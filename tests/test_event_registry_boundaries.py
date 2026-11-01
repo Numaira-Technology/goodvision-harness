@@ -30,6 +30,7 @@ from goodvision_harness.scene_delivery import (
 )
 from goodvision_harness.scene_runtime import SceneRuntime
 from goodvision_harness.scene_state import SceneState
+from goodvision_harness.vlm_offload import decode_inspection, encode_inspection
 from goodvision_harness.workflows import (
     WorkflowStore,
     WorkflowValidationError,
@@ -56,6 +57,8 @@ def test_events_lane_budget_and_response_cover_maximum_custom_vocabulary(monkeyp
         ]
     )
     labels = tuple(d.label for d in vocabulary.definitions if d.branch == "safety")
+    assert len(vocabulary.injected()) == 32
+    assert all(len(d.label) == 48 for d in vocabulary.injected())
     replies = {label: False for label in labels}
     response_text = json.dumps(replies, separators=(",", ":"))
     requests = []
@@ -89,8 +92,13 @@ def test_events_lane_budget_and_response_cover_maximum_custom_vocabulary(monkeyp
         api_key="TEST_KEY",
     )
     inspector = vlm_independent._inspector(cfg)
+    inspection = replace(job(cfg, 1.2, 18), vocabulary=vocabulary)
+    wire = encode_inspection(inspection, "events", cfg.model, {}, {}, 5)
+    decoded = decode_inspection(wire).job
+    assert decoded.vocabulary == vocabulary
+    assert decoded.request == inspection.request
     try:
-        votes = inspector.inspect(replace(job(cfg, 1.2, 18), vocabulary=vocabulary))
+        votes = inspector.inspect(inspection)
     finally:
         inspector.close()
     assert {vote.event_label for vote in votes} == set(labels)
@@ -104,6 +112,51 @@ def test_events_lane_budget_and_response_cover_maximum_custom_vocabulary(monkeyp
         assert inspector._parameters["max_tokens"] == 160
     finally:
         inspector.close()
+
+
+@pytest.mark.parametrize("kind", ["temporal", "full", "compact", "events"])
+def test_cpu_companion_preserves_custom_definitions_for_every_lane(kind):
+    import httpx
+    from fastapi.testclient import TestClient
+    from test_vlm_server import _app, _job, _reply
+
+    original = _job()
+    job = replace(
+        original,
+        vocabulary=_injected(),
+        request=replace(original.request, event_labels=("opens_door",)),
+    )
+    reply = json.loads(json.dumps(_reply(kind)).replace("smoking", "opens_door"))
+    app, seen = _app(lambda _: httpx.Response(200, json=reply))
+    wire = encode_inspection(job, kind, "local-vision", {}, {}, 5)
+    assert [d["label"] for d in wire["job"]["event_definitions"]] == ["opens_door"]
+    with TestClient(app) as client:
+        response = client.post("/v1/inspections", json=wire)
+    assert response.status_code == 200, response.text
+    assert response.json()["completion"] == reply
+    prompt = json.dumps(json.loads(seen[0].content)["messages"])
+    assert _injected().get("opens_door").definition in prompt
+    assert _injected().get("opens_door").counter_examples in prompt
+
+
+def test_cpu_companion_keeps_builtin_wire_and_rejects_untrusted_definitions():
+    from test_vlm_server import _job, _wire
+
+    wire = _wire()
+    assert "event_definitions" not in wire["job"]
+    assert decode_inspection(wire).job.vocabulary is BUILTIN_VOCABULARY
+    configured = encode_inspection(
+        replace(_job(), vocabulary=_injected()), "full", "local-vision", {}, {}, 5,
+    )
+    assert "event_definitions" not in configured["job"]
+    for definitions in ([{"label": "smoking"}], [{}] * 33, "opens_door"):
+        malformed = copy.deepcopy(wire)
+        malformed["job"]["event_definitions"] = definitions
+        with pytest.raises(ValueError):
+            decode_inspection(malformed)
+    wire["job"]["request"]["event_labels"] = ["opens_door"]
+    with pytest.raises(ValueError, match="unsupported temporal event labels"):
+        decode_inspection(wire)
 
 
 def confirmed_snapshot():

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .contracts import NormalizedBBox
+from .event_registry import SAFETY_BRANCH, vocabulary_from_json
 from .event_sensitivity import normalize_event_sensitivities
 from .runtime.scene import TemporalInspection
 from .runtime.scheduling import EvidenceFrame, InspectionRequest
@@ -109,6 +110,11 @@ def encode_inspection(job, kind, model, parameters, options, deadline_seconds):
     if not 0 < deadline <= 300:
         raise ValueError("invalid inspection deadline")
     request = job.request
+    injected = tuple(
+        definition
+        for definition in job.vocabulary.injected()
+        if definition.label in request.event_labels
+    )
     return {
         "version": 1,
         "kind": kind,
@@ -145,6 +151,23 @@ def encode_inspection(job, kind, model, parameters, options, deadline_seconds):
             "event_sensitivities": dict(job.event_sensitivities),
             "evidence_after_frame_sequence": job.evidence_after_frame_sequence,
             "grounding_required": job.grounding_required,
+            **(
+                {
+                    "event_definitions": [
+                        {
+                            "label": definition.label,
+                            "zh_name": definition.zh_name,
+                            "definition": definition.definition,
+                            "counter_examples": definition.counter_examples,
+                            "target": definition.target,
+                            "target_hint": definition.target_hint,
+                        }
+                        for definition in injected
+                    ],
+                }
+                if injected
+                else {}
+            ),
         },
     }
 
@@ -170,7 +193,7 @@ def decode_inspection(payload: object) -> InspectionPayload:
     if not 0 < deadline <= 300:
         raise ValueError("invalid inspection deadline")
     wire = payload["job"]
-    if not isinstance(wire, dict) or set(wire) != {
+    if not isinstance(wire, dict) or set(wire) - {"event_definitions"} != {
         "stream_session_id",
         "request",
         "frames",
@@ -180,6 +203,7 @@ def decode_inspection(payload: object) -> InspectionPayload:
         "grounding_required",
     }:
         raise ValueError("invalid inspection job")
+    vocabulary = vocabulary_from_json(wire.get("event_definitions"))
     session = _text(wire["stream_session_id"])
     raw = wire["request"]
     if not isinstance(raw, dict) or set(raw) != {
@@ -196,7 +220,7 @@ def decode_inspection(payload: object) -> InspectionPayload:
         not isinstance(subjects, list)
         or len(subjects) > 128
         or not isinstance(labels, list)
-        or not 1 <= len(labels) <= 6
+        or not 1 <= len(labels) <= len(vocabulary.branch(SAFETY_BRANCH))
     ):
         raise ValueError("invalid inspection request")
     subjects = tuple(_text(v) for v in subjects)
@@ -281,6 +305,7 @@ def decode_inspection(payload: object) -> InspectionPayload:
         tuple(sensitivities.items()),
         after,
         grounding_required=wire["grounding_required"],
+        vocabulary=vocabulary,
     )
     _validate_job(job)
     return InspectionPayload(
