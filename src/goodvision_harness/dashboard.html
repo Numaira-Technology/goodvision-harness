@@ -1733,7 +1733,8 @@ async function saveApiKey(){
   const key=ui.defaultApiKey.value.trim();
   if(!key){deploymentSay("请输入 API key 后保存。",true);return}
   await updateDeploymentSettings({api_key:key},
-    "API key 已保存，无需 .env 或重启服务。")
+    "API key 已保存，无需 .env 或重启服务。",
+    {preserveFields:[...workflowServiceFields("analysis"),...workflowServiceFields("tracking"),ui.defaultStreamUrl]})
 }
 async function saveBufferDelay(){
   const raw=ui.bufferDelay.value.trim(),seconds=Number(raw);
@@ -1771,7 +1772,8 @@ async function clearSavedApiKey(){
   const prompt="Clear the saved API key? Formal mode will require another available key.";
   if(!window.confirm(globalThis.GoodvisionI18n?.text(prompt)||prompt))return;
   await updateDeploymentSettings({clear_api_key:true},
-    "Saved API key cleared. A runtime/environment key, if configured, remains available.")
+    "Saved API key cleared. A runtime/environment key, if configured, remains available.",
+    {preserveFields:[...workflowServiceFields("analysis"),...workflowServiceFields("tracking"),ui.defaultStreamUrl]})
 }
 
 async function info(){

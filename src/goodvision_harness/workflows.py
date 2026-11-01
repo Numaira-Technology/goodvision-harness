@@ -865,14 +865,11 @@ class WorkflowStore:
                         continue
                     if group["workflow_id"] not in {None, workflow["id"]}:
                         _fail("video source is assigned to another workflow")
-                    group["camera_ids"] = [
-                        cid for cid in group["camera_ids"] if cid not in overlap
-                    ]
-                    group["camera_overrides"] = {
-                        cid: value
-                        for cid, value in group["camera_overrides"].items()
-                        if cid not in overlap
-                    }
+                    # Reuse existing unassigned groups so their stop switches
+                    # and per-camera gates survive automatic source assignment.
+                    owned.update(overlap)
+                    if group not in selected:
+                        selected.append(group)
                 unassigned = [cid for cid in source_cameras if cid not in owned]
                 if source_group is None and unassigned:
                     source_group = _group(

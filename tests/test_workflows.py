@@ -145,6 +145,39 @@ def test_binding_sources_preserves_existing_group_gates():
     assert compile_document(doc)["camera02"]["summaries"]
 
 
+@pytest.mark.parametrize("explicit_selection", [False, True])
+@pytest.mark.parametrize("stop_switch", ["group", "camera"])
+def test_source_apply_keeps_unassigned_group_membership_and_stop_switches(
+    explicit_selection, stop_switch
+):
+    store = WorkflowStore()
+    wid, first, second = setup_assets(store)
+    gate = (
+        {"enabled": False}
+        if stop_switch == "group"
+        else {"camera_overrides": {"camera01": {"enabled": False}}}
+    )
+    before = command(store, "update_group", {"id": first, **gate})
+    doc = command(
+        store,
+        "apply",
+        {
+            "workflow_id": wid,
+            "graph": two_sources(),
+            "group_ids": [first] if explicit_selection else [],
+        },
+    )
+    assert [group["id"] for group in doc["groups"]] == [first, second]
+    for old, new in zip(before["groups"], doc["groups"], strict=True):
+        for key in ("name", "camera_ids", "enabled", "camera_overrides"):
+            assert new[key] == old[key]
+        assert new["workflow_id"] == wid
+        assert new["assignment_generation"] == old["assignment_generation"] + 1
+    plans = compile_document(doc)
+    assert not plans["camera01"]["enabled"]
+    assert plans["camera02"]["enabled"] and plans["camera02"]["summaries"]
+
+
 def tracking_graph() -> dict:
     value = graph()
     value["nodes"].append({"id": "tracking", "type": "tracking"})

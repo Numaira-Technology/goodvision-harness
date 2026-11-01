@@ -58,6 +58,32 @@ test("tracking sidebar never validates or submits an unrelated analysis draft",a
   assert.equal(view.element('default-api-key').value,'pending-cloud-key');
 });
 
+for(const action of ['save','clear'])for(const failed of [false,true])
+test(`${action} API credentials preserves workflow service drafts when ${failed?'failing':'successful'}`,async()=>{
+  const view=dashboard({inference_mode:'cloud',tracking_mode:'legacy',api_key_persisted:true});
+  view.context.window.confirm=()=>true;view.context.fail=failed;
+  const drafts={
+    'inference-mode':'server','inference-server-protocol':'goodvision',
+    'inference-server-url':'unfinished-analysis','inference-server-model':'pending-model',
+    'tracking-mode':'server','tracking-server-protocol':'contour',
+    'tracking-server-url':'unfinished-tracking','tracking-server-capacity':'invalid',
+    'tracking-sample-fps':'invalid','tracking-node-key':'pending-node-key',
+    'default-stream-url':'pending-source'
+  };
+  for(const [id,value] of Object.entries(drafts))view.element(id).value=value;
+  view.element('clear-tracking-node-key').checked=true;
+  view.element('default-api-key').value='new-cloud-key';
+  await (action==='save'?view.saveApiKey():view.clearSavedApiKey());
+  assert.deepEqual(view.requests.map(request=>request.payload),[
+    action==='save'?{api_key:'new-cloud-key'}:{clear_api_key:true}
+  ]);
+  for(const [id,value] of Object.entries(drafts))assert.equal(view.element(id).value,value,id);
+  assert.equal(view.element('clear-tracking-node-key').checked,true);
+  assert.equal(view.state.deployment.inference_mode,'cloud');
+  assert.equal(view.state.deployment.tracking_mode,'legacy');
+  assert.deepEqual(view.messages,[]);
+});
+
 test("analysis protocol defaults to compatible API and persists GoodVision independently",async()=>{
   const view=dashboard({inference_mode:"server",tracking_mode:"legacy",
     inference_server_url:"http://analysis:8094",inference_server_model:"vision"});
@@ -135,7 +161,7 @@ function dashboard(settings={}){
     renderDeploymentSettings(true,true);
     globalThis.app={state,start,controls,renderDeploymentSettings,renderLocalGpuSettings,
       saveDeploymentSettings,loadDeploymentSettings,checkRoutes,selectRoute,loadRoutes,
-      localInferenceEnabled,savedExecutionMode,originalInfo,saveApiKey,workflowUsesSimulation,useRealWorkflowAnalysis};
+      localInferenceEnabled,savedExecutionMode,originalInfo,saveApiKey,clearSavedApiKey,workflowUsesSimulation,useRealWorkflowAnalysis};
   `,context);
   return {html,element,requests,messages,context,...context.app}
 }
