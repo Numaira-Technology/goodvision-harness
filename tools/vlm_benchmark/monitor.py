@@ -26,6 +26,19 @@ ASSETS = Path(__file__).resolve().parent
 EVENT_SUBJECT_MAX_AGE = 0.30
 
 
+def _probability(value):
+    if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
+        raise ValueError("selection probability must be a finite number in [0, 1]")
+    return value
+
+
+def _probability_env(name):
+    try:
+        return _probability(float(os.environ.get(name, "0.5")))
+    except ValueError:
+        raise ValueError(f"{name} must be a finite number in [0, 1]") from None
+
+
 def lane_name(report):
     return (
         "grounding" if report.get("vlm_lane") in {"grounding", "combined"} else "events"
@@ -213,6 +226,44 @@ class LiveMonitor:
         )
         self._select_closed = False
         self._select_state_lock = threading.Lock()
+        # Backend for the per-person selection. "chat" keeps the chat-completions
+        # VLM SELECT; "luna" uses the OpenRouter Decisions API (predicate gate for
+        # multi-person/scene events, choice binding for per-person events).
+        self._select_backend = os.environ.get(
+            "PREVIEW_SELECT_BACKEND", "chat"
+        ).strip().lower()
+        if self._select_backend not in {"chat", "luna"}:
+            raise ValueError("PREVIEW_SELECT_BACKEND must be chat or luna")
+        if (
+            self._select_backend == "luna"
+            and "PREVIEW_SELECT_MODEL" not in os.environ
+        ):
+            self._select_model = "openai/gpt-6-luna-decisions"
+        # Events judged at frame level (no single actor to bind): go to scene_alert.
+        # ground_litter is scene-based (trash on the floor, not tied to a person);
+        # fight binds to the aggressive person. Override with PREVIEW_SELECT_FRAME_LEVEL.
+        frame_level_env = os.environ.get("PREVIEW_SELECT_FRAME_LEVEL", "").strip()
+        self._select_frame_level = (
+            {x.strip() for x in frame_level_env.split(",") if x.strip()}
+            if frame_level_env
+            else {"ground_litter"}
+        )
+        if self._select_frame_level - set(self._select_labels):
+            raise ValueError("unknown PREVIEW_SELECT_FRAME_LEVEL event")
+        self._select_gate_thr = _probability_env("PREVIEW_SELECT_GATE")
+        # Litter gate. The tightened description already suppresses normal room
+        # clutter (baseline ~0.1); real floor litter reads ~0.6+, so 0.5 separates
+        # cleanly. Raise via env if a busy scene still trips it.
+        self._select_gate_litter = _probability_env("PREVIEW_SELECT_GATE_LITTER")
+        self._select_bind_conf = _probability_env("PREVIEW_SELECT_BIND_CONF")
+        # Optional: restrict the selection to a subset of events (e.g. the ones a
+        # backend has been validated on). Applies to both backends.
+        labels_env = os.environ.get("PREVIEW_SELECT_LABELS", "").strip()
+        if labels_env:
+            chosen = tuple(x.strip() for x in labels_env.split(","))
+            if any(label not in self._select_labels for label in chosen):
+                raise ValueError("unknown PREVIEW_SELECT_LABELS event")
+            self._select_labels = tuple(dict.fromkeys(chosen))
 
     def __enter__(self):
         from tools.vlm_benchmark.recording import BrowserRecorder, make_preview
@@ -539,6 +590,8 @@ class LiveMonitor:
             # not just the box colour, and flag that a real model is in use.
             if self._select_events:
                 data["select_active"] = bool(self._select_key and self.detector_url)
+                data["select_backend"] = self._select_backend
+                data["select_model"] = self._select_model
                 now = time.monotonic()
                 with self._select_state_lock:
                     live = (
@@ -564,6 +617,9 @@ class LiveMonitor:
                         ):
                             for labels in state["tags"].values():
                                 events.update(labels)
+                            # Scene-level events (e.g. litter) light their chip too,
+                            # even though they bind to no specific person.
+                            events.update(state.get("scene_events", ()))
                             cam["select_epoch"] = session["epoch"]
                             cam["select_generation"] = session["generation"]
                         cam["select_events"] = sorted(events)
@@ -939,13 +995,14 @@ class LiveMonitor:
                             "pending": None,
                             "tags": {},
                             "scene_alert": False,
+                            "scene_events": (),
                             "expires": 0.0,
                         }
                         self._select_states[key] = state
                     state["touched"] = now
                     if (
                         not self._select_key
-                        or not raw
+                        or (not raw and self._select_backend != "luna")
                         or now >= evidence_at + self._select_ttl
                         or state["pending"] is not None
                         or now - state["last"] < self._select_interval
@@ -1013,7 +1070,12 @@ class LiveMonitor:
                     is None
                 ):
                     return
-            tags, scene_alert = self._select_query(jpeg, numbered)
+            result = self._select_query(jpeg, numbered)
+            if self._select_backend == "luna":
+                tags, scene_alert, scene_events = result
+            else:
+                tags, scene_alert = result
+                scene_events = ()
             with self.lock, self._select_state_lock:
                 state = self._current_select(key, session_id, request_id, evidence_at)
                 if state is not None:
@@ -1021,6 +1083,7 @@ class LiveMonitor:
                     state.update(
                         tags=tags,
                         scene_alert=scene_alert,
+                        scene_events=scene_events,
                         expires=evidence_at + self._select_ttl,
                     )
         except Exception:
@@ -1030,6 +1093,8 @@ class LiveMonitor:
 
     def _select_query(self, jpeg, numbered):
         """Validate a complete provider verdict before binding actor labels."""
+        if self._select_backend == "luna":
+            return self._select_query_luna(jpeg, numbered)
         from io import BytesIO
 
         from PIL import Image, ImageDraw
@@ -1144,9 +1209,195 @@ class LiveMonitor:
                 scene_alert = True
             else:
                 tags.setdefault(num_to_track[person], []).append(event)
-        return {
-            track_id: tuple(sorted(labels)) for track_id, labels in tags.items()
-        }, scene_alert
+        return (
+            {track_id: tuple(sorted(labels)) for track_id, labels in tags.items()},
+            scene_alert,
+        )
+
+    # Per-event phrasing for the Decisions backend. Descriptions are intentionally
+    # permissive: a cigarette-like object counts as smoking (no visible smoke
+    # required), a single aggressive person counts as a fight, and throwing
+    # something on the ground counts as litter.
+    _LUNA_DESC = {
+        "fight": (
+            "a person is behaving aggressively — fighting, hitting, pushing, "
+            "kicking, or swinging a fist (a single aggressive person counts; "
+            "two people are not required)"
+        ),
+        "smoking": (
+            "a person is actively smoking — holding or puffing a lit cigarette, "
+            "cigar, or vape (visible smoke is not required)"
+        ),
+        "fall": (
+            "a person has fallen and is now lying, collapsed, or sprawled on the "
+            "ground or floor, or is clearly in the act of falling down — a person "
+            "who is only bending over, crouching, squatting, sitting, or kneeling "
+            "to reach something does NOT count"
+        ),
+        "weapon": "someone is holding or brandishing a weapon",
+        "ppe_violation": "someone is missing required safety gear (helmet/vest)",
+        # Scene-level, not tied to a specific person.
+        "ground_litter": (
+            "a person has just thrown, dropped, or discarded trash or an object "
+            "onto the floor, or loose litter/trash is lying on the floor — NOT "
+            "furniture, equipment, bags, boxes, or other items that normally "
+            "belong in the room"
+        ),
+    }
+    _LUNA_ACT = {
+        "smoking": (
+            "is actively smoking — holding or puffing a lit cigarette, cigar, or vape"
+        ),
+        "fall": (
+            "has fallen and is lying, collapsed, or sprawled on the ground, or is "
+            "clearly falling down (not merely bending, crouching, squatting, or sitting)"
+        ),
+        "fight": (
+            "is behaving aggressively — fighting, hitting, pushing, or swinging a fist"
+        ),
+        "weapon": "is holding or brandishing a weapon",
+        "ppe_violation": "is missing required safety gear",
+        # ground_litter intentionally omitted: it is judged at scene level, not
+        # bound to a person (see _select_frame_level).
+    }
+
+    def _select_query_luna(self, jpeg, numbered):
+        """Decisions-API SELECT: choice binds per-person events to a numbered track;
+        predicate gates multi-person / scene events into scene_alert. One call/frame."""
+        from io import BytesIO
+
+        from PIL import Image, ImageDraw
+
+        with Image.open(BytesIO(jpeg)) as source:
+            image = source.convert("RGB")
+        draw = ImageDraw.Draw(image)
+        width, height = image.size
+        num_to_track = {}
+        for number, track_id, box in numbered:
+            num_to_track[number] = track_id
+            x1, y1, x2, y2 = (
+                box[0] * width,
+                box[1] * height,
+                box[2] * width,
+                box[3] * height,
+            )
+            draw.rectangle([x1, y1, x2, y2], outline=(0, 255, 0), width=3)
+            draw.text((x1 + 2, max(0, y1 - 12)), f"#{number}", fill=(255, 255, 0))
+        buffer = BytesIO()
+        image.save(buffer, "JPEG", quality=90)
+        data = base64.b64encode(buffer.getvalue()).decode()
+        n = len(numbered)
+        questions = {}
+        for label in self._select_labels:
+            desc = self._LUNA_DESC.get(label, f"{label} is happening")
+            if label in self._select_frame_level or label not in self._LUNA_ACT or n == 0:
+                questions[label] = {
+                    "type": "noul",
+                    "instructions": f"Is it true that {desc}?",
+                    "criteria": {"true": desc, "false": f"not: {desc}"},
+                }
+            else:
+                act = self._LUNA_ACT[label]
+                criteria = {str(i): f"person #{i} {act}" for i in range(1, n + 1)}
+                criteria["none"] = f"no numbered person {act}"
+                questions[label] = {
+                    "type": "choice",
+                    "instructions": (
+                        f"People are marked with numbered green boxes (#1..#{n}). "
+                        f"Which numbered person {act}? Choose none if nobody is."
+                    ),
+                    "criteria": criteria,
+                }
+                # A diffuse actor choice is not evidence that the event occurred.
+                # Gate scene-only fallback independently in this same request.
+                questions["scene/" + label] = {
+                    "type": "noul", "instructions": f"Is it true that {desc}?",
+                    "criteria": {"true": desc, "false": f"not: {desc}"},
+                }
+        body = json.dumps(
+            {
+                "model": self._select_model,
+                "state": [
+                    "Surveillance frame with numbered people.",
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{data}"},
+                    },
+                ],
+                "questions": questions,
+            }
+        ).encode()
+        request = urllib.request.Request(
+            "https://openrouter.ai/api/alpha/decisions",
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self._select_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(
+            request, timeout=max(self._select_ttl, 10)
+        ) as response:
+            encoded = response.read(64 * 1024 + 1)
+        if len(encoded) > 64 * 1024:
+            raise ValueError("oversized selection response")
+        payload = json.loads(encoded)
+        answers = payload.get("answers") if isinstance(payload, dict) else None
+        if not isinstance(answers, dict) or set(answers) != set(questions):
+            raise ValueError("incomplete selection answers")
+        for name, question in questions.items():
+            answer = answers[name]
+            if (not isinstance(answer, dict) or answer.get("error") is not None
+                    or answer.get("type") != question["type"]):
+                raise ValueError("invalid selection answer type")
+            if question["type"] == "noul":
+                _probability(answer.get("noul"))
+            else:
+                if (not isinstance(answer.get("choice"), str)
+                        or answer["choice"] not in question["criteria"]):
+                    raise ValueError("invalid selection person")
+                _probability(answer.get("confidence"))
+        tags, scene_alert, scene_events = {}, False, set()
+        for label in self._select_labels:
+            answer = answers[label]
+            if not isinstance(answer, dict):
+                raise ValueError("invalid selection answer")
+            kind = answer.get("type")
+            if kind == "noul":
+                # Scene-level event (e.g. litter on the floor): light its chip,
+                # but do not redden any person's box — it is not tied to an actor.
+                gate = (
+                    self._select_gate_litter
+                    if label == "ground_litter"
+                    else self._select_gate_thr
+                )
+                if answer["noul"] >= gate:
+                    scene_events.add(label)
+            elif kind == "choice":
+                choice = answer.get("choice")
+                if answers["scene/" + label]["noul"] < self._select_gate_thr:
+                    continue
+                if choice == "none":
+                    scene_events.add(label)
+                    continue
+                try:
+                    person = int(choice)
+                except (TypeError, ValueError):
+                    raise ValueError("invalid selection person")
+                if person not in num_to_track:
+                    raise ValueError("invalid selection person")
+                if answer["confidence"] < self._select_bind_conf:
+                    scene_events.add(label)
+                else:
+                    tags.setdefault(num_to_track[person], []).append(label)
+            else:
+                raise ValueError("invalid selection answer type")
+        return (
+            {track_id: tuple(sorted(labels)) for track_id, labels in tags.items()},
+            scene_alert,
+            tuple(sorted(scene_events)),
+        )
 
     def handler(self):
         monitor = self

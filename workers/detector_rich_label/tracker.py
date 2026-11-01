@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 PERSON_LABELS = frozenset({"person", "pedestrian"})
+MaskPolygons = tuple[tuple[tuple[float, float], ...], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,7 @@ class Detection:
     label: str
     confidence: float
     bbox: tuple[float, float, float, float]  # pixel x1,y1,x2,y2
+    mask_polygons: MaskPolygons = ()  # source-normalized polygons, observed frame only
 
 
 @dataclass(slots=True)
@@ -38,6 +40,7 @@ class Track:
     velocity_y: float = 0.0
     motion_updates: int = 0
     last_observed_timestamp_seconds: float | None = None
+    mask_polygons: MaskPolygons = ()
 
 
 class IoUTracker:
@@ -144,6 +147,7 @@ class IoUTracker:
                 )
                 self._tracks[track_id] = track
             track.last_observed_timestamp_seconds = timestamp_seconds
+            track.mask_polygons = detection.mask_polygons
             current.append(track)
         visible = {track.track_id: track for track in current}
         for track_id, track in self._tracks.items():

@@ -474,8 +474,8 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             else:
                 rich_client.close()
                 self._rich_labels = None
-                self._rich_disabled_reason = "gpu_required"
-                LOGGER.info("rich annotation disabled: usable GPU required")
+                self._rich_disabled_reason = self._rich_readiness_reason()
+                LOGGER.info("rich annotation disabled: inference provider unavailable")
         else:
             self._rich_labels = None
         self._rich_history = DeferredRichLabelHistory(lambda: self._rich_labels)
@@ -949,6 +949,11 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         detector_model = resolve_rich_label_model(key).detector_model
         return {DETECTOR_MODEL_HEADER: detector_model} if detector_model else {}
 
+    def _rich_readiness_reason(self) -> str:
+        if self._detector_model_headers().get(DETECTOR_MODEL_HEADER) == "sam3-onnx":
+            return "provider_unavailable"
+        return "gpu_required"
+
     @staticmethod
     def _configure_rich_label_model(
         configuration: HarnessConfig, key: str | None,
@@ -1084,7 +1089,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 self._rich_requested or self.config.rich_labeling.tracking_enabled
                 or method is not None
             )
-            self._rich_disabled_reason = "gpu_required"
+            self._rich_disabled_reason = self._rich_readiness_reason()
             self._state.update(
                 pipeline_state="stopping" if previous is not None else "idle",
                 input_mode=None, ready=False, generation=self._generation,
@@ -2015,10 +2020,10 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     self._rich_disabled_reason = None
                     self._state["rich_labeling_enabled"] = self._rich_requested
                 client = None  # The coordinator now owns and closes it.
-            LOGGER.info("rich annotation enabled: remote GPU is ready")
+            LOGGER.info("rich annotation enabled: remote inference provider is ready")
             return True
         except Exception:
-            LOGGER.warning("rich annotation GPU readiness check failed")
+            LOGGER.warning("rich annotation provider readiness check failed")
             return False
         finally:
             if client is not None:
@@ -2762,9 +2767,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 }
 
                 if self.config.runtime.scene_independent_vlm:
-                    native_videojev = (
+                    prepared_native_vlm = (
                         model_settings.provider == "local"
-                        and model == "ZhuYuhan/VideoJev-4B"
+                        and model in {"ZhuYuhan/VideoJev-4B", "vllm-sr/d3-nano"}
                     )
                     process_config = VLMProcessConfig(
                         session.stream_session_id, self.source_id, generation, scene_labels,
@@ -2784,9 +2789,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                             self.config.runtime.scene_requests_per_second,
                             self.config.runtime.scene_queue_timeout_seconds,
                         ) if self.config.runtime.scene_admission_database else None),
-                        candidate_fps=4.0 if native_videojev else None,
-                        observation_window_frames=2 if native_videojev else 4,
-                        observation_frame_delta_seconds=0.5 if native_videojev else None,
+                        candidate_fps=4.0 if prepared_native_vlm else None,
+                        observation_window_frames=2 if prepared_native_vlm else 4,
+                        observation_frame_delta_seconds=0.5 if prepared_native_vlm else None,
                     )
                     next_worker = IndependentVLMBranch(
                         process_config, results=self.results,

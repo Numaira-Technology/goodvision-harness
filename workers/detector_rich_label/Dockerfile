@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY requirements.txt .
 RUN python3 -m pip install --no-cache-dir -r requirements.txt
-COPY app.py tracker.py detectors.py ./
+COPY app.py tracker.py detectors.py sam3_onnx.py ./
 ENV DETECTOR_MODEL=yolo26-s DETECTOR_DEVICE=cuda DETECTOR_WEIGHTS_DIR=/models
 EXPOSE 8092
 CMD ["python3","-m","uvicorn","app:app","--host","0.0.0.0","--port","8092","--workers","1"]

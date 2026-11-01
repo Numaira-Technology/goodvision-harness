@@ -31,6 +31,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Install only one extra in an isolated environment: the ORT builds conflict.
+sam3-onnx = ["osam[cpu]==0.9.4"]
+sam3-onnx-cuda = ["osam[gpu]==0.9.4"]
 vlm = [
   "httpx[http2]>=0.27,<1",
 ]
@@ -43,6 +46,17 @@ videojev = [
   "flash-linear-attention==0.4.2",
   "fla-core==0.4.2",
   "flash-attn==2.8.3.post2",
+  "causal-conv1d==1.7.0",
+]
+decision3 = [
+  "torch==2.8.0",
+  "torchvision==0.23.0",
+  "transformers==5.17.0",
+  "tokenizers==0.23.3",
+  "accelerate==1.10.1",
+  "safetensors==0.8.0",
+  "flash-linear-attention==0.5.2",
+  "fla-core==0.5.2",
   "causal-conv1d==1.7.0",
 ]
 video = [
@@ -78,6 +92,7 @@ goodvision-harness = "goodvision_harness.service:main"
 goodvision-harness-cli = "goodvision_harness.pipeline:main"
 goodvision-harness-demo = "goodvision_harness.demo.server:main"
 goodvision-videojev = "goodvision_harness.videojev_service:main"
+goodvision-vlm = "goodvision_harness.videojev_service:main"
 goodvision-event-replay = "goodvision_harness.evaluation.replay:main"
 
 [tool.setuptools.packages.find]
