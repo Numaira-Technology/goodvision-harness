@@ -257,7 +257,11 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         face_runtime: FaceRecognitionRuntime | None = None,
         deployment_store: DeploymentSettingsStore | None = None,
         rich_label_coordinator: RichLabelCoordinator | None = None,
+        production: bool = False,
     ) -> None:
+        # Deployed entrypoints never accept synthetic analysis. Injected runtimes
+        # retain fake clients for offline regression tests.
+        self._production = production
         self._fleet_camera_index = int(
             os.environ.get("HARNESS_FLEET_CAMERA_INDEX", "1"),
         )
@@ -324,7 +328,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             )
             config_error = config_error or self._local_configuration_error
         try:
-            dry_run = (
+            dry_run = False if production else (
                 self._deployment_settings.dry_run
                 if self._deployment_settings is not None
                 else _env_bool("HARNESS_DRY_RUN", False)
@@ -650,22 +654,24 @@ class HarnessRuntime(WorkflowRuntimeMixin):
     @classmethod
     def from_environment(cls) -> HarnessRuntime:
         config_path = Path(os.environ.get("HARNESS_CONFIG", str(DEFAULT_CONFIG_PATH)))
-        deployment_path = os.environ.get(
-            "HARNESS_DEPLOYMENT_SETTINGS_PATH", ""
-        ).strip()
-        deployment_store = (
-            DeploymentSettingsStore(deployment_path) if deployment_path else None
-        )
+        config_error = None
         try:
             config = load_config(config_path)
         except Exception:
             LOGGER.error("could not load harness configuration")
-            return cls(
-                None,
-                config_error="configuration error",
-                deployment_store=deployment_store,
-            )
-        return cls(config, deployment_store=deployment_store)
+            config = None
+            config_error = "configuration error"
+        # load_config also reads .env. Resolve storage afterwards so local
+        # launches honor it, and provide the same persistent console as Docker.
+        deployment_path = os.environ.get(
+            "HARNESS_DEPLOYMENT_SETTINGS_PATH", ""
+        ).strip() or str(Path(".goodvision") / "deployment-settings.json")
+        return cls(
+            config,
+            config_error=config_error,
+            deployment_store=DeploymentSettingsStore(deployment_path),
+            production=True,
+        )
 
     def configured_stream_url(self) -> str:
         if self.config is None:
@@ -1206,6 +1212,8 @@ class HarnessRuntime(WorkflowRuntimeMixin):
     def update_deployment_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Persist defaults; buffer-only updates also apply to the active session."""
 
+        if self._production and payload.get("dry_run") is True:
+            raise ValueError("Synthetic analysis is no longer supported.")
         if self._deployment_store is None:
             raise RuntimeError("persistent deployment storage is not configured")
         allowed = SERVICE_LOCATION_FIELDS | {
@@ -2325,6 +2333,8 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         video_connection_id: str | None = None,
         tracking_only: bool = False,
     ) -> dict[str, Any]:
+        if self._production and dry_run:
+            raise ValueError("Synthetic analysis is no longer supported.")
         if self.config is None or self.config_error is not None:
             raise RuntimeError(self.config_error or "configuration unavailable")
         if self._fleet_camera_index > self.tracking_camera_capacity():

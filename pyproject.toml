@@ -96,7 +96,6 @@ diag = [
 [project.scripts]
 goodvision-harness = "goodvision_harness.service:main"
 goodvision-harness-cli = "goodvision_harness.pipeline:main"
-goodvision-harness-demo = "goodvision_harness.demo.server:main"
 goodvision-videojev = "goodvision_harness.videojev_service:main"
 goodvision-neural = "goodvision_harness.neural_service:main"
 goodvision-vlm = "goodvision_harness.videojev_service:main"

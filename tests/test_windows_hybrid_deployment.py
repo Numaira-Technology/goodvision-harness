@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,100 @@ def test_windows_hybrid_instructions_keep_runtime_packages_isolated() -> None:
 
 def _ps_literal(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
+
+
+@pytest.mark.parametrize("service_exit_code", [0, 7])
+def test_hybrid_launcher_isolates_persisted_console_settings_and_cleans_up(
+    tmp_path: Path, service_exit_code: int,
+) -> None:
+    powershell = shutil.which("pwsh") or shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("PowerShell is required to execute the Windows launcher")
+    # Exercise the launcher and the actual production factory together, without
+    # starting video connections, model workers or a listening service.
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    launcher = tools / "start_windows_hybrid_demo.ps1"
+    shutil.copyfile(ROOT / "tools" / launcher.name, launcher)
+    shutil.copyfile(ROOT / "config.yaml", tmp_path / "config.yaml")
+    saved = tmp_path / ".goodvision" / "deployment-settings.json"
+    saved.parent.mkdir()
+    original_settings = json.dumps({
+        "schema_version": 1, "stream_url": "rtsp://127.0.0.1/saved-console",
+        "dry_run": False, "autostart": True,
+    })
+    saved.write_text(original_settings, encoding="utf-8")
+    probe = tmp_path / "probe.py"
+    capture = tmp_path / "observed.json"
+    restored = tmp_path / "restored.json"
+    probe.write_text(
+        """import json, os
+from pathlib import Path
+from unittest.mock import patch
+from goodvision_harness.service import HarnessRuntime
+with patch('goodvision_harness.config.find_dotenv', return_value=''):
+    runtime = HarnessRuntime.from_environment()
+    observed = {
+        'path': os.environ.get('HARNESS_DEPLOYMENT_SETTINGS_PATH', ''),
+        'autostart': runtime.autostart,
+        'settings_saved': runtime.deployment_settings()['settings_saved'],
+        'stream_url': runtime.configured_stream_url(),
+    }
+    runtime.update_deployment_settings({'buffer_delay_seconds': 1.25})
+    observed['settings_written'] = runtime._deployment_store.path.is_file()
+    Path(os.environ['HYBRID_TEST_CAPTURE']).write_text(json.dumps(observed))
+""",
+        encoding="utf-8",
+    )
+    fake_python = tmp_path / "python.ps1"
+    fake_python.write_text(
+        f"""if ($args[0] -eq '-c') {{
+    Write-Output '["DmlExecutionProvider"]'
+    $global:LASTEXITCODE = 0
+}}
+else {{
+    & {_ps_literal(sys.executable)} {_ps_literal(probe)}
+    if ($LASTEXITCODE -ne 0) {{ throw 'Runtime probe failed' }}
+    $global:LASTEXITCODE = {service_exit_code}
+}}
+""",
+        encoding="utf-8",
+    )
+    wrapper = tmp_path / "launch-test.ps1"
+    wrapper.write_text(
+        f"""$ErrorActionPreference = 'Stop'
+$env:HYBRID_TEST_CAPTURE = {_ps_literal(capture)}
+$env:HARNESS_DEPLOYMENT_SETTINGS_PATH = 'original-settings-path'
+$env:HARNESS_AUTOSTART = 'original-autostart'
+$failed = $false
+try {{ & {_ps_literal(launcher)} -PythonPath {_ps_literal(fake_python)} }}
+catch {{ $failed = $true }}
+[pscustomobject]@{{
+    path = $env:HARNESS_DEPLOYMENT_SETTINGS_PATH
+    autostart = $env:HARNESS_AUTOSTART
+    failed = $failed
+}} | ConvertTo-Json | Set-Content -LiteralPath {_ps_literal(restored)}
+""",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(wrapper)],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    observed = json.loads(capture.read_text(encoding="utf-8"))
+    assert observed["autostart"] is False
+    assert observed["settings_saved"] is False
+    assert observed["stream_url"] != "rtsp://127.0.0.1/saved-console"
+    assert observed["settings_written"] is True
+    assert observed["path"]
+    assert not Path(observed["path"]).parent.exists()
+    assert saved.read_text(encoding="utf-8") == original_settings
+    assert json.loads(restored.read_text(encoding="utf-8-sig")) == {
+        "path": "original-settings-path", "autostart": "original-autostart",
+        "failed": service_exit_code != 0,
+    }
 
 
 @pytest.mark.parametrize(

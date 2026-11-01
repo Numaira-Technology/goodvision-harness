@@ -127,14 +127,14 @@ test("settings preserve conditional service wrappers and put controls in their o
   const view=fixture(),get=id=>view.document.getElementById(id);
   const cloud=get("cloud-model-settings"),server=get("tracking-server-fields"),key=get("tracking-node-key-fields"),legacy=get("local-inference-enabled").parentElement;
   organizeSettings(view.document);
-  const expected={analysis:["inference-mode","inference-server-fields"],tracking:["tracking-mode","tracking-server-fields","tracking-node-key-fields","cloud-gpu-panel","tracking-sample-fps","tracking-sample-fps-help","local-inference-enabled","local-tracking-enabled","local-gpu-status","local-gpu-help","processing-method-field","richlabel-model-field","richlabel-model-note"],video:["default-stream-url","default-stream-status","default-camera-layout"],credentials:["default-api-key","default-api-key-status","save-api-key-button","clear-api-key-button"],startup:["default-dry-run","default-autostart","deployment-source-status"]};
+  const expected={analysis:["inference-mode","inference-server-fields"],tracking:["tracking-mode","tracking-server-fields","tracking-node-key-fields","cloud-gpu-panel","tracking-sample-fps","tracking-sample-fps-help","local-inference-enabled","local-tracking-enabled","local-gpu-status","local-gpu-help","processing-method-field","richlabel-model-field","richlabel-model-note"],video:["default-stream-url","default-stream-status","default-camera-layout"],credentials:["default-api-key","default-api-key-status","save-api-key-button","clear-api-key-button"],startup:["default-autostart","deployment-source-status"]};
   for(const [group,ids] of Object.entries(expected))for(const id of ids)assert.equal(get(id).closest(".settings-section").id,"settings-"+group,id);
   assert.equal(key.parentElement,server);assert.equal(server.hidden,true);assert.equal(key.hidden,true);
   assert.equal(get("default-api-key").closest("#cloud-model-settings"),cloud);
   assert.equal(get("clear-api-key-button").closest("#cloud-model-settings"),cloud);
   assert.equal(get("local-inference-enabled").parentElement,legacy);assert.equal(legacy.hidden,true);
   assert.equal(get("local-tracking-enabled").parentElement,legacy);
-  assert.equal(get("default-dry-run").closest("label").nextElementSibling.classList.contains("secret-status"),true);
+  assert.equal(get("default-dry-run"),null);
 });
 
 test("section jumps keep the console route and idempotent initialization preserves nodes",()=>{
