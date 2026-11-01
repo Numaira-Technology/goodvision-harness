@@ -290,7 +290,9 @@ class ServiceLocations:
                 ),
             )
             if (config.rich_labeling.backend == "vlm"
-                    and self.inference_server_model != "ZhuYuhan/VideoJev-4B"):
+                    and self.inference_server_model not in {
+                        "ZhuYuhan/VideoJev-4B", "vllm-sr/d3-nano",
+                    }):
                 config = replace(
                     config,
                     rich_labeling=replace(
@@ -344,7 +346,9 @@ class ServiceLocations:
                 config.rich_labeling, max_fps=self.tracking_sample_fps,
             ))
         if (config.model_api.provider == "local"
-                and config.inference.model == "ZhuYuhan/VideoJev-4B"):
+                and config.inference.model in {
+                    "ZhuYuhan/VideoJev-4B", "vllm-sr/d3-nano",
+                }):
             if self.inference_mode == "server":
                 config = replace(config, aiclub=replace(
                     config.model_api, endpoint=self.inference_server_url + "/predict",

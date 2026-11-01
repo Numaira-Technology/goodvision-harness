@@ -58,13 +58,17 @@ class VideoJevInspector:
     An HTTP timeout does not cancel already-started work in the GPU service.
     """
 
+    model_name = MODEL
+    display_name = "VideoJev"
+    metric_prefix = "videojev_"
+
     def __init__(self, config):
         if (
             config.model_settings.provider != "local"
-            or config.model != MODEL
+            or config.model != self.model_name
             or config.output_mode != "events"
         ):
-            raise ValueError("VideoJev requires its explicit local events route")
+            raise ValueError(f"{self.display_name} requires its explicit local events route")
         settings = config.model_settings
         endpoint = urlparse(settings.endpoint)
         if (
@@ -75,9 +79,9 @@ class VideoJevInspector:
             or endpoint.query
             or endpoint.fragment
         ):
-            raise ValueError("invalid VideoJev service endpoint")
+            raise ValueError(f"invalid {self.display_name} service endpoint")
         if not math.isfinite(settings.timeout_seconds):
-            raise ValueError("VideoJev requires a finite request deadline")
+            raise ValueError(f"{self.display_name} requires a finite request deadline")
         self.config = config
         self.settings = settings
         self._lock = RLock()
@@ -146,8 +150,19 @@ class VideoJevInspector:
             note(job, "prepared", encoded)
         body = json.dumps(payload, allow_nan=False, separators=(",", ":")).encode()
         if len(body) > _MAX_REQUEST_BYTES:
-            raise ValueError("VideoJev request exceeds the encoded memory limit")
+            raise ValueError(f"{self.display_name} request exceeds the encoded memory limit")
         return body, self._expected
+
+    def _decode(self, response, expected, labels):
+        values = parse_choices(response.get("raw"), expected)
+        self.last_response_diagnostics = {
+            "choices_count": len(expected), "model_match": "unreported",
+        }
+        return tuple(
+            IndependentVerdict(label, (), values["scene/" + label], None, (),
+                               ("scene_only",))
+            for label in labels
+        )
 
     def inspect(self, job):
         with self._lock:
@@ -187,27 +202,18 @@ class VideoJevInspector:
                         if (name in _SERVICE_METRICS
                                 and type(value) in (int, float)
                                 and math.isfinite(value) and value >= 0):
-                            self.last_http_timing["videojev_" + name] = value
-                    values = parse_choices(response.get("raw"), expected)
-                    verdicts = tuple(
-                        IndependentVerdict(
-                            label, (), values["scene/" + label], None, (),
-                            ("scene_only",),
-                        ) for label in job.request.event_labels
-                    )
+                            self.last_http_timing[self.metric_prefix + name] = value
+                    verdicts = self._decode(response, expected, job.request.event_labels)
                 finally:
                     self.last_inspection_timing["verdict_parse_seconds"] = (
                         time.monotonic() - parse_started
                     )
-                self.last_response_diagnostics = {
-                    "choices_count": len(expected), "model_match": "unreported",
-                }
                 return verdicts
             except (TimeoutError, asyncio.TimeoutError, httpx.TimeoutException):
-                failure = ModelAPIError("VideoJev deadline exceeded", code="timeout")
+                failure = ModelAPIError(f"{self.display_name} deadline exceeded", code="timeout")
                 raise failure from None
             except httpx.RequestError:
-                failure = ModelAPIError("VideoJev connection failed", code="connection")
+                failure = ModelAPIError(f"{self.display_name} connection failed", code="connection")
                 raise failure from None
             except ModelAPIError as error:
                 failure = error
@@ -215,10 +221,10 @@ class VideoJevInspector:
             except (ValueError, TypeError, KeyError, IndexError, RecursionError,
                     OverflowError, OSError):
                 if not self.last_http_timing.get("http_request_attempted", False):
-                    failure = ValueError("VideoJev input preparation failed")
+                    failure = ValueError(f"{self.display_name} input preparation failed")
                     raise failure from None
                 failure = ModelAPIError(
-                    "VideoJev returned an invalid response", code="invalid_response",
+                    f"{self.display_name} returned an invalid response", code="invalid_response",
                 )
                 raise failure from None
             except Exception as error:
@@ -277,9 +283,9 @@ class VideoJevInspector:
                                     if (name in _SERVICE_METRICS
                                             and type(value) in (int, float)
                                             and math.isfinite(value) and value >= 0):
-                                        timing["videojev_" + name] = value
+                                        timing[self.metric_prefix + name] = value
                         failure = ModelAPIError(
-                            "VideoJev service request failed", code=code,
+                            f"{self.display_name} service request failed", code=code,
                             status_code=response.status_code,
                         )
                         failure.retry_after = response.headers.get("Retry-After")

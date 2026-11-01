@@ -28,6 +28,7 @@
 | 编排流程、摄像头组与定时总结 | [工作流画布](guides/workflows.md) |
 | 了解设置优先级、推理路线与参考记忆 | [配置指南](guides/configuration.md) |
 | 从源码部署、使用 Compose 与 dry-run | [源码部署](guides/deployment.md) |
+| 区分 demo 运行模式与客户交付 | [Demo 与交付清单](guides/demo-vs-delivery.md) |
 | 在本机 NVIDIA 显卡上运行多路视频 | [本地 GPU 部署](guides/local-gpu.md) |
 | 使用受管云 GPU 运行多路追踪 | [云 GPU 部署](guides/cloud-gpu.md) |
 | 将主程序、追踪与大模型部署到不同机器 | [分机部署](guides/modular-services.md) |
@@ -42,6 +43,7 @@
 | 对照 FP8 内核及 16/24/32 并发 | [FP8 测试](guides/vast-fp8-yolo.md) |
 | 验证 VideoJev-4B 与 PPE 提问方案 | [VideoJev 小规模验证](guides/videojev-candidate.md) |
 | 配置与验收 Contour 实时队列 | [Contour 验收指南](guides/contour-realtime-validation.md) |
+| 可选单帧人物分割 | [SAM3 ONNX component](guides/sam3-onnx.md) |
 | 构建和检查发布包 | [发布构建指南](guides/release.md) |
 
 本地开发和人物登记见[贡献指南](../CONTRIBUTING.md#local-development)；

@@ -80,6 +80,9 @@ def test_slow_admission_does_not_hold_capture_lock_or_write_replaced_candidates(
     monkeypatch.setattr(TrackingSpool, "admit", blocked_admit)
     server, _, coordinator = setup_pipeline(
         tmp_path, received.append, queue_policy="latest_only",
+        # This exercises replacement during blocked disk admission, not source
+        # expiry. Keep slow journal initialization outside the default 2s TTL.
+        realtime_max_age_seconds=30,
     )
     pool = ThreadPoolExecutor(max_workers=1)
     try:
@@ -95,6 +98,7 @@ def test_slow_admission_does_not_hold_capture_lock_or_write_replaced_candidates(
         assert coordinator.wait_until_idle(5)
         assert admitted == [3, 303]
         assert output_sequences(received) == admitted
+        assert coordinator.stats()["skipped_by_reason"]["expired"] == 0
     finally:
         release.set()
         pool.shutdown(wait=True)

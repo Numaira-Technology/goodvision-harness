@@ -1,9 +1,8 @@
 """Fixed native VideoJev scene choices and three-way response decoding."""
 
-from dataclasses import dataclass
-
 from .event_sensitivity import normalize_event_sensitivities, sensitivity_policy_text
 from .videojev_core import CONTEXT, MODEL, OPTIONS, REVISION, VALUES, choice_indices
+from .vlm_questions import QuestionTemplate
 
 _WINDOW_GUIDANCE = (
     "\nJudge the last original frame using all earlier frames as context. "
@@ -16,14 +15,6 @@ _PERSON_GUIDANCE = (
     "For an ambiguous person association select insufficient evidence."
 )
 
-
-
-@dataclass(eq=False)
-class QuestionTemplate:
-    """Fixed session questions with runtime-owned compiled text."""
-
-    rows: tuple
-    compiled: object = None
 
 
 def scene_question_template(*, labels, sensitivities=None):

@@ -6,6 +6,7 @@ from functools import partial
 import httpx
 import pytest
 from benchmark_runtime_fixtures import (
+    ContractSourceFeeder,
     assert_admission_drained,
     configure_ephemeral_admission,
 )
@@ -66,6 +67,7 @@ def test_fixed_load_and_policy():
 @pytest.mark.parametrize("mode", ["events", "compact", "parallel"])
 def test_twelve_camera_native_route(tmp_path, monkeypatch, mode):
     monkeypatch.delenv("GOODVISION_LOCAL_API_KEY", raising=False)
+    monkeypatch.setattr("tools.vlm_multistream_benchmark.TimedSourceFeeder", ContractSourceFeeder)
     args = suite.arguments()
     args.real = True
     args.duration, args.output_mode, args.deadline = 1.6, mode, 3
