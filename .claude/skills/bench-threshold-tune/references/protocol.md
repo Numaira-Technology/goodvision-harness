@@ -1,54 +1,92 @@
-# Threshold calibration protocol (SPEC §5/§8, expanded)
+# Validation-only threshold protocol
 
-## Why 0.5 is unfair to continuous-score models
+This is a separately labeled analysis protocol, not a change to the v2 fixed exam.
+The current repository has no committed tuning CLI or reviewed validation split.
+The following inputs and algorithm must be implemented/verified before producing
+numbers; missing artifacts block execution, not this documentation's installation.
 
-A clip is scored "take the max over frames, call it yes if that exceeds the gate."
+## Input acceptance, before selection
 
-qwen/gemini emit 0 or 1 per frame, so gate 0.5 just means "any frame was true" — there is nothing else to move, and tuning it is meaningless. luna's `noul` and CLIP's margin are different: each frame gives a continuous score, and 0.5 is a boundary borrowed from binary logic, not necessarily where this model should sit. That has to come from data.
+- Freeze a split manifest identifying every question, event, reviewed binary label,
+  media SHA-256 and source-video group, and the train/development/validation/test
+  assignment. Confirm validation and test were not used for training, prompt/text
+  pair selection or model selection. If training membership is unknown (e.g. a
+  hosted model), disclose it; do not claim a proven training-disjoint benchmark.
+- Verify source-video group and content-hash disjointness across development,
+  validation and test. Distinct filenames alone are insufficient. Reused footage or
+  overlapping excerpts require grouping before assignment. A literal assertion field
+  is not evidence. Unresolved membership/provenance blocks a leakage-free claim.
+- Match every expected validation question exactly once. Reject duplicate IDs,
+  unexpected questions, label/hash mismatch, nonfinite/out-of-range scores and
+  any missing/error/partial-frame validation record. For v2, `frames_ok` must equal
+  `frames_planned > 0` and `frames_failed` must be zero. Do not silently drop errors.
+- Require reviewed labels and matching model/config/sampling/aggregation/parser
+  hashes between validation and eventual test artifacts. Historical v1 or provisional
+  outputs cannot be used for a v2 tuning claim.
+- Record planned and observed counts per event, including positive and negative
+  counts. This protocol's minimum is **six complete validation questions per event
+  and at least one of each label**; six is a minimum, not statistical assurance.
+  If a deliberately frozen complete split lacks this support, mark that event
+  `tau=n/a`, retain the fixed baseline and report it as uncalibrated. A missing
+  question in a planned six-question event blocks the run instead of triggering
+  fallback. Never label an incomplete run as the full frozen validation split.
 
-The "take the max" step cuts both ways. Sampling more frames makes a positive easier to catch (higher recall) and a negative easier to trip (higher false positives). If one event runs hot on per-frame false positives — luna's fall does — 0.5 amplifies them, and raising that event's threshold brings them back down.
+## Score precision prerequisite
 
-## The method: pick on held-out → freeze → evaluate on test
+The current v2 runner predicts from the full-precision clip maximum, then rounds
+the stored `score` to four decimals. For example, a raw 0.49996 predicts no but
+is saved as 0.5. Applying `>= 0.5` to that stored value changes the answer.
+Require lossless scores or full-precision evidence for an exact v2 threshold
+analysis; the current saved score alone is insufficient. Do not infer the lost
+precision from `pred`, or change the runner as an implicit tuning step.
 
-1. Held-out set: clips that are in no test set (`validation_split.json`, `disjoint_assert` all 0). Thresholds are picked only here.
-2. Sweep per event: try τ from 0 to 1 in steps of 0.01, score validation accuracy, take the midpoint of the tied-best run. That is what `pick_tau` in `tune_threshold.py` does.
-3. Freeze the chosen per-class τ.
-4. Score the test set with the frozen τ and report it next to the 0.5 baseline.
-5. The main table stays at 0.5. The calibrated result is a footnote or a variant — it never replaces the main table, and never enters the Drive frozen set's headline.
+An explicitly requested quantized-score experiment must freeze the quantization
+as part of its own protocol and use it on both validation and test. First verify
+its recomputed 0.5 predictions match every saved baseline prediction; stop on any
+mismatch. Even with agreement at 0.5, other thresholds can differ from lossless
+scores. Label the experiment quantized and do not claim exact v2 equivalence.
 
-The one rule that matters most: thresholds may only be picked on the held-out set, never on the test set. Picking the τ that maximizes the test score is reading the answers into the model config — the number comes out inflated and falls apart on the next batch of data. The point of a held-out set is to keep "data used to pick τ" and "data used to report" strictly apart.
+## Luna probability selection: deterministic, validation-only
 
-## Worked example (luna, v1)
+1. Input is finite numeric clip-max score in [0,1], not a boolean or string.
+   Prediction is **score >= tau**, exactly as in the baseline runner.
+2. Freeze candidate thresholds `{i/100 : i=0,...,100}` before selection. Compute
+   each candidate's validation correct count (all expected questions, no omissions).
+3. Find all grid indices with the maximum correct count. Partition them into
+   **contiguous runs**. Choose the longest run; break equal-length ties by midpoint
+   closest to 0.5, then lower midpoint. Set tau to the arithmetic midpoint of that
+   chosen run's endpoints. Do not take the midpoint of disconnected maxima.
+4. Re-evaluate validation at the chosen midpoint and verify it still attains the
+   maximum. Scores may fall between grid points, so a midpoint is not guaranteed to
+   remain optimal. If it is worse, use the best grid point nearest that midpoint,
+   breaking ties toward the lower threshold. Store the full candidate scores,
+   chosen run, final tau and tie-rule version. No test metric enters this decision.
+5. Freeze a JSON artifact with per-event thresholds/fallbacks, comparator, candidate
+   grid, tie rule, validation counts, split/label/media/result hashes, source commit,
+   model/config/runner/spec hashes and timestamp. Hash the artifact itself. Only
+   then load held-out test scores and apply it without modification.
 
-Held-out set of 24 clips (6 each of fight/smoking/fall/weapon, 12 yes / 12 no, 1fps), zero overlap with the 50- and 100-clip test sets. Thresholds picked:
+A baseline of 0.5 need not optimize empirical accuracy, but that does not establish
+that it is unfair. Selecting thresholds optimizes validation accuracy; it does not
+make the probabilities calibrated. Do not promise a gain on held-out data.
 
-| Event | τ | vs 0.5 | Effect |
-|---|---|---|---|
-| fight | 0.29 | lower | catch more fights |
-| smoking | 0.53 | ~same | — |
-| fall | 0.58 | higher | cut everyday motion misread as a fall |
-| weapon | 0.46 | ~same | — |
+## Margin models
 
-Test set (frozen τ vs 0.5): 50-clip 84% → 94%, 100-question 85% → 92%. Almost all of the gain is fall: at 0.5 it had many false positives (4 on the 50 set, 7 on the 100 set), and raising τ to 0.58 removed them.
+A cosine margin is not constrained to [0,1]. Inspect the reviewed runner and record
+its comparison operator (often strict `>`), zero baseline, text pairs, aggregation,
+unknown policy and candidate generation. If using a selector with the tie tuple
+`(accuracy, -FP, -FN, -abs(tau), -tau)`, freeze that rule and verify it with local
+fixtures, including equal scores and no valid scores. It differs from the Luna
+rule above. Validate complete held-out coverage before calling it. Events without
+planned validation support stay zero/uncalibrated; missing scheduled evidence blocks
+selection. Never label bag-search thresholds calibrated without validation data.
 
-## Commands
+## Evaluation and reporting
 
-```sh
-# 1) Score the held-out set (skip if results/luna_val24.json exists and matches the frozen split)
-python tools/event_benchmark/run_eval.py --candidate luna \
-  --samples <val_split>/samples.json --media <val_split>/videos \
-  --out tools/event_benchmark/results/luna_val24.json
-
-# 2) Score the test set(s) (50 / 100 / 120-base; reuse if already present)
-
-# 3) Calibrate + evaluate (offline, reads score, no API calls)
-python -I tools/event_benchmark/tune_threshold.py \
-  --val  tools/event_benchmark/results/luna_val24.json \
-  --test tools/event_benchmark/results/luna_1fps.json \
-  --test tools/event_benchmark/results/luna_100base.json \
-  --out  tools/event_benchmark/results/luna_threshold_tuning.json
-```
-
-## Small-sample caveat
-
-The fewer held-out clips an event has, the shakier its threshold. Six per class is the current floor; always state the val n per event in the report. If an event has fewer than six, mark its τ as n/a, fall back to 0.5, and don't report a tuned number for it. After the held-out set grows, re-run and re-check `disjoint_assert`.
+Apply the frozen artifact to test results once. Publish the fixed and tuned variants
+with the same test cohort, v2 eligibility policy and errors/attempted counts.
+Report correct/valid and coverage, per-event validation n/positives/negatives,
+fallbacks, threshold hash and comparator. Show no accuracy when valid=0. For other
+runners preserve unknown/error denominators; do not silently switch to v2 math.
+Repeatedly adjusting the threshold/protocol after inspecting test outcomes consumes
+the test set as development data; obtain a new untouched test set for the next claim.

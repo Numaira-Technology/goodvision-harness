@@ -1,91 +1,101 @@
-# Column contract — goodvision-event-bench · `results` tab
+# Pivoted Sheet contract: A:W
 
-The sheet is **already built**: group bands, freezes, number formats, and the color-scale (ranking)
-rules are all configured. Your job is to add or update **one row for your model**, filling the dataset
-block(s) you ran. Do not alter anything else.
+Target `results` in spreadsheet `1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA`.
+Headers occupy rows 1–2; data begins at 3. Live headers checked 2026-11-01 match
+this layout. Verify again before every write; the old repository A:Q config does
+not describe this schema. Do not rebuild or migrate formatting as a contribution.
 
-Sheet: `1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA`, tab `results`, `sheetId` 0.
-Row 1 = merged group bands, row 2 = headers (both frozen), column A frozen. **Data starts at row 3.**
+| Column | Row-2 header | Value |
+|---|---|---|
+| A | Model | nonempty text, exact model/protocol/variant identity |
+| B | Backend | language / decision / vision |
+| C | P50 @12 (s) | finite nonnegative number or blank |
+| D | P95 @12 (s) | finite nonnegative number or blank; >= P50 |
+| E | Overall % | 50-question block overall |
+| F–I | Fight % / Smoking % / Fall % / Weapon % | 50 block subtasks |
+| J | Overall % | 100-question base-4 block overall |
+| K–N | Fight % / Smoking % / Fall % / Weapon % | 100 block subtasks |
+| O | Overall % | full 120-question combined metric, only if agreed |
+| P–S | Fight % / Smoking % / Fall % / Weapon % | 120 block base-4 subtasks |
+| T | Hardware | nonempty text |
+| U | Price | finite nonnegative number or blank; unit/source note required |
+| V | Spec ver | nonempty protocol/variant text, e.g. v2 fixed |
+| W | Run date | actual YYYY-MM-DD calendar date; latest filled block |
 
-## Layout: one row per model, dataset on top, no tracking columns
+Percentages are JSON numbers on 0..100, rounded to one decimal, not fractions or
+strings. Blanks are `""`/null in the offline payload. A new row needs at least one
+filled overall. Every subtask percentage needs the block's overall. Missing
+subtasks must be explained; don't treat blanks as zero. Numeric strings, boolean
+numbers, NaN/infinity, objects/lists as text and invalid dates are rejected.
 
-Dataset size is a **top band**, not a column. Each dataset block (50 / 100 / all 120) repeats the same
-five accuracy cells. Speed, cost and meta are single per-model columns. There are **no Run/Validation
-tracking columns**. So a model has **one row**; running a new dataset fills that dataset's block in the
-same row.
+Backend `vision` is the Sheet label for margin models; do not rename it to threshold
+without a coordinated schema change. Decision includes Luna and native verdicts;
+the cell label alone does not establish a threshold or metric.
 
-**Upsert key = Model (column A) alone.** Re-publishing a model updates its row in place. You fill only
-the block(s) you ran and leave the others as they are — never blank a block someone else populated.
+## Accuracy and note contract
 
-## The 23 columns, in order (A → W)
+For **v2 base-4**: `valid=TP+FN+TN+FP`, `correct=TP+TN`,
+`attempted=valid+errors`, percentage = `round(100*correct/valid, 1)`.
+No valid questions means blank accuracy. Report errors separately; they are never
+negative predictions. Other runners' unknown/error policies need a separately
+identified protocol, not silently substituted denominators.
 
-| Col | Header | Band | Type / format | Ranking | Rule |
-|-----|--------|------|---------------|---------|------|
-| A | Model | IDENTITY | text | — | **upsert key.** Your model's name. |
-| B | Backend | IDENTITY | text | — | `language` (hard 0/1) · `decision` (continuous score + gate) · `vision` (CLIP/SigLIP-style). |
-| C | P50 @12 (s) | SPEED ↓ | num `0.000` | pale(min)→red(max) | Median latency at N concurrency. Blank if not measured. |
-| D | P95 @12 (s) | SPEED ↓ | num `0.000` | pale(min)→red(max) | p95 latency at N concurrency. Blank if not measured. |
-| E | Overall % | DATASET · 50 | num `0.0` | red→orange; green if =100 | `100·correct/total` on the 50 set. |
-| F | Fight % | DATASET · 50 | num `0.0` | red→orange; green if =100 | `100·(TP+TN)/(TP+FN+TN+FP)`. **Note required.** |
-| G | Smoking % | DATASET · 50 | num `0.0` | red→orange; green if =100 | same formula. **Note required.** |
-| H | Fall % | DATASET · 50 | num `0.0` | red→orange; green if =100 | same formula. **Note required.** |
-| I | Weapon % | DATASET · 50 | num `0.0` | red→orange; green if =100 | same formula. **Note required.** |
-| J–N | Overall / Fight / Smoking / Fall / Weapon % | DATASET · 100 | num `0.0` | red→orange; green if =100 | same five cells, for the 100 set. Subtask notes required. |
-| O–S | Overall / Fight / Smoking / Fall / Weapon % | DATASET · all 120 | num `0.0` | red→orange; green if =100 | same five cells, for the full 120 set. Subtask notes required. |
-| T | Hardware | COST | text | — | e.g. `OpenRouter API`, `4090`, `L4`, `A100`. |
-| U | Price | COST | num | pale(min)→red(max) | Each run's cost. API: OpenRouter token price `$/Mtok` (look up at publish time). Self-hosted: computed GPU run cost `$` (rate × wall-hours). State which in the cell note. Blank if unknown. |
-| V | Spec ver | META | text | — | Spec you ran against, e.g. `v1`. |
-| W | Run date | META | text | — | `YYYY-MM-DD`. If the blocks were run on different days, use the latest. |
+The bundled validator supports binary confusion counts with errors excluded from
+valid. If another runner counts unknown/abstained outputs inside the base-event
+denominator, its result cannot pass this contract unchanged. Keep it in a separate
+report until a reviewed adapter/metric contract exists; do not relabel unknown as
+an excluded error or a false prediction merely to make the validator pass.
 
-### The three dataset blocks
-
-| Dataset | Overall | Fight | Smoking | Fall | Weapon |
-|---------|---------|-------|---------|------|--------|
-| 50      | E | F | G | H | I |
-| 100     | J | K | L | M | N |
-| all 120 | O | P | Q | R | S |
-
-Fill the block that matches your run. A block you did not run stays blank. At least one block must carry
-an Overall %. The full 120 set adds 20 three-valued bag-search questions; only score-based models answer
-those, so language models fill 100 (base-4) and leave the 120 block blank.
-
-## Per-subtask note format (Fight/Smoking/Fall/Weapon of each filled block)
-
-Each non-blank subtask cell carries a note with the confusion counts behind the %:
+Each filled accuracy cell requires one unambiguous x/N plus `errN`, `attemptedN`
+and `provisional=yes|no`. Subtask notes additionally carry TP/FN/TN/FP:
 
 ```
-fight 11/12  ·  TP5 FN1 TN6 FP0  ·  err0
+fight 11/12 · TP5 FN1 TN6 FP0 · err1 · attempted13 · provisional=no
 ```
 
-- `x/N` where `x = TP+TN`, `N = TP+FN+TN+FP` (errors excluded from N).
-- If the class has **no negatives** (`TN+FP == 0`), append `  ·  no negatives (specificity n/a)` and do
-  not report a false-positive rate.
-- If you only have `x/N` (no confusion breakdown), put just `fight 28/32` — that is enough.
+Here N=12 is valid, attempted=13. When TN+FP=0 append
+`no negatives (specificity n/a)`. The validator checks these counts against the
+percentage. For 50/100 blocks with all subtasks present it also checks that their
+counts add up to overall. The 120 overall is not the sum of just four subtasks;
+it includes the additional task, whose accepted denominator and unknown policy
+must be documented and audited before publication.
 
-## Row math (frozen — identical for every row already on the sheet)
+Overall note example (placeholders must be replaced by real provenance):
 
-- Per class: `x = TP + TN`, `N = TP + FN + TN + FP`, `% = round(100·x/N, 1)`.
-- Overall: `% = round(100·correct/total, 1)` where `total` excludes errored questions.
-- `decision`/`vision` backends choose yes/no by a gate on a continuous score (frozen default gate = 0.5);
-  `language` backends emit hard yes/no. The % math above is the same regardless.
+```
+overall 45/50 · err0 · attempted50 · provisional=no · dataset=<manifest SHA256>
+source=<result SHA256> · commit=<SHA> · protocol=v2 fixed · run_date=YYYY-MM-DD
+```
 
-## What is already on the sheet (do not recreate or modify)
+Each block's attempted count must match its expected reviewed manifest; a failed
+run still attempts the full cohort. The 50/100/120 band is a cohort, not a successful
+answer count. Preserve original provenance notes when another block is added. The
+validator checks syntax/arithmetic only; it cannot verify hashes, completeness,
+review status or whether the selected cohort is the intended one.
 
-- Row-1 band merges: `C1:D1` (SPEED @12), `E1:I1` (DATASET · 50), `J1:N1` (DATASET · 100),
-  `O1:S1` (DATASET · all 120), `T1:U1` (COST), `V1:W1` (META). `IDENTITY` sits in `A1`, unmerged
-  (a merge can't cross the frozen A|B boundary).
-- `frozenRowCount = 2`, `frozenColumnCount = 1`. Thin left borders separate the three dataset blocks.
-- **Muted warm palette** (green reserved for best-only): red `#E67C73`, orange `#F9CB9C`,
-  pale `#FCE5CD`, green `#B6D7A8`, yellow `#FFE599`.
-- Number formats: accuracy E:S `0.0`, speed C/D `0.000`, price U `0.00`.
-- Conditional-format rules (the boolean rule must outrank the gradients):
-  1. boolean on E:S: `NUMBER_EQ 100` → green (green shows **only** at a perfect 100.0).
-  2. gradient per accuracy column E..S (one rule each): MIN red → MAX orange.
-  3. gradient per speed column C,D and price U (one rule each): MIN pale → MAX red.
+## Timing and price notes
 
-  Rebuild gotcha: the Sheets MCP `addConditionalFormatRule` inserts at index 0 (it prepends), so the
-  **last** rule you add ends up on top. Add the gradients first and the green=100 boolean last —
-  otherwise a 100 cell shows the gradient max (orange) instead of green.
+C/D must both be filled or both blank; @12 means 12, not an arbitrary N. Require a
+complete measurement and matching frame/question/timing basis. Describe timestamp,
+source artifact, attempt/success counts and request boundary in C/D notes. Other
+runners' timings are separate report entries, not comparable @12 values.
 
-If the sheet were ever lost, this block plus the table above is enough to rebuild it — but as a
-contributor you should never need to.
+U requires a note stating currency, unit, pricing date/source and basis. API input
+and output token rates are separate; one cell cannot honestly represent both without
+an explicitly defined weighting. GPU run dollars and dollars per million tokens
+are not directly comparable. Leave U blank when no agreed single metric applies;
+explain prices in the report. Never change global price formatting/rules here.
+
+## Row identity and safe updates
+
+Column A is the exact lookup key. Distinguish model, protocol, threshold artifact
+and other variant parameters in that identity. Two exact matches or ambiguous
+ownership block writing. Dataset blocks share a row only if shared metadata remains
+true for all blocks; otherwise prepare a distinct variant. A changed dataset's
+hash cannot silently replace another revision's results under the same block.
+
+Offline rows contain 23 cells to make mapping reviewable; **updates are sparse**.
+Blank unmeasured inputs never erase existing measurements. Read metadata, header
+bands, cells, notes and formulas; preview the exact change; re-read before writing.
+Use RAW/literal values, narrow masks and the append response's actual row range.
+After uncertain writes, read back before retrying. See SKILL.md for the full flow.

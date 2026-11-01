@@ -1,59 +1,54 @@
-# Methodology (frozen exam — swap the candidate, not the exam)
+# Frozen benchmark methodology
 
-This is a controlled exam: the only thing allowed to change is the model under test. Prompt, sampling,
-threshold, and scoring are byte-identical for every candidate. Changing any of them changes the exam —
-bump a version and re-run every candidate.
+Authority: `tools/event_benchmark/SPEC.md` and `run_eval.py`, currently v2.
+`SPEC_V1.md`, `RESULTS.md` and checked-in result JSONs are historical v1 artifacts.
+They cannot establish v2 accuracy or calibrate a v2 variant without fresh evidence.
 
-The authoritative source lives in the repo; don't copy the rules here and let them drift:
-- Spec: `tools/event_benchmark/SPEC.md` (exam spec v1)
-- Runner: `tools/event_benchmark/run_eval.py`
-- History: `tools/event_benchmark/RESULTS.md` + `results/`
+## Inputs and provenance
 
-Below is a quick reference. SPEC.md wins on any detail.
+Before any request, require a `human_reviewed` manifest matching the exact samples
+file and every scored media file. Pass `--manifest` explicitly. Missing media,
+ambiguous filenames, changed questions/labels and hash mismatches are blockers.
+`--checksums` is a compatibility flag: hash checking is always enforced.
 
-## Frozen items
+Record dataset ID, samples/manifest/media hashes, source commit, runner/spec hashes,
+model/backend/provider route, configuration, run timestamp, environment versions
+and result-file hash. A count such as 50 or 100 is not a dataset identity. Record
+question count and distinct-media count separately. Do not send labels or reference
+answers to the model. Private media, keys and raw outputs stay outside Git.
 
-- **Prompt**: each sample's own `question` field from `samples.json`, with the trailing `Answer yes or no.`
-  stripped at runtime. The question is the same for every model; only the output envelope is fixed per class.
-- **Scored events**: currently fight / smoking / fall / weapon. Clip-level (did it happen in the clip), not
-  track_id / person selection.
-- **Three model classes**, output fixed within a class and not aligned across classes (full contract in
-  `model-classes.md`):
-  - **language** (qwen = baseline / gemini, chat completions): prompt + frame → JSON boolean
-    `{"answer": true/false}`, 0/1 per frame.
-  - **decision**: Luna decisions (`noul` question type, 0–1 probability, calibratable on a held-out set);
-    VideoJev-4B (native multi-label present/absent/insufficient verdict, uncalibrated option scores, no threshold).
-  - **threshold** (CLIP / SigLIP2, colleague's `tools/clip_benchmark`, not wired into run_eval): per-frame
-    **margin = cos(positive) − cos(negative)**, `> its own threshold` → yes. A margin is not a probability,
-    so never borrow 0.5; its untuned baseline is threshold = 0.
-  - Real runner locations, per-class cadence (VLM 1fps · CLIP 1 frame/clip @0.8s · VideoJev 2 frames/window
-    @0.8s), data sync, and honesty flags: see `model-classes.md`.
-- **Sampling**: 1 fps (`--interval 1.0`, frozen cadence), 720px wide, one frame one independent call.
-  - 0.25 fps (`--interval 4`) was only a production compromise when VLM throughput couldn't keep up; it is
-    not a hard requirement, and eval + production are unified at 1 fps.
-  - `--dense` is a capability-ceiling comparison (≤14 frames), for sampling-sensitivity checks only, not the
-    headline number.
-- **Decision**: 0–1 score per frame, clip = max over frames ("positive if any frame is positive"),
-  `≥ gate 0.5` → yes. Gate 0.5 is uniform across every event and model, and is never tuned on the eval set.
-- **Run params**: temperature 0, chat max_tokens 30, 90s timeout, 3 retries, `--workers 12` (mirrors the
-  12-way product; affects speed only, not scoring).
+Current manifests: 50 is reviewed; 120 is `draft_pending_user_review`, with 100
+base-4 questions and 20 bag-search questions. Review status must be resolved by
+reviewers, not relabeled by an agent to enable a run. Bag questions allow unknown
+and require a separate versioned task/metric; the base runner filters them out.
 
-## The dataset can grow; the spec does not
+## Frozen v2 procedure
 
-Sample count can grow (50 → 120 → ~250), and growing it does not change the exam. When expanding:
-- Freeze the file list + a SHA-256 per clip (`--checksums`); no relabeling after you've seen scores.
-- Add negatives to a positives-only event before you talk about its false-positive rate / specificity.
-- Tune thresholds / prompts only on a held-out subset, never on the main eval clips.
-- A new question type (e.g. repackaging bag_knife / bag_alcohol_bottle, whose answer space includes
-  `unknown`) is **changing the exam**: version it separately and define the unknown-handling rule first;
-  don't fold it into the binary main table.
+- Same sample question for every candidate, stripping trailing `Answer yes or no.`.
+- Language emits `{"answer": true/false}`; complete response and a real JSON boolean
+  are required. Luna emits error-free `noul` with a finite numeric [0,1] value.
+  Strings, booleans-as-probabilities, duplicate fields and malformed outputs fail.
+- 1 fps: `n=max(1,round(duration/1.0))`, centered `t_i=duration*(i+0.5)/n`;
+  JPEG width 720, height even. One independent call per frame.
+- Temperature 0, chat max_tokens 30, timeout 90s, **three total attempts** per frame.
+- All scheduled frames must decode and receive valid answers. Any failure makes
+  the whole clip an error; partial positive evidence cannot rescue it.
+- Clip max score `>= 0.5` is yes for both implemented backends. The uniform 0.5
+  result remains the baseline; held-out tuning is a separate labeled variant.
+- Default 12 workers is accuracy-run concurrency, not a measured latency result.
 
-## Where the dataset lives (moves with the project; confirm before a run)
+## Denominators and comparison
 
-Current merged set: `~/Desktop/benchmark_media_test/media_extra_50/samples.json` (120 questions), videos
-spread across:
-- `media50/media/media/` (original 50)
-- `media_extra_50/新增基础视频_50段/`
-- `media_extra_50/翻包视频_10段/` (repackaging, not base-4)
+For each event: `valid=TP+FN+TN+FP`, `correct=TP+TN`,
+`attempted=valid+errors`. Report `correct/valid`, errors/attempted and coverage.
+When valid is zero, accuracy is unavailable. When negatives are absent, specificity
+is unavailable. Error clips are not true negatives. A failed model cannot appear
+better by silently dropping hard examples; disclose differing eligibility and do
+not rank incomplete runs as comparable headline results.
 
-`run_eval.py --media` takes several directories and finds clips by filename across them.
+CLIP unknown handling and native VideoJev window scoring may differ. Preserve
+those rules and label the cohort, unit, denominator and timing boundary. Do not
+copy their OVERALL into a v2 base-event cell without a verified equivalent mapping.
+Changing prompts, cadence, aggregation, parser or error policy changes the protocol;
+changing samples or labels changes the dataset fingerprint. Both require new,
+explicitly identified comparison evidence.
