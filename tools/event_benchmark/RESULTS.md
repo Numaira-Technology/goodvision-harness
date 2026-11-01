@@ -1,6 +1,6 @@
 # 历史测评结果 — spec v1
 
-📊 **实时汇总表（running Google Sheet）**：<https://docs.google.com/spreadsheets/d/1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA/edit> — 所有模型最新结果，数字带红→绿色阶可排序；`results` tab 为准确率主表，`threshold-tuning` tab 为 luna 阈值调参。由 `bench-sheet-push` skill 推送（预览 → 确认 → 写入，用会话内 Google OAuth，不存密钥）。
+📊 **团队汇总表**：<https://docs.google.com/spreadsheets/d/1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA/edit>。以各行的来源、版本与审阅状态为准；需要发布时使用 `bench-sheet-contribute` skill 核对实时表头、目标行与授权，用会话内 Google OAuth，不存密钥。本页的历史结果不代表已审阅的 v2 数据。
 
 本页的 **50 片、100 题 base-4 和 luna 阈值调参均为历史 v1 输出**，不是当前 v2 runner 的验收结果。新增历史输出中，Gemini/Luna/Qwen 分别有 1/6/50 行含失败帧；验证集 24 行只有 22 个分数，且均无 v2 provenance。冻结考卷规则见 [`SPEC.md`](SPEC.md)；历史 50 片沿用的原始规则见 [`SPEC_V1.md`](SPEC_V1.md)。**唯一变量是模型**。
 

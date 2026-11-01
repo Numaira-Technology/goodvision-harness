@@ -1,9 +1,9 @@
 # Validation-only threshold protocol
 
 This is a separately labeled analysis protocol, not a change to the v2 fixed exam.
-The current repository has no committed tuning CLI or reviewed validation split.
-The following inputs and algorithm must be implemented/verified before producing
-numbers; missing artifacts block execution, not this documentation's installation.
+The tuning CLI implements separate selection/evaluation phases; a complete reviewed
+validation split is still missing. Missing artifacts block real calibration, not
+offline synthetic regressions or documentation.
 
 ## Input acceptance, before selection
 
@@ -26,19 +26,19 @@ numbers; missing artifacts block execution, not this documentation's installatio
 - Record planned and observed counts per event, including positive and negative
   counts. This protocol's minimum is **six complete validation questions per event
   and at least one of each label**; six is a minimum, not statistical assurance.
-  If a deliberately frozen complete split lacks this support, mark that event
-  `tau=n/a`, retain the fixed baseline and report it as uncalibrated. A missing
-  question in a planned six-question event blocks the run instead of triggering
-  fallback. Never label an incomplete run as the full frozen validation split.
+  The CLI refuses a run lacking this support for any event. Such events can still
+  be reported separately as fixed-baseline/uncalibrated; they must not enter a
+  tuned report. A missing question always blocks selection. Never label an
+  incomplete run as the full frozen validation split.
 
 ## Score precision prerequisite
 
-The current v2 runner predicts from the full-precision clip maximum, then rounds
-the stored `score` to four decimals. For example, a raw 0.49996 predicts no but
-is saved as 0.5. Applying `>= 0.5` to that stored value changes the answer.
-Require lossless scores or full-precision evidence for an exact v2 threshold
-analysis; the current saved score alone is insufficient. Do not infer the lost
-precision from `pred`, or change the runner as an implicit tuning step.
+Earlier v2 runners predicted from the full-precision clip maximum, then rounded
+the stored `score` to four decimals. A raw 0.49996 predicted no but was saved as
+0.5; applying `>= 0.5` to that value changes the answer. The current runner saves
+the exact maximum and records `score_precision=lossless`; the tuner requires this
+marker and verifies the saved baseline verdict. Old v1 and rounded v2 outputs are
+ineligible. Do not infer lost precision from `pred` or relabel historical artifacts.
 
 An explicitly requested quantized-score experiment must freeze the quantization
 as part of its own protocol and use it on both validation and test. First verify
@@ -61,10 +61,20 @@ scores. Label the experiment quantized and do not claim exact v2 equivalence.
    remain optimal. If it is worse, use the best grid point nearest that midpoint,
    breaking ties toward the lower threshold. Store the full candidate scores,
    chosen run, final tau and tie-rule version. No test metric enters this decision.
-5. Freeze a JSON artifact with per-event thresholds/fallbacks, comparator, candidate
+5. Freeze a JSON artifact with per-event thresholds/support, comparator, candidate
    grid, tie rule, validation counts, split/label/media/result hashes, source commit,
    model/config/runner/spec hashes and timestamp. Hash the artifact itself. Only
    then load held-out test scores and apply it without modification.
+
+The `select` command takes a validation result and its exact reviewed runner
+manifest. For every scored question the manifest includes `human_review=user_reviewed`
+and a reviewed `source_video_group`. It checks the full cohort and freezes the
+selection using exclusive file creation, printing the artifact's SHA-256.
+`evaluate` requires that saved hash and the held-out result/manifest pair(s), checks
+matching prompts/model/config and disjoint media/source groups, and never repicks.
+Manifests group reused/overlapping footage by actual origin, not by renamed files.
+These checks cannot prove review truth or unknown hosted-model training membership;
+report those limits and verify development disjointness independently.
 
 A baseline of 0.5 need not optimize empirical accuracy, but that does not establish
 that it is unfair. Selecting thresholds optimizes validation accuracy; it does not

@@ -2,8 +2,8 @@
 
 Target `results` in spreadsheet `1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA`.
 Headers occupy rows 1–2; data begins at 3. Live headers checked 2026-11-01 match
-this layout. Verify again before every write; the old repository A:Q config does
-not describe this schema. Do not rebuild or migrate formatting as a contribution.
+this layout. Verify again before every write; the repository A:W config is only
+a saved description. Do not rebuild or migrate formatting as a contribution.
 
 | Column | Row-2 header | Value |
 |---|---|---|

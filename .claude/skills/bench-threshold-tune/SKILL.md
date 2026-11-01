@@ -16,10 +16,10 @@ CLIP margins require their own fixed baseline (normally zero, never borrowed 0.5
 
 ## Availability and inputs
 
-This checkout has **no** `tools/event_benchmark/tune_threshold.py` and **no**
-`datasets/validation_split.json`. Do not issue commands for them or assume a
-24-clip split exists. CLIP tooling is also a separate PR, not a dependency installed
-by this skill. Inspect any later supplied implementation before reusing it.
+`tools/event_benchmark/tune_threshold.py` provides separate `select` and `evaluate`
+commands. The historical `datasets/validation_split.json` is a candidate list,
+not a reviewed v2 manifest. A complete reviewed calibration split is still missing.
+CLIP tooling is a separate PR, not a dependency installed by this skill.
 
 Require a reviewed split manifest and saved score artifacts with their original
 hashes. If these are missing, report exactly which input is needed and stop tuning;
@@ -33,8 +33,9 @@ calibration inputs. No worked threshold or claimed accuracy gain is supplied her
    `disjoint_assert` flag. No overlap or near-duplicate excerpts across splits.
 2. Verify exact validation question coverage, reviewed labels, positive/negative
    support and complete frame evidence. Missing/error clips are blockers, not
-   permission to fit a smaller successful subset. The small-sample fallback applies
-   to the planned complete split, never to an accidentally incomplete run.
+   permission to fit a smaller successful subset. This CLI requires six complete
+   questions and both labels for every event and refuses unsupported events; report
+   their fixed baseline separately rather than fitting an incomplete subset.
 3. Select using validation scores only, following the grid/comparator/tie rule in
    `references/protocol.md`. Keep test scores unavailable during selection.
 4. Save and hash the thresholds plus validation provenance **before** opening test
@@ -45,12 +46,21 @@ calibration inputs. No worked threshold or claimed accuracy gain is supplied her
    and not evidence that the score scale is probabilistically calibrated.
 
 For Luna, require lossless clip-max scores for an exact threshold analysis. The
-current runner rounds saved `score` to four decimals after making its prediction;
-those scores can cross a threshold when replayed. See the precision prerequisite
-in the protocol; do not claim an exact v2 replay from rounded scores. Do not tune
+current runner saves lossless scores and records `score_precision=lossless`.
+Earlier v2 outputs rounded `score` to four decimals after prediction; they are
+rejected, even if their rounded baseline happens to agree. Never add the marker
+to an old archive. See the precision prerequisite in the protocol. Do not tune
 qwen/gemini hard booleans or native VideoJev
 verdicts. For margins, verify the actual backend comparator and candidate grid;
 never feed margins into a probability-grid selector.
+
+Use the commands in `tools/event_benchmark/RESULTS.md`: `select --val ...
+--val-manifest ... --out ...` reads no test scores and creates a new immutable
+artifact. Save its printed hash before obtaining/opening test predictions, then
+run `evaluate --thresholds ... --thresholds-sha256 ... --test ...
+--test-manifest ... --out ...`. Both manifests need reviewed `source_video_group`
+values. Exact question coverage, labels, hashes, prompts and group disjointness
+are checked; training/development membership still requires independent review.
 
 ## Publishing
 
