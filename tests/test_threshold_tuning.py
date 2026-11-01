@@ -334,3 +334,8 @@ def test_different_test_prompt_is_not_a_compatible_evaluation(tmp_path):
     source, manifest = save_run(tmp_path, run("test"), change_manifest=edit)
     with pytest.raises(ValueError, match="question text differs"):
         tuner.evaluate_thresholds(artifact, digest, [source], [manifest])
+
+
+@pytest.mark.parametrize("items", [[], [(0.8, True)], [(0.2, False)]])
+def test_youden_index_requires_both_reference_classes(items):
+    assert tuner.confusion(items, 0.5)["youden_j"] is None

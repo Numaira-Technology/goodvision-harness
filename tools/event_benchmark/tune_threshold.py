@@ -218,7 +218,7 @@ def confusion(items, tau):
     fpr = fp / (fp + tn) if (fp + tn) else 0.0
     return {"TP": tp, "FN": fn, "TN": tn, "FP": fp, "n": n,
             "accuracy": round(100 * acc, 1) if n else None, "precision": prec, "recall": rec,
-            "youden_j": round(tpr - fpr, 4)}
+            "youden_j": round(tpr - fpr, 4) if (tp + fn) and (tn + fp) else None}
 
 
 def pick_tau(items):
