@@ -2,7 +2,7 @@ name: goodvision-harness
 
 services:
   harness:
-    image: goodvision-harness:2026.09.10-full.4
+    image: goodvision-harness:20260923-full1
     pull_policy: never
     init: true
     restart: unless-stopped
@@ -11,6 +11,7 @@ services:
     environment:
       HARNESS_CONFIG: /app/config.yaml
       HARNESS_DEPLOYMENT_SETTINGS_PATH: /data/deployment-settings.json
+      GOODVISION_TRACKING_SPOOL_DIRECTORY: /data/tracking-spool
       HARNESS_HOST: 0.0.0.0
       HARNESS_PORT: 8080
       HARNESS_STREAM_URL: "${HARNESS_STREAM_URL:-}"
@@ -19,6 +20,7 @@ services:
       HARNESS_DRY_RUN: "true"
       HARNESS_AUTOSTART: "false"
       HARNESS_SOURCE_ID: "${HARNESS_SOURCE_ID:-external-camera}"
+      SCENE_DIAGNOSTICS_ENABLED: "${SCENE_DIAGNOSTICS_ENABLED:-}"
       VIDEO_CAPTURE_OPTIONS: "${VIDEO_CAPTURE_OPTIONS:-rtsp_transport;tcp|timeout;5000000}"
       # Keep the customer service preset fixed when retaining an older .env.
       HARNESS_INFERENCE_PROFILE: customer-standard
@@ -52,7 +54,7 @@ services:
     stop_grace_period: 90s
   rich-label-worker:
     profiles: [gpu]
-    image: goodvision-rich-label-worker:2026.09.10-full.4
+    image: goodvision-rich-label-worker:20260923-full1
     pull_policy: never
     init: true
     restart: unless-stopped

@@ -27,10 +27,16 @@ services:
       LOCAL_TRACKING_ENABLED: "${LOCAL_TRACKING_ENABLED:-true}"
       LOCAL_TRACKING_FPS: "${LOCAL_TRACKING_FPS:-2}"
       LOCAL_INFERENCE_ENDPOINT: http://local-inference:8000/v1/chat/completions
+      LOCAL_INFERENCE_INSPECTION_ENDPOINT: http://local-vlm-processing:8080/v1/inspections
+      LOCAL_INFERENCE_API_KEY: "${LOCAL_INFERENCE_API_KEY:-}"
       LOCAL_INFERENCE_MODEL: "${LOCAL_INFERENCE_MODEL:-local-vision}"
       LOCAL_INFERENCE_MAX_TOKENS: "${LOCAL_INFERENCE_MAX_TOKENS:-1600}"
       LOCAL_TRACKING_ENDPOINT: http://local-tracking:8092/v1/video/sessions
       # Preserve remote settings so each console switch can restore its route.
+      INFERENCE_EXECUTION_MODE: "${INFERENCE_EXECUTION_MODE:-}"
+      INFERENCE_SERVER_URL: "${INFERENCE_SERVER_URL:-}"
+      INFERENCE_SERVER_MODEL: "${INFERENCE_SERVER_MODEL:-local-vision}"
+      INFERENCE_SERVER_PROTOCOL: "${INFERENCE_SERVER_PROTOCOL:-compatible}"
       RICH_LABEL_BACKEND: "${RICH_LABEL_BACKEND:-}"
       SCENE_ENGINE_MODE: "${SCENE_ENGINE_MODE:-}"
       SAM31_CLIENT_TIMEOUT_SECONDS: "${SAM31_CLIENT_TIMEOUT_SECONDS:-75}"
@@ -80,6 +86,7 @@ services:
       VLLM_CACHE_ROOT: /tmp/vllm
       VLLM_NO_USAGE_STATS: "1"
       DO_NOT_TRACK: "1"
+      VLLM_API_KEY: "${LOCAL_INFERENCE_API_KEY:-}"
     volumes:
       - type: bind
         source: ${LOCAL_INFERENCE_MODEL_DIRECTORY:?Set a local model directory}
@@ -111,52 +118,64 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  local-tracking:
+  local-vlm-processing:
     build:
-      context: ./workers/sam_scene
-    image: goodvision-sam31:experimental
+      context: .
+      dockerfile: Dockerfile
+    image: goodvision-vlm-processing:local
     init: true
     restart: unless-stopped
+    command: ["python", "-m", "goodvision_harness.vlm_server"]
+    depends_on:
+      local-inference:
+        condition: service_healthy
     environment:
-      SAM31_ENABLED: "true"
-      SAM_SCENE_IMAGE_ENABLED: "false"
-      SAM31_SESSION_ENABLED: "false"
-      SAM31_LIVE_ENABLED: "true"
-      SAM31_SESSION_H264_ENABLED: "true"
-      SAM31_CHECKPOINT_PATH: /models/sam3.1_multiplex.pt
-      HF_HUB_OFFLINE: "1"
-    volumes:
-      - type: bind
-        source: ${SAM31_CHECKPOINT_FILE:-./.models/sam3.1/sam3.1_multiplex.pt}
-        target: /models/sam3.1_multiplex.pt
-        read_only: true
-        bind:
-          create_host_path: false
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["${LOCAL_TRACKING_GPU_ID:?Run tools/start_local_gpu.py}"]
-              capabilities: [gpu]
+      VLM_SERVER_UPSTREAM_ENDPOINT: http://local-inference:8000/v1/chat/completions
+      VLM_SERVER_MODEL: "${LOCAL_INFERENCE_MODEL:-local-vision}"
+      VLM_SERVER_MAX_CONCURRENCY: "${VLM_SERVER_MAX_CONCURRENCY:-8}"
+      VLM_SERVER_PREPARATION_CONCURRENCY: "${VLM_SERVER_PREPARATION_CONCURRENCY:-2}"
+      VLM_SERVER_TIMEOUT_SECONDS: "${VLM_SERVER_TIMEOUT_SECONDS:-90}"
+      LOCAL_INFERENCE_API_KEY: "${LOCAL_INFERENCE_API_KEY:-}"
     read_only: true
-    tmpfs:
-      - /tmp:size=2g
-    shm_size: 2g
-    security_opt:
-      - no-new-privileges:true
+    tmpfs: ["/tmp:size=256m"]
+    security_opt: ["no-new-privileges:true"]
     healthcheck:
-      test: ["CMD", "python", "-c", "import json,urllib.request; r=json.load(urllib.request.urlopen('http://127.0.0.1:8092/health/perception/sam_live', timeout=2)); assert r['enabled'] and r['ready'] and r['gpu_ready']"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read()"]
       interval: 15s
       timeout: 3s
-      start_period: 300s
+      start_period: 15s
       retries: 10
     stop_grace_period: 90s
     logging:
       driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+      options: {max-size: "10m", max-file: "3"}
+
+  local-tracking:
+    # Extend Contour directly: Compose 2.x can drop !override fields when
+    # inheriting compose.local-tracking.yaml through an extra extends layer.
+    extends:
+      file: workers/contour/compose.gpu.yaml
+      service: engine
+    build:
+      context: ./workers
+      dockerfile: contour/Dockerfile.engine
+      args:
+        TORCH_CUDA: "${LOCAL_TRACKING_TORCH_CUDA:-cu128}"
+    environment:
+      SAM31_LIVE_CAMERAS: "${HARNESS_FLEET_CAPACITY:-1}"
+    volumes: !override
+      - type: bind
+        source: "${SAM31_CHECKPOINT_FILE:?Set a SAM checkpoint or prepare Contour models}"
+        target: /models/contour.pt
+        read_only: true
+        bind: {create_host_path: false}
+    deploy:
+      resources:
+        reservations:
+          devices: !override
+            - driver: nvidia
+              device_ids: ["${LOCAL_TRACKING_GPU_ID:?Run tools/start_local_gpu.py}"]
+              capabilities: [gpu]
 
   # Optional existing Paddle worker: --with-paddle, also isolated to GPU 1/0.
   rich-label-worker:

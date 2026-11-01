@@ -50,7 +50,10 @@ def test_overload_replaces_only_unsent_frames_and_preserves_one_epoch(tmp_path):
         tmp_path,
         received.append,
         queue_policy="realtime_latest",
-        realtime_max_age_seconds=10,
+        # The first HTTP request is deliberately held across 19 synchronous
+        # journal admissions/skips. This tests replacement, not disk throughput.
+        client_timeout_seconds=15,
+        realtime_max_age_seconds=30,
     )
     server.release.clear()
     try:
@@ -66,7 +69,9 @@ def test_overload_replaces_only_unsent_frames_and_preserves_one_epoch(tmp_path):
         assert coordinator._spool.load(0, [3])[0].jpeg_bytes == b"jpeg"
         server.release.set()
         coordinator.flush()
-        assert coordinator.wait_until_idle(4)
+        # Allow HTTP completion and durable journal writes on shared runners;
+        # replacement counts, exact output and the epoch are asserted below.
+        assert coordinator.wait_until_idle(10), coordinator.stats()
         assert output_sequences(received) == [3, 57, 60]
         assert server.creates == ["camera"]
         assert {batch.predictor_epoch for batch in received} == {"epoch-1"}
@@ -80,19 +85,32 @@ def test_overload_replaces_only_unsent_frames_and_preserves_one_epoch(tmp_path):
         coordinator.close()
 
 
+@pytest.mark.parametrize("queue_policy", ["realtime_latest", "latest_only"])
 def test_pending_expires_without_another_arrival_while_request_stays_owned(
-    tmp_path, monkeypatch, advance_age
+    tmp_path, monkeypatch, advance_age, queue_policy
 ):
     received = []
-    server, _, coordinator = setup_pipeline(
+    server, client, coordinator = setup_pipeline(
         tmp_path,
         received.append,
-        queue_policy="realtime_latest",
+        queue_policy=queue_policy,
         realtime_max_age_seconds=30,
     )
     server.release.clear()
+    append_ready = threading.Event()
+    append = client.append
+
+    def observed_append(*args, **kwargs):
+        append_ready.set()
+        return append(*args, **kwargs)
+
+    monkeypatch.setattr(client, "append", observed_append)
     try:
         submit(coordinator, frames(1, 1))
+        # latest_only creates its WAL journal and admits the selected source on
+        # the preparation worker. Wait for those setup writes independently of
+        # the HTTP and expiry watchdogs this test actually exercises.
+        assert append_ready.wait(8), coordinator.stats()
         assert server.entered.wait(2)
         expiry_waiting = threading.Event()
         condition_wait = coordinator._condition.wait
@@ -117,20 +135,22 @@ def test_pending_expires_without_another_arrival_while_request_stays_owned(
         coordinator.flush()
         assert coordinator.wait_until_idle(3)
         assert output_sequences(received) == [3]
-        assert coordinator._spool.skipped_records()[0]["sequence"] == 6
+        if queue_policy == "realtime_latest":
+            assert coordinator._spool.skipped_records()[0]["sequence"] == 6
     finally:
         server.release.set()
         coordinator.close()
 
 
+@pytest.mark.parametrize("queue_policy", ["realtime_latest", "latest_only"])
 def test_slow_preparation_is_retired_before_send_and_empty_session_can_finish(
-    tmp_path, monkeypatch, advance_age
+    tmp_path, monkeypatch, advance_age, queue_policy
 ):
     received = []
     server, client, coordinator = setup_pipeline(
         tmp_path,
         received.append,
-        queue_policy="realtime_latest",
+        queue_policy=queue_policy,
         realtime_max_age_seconds=30,
     )
     entered, release = threading.Event(), threading.Event()
@@ -162,6 +182,60 @@ def test_slow_preparation_is_retired_before_send_and_empty_session_can_finish(
         coordinator.close()
 
 
+def test_latest_only_expires_memory_candidates_without_cancelling_http(
+    tmp_path, monkeypatch, advance_age,
+):
+    received = []
+    server, client, coordinator = setup_pipeline(
+        tmp_path, received.append, queue_policy="latest_only",
+        realtime_max_age_seconds=30,
+    )
+    server.release.clear()
+    append_ready = threading.Event()
+    append = client.append
+
+    def observed_append(*args, **kwargs):
+        append_ready.set()
+        return append(*args, **kwargs)
+
+    monkeypatch.setattr(client, "append", observed_append)
+    try:
+        submit(coordinator, frames(1, 1))
+        # WAL initialization and slow-spool admission precede HTTP dispatch;
+        # do not charge those setup writes to the HTTP readiness watchdog.
+        assert append_ready.wait(8), coordinator.stats()
+        assert server.entered.wait(2)
+        submit(coordinator, frames(2, 1))
+        assert coordinator.stats()["prepared_frames"] == 0
+        submit(coordinator, frames(3, 2))
+        assert coordinator.stats()["candidate_frames"] == 2
+        advance_age(coordinator)
+        wait_for(lambda: coordinator.stats()["skipped_by_reason"]["expired"] == 2)
+        assert coordinator.stats()["pending_frames"] == 0
+        assert not coordinator._candidate_frames
+        assert list(coordinator._source_arrivals) == [3]
+        assert len(server.requests) == 1
+        assert coordinator._requesting is not None
+        assert coordinator._spool.stats()["retained_sources"] == 1
+        # Superseded/expired memory candidates never become durable work.
+        assert coordinator.stats()["skipped_by_reason"]["superseded"] == 1
+        assert coordinator._spool.skipped_records() == []
+        assert len(coordinator._spool.records()) == 1
+        # A fresh candidate can replace expired ones while HTTP remains owned.
+        submit(coordinator, frames(5, 1))
+        assert coordinator.stats()["prepared_frames"] == 0
+        assert len(server.requests) == 1
+        server.release.set()
+        coordinator.flush()
+        assert coordinator.wait_until_idle(4)
+        assert output_sequences(received) == [3, 15]
+        assert server.creates == ["camera"]
+        assert not coordinator._source_arrivals
+    finally:
+        server.release.set()
+        coordinator.close()
+
+
 @pytest.mark.parametrize("batch_size", [1, 2, 4])
 def test_batch_limits_keep_same_session_and_do_not_wait_to_fill(tmp_path, batch_size):
     received = []
@@ -171,7 +245,10 @@ def test_batch_limits_keep_same_session_and_do_not_wait_to_fill(tmp_path, batch_
         queue_policy="realtime_latest",
         realtime_append_frames=batch_size,
         realtime_pending_frames=8,
-        realtime_max_age_seconds=10,
+        # Nine frames require up to nine durable append/commit rounds. Keep the
+        # real request deadline bounded without making disk speed the assertion.
+        client_timeout_seconds=15,
+        realtime_max_age_seconds=30,
     )
     server.release.clear()
     try:
@@ -180,7 +257,7 @@ def test_batch_limits_keep_same_session_and_do_not_wait_to_fill(tmp_path, batch_
         submit(coordinator, frames(2, 8))
         server.release.set()
         coordinator.flush()
-        assert coordinator.wait_until_idle(3)
+        assert coordinator.wait_until_idle(10), coordinator.stats()
         assert output_sequences(received) == list(range(3, 28, 3))
         assert server.creates == ["camera"]
         assert max(len(r["frames"]) for r in server.requests) == batch_size

@@ -1,0 +1,914 @@
+{
+  "started_at": "2026-09-22T08:11:21.500922+00:00",
+  "model": "qwen/qwen3-vl-8b-instruct",
+  "planned_requests": 455,
+  "dataset_sha256": "1b42bbc605a4ccab14dfbf40134b492e783a75c133f411e556c21a6c32063135",
+  "repeats": 3,
+  "source_sha256": {
+    "vlm_parallel_benchmark.py": "143b88b84ae42fba1c1bee50748bd77cba84d9b214495304d1d448167e4a3cb5",
+    "vlm_compact_model.py": "f39374576c761ed7ca6b771067a7d006c676451a61c7752e2e9ff7f5e5b559fd",
+    "vlm_independent_model.py": "c49052ca39260f78c698054dac0c8fadc040fa27730174fd63c73d822d704253",
+    "event_sensitivity.py": "181e7041e6ce08f846ecf55c62aa86149d90273fdd592029fe20f29fa7b97209"
+  },
+  "settings": {
+    "side": 720,
+    "jpeg_quality": 90,
+    "offsets": [
+      -1.2,
+      -0.8,
+      -0.4,
+      0
+    ],
+    "provider": "alibaba",
+    "fallback": false,
+    "temperature": 0,
+    "retries": 0,
+    "timeout": 45,
+    "warmup_requests": 5
+  },
+  "timing": "Includes request construction and parse, excludes decode. Dual lanes are published independently; pairs never overlap other trials.",
+  "annotation_status": "verified_before_inference",
+  "annotation_frozen_at": "2026-09-22T04:44:03.978318+00:00",
+  "source_folder_id": "1zt7_9s0zNNY4aFBrzBV5HevBvnboWenq",
+  "selection_method": "UR clips spaced across numbered collection; HMDB ten different source titles spanning good/medium/bad quality and front/side/back views. Frozen before visual inspection and inference.",
+  "samples": [
+    {
+      "id": "1MJwLvWvd1cUH4eVx4_r0bMrBWmtIF07H",
+      "name": "fall-01-cam0.mp4",
+      "size": 123917,
+      "folder": "ur_fall_rgb",
+      "group": "fall",
+      "sample_id": "v01",
+      "fps": 30.0,
+      "frame_count": 160,
+      "duration": 5.333333333333333,
+      "width": 320,
+      "height": 240,
+      "sha256": "953512f836991cb98e60ca8650fa4179aa818a0622ebc63756de2b5f34a0626d",
+      "endpoint": 4.1,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": true,
+        "weapon": false
+      },
+      "reference_note": "Standing/walking then forward loss of support and descent.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "dab000899fcca4f3deacf66692b8505d3ee917c508d92228e43bf9fa47e6d79c",
+        "19d962a106919eded1f06cbca8746ca84267ed0f9fb9d55934657881c9002155",
+        "e4e1e84ba49c1e7a52936c00836d6a55ca6900d06a2de059069efc098d47493d",
+        "e5477184f30b719b0fab3f3d05eef5c8879d8d23ec693527e62c21336933704e"
+      ]
+    },
+    {
+      "id": "1WlKCyYW2dFksLSDvAXD_WR3NUN040-c7",
+      "name": "fall-04-cam0.mp4",
+      "size": 91734,
+      "folder": "ur_fall_rgb",
+      "group": "fall",
+      "sample_id": "v02",
+      "fps": 30.0,
+      "frame_count": 96,
+      "duration": 3.2,
+      "width": 320,
+      "height": 240,
+      "sha256": "f55568bdb00d360bd1921a3beb0a766d1c2b2aaa5f933a7457023661a711a2b7",
+      "endpoint": 1.7,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": true,
+        "weapon": false
+      },
+      "reference_note": "Seated posture followed by sideways loss of support and floor descent.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "ce4e8652560b390e8530414a47fcfdea7176f766de917da919920ca43b7f52c4",
+        "f24bb7a3daa5ec44aadbb6d1fc48bddaed4d5d9ee293d97df99d550eda0df704",
+        "d678fefc7998dd263201e7d1b13f0e2c5f6e3165a48bac6e3ee90320485b7793",
+        "72e16055b51ef8c9da11c4b702011d3d5b7624f3c4131638b8fbe5ef71f99f75"
+      ]
+    },
+    {
+      "id": "103qRXNq4nlrsbIstulwqm-X-fxm7e8Fg",
+      "name": "fall-07-cam0.mp4",
+      "size": 144512,
+      "folder": "ur_fall_rgb",
+      "group": "fall",
+      "sample_id": "v03",
+      "fps": 30.0,
+      "frame_count": 156,
+      "duration": 5.2,
+      "width": 320,
+      "height": 240,
+      "sha256": "b669fef7afaf23b4150affec2b78001c1acfc384f0461f73a56bdbc76bf97276",
+      "endpoint": 4.0,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": true,
+        "weapon": false
+      },
+      "reference_note": "Standing then forward/sideways rapid descent to floor.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "c53e122b90378f49b11c0fe8685ca6d9c0e2fb0d4e50c46bf1c8ff1ee0eb0389",
+        "656eed6d996cfece33b92befebab5a08fee3292ac45d0c0c70d9ae3ba9b831c8",
+        "5b1e6c7e8f5885cc8ec89e4f33bf2ee13dc92138726dad0313d9fc1e33bd9e53",
+        "5e7051cbfc1a782c2b4ab1fe3a292c3afcd4d01f873278e735ea6bf8294aea02"
+      ]
+    },
+    {
+      "id": "1PvSNRGhPM14IzfVuMHQT60mhx4Rbj9hD",
+      "name": "fall-10-cam0.mp4",
+      "size": 105653,
+      "folder": "ur_fall_rgb",
+      "group": "fall",
+      "sample_id": "v04",
+      "fps": 30.0,
+      "frame_count": 130,
+      "duration": 4.333333333333333,
+      "width": 320,
+      "height": 240,
+      "sha256": "9caa30c378425c14a07eba62cd5a3ced1053eb23a7023ab62b14e5e9e5b0e4e2",
+      "endpoint": 2.5,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": true,
+        "weapon": false
+      },
+      "reference_note": "Sitting then forward loss of support and floor descent.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "1be9c563c60c895752792ba89cefbbcc67a39431fa6c2fa567cdec8e5ef0647e",
+        "e5849fbd4f0104adcd47156407360ce79272f8e9b25c74836847cbc525a37e80",
+        "ecd609ef70945bcee2a06152c1401ae28098dd5317dce2a6195f1293f2cb6f6c",
+        "52cd42d2086af6fa0f3f4e7360ac982354995e5463cbc6f49b6786316c853bf6"
+      ]
+    },
+    {
+      "id": "1IiDxODLtlLVPXjjhgf6Iu9B306PFwCxh",
+      "name": "fall-13-cam0.mp4",
+      "size": 51967,
+      "folder": "ur_fall_rgb",
+      "group": "fall",
+      "sample_id": "v05",
+      "fps": 30.0,
+      "frame_count": 85,
+      "duration": 2.8333333333333335,
+      "width": 320,
+      "height": 240,
+      "sha256": "1fa2b1ddac521046434d2f6df3fe29db55db48f198c3d348c145639d5ffb65d5",
+      "endpoint": 2.5,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": true,
+        "weapon": false
+      },
+      "reference_note": "Walking then forward collapse toward floor.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "dda349a3473f7988e8a50d743a95cc52e785143fe1d65b4c13a79058811144bc",
+        "d358b7750e870d8af0707341b1aaf3090e16c049ede529d456c689bb7e04d160",
+        "e55e379e4f33a8688453402611ca65e9b1bd6695ba0039ff9e6ec55351a59469",
+        "90ede7ec5b2bc68a0860f11b249945ab013e18c908ff7418f2af97f3e3c40ae1"
+      ]
+    },
+    {
+      "id": "1M1M1rcIrNae6q-YZFUzkfVrPuTSnP6wn",
+      "name": "fall-17-cam0.mp4",
+      "size": 55404,
+      "folder": "ur_fall_rgb",
+      "group": "fall",
+      "sample_id": "v06",
+      "fps": 30.0,
+      "frame_count": 95,
+      "duration": 3.1666666666666665,
+      "width": 320,
+      "height": 240,
+      "sha256": "db28861be248102a7f5e0186f92e5b6923417add5266ca6a80b4e1d5ec4ee682",
+      "endpoint": 2.8,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": true,
+        "weapon": false
+      },
+      "reference_note": "Standing then forward collapse toward floor.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "9789380427060dc958ddb2263bc11f93ea99d4027e68978d9f024dd5783a90fc",
+        "f37e74cf6af6cfc31d908670b3543e565c7ce961bfe3c0b71eb76271c33f69d7",
+        "dab13e49d0f3bab606c2fd80f81ca7d0f279e226581f81719b2d4d7c94dd8c38",
+        "f64873cd87a2c17481011c56c9ff395e633aef24610b894fc1a3106e22c69366"
+      ]
+    },
+    {
+      "id": "10bvvLqkufBWpEV6jcyD2LMC4vG6orduu",
+      "name": "fall-20-cam0.mp4",
+      "size": 65097,
+      "folder": "ur_fall_rgb",
+      "group": "fall",
+      "sample_id": "v07",
+      "fps": 30.0,
+      "frame_count": 110,
+      "duration": 3.6666666666666665,
+      "width": 320,
+      "height": 240,
+      "sha256": "bc4d976e97c871a16220b0623ad3c156be878f84ccd1047b12b4ee705ab39b97",
+      "endpoint": 1.9,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": true,
+        "weapon": false
+      },
+      "reference_note": "Seated then sideways descent with arms extending.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "9071e6338d3d45f8cf2da0080371616f1af3859a325e51b3c3f3c5d2f9605b24",
+        "01e54a1e6cdbf3ba5073285802078be7b31fba2487961fff4dd82123add0a6d2",
+        "7809e5497c277f3242e70fab017a528f65ae5c81041020917be5ea03afef5268",
+        "3f12c19d7f0145b549fe7f504eff5c6b038d6caf77d4c960e936b171ac736625"
+      ]
+    },
+    {
+      "id": "194n0x74aWHLMHWzL7RKCihNAn21yphpI",
+      "name": "fall-23-cam0.mp4",
+      "size": 44891,
+      "folder": "ur_fall_rgb",
+      "group": "fall",
+      "sample_id": "v08",
+      "fps": 30.0,
+      "frame_count": 75,
+      "duration": 2.5,
+      "width": 320,
+      "height": 240,
+      "sha256": "87fcdcce63a228ab422c59da98904338341c21076082c7bbeaedbb9c77b3d18e",
+      "endpoint": 2.1,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": true,
+        "weapon": false
+      },
+      "reference_note": "Standing then forward descent and floor contact.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "5c6e8575af57c9bd406936459c3114bbc01cb15121bfde45009fac0de908165d",
+        "852631d07c0f3f0d6ea945004c5dd2b7ccf84f70b5b1cd0cf859fd0c21763b44",
+        "ad8fac27dc485353ccec1114b9afb1e5152169a27e98dfe462aa95e0aaf40d44",
+        "8671b08ff8efe9381b8a977e0a3576102ff547c0270de560e83d2fd999c55bcc"
+      ]
+    },
+    {
+      "id": "1KkZx0G8PtZ4WGlk7FXcPOfOIIGVu53T0",
+      "name": "fall-26-cam0.mp4",
+      "size": 46991,
+      "folder": "ur_fall_rgb",
+      "group": "fall",
+      "sample_id": "v09",
+      "fps": 30.0,
+      "frame_count": 61,
+      "duration": 2.033333333333333,
+      "width": 320,
+      "height": 240,
+      "sha256": "64642e0110a4fb6bb47b29aa509c4dbdb4155fa24f1bbeae8fcc93abb927d44a",
+      "endpoint": 1.6,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": true,
+        "weapon": false
+      },
+      "reference_note": "Seated then sideways uncontrolled descent.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "155b6d4ea2998e211811a02d51d6179dedb38de55d99927551191085fbffe445",
+        "76c871e644e58c29a7f057bd29fc0a35fe33eebfc16589cf0242fdb458609a68",
+        "4f209dd1050de04734f0bdf2b953cedecd7f8afbcd0f56f40f6b943e37f239ea",
+        "2df0bcd7df20851839b5502fb4f499a906d74fab6f98c1f67496700e27c8ec99"
+      ]
+    },
+    {
+      "id": "1giLLlImSXIcWNxIb9WofT3-eW54dSqwD",
+      "name": "fall-30-cam0.mp4",
+      "size": 59402,
+      "folder": "ur_fall_rgb",
+      "group": "fall",
+      "sample_id": "v10",
+      "fps": 30.0,
+      "frame_count": 70,
+      "duration": 2.3333333333333335,
+      "width": 320,
+      "height": 240,
+      "sha256": "d7b6f545f191ea159d1bbdb48edecd30f208554e8823be3227b47fa106bedd86",
+      "endpoint": 2.0,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": true,
+        "weapon": false
+      },
+      "reference_note": "Seated then forward/sideways uncontrolled descent.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "63cc9868b298b4c9ab180ecac053f791a456c17ef9c80b56ee1a09876a50ca48",
+        "c9077525d0b6d6810e55d804285336f98888fb7882238721c887f232a76497b1",
+        "be6f8d545e3cc443c106f4e2eddd80fa61e775299c7cc4f4598fedf65ef10024",
+        "2788ee69924b1e1599eaa54b4b0607164a61a4978e4549f976c88bb9335e6291"
+      ]
+    },
+    {
+      "id": "1_WC22HiG-GeZzZIN4zvcCO_ymYvPBp02",
+      "name": "adl-01-cam0.mp4",
+      "size": 167709,
+      "folder": "ur_fall_rgb",
+      "group": "adl",
+      "sample_id": "v11",
+      "fps": 30.0,
+      "frame_count": 150,
+      "duration": 5.0,
+      "width": 320,
+      "height": 240,
+      "sha256": "a1daaa3d7994279eaf5f2e2e6afe6d9971b7a01f4a94247c60105ec249fa8898",
+      "endpoint": 4.3,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Controlled squat with feet supporting body.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "0df30a7a0cfb818a02fedcd9cecabb0fcaf33296902042fc37aa1ccb0afa4dea",
+        "07ddf1ab4fdd1fb1fe44246733dd9cba7c62b746f7dba39c7427d4b3c8bae7c2",
+        "0b31960d76c3bce731e1c75dfe2abdaf8dc7a0aae6857d14b3a69ceb7864df11",
+        "e3eda151dde7ebacb8e7c7b4a046f82094da40fb48df00d1d197b411ccd23c33"
+      ]
+    },
+    {
+      "id": "1d9JmTDu-EIBgvcnuvauM7wl9cWpdfuZU",
+      "name": "adl-05-cam0.mp4",
+      "size": 239200,
+      "folder": "ur_fall_rgb",
+      "group": "adl",
+      "sample_id": "v12",
+      "fps": 30.0,
+      "frame_count": 180,
+      "duration": 6.0,
+      "width": 320,
+      "height": 240,
+      "sha256": "4d48ac250c9421c0bf98e96af417c85f93cf7bd3ed4957e07bdf63eae8634126",
+      "endpoint": 4.5,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Deliberate bend and reach to floor beside bed.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "f5d94f223586e466197820b034f4ea70ccbd33d542a91acc23740a1e81e0175e",
+        "9fb8f8e74ab31dbd59c04d427ada3e33822b411c840128f4029f28899f308f31",
+        "ca5fa2ff4d3a5df25ced0b899b2538bcacc2ba88859271da004baaac0feac730",
+        "e335aa5e251b0cf374a6c8bea68788d5f37c95736e53704c105b921e7cd2f98b"
+      ]
+    },
+    {
+      "id": "1uP1UUpcFkQjzotU6EKYE9yMOj_HFhx_P",
+      "name": "adl-10-cam0.mp4",
+      "size": 402550,
+      "folder": "ur_fall_rgb",
+      "group": "adl",
+      "sample_id": "v13",
+      "fps": 30.0,
+      "frame_count": 300,
+      "duration": 10.0,
+      "width": 320,
+      "height": 240,
+      "sha256": "0fe8d103fc5ec32a376530185f1813aba869d5850c256a20b90fb3be848188ee",
+      "endpoint": 7.4,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Controlled sit and lie onto supported bed.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "c613987428eee60bf410a192918cc07189ca36460ffb8f98facacd7062f58cbc",
+        "1b5d0eb8f05298324fc23f3496ffb96b3596572590946643d607b981626fce32",
+        "be40c117318ee7a720d7e6f93007e2ba26789b89a9961626da1870213792db9c",
+        "f1004ac9124fe1df15ad8aa161424b1edc5cbf4bc8a070a1b3556be6ed1d0a19"
+      ]
+    },
+    {
+      "id": "1IIQ1ziQmbFjkbpFRD8WCwL8nLq7vxF9w",
+      "name": "adl-14-cam0.mp4",
+      "size": 353582,
+      "folder": "ur_fall_rgb",
+      "group": "adl",
+      "sample_id": "v14",
+      "fps": 30.0,
+      "frame_count": 235,
+      "duration": 7.833333333333333,
+      "width": 320,
+      "height": 240,
+      "sha256": "143b04c4e8abdf30f13ed5bfc1223f597565f7a7266634e28ac85ab9f0a7cf23",
+      "endpoint": 6.0,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Low-light deliberate squat; balanced support retained.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "3b66de5271edce706771032a9126c6dbad37a76c95dc880f205318e964d4ce51",
+        "7690230721026ff61919c71767352a5be31ae70ea48c0362e2de1b410cccd6ae",
+        "98d35edcc73c312df10515ed2b9e41b375e558fb7555ff681175fa337097ccd5",
+        "44d51834e01a559cff5281116e5c7cb160a98edca8eb45cbf45e780f499a4476"
+      ]
+    },
+    {
+      "id": "1AGUZdPpRn8fwRZ_TOmXH5y88IvqaKBn9",
+      "name": "adl-18-cam0.mp4",
+      "size": 404285,
+      "folder": "ur_fall_rgb",
+      "group": "adl",
+      "sample_id": "v15",
+      "fps": 30.0,
+      "frame_count": 265,
+      "duration": 8.833333333333334,
+      "width": 320,
+      "height": 240,
+      "sha256": "59b041f815cca592e5ebdce83e0496574e05f1fcb137e4c62f4b5cf7cf315d74",
+      "endpoint": 7.4,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Low-light controlled sitting on sofa.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "6a7a35314d39d28eae22133ad27ee2c79ce4b8eb86d51f9b7e47ac833788ce17",
+        "b1a167179bd5f6d048cc46c6c180cf7d38b3e11dcaba507a0dbfcd43c64f5a7d",
+        "e846bc9333868db3b072152269c48769edd4c0831cfeb29eb2c1ba4593483a0a",
+        "5b402fd2151babe1bf1b2c82645d851cb7500c8620a6d175b199f30576cfec5e"
+      ]
+    },
+    {
+      "id": "1xadGVLYKTVHTfzdaTikTAPHYTC6LFQb-",
+      "name": "adl-23-cam0.mp4",
+      "size": 334318,
+      "folder": "ur_fall_rgb",
+      "group": "adl",
+      "sample_id": "v16",
+      "fps": 30.0,
+      "frame_count": 220,
+      "duration": 7.333333333333333,
+      "width": 320,
+      "height": 240,
+      "sha256": "bea196cbc003fdd75345dcd11d58ffa84d43f0d41e6317200809ff79bf42945c",
+      "endpoint": 4.8,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Low-light controlled sitting and lying on sofa.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "5675a7684befaf954710b54a9a3d52c0ca485bb979112eb3b9c67f20ea69a4ce",
+        "e2271f133e341b28f7bdcb3ef6e64c218777e726e3055876df6446be34ebeee3",
+        "307959117fa1bcfdcca091b6ab4297caa95dee17f4c42020cd8d5af7f114c141",
+        "fc4b10d73fb367b2557ecb1550b32b6b6493603d5722898b6c4b795c3c5f9286"
+      ]
+    },
+    {
+      "id": "1d-GHG0J_dMf2KlDFHst3kl9WibCkGbBA",
+      "name": "adl-27-cam0.mp4",
+      "size": 58293,
+      "folder": "ur_fall_rgb",
+      "group": "adl",
+      "sample_id": "v17",
+      "fps": 30.0,
+      "frame_count": 100,
+      "duration": 3.3333333333333335,
+      "width": 320,
+      "height": 240,
+      "sha256": "c10d8e269d02401ce1062a1f75ab9edb1fe4d9216565e9b149001061b4a0225a",
+      "endpoint": 2.3,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Controlled lowering onto chair.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "0fed29406458fa645f1af89586eb8b0bf80a31b536c6dd04b4d7e0568b6296e6",
+        "d48a3dcf225b64917d85a12d0f2eb2965771a5a4b6e3435b8104b6e5464f5288",
+        "2259edc415263931f16f9356ce115b29937573d49743ebdffe9857cd6d10e935",
+        "cc617535f19ccbc566c6ad6408273c8780e52df95131087d9095e0b5ac8f0e1a"
+      ]
+    },
+    {
+      "id": "1404sMzLRL87l-5KPWy9JglLZpq6fZX06",
+      "name": "adl-31-cam0.mp4",
+      "size": 167881,
+      "folder": "ur_fall_rgb",
+      "group": "adl",
+      "sample_id": "v18",
+      "fps": 30.0,
+      "frame_count": 250,
+      "duration": 8.333333333333334,
+      "width": 320,
+      "height": 240,
+      "sha256": "f9489b0ae2e9ea77df32e1e08ab070f3c11553168e10b7191976186950c7b060",
+      "endpoint": 4.7,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Deliberate kneeling and lowering torso with arm support.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "211a4f73f584aee1782df8de3ad03a1aeafb58758ae7f1fca9713f7fb0a491cb",
+        "e531cc19c8f79ec958f974613223df83a3424bc0767d85266f1ff9a4fae589f4",
+        "e8b6f37edb54525d57cdbf475a8ee87711d892bc937b597f548786b28ce4adba",
+        "9f24de0fbdc19d4b167f649049a4fa9201b6da1e60d94c5e3b92f91a3b601d75"
+      ]
+    },
+    {
+      "id": "1uAm-eaZkY5s0sswVaNmv8b7MIHjwANVU",
+      "name": "adl-36-cam0.mp4",
+      "size": 250801,
+      "folder": "ur_fall_rgb",
+      "group": "adl",
+      "sample_id": "v19",
+      "fps": 30.0,
+      "frame_count": 340,
+      "duration": 11.333333333333334,
+      "width": 320,
+      "height": 240,
+      "sha256": "364767e7919ff35e5eb256bfc71385580d85f12450a07fc9dc99a53752e0a00b",
+      "endpoint": 7.7,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Controlled sit and lie onto bed.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "8657162ada505f799717051bd10ff18280a6378b6e3c94d5a861760fc1e109b0",
+        "8bd1aa6124a508030a49a57bdae2e4f0adada3c88e501616dc7b0020284d2647",
+        "637ad0c379d93c2b858ba7fdf20f2bf086f758a07c80303d041be77aa6ce2b96",
+        "25a184a394f27dae1ee756d48a983b4362017b796709b46fae2b59172004beaf"
+      ]
+    },
+    {
+      "id": "1kPzpRchCMIV-71ekcTubk1lGPj15M_wC",
+      "name": "adl-40-cam0.mp4",
+      "size": 185070,
+      "folder": "ur_fall_rgb",
+      "group": "adl",
+      "sample_id": "v20",
+      "fps": 30.0,
+      "frame_count": 330,
+      "duration": 11.0,
+      "width": 320,
+      "height": 240,
+      "sha256": "6e0ace141b7a224ef722dc0580808031f1aaae62852d47bcb69751b9a53d302f",
+      "endpoint": 8.6,
+      "expected": {
+        "fight": false,
+        "smoking": false,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Deliberate kneeling and lowering to floor with arm support.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "834df66030251d87495ae6d8df2986da9962bfd618546da2461c721cf97c674e",
+        "5a0827403c01e35c3d2ac85804fec86f7c231a1e618099757a312715136d660e",
+        "438fe26693886986b1a460d03eb82acf89cadaa79a8af407136e949bdab4eac4",
+        "e5de148623ebcfd2ef846ed8799f2b4436e724c328ec95a0dffc2d01d944d2f6"
+      ]
+    },
+    {
+      "id": "1Lt1ist_CmCYJ0LeMJvfDFzxE4MtYCqig",
+      "name": "A_Beautiful_Mind_2_smoke_u_cm_np1_fr_goo_0.mp4",
+      "size": 219056,
+      "folder": "hmdb51_smoke",
+      "group": "smoking",
+      "sample_id": "v21",
+      "fps": 30.0,
+      "frame_count": 80,
+      "duration": 2.6666666666666665,
+      "width": 352,
+      "height": 240,
+      "sha256": "f57225f2ec8aa951679a7bce170aab7c8dab837fc96f16c176eb1ac082f6fdf4",
+      "endpoint": 1.8,
+      "expected": {
+        "fight": false,
+        "smoking": true,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Visible smoking item near mouth and exhaled smoke.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "bce8a5c9c1a1516243936e6f306220c9a1d12dae3426d93e5b9b1b804c82c164",
+        "3ee1b0b0b4c1c6444c6e1d16a37548b57677af216e34067775e30a16d1928fe0",
+        "ce74cab9b36ceae515b98e2a313970bd459e3349019770c0c22d25e627dcd7f6",
+        "cfaac67cd9b29b1996dfbea0059ff42bdf364de6689fbd49b20539ce05f3a42c"
+      ]
+    },
+    {
+      "id": "1QxnKLoYsfH-c32ramDqt_irOErGFr_jD",
+      "name": "A_Beginners_Guide_to_Smoking_smoke_u_cm_np1_ri_bad_0.mp4",
+      "size": 167075,
+      "folder": "hmdb51_smoke",
+      "group": "smoking",
+      "sample_id": "v22",
+      "fps": 30.0,
+      "frame_count": 80,
+      "duration": 2.6666666666666665,
+      "width": 320,
+      "height": 240,
+      "sha256": "b5ae7ee0b7acc31f87c1d5b2db73393e5659e5b1f8e04f88e64fd7c0b854da16",
+      "endpoint": 1.8,
+      "expected": {
+        "fight": false,
+        "smoking": true,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Smoking item near mouth; selected frames after scene cut.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "6dc5f3f2f491a2af534a032c05a95d2075cc3c94b4281033368b4a0305c9f932",
+        "973e6443713edba5e0ef1eaa37ea3498bda713951da54c8b886568ed6d164dec",
+        "94b2f3b1cbd082933de571d086896df572810a24e2c67e2a15ee72b78b6e5508",
+        "1207ba53488a3155ed09ff4786e66fda944446ef4b1af7fd51be90a43dfcc30f"
+      ]
+    },
+    {
+      "id": "1-JemMzSsPXQzSJO8WtYVrkV-OC9nEzp9",
+      "name": "Glory_smoke_h_nm_np1_fr_goo_41.mp4",
+      "size": 307075,
+      "folder": "hmdb51_smoke",
+      "group": "smoking",
+      "sample_id": "v23",
+      "fps": 30.0,
+      "frame_count": 108,
+      "duration": 3.6,
+      "width": 432,
+      "height": 240,
+      "sha256": "52e330694aa29ce9de41ff85688003fabb0e63ba619ba4735b6194b92f73eec1",
+      "endpoint": 2.1,
+      "expected": {
+        "fight": false,
+        "smoking": true,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Pipe at mouth with visible smoke.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "2166fab75651cc2b3c2f93d97c8e09aff4e889d50b690fe7ee81de0cda431b2a",
+        "7eb7a0586cde4469b26ac5a4252f0b54807744bd04b43c0adf6edd7968c3f360",
+        "ee986387b34ed6be362fa818fcaa42308876f3363b655f113818de545edaaeb6",
+        "0f0bb77a58b968f02f9e38ce1a096083ed786f2d8068be5d6ea9abe054070a72"
+      ]
+    },
+    {
+      "id": "1YUL67ULV5RgT_hgGDR3bWvOW2YyXS9d1",
+      "name": "How_to_smoke_smoke_h_nm_np1_fr_goo_0.mp4",
+      "size": 146172,
+      "folder": "hmdb51_smoke",
+      "group": "smoking",
+      "sample_id": "v24",
+      "fps": 30.0,
+      "frame_count": 123,
+      "duration": 4.1,
+      "width": 320,
+      "height": 240,
+      "sha256": "4700674ab48f5b61201899d573af74e5fe65630d0c24a407820ee856ceeed325",
+      "endpoint": 2.0,
+      "expected": {
+        "fight": false,
+        "smoking": true,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Thin smoking item held at mouth.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "d63c8ad7151cd677626fb0cb15e062aa0fe8345774bf4ee4429b8468d7cfad6a",
+        "4d49118803a272f5010079f5a7fcbe47b2e3154ac05c910637a7fb91fa274a39",
+        "d9009b7c87448d0a50fdb48c900e3be7d73540d36aa60888e38174ec9394eb59",
+        "4637d42bffa6dd359b2d87be57e9b97cc124e5f08e02a0f5ea753f417c994006"
+      ]
+    },
+    {
+      "id": "1zkQNVLj4N8MDJgCrhStuaCgEqjYi6jGj",
+      "name": "OSSER_-_Qualboro_light_-_Marlboro_Verarschung_smoke_h_cm_np1_le_bad_0.mp4",
+      "size": 376792,
+      "folder": "hmdb51_smoke",
+      "group": "smoking",
+      "sample_id": "v25",
+      "fps": 30.0,
+      "frame_count": 229,
+      "duration": 7.633333333333334,
+      "width": 300,
+      "height": 240,
+      "sha256": "3b74008cc6e5aec96629198f55049d1400306be4e8d4f0c337061c6b3e8ee6de",
+      "endpoint": 3.3,
+      "expected": {
+        "fight": false,
+        "smoking": true,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Held smoking item and hand-to-mouth gesture.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "cc23d292461202e159e332e5fe415e7fc1bcf0e7529c8847f8599fc1b864da67",
+        "409859b3a0b3aae7679037b4a30977f6a0e232b9f597d1f4b0c4d1126891f330",
+        "681dea3c1390fe385fcb21acef6f8399895f1f5b44468da8a01a5e6d14edb977",
+        "0c2c9ae29203bf5a3f44d26ae3b308458c54869012b4ef2dc8fdb004e51d5106"
+      ]
+    },
+    {
+      "id": "1T7oRLCPHZzUiiZgI5j8hJ7UqCWSeqmue",
+      "name": "Return_of_the_King_1_smoke_h_cm_np1_fr_goo_7.mp4",
+      "size": 141091,
+      "folder": "hmdb51_smoke",
+      "group": "smoking",
+      "sample_id": "v26",
+      "fps": 30.0,
+      "frame_count": 64,
+      "duration": 2.1333333333333333,
+      "width": 352,
+      "height": 240,
+      "sha256": "337019dd44fd7eff78de8cd8f9a1dd3ac97b5966071b64eae2467daa184d24c9",
+      "endpoint": 1.5,
+      "expected": {
+        "fight": false,
+        "smoking": true,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Pipe and exhaled smoke; selected frames before scene cut.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "ea23a00e311572d0fbeaff34d93daa31ce76d079a6735bc02cbfb4ade7982b18",
+        "a68df00bf01a224a155f59e72193e315aaad3639a294fadd6e86421774bd947f",
+        "f2d251a1249b5196b6a995c562daa847f368bb8ae33e0284c9d83b931fc09ba7",
+        "79c4533856d59e0361ba1755183557cc8386380bb3212ec3f8ab5d20030d1673"
+      ]
+    },
+    {
+      "id": "13ru9mJ-v70vOE9sDR2S95V8KEZD2nXze",
+      "name": "girl_smoking_a_cigarette_smoke_h_nm_np1_fr_med_0.mp4",
+      "size": 235379,
+      "folder": "hmdb51_smoke",
+      "group": "smoking",
+      "sample_id": "v27",
+      "fps": 30.0,
+      "frame_count": 115,
+      "duration": 3.8333333333333335,
+      "width": 320,
+      "height": 240,
+      "sha256": "3074389b9118d2835f6a04c3046795db9af02d55ef64b741d53dc9192b6ef294",
+      "endpoint": 1.5,
+      "expected": {
+        "fight": false,
+        "smoking": true,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Cigarette at mouth and hand-to-mouth smoking action.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "b38f7e3fd6604c68ac44f01ccae29cee326ff2fdadebd346ae88b88e6f7c1193",
+        "2ffce8c2274acd561b0298735e5cbe789882c2d8fd5f95b6379a4d9cd5cc1d26",
+        "24fc7ada838adf508c4d2c06757cc8e3f1c0317917fdedd5696bc49ae7f8df71",
+        "7b894fc3b4c48d18c83a8178068c9046c80fb371aa4b273f8f72abcee7fa3d5b"
+      ]
+    },
+    {
+      "id": "1pdiyijbyMPVEhO9XsnBhgX4OS05NR_0k",
+      "name": "raucher_smoke_u_nm_np1_fr_med_0.mp4",
+      "size": 224854,
+      "folder": "hmdb51_smoke",
+      "group": "smoking",
+      "sample_id": "v28",
+      "fps": 30.0,
+      "frame_count": 119,
+      "duration": 3.966666666666667,
+      "width": 300,
+      "height": 240,
+      "sha256": "873f43016e59374ba569fa67171889564aae3354be7e2ffcdfa14a44aa16645a",
+      "endpoint": 2.4,
+      "expected": {
+        "fight": false,
+        "smoking": true,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Cigarette held at lips.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "a1a56a9713da2a9252dd2420e4a974da651c859c5f1c7d6f2ae95f4d46aadd20",
+        "8094cff97afa5d95b635e78a86f346dabb713009802a02f1139aeb297bdebb48",
+        "d350e096153897de96a78c5edf28d12522b495dd63dfd2ddd7b151587b3df20c",
+        "8f9c968190bc404e4eb78a75dfc43455270fcd290c389c3aa7b981b81c703523"
+      ]
+    },
+    {
+      "id": "1KzNqvzc93HrsxIqS0dr6q0HIjiA6yE4r",
+      "name": "smoking_2_smoke_h_cm_np1_ba_med_4.mp4",
+      "size": 154726,
+      "folder": "hmdb51_smoke",
+      "group": "smoking",
+      "sample_id": "v29",
+      "fps": 30.0,
+      "frame_count": 61,
+      "duration": 2.033333333333333,
+      "width": 420,
+      "height": 240,
+      "sha256": "5b4ed5f004661165b55ff9a93aff5971bf5e0e36c93a97dfebd0d15a28c766e1",
+      "endpoint": 1.6,
+      "expected": {
+        "fight": false,
+        "smoking": true,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Rear/side view, partly occluded small smoking item by mouth; HIGH policy.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "741c9eeb4b023578a42df512eb548e4a9c01424c7a30d87c73d87e6daeb544ca",
+        "e3a0ed16ed5b928c65e0c9cfd49187b90d0a1e96d43ac1f665e155aba2b3d3c4",
+        "6848ce80f1a5dfdd475a9c61302648ec5a01ad1c6315535ef91d3c6e6d8dddac",
+        "8e8b655b128ac9686158a1618b14ec3d705e7ce150ab78bf0fd59cfa2a87abde"
+      ]
+    },
+    {
+      "id": "1QQaFxq8va_-UMU67Li9KYGQqLD4jhxw4",
+      "name": "you_like_a_nice_long_white_cig_smoke_u_nm_np1_ri_goo_0.mp4",
+      "size": 314177,
+      "folder": "hmdb51_smoke",
+      "group": "smoking",
+      "sample_id": "v30",
+      "fps": 30.0,
+      "frame_count": 235,
+      "duration": 7.833333333333333,
+      "width": 320,
+      "height": 240,
+      "sha256": "54dfdf2bc49e106f9bb1aa79f143972e2e2b5a80f6adc68f4b310fcf6d4efd06",
+      "endpoint": 3.4,
+      "expected": {
+        "fight": false,
+        "smoking": true,
+        "fall": false,
+        "weapon": false
+      },
+      "reference_note": "Long cigarette visibly held at mouth, then moved away.",
+      "reference_basis": "Assistant visual review of whole-clip contact sheet and selected four-frame window before any model inference; dataset category used as supporting context. No independent human adjudicator.",
+      "frame_sha256": [
+        "db8701c2acf71ee8cee6793994a98ad6749b9308583c06f9477ae2a34a8e0f58",
+        "6bf40c9531caa7a22502d5232422df78a97b848a4992421558eb0f084a715df4",
+        "d517f7d89819ca1a52b191b823e0ea157e18fcf73279b20c6de681b199ef514b",
+        "65b5f4fad062d9b07de95d996c9f5d46671cc9832fe9996d662c99be57f387d6"
+      ]
+    }
+  ],
+  "limits": [
+    "Purposefully selected 30 windows, not random population evaluation",
+    "References reviewed by assistant before previous inference, not independently human-annotated",
+    "No positive fight or weapon clips in Drive sample",
+    "No SAM/identity/whole-video latency measured yet",
+    "Each prompt variant uses repeated videos, not independent samples",
+    "Prompt diagnostics used the previously authorized original video; revised dataset evaluation is not a new holdout"
+  ]
+}

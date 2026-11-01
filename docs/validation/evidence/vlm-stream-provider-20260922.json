@@ -1,0 +1,1279 @@
+{
+  "groups": {
+    "30B-DeepInfra": {
+      "nonstream": {
+        "attempts": 8,
+        "success": 8,
+        "providers": {
+          "DeepInfra": 8
+        },
+        "statistics": {
+          "first_content_seconds": {
+            "n": 8,
+            "min": 6.2568412399996305,
+            "median": 12.432499122500303,
+            "mean": 11.469942987874674,
+            "p95": 16.028638741998293,
+            "max": 16.028638741998293
+          },
+          "validated_result_seconds": {
+            "n": 8,
+            "min": 6.256999950004683,
+            "median": 12.432695085000887,
+            "mean": 11.470074820875197,
+            "p95": 16.02873354699841,
+            "max": 16.02873354699841
+          },
+          "http_seconds": {
+            "n": 8,
+            "min": 6.257012649999524,
+            "median": 12.432709285498277,
+            "mean": 11.470086883873591,
+            "p95": 16.028744046998327,
+            "max": 16.028744046998327
+          },
+          "build_messages_seconds": {
+            "n": 8,
+            "min": 0.07744992100197123,
+            "median": 0.0890947865009366,
+            "mean": 0.09865734950017213,
+            "p95": 0.16073042299831286,
+            "max": 0.16073042299831286
+          },
+          "parse_seconds": {
+            "n": 8,
+            "min": 8.330499986186624e-05,
+            "median": 9.890550063573755e-05,
+            "mean": 0.00012682000033237273,
+            "p95": 0.000279116997262463,
+            "max": 0.000279116997262463
+          },
+          "response_bytes": {
+            "n": 8,
+            "min": 1371,
+            "median": 1373.5,
+            "mean": 1401.375,
+            "p95": 1477,
+            "max": 1477
+          },
+          "completion_tokens": {
+            "n": 8,
+            "min": 162,
+            "median": 166.5,
+            "mean": 176.5,
+            "p95": 213,
+            "max": 213
+          },
+          "platform_generation_time_seconds": {
+            "n": 8,
+            "min": 4.817,
+            "median": 6.0024999999999995,
+            "mean": 6.274875,
+            "p95": 9.593,
+            "max": 9.593
+          },
+          "platform_latency_seconds": {
+            "n": 8,
+            "min": 0.381,
+            "median": 0.4495,
+            "mean": 0.8047500000000001,
+            "p95": 1.647,
+            "max": 1.647
+          },
+          "connect_tcp_seconds": {
+            "n": 4,
+            "min": 0.18616527500125812,
+            "median": 0.2989053370001784,
+            "mean": 0.292610907501512,
+            "p95": 0.38646768100443296,
+            "max": 0.38646768100443296
+          },
+          "start_tls_seconds": {
+            "n": 4,
+            "min": 4.096805286004383,
+            "median": 4.271269346500048,
+            "mean": 4.646046929499789,
+            "p95": 5.9448437389946776,
+            "max": 5.9448437389946776
+          },
+          "headers_seconds": {
+            "n": 8,
+            "min": 1.663686162995873,
+            "median": 5.159144455497881,
+            "mean": 5.450839687998268,
+            "p95": 10.385827549995156,
+            "max": 10.385827549995156
+          },
+          "upload_done_seconds": {
+            "n": 8,
+            "min": 0.0024512479940312915,
+            "median": 2.223302859998512,
+            "mean": 2.4820176303737753,
+            "p95": 6.2073152890006895,
+            "max": 6.2073152890006895
+          }
+        },
+        "within_15_seconds": 6,
+        "failures": [],
+        "weapon_positive": 0,
+        "weapon_uncertain": 0
+      },
+      "stream": {
+        "attempts": 8,
+        "success": 8,
+        "providers": {
+          "DeepInfra": 8
+        },
+        "statistics": {
+          "first_content_seconds": {
+            "n": 8,
+            "min": 1.7879255810039467,
+            "median": 5.42892048900103,
+            "mean": 5.872299626876156,
+            "p95": 11.9024079180017,
+            "max": 11.9024079180017
+          },
+          "validated_result_seconds": {
+            "n": 8,
+            "min": 6.0860518110057455,
+            "median": 10.832334365000861,
+            "mean": 11.029582653000944,
+            "p95": 18.558392849001393,
+            "max": 18.558392849001393
+          },
+          "http_seconds": {
+            "n": 8,
+            "min": 6.093357261001074,
+            "median": 10.84034860599786,
+            "mean": 11.038687491750352,
+            "p95": 18.570757480003522,
+            "max": 18.570757480003522
+          },
+          "build_messages_seconds": {
+            "n": 8,
+            "min": 0.07581396299792686,
+            "median": 0.08818773799794144,
+            "mean": 0.09925140174982516,
+            "p95": 0.1478607090029982,
+            "max": 0.1478607090029982
+          },
+          "parse_seconds": {
+            "n": 8,
+            "min": 9.750599565450102e-05,
+            "median": 0.00013225699876784347,
+            "mean": 0.00013237024813861353,
+            "p95": 0.00018881200230680406,
+            "max": 0.00018881200230680406
+          },
+          "response_bytes": {
+            "n": 8,
+            "min": 46648,
+            "median": 48616.5,
+            "mean": 51279.375,
+            "p95": 60965,
+            "max": 60965
+          },
+          "completion_tokens": {
+            "n": 8,
+            "min": 162,
+            "median": 166.5,
+            "mean": 176.25,
+            "p95": 210,
+            "max": 210
+          },
+          "platform_generation_time_seconds": {
+            "n": 8,
+            "min": 4.659,
+            "median": 5.355,
+            "mean": 5.598375,
+            "p95": 7.061,
+            "max": 7.061
+          },
+          "platform_latency_seconds": {
+            "n": 8,
+            "min": 0.347,
+            "median": 0.43600000000000005,
+            "mean": 0.43225,
+            "p95": 0.498,
+            "max": 0.498
+          },
+          "connect_tcp_seconds": {
+            "n": 4,
+            "min": 0.17190799800300738,
+            "median": 0.17753273800190073,
+            "mean": 0.2012456877509976,
+            "p95": 0.2780092769971816,
+            "max": 0.2780092769971816
+          },
+          "start_tls_seconds": {
+            "n": 4,
+            "min": 4.116528009995818,
+            "median": 4.2214344079984585,
+            "mean": 4.760006537997469,
+            "p95": 6.480629325997143,
+            "max": 6.480629325997143
+          },
+          "headers_seconds": {
+            "n": 8,
+            "min": 1.678135920999921,
+            "median": 5.18139275249996,
+            "mean": 5.681479020124243,
+            "p95": 11.743699339000159,
+            "max": 11.743699339000159
+          },
+          "upload_done_seconds": {
+            "n": 8,
+            "min": 0.0024747520001255907,
+            "median": 2.1507736335006484,
+            "mean": 2.485501274375565,
+            "p95": 6.764944582006137,
+            "max": 6.764944582006137
+          }
+        },
+        "within_15_seconds": 7,
+        "failures": [],
+        "weapon_positive": 0,
+        "weapon_uncertain": 0
+      }
+    },
+    "30B-Alibaba": {
+      "nonstream": {
+        "attempts": 8,
+        "success": 6,
+        "providers": {
+          "Alibaba": 6
+        },
+        "statistics": {
+          "first_content_seconds": {
+            "n": 6,
+            "min": 2.9809132459995453,
+            "median": 3.699597939499654,
+            "mean": 5.663982537830937,
+            "p95": 10.182273744998383,
+            "max": 10.182273744998383
+          },
+          "validated_result_seconds": {
+            "n": 6,
+            "min": 2.9810017510026228,
+            "median": 3.6997129964984197,
+            "mean": 5.664091627831415,
+            "p95": 10.182406852996792,
+            "max": 10.182406852996792
+          },
+          "http_seconds": {
+            "n": 6,
+            "min": 2.9810113509956864,
+            "median": 3.6997234469999967,
+            "mean": 5.664102928332189,
+            "p95": 10.182416752999416,
+            "max": 10.182416752999416
+          },
+          "build_messages_seconds": {
+            "n": 6,
+            "min": 0.07554245099890977,
+            "median": 0.1005191680014832,
+            "mean": 0.0989373131657582,
+            "p95": 0.12549879799917107,
+            "max": 0.12549879799917107
+          },
+          "parse_seconds": {
+            "n": 6,
+            "min": 8.470499597024173e-05,
+            "median": 9.810650226427242e-05,
+            "mean": 0.00010310666524067831,
+            "p95": 0.0001287079940084368,
+            "max": 0.0001287079940084368
+          },
+          "response_bytes": {
+            "n": 6,
+            "min": 1358,
+            "median": 1360.0,
+            "mean": 1394,
+            "p95": 1464,
+            "max": 1464
+          },
+          "completion_tokens": {
+            "n": 6,
+            "min": 161,
+            "median": 171.0,
+            "mean": 183.16666666666666,
+            "p95": 213,
+            "max": 213
+          },
+          "platform_generation_time_seconds": {
+            "n": 6,
+            "min": 1.659,
+            "median": 1.795,
+            "mean": 1.8611666666666666,
+            "p95": 2.216,
+            "max": 2.216
+          },
+          "platform_latency_seconds": {
+            "n": 6,
+            "min": 0.308,
+            "median": 0.4465,
+            "mean": 0.43,
+            "p95": 0.549,
+            "max": 0.549
+          },
+          "connect_tcp_seconds": {
+            "n": 2,
+            "min": 0.1713800510042347,
+            "median": 0.17452343400145764,
+            "mean": 0.17452343400145764,
+            "p95": 0.1776668169986806,
+            "max": 0.1776668169986806
+          },
+          "start_tls_seconds": {
+            "n": 2,
+            "min": 4.102557834004983,
+            "median": 4.116415185500955,
+            "mean": 4.116415185500955,
+            "p95": 4.130272536996927,
+            "max": 4.130272536996927
+          },
+          "headers_seconds": {
+            "n": 6,
+            "min": 1.65954211299686,
+            "median": 2.2049800565000623,
+            "mean": 4.230444934831515,
+            "p95": 8.814644295001926,
+            "max": 8.814644295001926
+          },
+          "upload_done_seconds": {
+            "n": 6,
+            "min": 0.0029973700002301484,
+            "median": 0.004433268499269616,
+            "mean": 1.4353342268320073,
+            "p95": 4.318027468994842,
+            "max": 4.318027468994842
+          }
+        },
+        "within_15_seconds": 6,
+        "failures": [
+          {
+            "request_id": "ae44877b-68f3-4bc7-9005-1aeb79a59d7f",
+            "error": "invalid_json_syntax"
+          },
+          {
+            "request_id": "4fbb5cb6-ce54-4bc2-b955-46b27d771662",
+            "error": "invalid_json_syntax"
+          }
+        ],
+        "weapon_positive": 0,
+        "weapon_uncertain": 0
+      },
+      "stream": {
+        "attempts": 8,
+        "success": 7,
+        "providers": {
+          "Alibaba": 7
+        },
+        "statistics": {
+          "first_content_seconds": {
+            "n": 7,
+            "min": 1.8800599339956534,
+            "median": 4.964322333995369,
+            "mean": 5.582814182570603,
+            "p95": 8.754119916004129,
+            "max": 8.754119916004129
+          },
+          "validated_result_seconds": {
+            "n": 7,
+            "min": 3.3982232119960827,
+            "median": 6.72129122899787,
+            "mean": 7.026523471713257,
+            "p95": 10.061006335003185,
+            "max": 10.061006335003185
+          },
+          "http_seconds": {
+            "n": 7,
+            "min": 3.4114909509953577,
+            "median": 6.730393491998257,
+            "mean": 7.035417927428041,
+            "p95": 10.070103897000081,
+            "max": 10.070103897000081
+          },
+          "build_messages_seconds": {
+            "n": 7,
+            "min": 0.07612935199722415,
+            "median": 0.08428136799921049,
+            "mean": 0.09306818571453082,
+            "p95": 0.1377630350034451,
+            "max": 0.1377630350034451
+          },
+          "parse_seconds": {
+            "n": 7,
+            "min": 9.360600233776495e-05,
+            "median": 0.0001280069991480559,
+            "mean": 0.00013566528754641434,
+            "p95": 0.0002034130011452362,
+            "max": 0.0002034130011452362
+          },
+          "response_bytes": {
+            "n": 7,
+            "min": 49414,
+            "median": 49696,
+            "mean": 53001.42857142857,
+            "p95": 61688,
+            "max": 61688
+          },
+          "completion_tokens": {
+            "n": 7,
+            "min": 170,
+            "median": 171,
+            "mean": 182.57142857142858,
+            "p95": 213,
+            "max": 213
+          },
+          "platform_generation_time_seconds": {
+            "n": 7,
+            "min": 1.518,
+            "median": 1.661,
+            "mean": 1.748,
+            "p95": 2.117,
+            "max": 2.117
+          },
+          "platform_latency_seconds": {
+            "n": 7,
+            "min": 0.358,
+            "median": 0.397,
+            "mean": 0.413,
+            "p95": 0.523,
+            "max": 0.523
+          },
+          "connect_tcp_seconds": {
+            "n": 3,
+            "min": 0.17165989099885337,
+            "median": 0.17366791300446494,
+            "mean": 0.23002412966889096,
+            "p95": 0.3447445850033546,
+            "max": 0.3447445850033546
+          },
+          "start_tls_seconds": {
+            "n": 3,
+            "min": 4.11846092199994,
+            "median": 4.123238976004359,
+            "mean": 4.122631332002736,
+            "p95": 4.126194098003907,
+            "max": 4.126194098003907
+          },
+          "headers_seconds": {
+            "n": 7,
+            "min": 1.8777651969940052,
+            "median": 4.959084916001302,
+            "mean": 5.579909405856077,
+            "p95": 8.752015785998083,
+            "max": 8.752015785998083
+          },
+          "upload_done_seconds": {
+            "n": 7,
+            "min": 0.002473146996635478,
+            "median": 0.0038362319974112324,
+            "mean": 1.8690983117142292,
+            "p95": 4.475023858001805,
+            "max": 4.475023858001805
+          }
+        },
+        "within_15_seconds": 7,
+        "failures": [
+          {
+            "request_id": "c31fc950-180d-454a-94e9-8421d28b93bf",
+            "error": "invalid_json_syntax"
+          }
+        ],
+        "weapon_positive": 0,
+        "weapon_uncertain": 0
+      }
+    },
+    "3.6-35B": {
+      "nonstream": {
+        "attempts": 8,
+        "success": 8,
+        "providers": {
+          "Io Net": 4,
+          "Phala": 4
+        },
+        "statistics": {
+          "first_content_seconds": {
+            "n": 8,
+            "min": 3.667105353997613,
+            "median": 20.65575247850211,
+            "mean": 17.060736989998986,
+            "p95": 28.61403400999552,
+            "max": 28.61403400999552
+          },
+          "validated_result_seconds": {
+            "n": 8,
+            "min": 3.66723906200059,
+            "median": 20.655866485001752,
+            "mean": 17.060850346750158,
+            "p95": 28.61416781799926,
+            "max": 28.61416781799926
+          },
+          "http_seconds": {
+            "n": 8,
+            "min": 3.667248961995938,
+            "median": 20.65588053600004,
+            "mean": 17.06086293487442,
+            "p95": 28.61418251899886,
+            "max": 28.61418251899886
+          },
+          "build_messages_seconds": {
+            "n": 8,
+            "min": 0.07629512799758231,
+            "median": 0.08077298649732256,
+            "mean": 0.08508811550109385,
+            "p95": 0.1147352870029863,
+            "max": 0.1147352870029863
+          },
+          "parse_seconds": {
+            "n": 8,
+            "min": 8.920500113163143e-05,
+            "median": 0.00010420600301586092,
+            "mean": 0.00010894387378357351,
+            "p95": 0.00012990699906367809,
+            "max": 0.00012990699906367809
+          },
+          "response_bytes": {
+            "n": 8,
+            "min": 1693,
+            "median": 1747.5,
+            "mean": 1750.25,
+            "p95": 1859,
+            "max": 1859
+          },
+          "completion_tokens": {
+            "n": 8,
+            "min": 284,
+            "median": 291.0,
+            "mean": 295.75,
+            "p95": 331,
+            "max": 331
+          },
+          "platform_generation_time_seconds": {
+            "n": 8,
+            "min": 1.856,
+            "median": 2.8135,
+            "mean": 6.46525,
+            "p95": 19.88,
+            "max": 19.88
+          },
+          "platform_latency_seconds": {
+            "n": 8,
+            "min": 0.961,
+            "median": 1.2160000000000002,
+            "mean": 1.5715,
+            "p95": 3.001,
+            "max": 3.001
+          },
+          "connect_tcp_seconds": {
+            "n": 3,
+            "min": 0.17062897300638724,
+            "median": 0.1770851380060776,
+            "mean": 0.18034161100513302,
+            "p95": 0.1933107220029342,
+            "max": 0.1933107220029342
+          },
+          "start_tls_seconds": {
+            "n": 3,
+            "min": 4.1007711149941315,
+            "median": 4.156201903999317,
+            "mean": 4.283037742997597,
+            "p95": 4.592140209999343,
+            "max": 4.592140209999343
+          },
+          "headers_seconds": {
+            "n": 8,
+            "min": 2.5251813909999328,
+            "median": 11.303916392495012,
+            "mean": 12.159260975374309,
+            "p95": 21.45776372600085,
+            "max": 21.45776372600085
+          },
+          "upload_done_seconds": {
+            "n": 8,
+            "min": 0.0024254500021925196,
+            "median": 0.0029563810021500103,
+            "mean": 1.67804025287478,
+            "p95": 4.791009869994014,
+            "max": 4.791009869994014
+          }
+        },
+        "within_15_seconds": 3,
+        "failures": [],
+        "weapon_positive": 0,
+        "weapon_uncertain": 0
+      },
+      "stream": {
+        "attempts": 8,
+        "success": 8,
+        "providers": {
+          "Phala": 6,
+          "Io Net": 2
+        },
+        "statistics": {
+          "first_content_seconds": {
+            "n": 8,
+            "min": 2.896952457995212,
+            "median": 4.791149974000291,
+            "mean": 7.701176610374205,
+            "p95": 26.09407123499841,
+            "max": 26.09407123499841
+          },
+          "validated_result_seconds": {
+            "n": 8,
+            "min": 4.175625254996703,
+            "median": 6.209313116502017,
+            "mean": 11.606757089000894,
+            "p95": 27.455641166998248,
+            "max": 27.455641166998248
+          },
+          "http_seconds": {
+            "n": 8,
+            "min": 4.183339414994407,
+            "median": 6.216042137504701,
+            "mean": 11.616514913624997,
+            "p95": 27.469115021995094,
+            "max": 27.469115021995094
+          },
+          "build_messages_seconds": {
+            "n": 8,
+            "min": 0.07823616099631181,
+            "median": 0.09465551549874363,
+            "mean": 0.09329782787608565,
+            "p95": 0.10917285200412152,
+            "max": 0.10917285200412152
+          },
+          "parse_seconds": {
+            "n": 8,
+            "min": 8.520499977748841e-05,
+            "median": 0.0001273079979000613,
+            "mean": 0.00014028362511453452,
+            "p95": 0.00023661500017624348,
+            "max": 0.00023661500017624348
+          },
+          "response_bytes": {
+            "n": 8,
+            "min": 13067,
+            "median": 22840.5,
+            "mean": 22021.875,
+            "p95": 26149,
+            "max": 26149
+          },
+          "completion_tokens": {
+            "n": 8,
+            "min": 285,
+            "median": 290.5,
+            "mean": 296.875,
+            "p95": 340,
+            "max": 340
+          },
+          "platform_generation_time_seconds": {
+            "n": 8,
+            "min": 2.483,
+            "median": 2.9095,
+            "mean": 5.652,
+            "p95": 14.919,
+            "max": 14.919
+          },
+          "platform_latency_seconds": {
+            "n": 8,
+            "min": 1.107,
+            "median": 1.384,
+            "mean": 1.7686250000000001,
+            "p95": 3.959,
+            "max": 3.959
+          },
+          "connect_tcp_seconds": {
+            "n": 2,
+            "min": 0.17502732400316745,
+            "median": 0.17820028850110248,
+            "mean": 0.17820028850110248,
+            "p95": 0.1813732529990375,
+            "max": 0.1813732529990375
+          },
+          "start_tls_seconds": {
+            "n": 2,
+            "min": 4.180287636001594,
+            "median": 4.244795939499454,
+            "mean": 4.244795939499454,
+            "p95": 4.309304242997314,
+            "max": 4.309304242997314
+          },
+          "headers_seconds": {
+            "n": 8,
+            "min": 2.8949984409991885,
+            "median": 4.78888558250037,
+            "mean": 6.787407464249554,
+            "p95": 18.801545042995713,
+            "max": 18.801545042995713
+          },
+          "upload_done_seconds": {
+            "n": 8,
+            "min": 0.0023905429989099503,
+            "median": 0.003333753498736769,
+            "mean": 1.1091584147507092,
+            "p95": 4.495094976002292,
+            "max": 4.495094976002292
+          }
+        },
+        "within_15_seconds": 5,
+        "failures": [],
+        "weapon_positive": 0,
+        "weapon_uncertain": 0
+      }
+    }
+  },
+  "paired_summary": {
+    "30B-DeepInfra": {
+      "pairs": 8,
+      "same_provider_pairs": 8,
+      "stream_faster": 5,
+      "ready_time_difference_seconds": {
+        "n": 8,
+        "min": -4.051250395998068,
+        "median": -0.2479331309987174,
+        "mean": -0.44049216787425394,
+        "p95": 3.104075456998544,
+        "max": 3.104075456998544
+      },
+      "first_content_advantage_seconds": {
+        "n": 8,
+        "min": 3.551784066003165,
+        "median": 5.199279339998611,
+        "mean": 5.597643360998518,
+        "p95": 9.062623291996715,
+        "max": 9.062623291996715
+      },
+      "judgment_agreement": 8,
+      "same_provider_ready_time_difference_seconds": {
+        "n": 8,
+        "min": -4.051250395998068,
+        "median": -0.2479331309987174,
+        "mean": -0.44049216787425394,
+        "p95": 3.104075456998544,
+        "max": 3.104075456998544
+      },
+      "same_provider_stream_faster": 5,
+      "same_provider_warm_pairs": 4,
+      "same_provider_warm_difference_seconds": {
+        "n": 4,
+        "min": -4.051250395998068,
+        "median": -0.41329590949681005,
+        "mean": -1.0655979037474026,
+        "p95": 0.6154506000020774,
+        "max": 0.6154506000020774
+      }
+    },
+    "30B-Alibaba": {
+      "pairs": 6,
+      "same_provider_pairs": 6,
+      "stream_faster": 2,
+      "ready_time_difference_seconds": {
+        "n": 6,
+        "min": -0.22702461299923016,
+        "median": 1.4347124670021003,
+        "mean": 1.9671485538347042,
+        "p95": 6.167499430994212,
+        "max": 6.167499430994212
+      },
+      "first_content_advantage_seconds": {
+        "n": 6,
+        "min": -4.836641943998984,
+        "median": -0.1312761510052951,
+        "mean": -0.5191689091686081,
+        "p95": 1.8707973810014664,
+        "max": 1.8707973810014664
+      },
+      "judgment_agreement": 6,
+      "same_provider_ready_time_difference_seconds": {
+        "n": 6,
+        "min": -0.22702461299923016,
+        "median": 1.4347124670021003,
+        "mean": 1.9671485538347042,
+        "p95": 6.167499430994212,
+        "max": 6.167499430994212
+      },
+      "same_provider_stream_faster": 2,
+      "same_provider_warm_pairs": 3,
+      "same_provider_warm_difference_seconds": {
+        "n": 3,
+        "min": -0.22702461299923016,
+        "median": 2.7042464909973205,
+        "mean": 1.890875276333342,
+        "p95": 3.1954039510019356,
+        "max": 3.1954039510019356
+      }
+    },
+    "3.6-35B": {
+      "pairs": 8,
+      "same_provider_pairs": 4,
+      "stream_faster": 5,
+      "ready_time_difference_seconds": {
+        "n": 8,
+        "min": -18.326196737994906,
+        "median": -4.99771936649995,
+        "mean": -5.454093257749264,
+        "p95": 2.5625763310017646,
+        "max": 2.5625763310017646
+      },
+      "first_content_advantage_seconds": {
+        "n": 8,
+        "min": -1.2011076050039264,
+        "median": 10.804592117001448,
+        "mean": 9.359560379624781,
+        "p95": 19.90494487000251,
+        "max": 19.90494487000251
+      },
+      "judgment_agreement": 8,
+      "same_provider_ready_time_difference_seconds": {
+        "n": 4,
+        "min": -18.326196737994906,
+        "median": -10.401027185500425,
+        "mean": -9.177067463248022,
+        "p95": 2.419981256003666,
+        "max": 2.419981256003666
+      },
+      "same_provider_stream_faster": 3,
+      "same_provider_warm_pairs": 3,
+      "same_provider_warm_difference_seconds": {
+        "n": 3,
+        "min": -18.326196737994906,
+        "median": -15.42162815300253,
+        "mean": -10.442614544997923,
+        "p95": 2.419981256003666,
+        "max": 2.419981256003666
+      }
+    }
+  },
+  "pairs": [
+    {
+      "group": "30B-DeepInfra",
+      "repeat": 0,
+      "window": 0,
+      "same_provider": true,
+      "both_reused_connections": false,
+      "provider_nonstream": "DeepInfra",
+      "provider_stream": "DeepInfra",
+      "nonstream_seconds": 13.81150689200149,
+      "stream_seconds": 14.19976117299666,
+      "stream_minus_nonstream_seconds": 0.3882542809951701,
+      "first_content_advantage_seconds": 4.12415319000138,
+      "judgments_equal": true
+    },
+    {
+      "group": "30B-DeepInfra",
+      "repeat": 0,
+      "window": 1,
+      "same_provider": true,
+      "both_reused_connections": false,
+      "provider_nonstream": "DeepInfra",
+      "provider_stream": "DeepInfra",
+      "nonstream_seconds": 16.02873354699841,
+      "stream_seconds": 13.599776203998772,
+      "stream_minus_nonstream_seconds": -2.428957342999638,
+      "first_content_advantage_seconds": 7.185619671996392,
+      "judgments_equal": true
+    },
+    {
+      "group": "30B-DeepInfra",
+      "repeat": 0,
+      "window": 2,
+      "same_provider": true,
+      "both_reused_connections": true,
+      "provider_nonstream": "DeepInfra",
+      "provider_stream": "DeepInfra",
+      "nonstream_seconds": 6.256999950004683,
+      "stream_seconds": 6.0860518110057455,
+      "stream_minus_nonstream_seconds": -0.1709481389989378,
+      "first_content_advantage_seconds": 4.468915658995684,
+      "judgments_equal": true
+    },
+    {
+      "group": "30B-DeepInfra",
+      "repeat": 0,
+      "window": 3,
+      "same_provider": true,
+      "both_reused_connections": true,
+      "provider_nonstream": "DeepInfra",
+      "provider_stream": "DeepInfra",
+      "nonstream_seconds": 7.511100096999144,
+      "stream_seconds": 8.126550697001221,
+      "stream_minus_nonstream_seconds": 0.6154506000020774,
+      "first_content_advantage_seconds": 5.4961818829979165,
+      "judgments_equal": true
+    },
+    {
+      "group": "30B-DeepInfra",
+      "repeat": 1,
+      "window": 0,
+      "same_provider": true,
+      "both_reused_connections": false,
+      "provider_nonstream": "DeepInfra",
+      "provider_stream": "DeepInfra",
+      "nonstream_seconds": 13.863036155998998,
+      "stream_seconds": 13.5381180330005,
+      "stream_minus_nonstream_seconds": -0.324918122998497,
+      "first_content_advantage_seconds": 4.902376796999306,
+      "judgments_equal": true
+    },
+    {
+      "group": "30B-DeepInfra",
+      "repeat": 1,
+      "window": 1,
+      "same_provider": true,
+      "both_reused_connections": true,
+      "provider_nonstream": "DeepInfra",
+      "provider_stream": "DeepInfra",
+      "nonstream_seconds": 7.781021254995721,
+      "stream_seconds": 7.125377575001039,
+      "stream_minus_nonstream_seconds": -0.6556436799946823,
+      "first_content_advantage_seconds": 5.989492328997585,
+      "judgments_equal": true
+    },
+    {
+      "group": "30B-DeepInfra",
+      "repeat": 1,
+      "window": 2,
+      "same_provider": true,
+      "both_reused_connections": true,
+      "provider_nonstream": "DeepInfra",
+      "provider_stream": "DeepInfra",
+      "nonstream_seconds": 11.053883278000285,
+      "stream_seconds": 7.002632882002217,
+      "stream_minus_nonstream_seconds": -4.051250395998068,
+      "first_content_advantage_seconds": 9.062623291996715,
+      "judgments_equal": true
+    },
+    {
+      "group": "30B-DeepInfra",
+      "repeat": 1,
+      "window": 3,
+      "same_provider": true,
+      "both_reused_connections": false,
+      "provider_nonstream": "DeepInfra",
+      "provider_stream": "DeepInfra",
+      "nonstream_seconds": 15.45431739200285,
+      "stream_seconds": 18.558392849001393,
+      "stream_minus_nonstream_seconds": 3.104075456998544,
+      "first_content_advantage_seconds": 3.551784066003165,
+      "judgments_equal": true
+    },
+    {
+      "group": "30B-Alibaba",
+      "repeat": 0,
+      "window": 0,
+      "same_provider": true,
+      "both_reused_connections": false,
+      "provider_nonstream": "Alibaba",
+      "provider_stream": "Alibaba",
+      "nonstream_seconds": 9.895827891996305,
+      "stream_seconds": 10.061006335003185,
+      "stream_minus_nonstream_seconds": 0.16517844300688012,
+      "first_content_advantage_seconds": 1.141615369990177,
+      "judgments_equal": true
+    },
+    {
+      "group": "30B-Alibaba",
+      "repeat": 0,
+      "window": 2,
+      "same_provider": true,
+      "both_reused_connections": false,
+      "provider_nonstream": "Alibaba",
+      "provider_stream": "Alibaba",
+      "nonstream_seconds": 10.182406852996792,
+      "stream_seconds": 9.979994473003899,
+      "stream_minus_nonstream_seconds": -0.20241237999289297,
+      "first_content_advantage_seconds": 1.5519286729977466,
+      "judgments_equal": true
+    },
+    {
+      "group": "30B-Alibaba",
+      "repeat": 0,
+      "window": 3,
+      "same_provider": true,
+      "both_reused_connections": true,
+      "provider_nonstream": "Alibaba",
+      "provider_stream": "Alibaba",
+      "nonstream_seconds": 3.5258872779959347,
+      "stream_seconds": 6.72129122899787,
+      "stream_minus_nonstream_seconds": 3.1954039510019356,
+      "first_content_advantage_seconds": -1.4385452630012878,
+      "judgments_equal": true
+    },
+    {
+      "group": "30B-Alibaba",
+      "repeat": 1,
+      "window": 0,
+      "same_provider": true,
+      "both_reused_connections": true,
+      "provider_nonstream": "Alibaba",
+      "provider_stream": "Alibaba",
+      "nonstream_seconds": 2.9810017510026228,
+      "stream_seconds": 5.685248241999943,
+      "stream_minus_nonstream_seconds": 2.7042464909973205,
+      "first_content_advantage_seconds": -1.4041676720007672,
+      "judgments_equal": true
+    },
+    {
+      "group": "30B-Alibaba",
+      "repeat": 1,
+      "window": 2,
+      "same_provider": true,
+      "both_reused_connections": false,
+      "provider_nonstream": "Alibaba",
+      "provider_stream": "Alibaba",
+      "nonstream_seconds": 3.6484327700018184,
+      "stream_seconds": 9.81593220099603,
+      "stream_minus_nonstream_seconds": 6.167499430994212,
+      "first_content_advantage_seconds": -4.836641943998984,
+      "judgments_equal": true
+    },
+    {
+      "group": "30B-Alibaba",
+      "repeat": 1,
+      "window": 3,
+      "same_provider": true,
+      "both_reused_connections": true,
+      "provider_nonstream": "Alibaba",
+      "provider_stream": "Alibaba",
+      "nonstream_seconds": 3.750993222995021,
+      "stream_seconds": 3.5239686099957908,
+      "stream_minus_nonstream_seconds": -0.22702461299923016,
+      "first_content_advantage_seconds": 1.8707973810014664,
+      "judgments_equal": true
+    },
+    {
+      "group": "3.6-35B",
+      "repeat": 0,
+      "window": 0,
+      "same_provider": false,
+      "both_reused_connections": false,
+      "provider_nonstream": "Io Net",
+      "provider_stream": "Phala",
+      "nonstream_seconds": 24.893064835996483,
+      "stream_seconds": 27.455641166998248,
+      "stream_minus_nonstream_seconds": 2.5625763310017646,
+      "first_content_advantage_seconds": -1.2011076050039264,
+      "judgments_equal": true
+    },
+    {
+      "group": "3.6-35B",
+      "repeat": 0,
+      "window": 1,
+      "same_provider": true,
+      "both_reused_connections": true,
+      "provider_nonstream": "Phala",
+      "provider_stream": "Phala",
+      "nonstream_seconds": 20.475912895002693,
+      "stream_seconds": 5.0542847420001635,
+      "stream_minus_nonstream_seconds": -15.42162815300253,
+      "first_content_advantage_seconds": 16.87927676000254,
+      "judgments_equal": true
+    },
+    {
+      "group": "3.6-35B",
+      "repeat": 0,
+      "window": 2,
+      "same_provider": true,
+      "both_reused_connections": true,
+      "provider_nonstream": "Phala",
+      "provider_stream": "Phala",
+      "nonstream_seconds": 4.944360235000204,
+      "stream_seconds": 7.36434149100387,
+      "stream_minus_nonstream_seconds": 2.419981256003666,
+      "first_content_advantage_seconds": -1.0415079910017084,
+      "judgments_equal": true
+    },
+    {
+      "group": "3.6-35B",
+      "repeat": 0,
+      "window": 3,
+      "same_provider": false,
+      "both_reused_connections": false,
+      "provider_nonstream": "Io Net",
+      "provider_stream": "Phala",
+      "nonstream_seconds": 9.973517985003127,
+      "stream_seconds": 5.042214017004881,
+      "stream_minus_nonstream_seconds": -4.931303967998247,
+      "first_content_advantage_seconds": 6.874338474000979,
+      "judgments_equal": true
+    },
+    {
+      "group": "3.6-35B",
+      "repeat": 1,
+      "window": 0,
+      "same_provider": true,
+      "both_reused_connections": true,
+      "provider_nonstream": "Phala",
+      "provider_stream": "Phala",
+      "nonstream_seconds": 23.082719867998094,
+      "stream_seconds": 4.756523130003188,
+      "stream_minus_nonstream_seconds": -18.326196737994906,
+      "first_content_advantage_seconds": 19.90494487000251,
+      "judgments_equal": true
+    },
+    {
+      "group": "3.6-35B",
+      "repeat": 1,
+      "window": 1,
+      "same_provider": false,
+      "both_reused_connections": true,
+      "provider_nonstream": "Io Net",
+      "provider_stream": "Phala",
+      "nonstream_seconds": 3.66723906200059,
+      "stream_seconds": 4.175625254996703,
+      "stream_minus_nonstream_seconds": 0.5083861929961131,
+      "first_content_advantage_seconds": 0.7701528960024007,
+      "judgments_equal": true
+    },
+    {
+      "group": "3.6-35B",
+      "repeat": 1,
+      "window": 2,
+      "same_provider": true,
+      "both_reused_connections": false,
+      "provider_nonstream": "Io Net",
+      "provider_stream": "Io Net",
+      "nonstream_seconds": 28.61416781799926,
+      "stream_seconds": 23.23374160000094,
+      "stream_minus_nonstream_seconds": -5.38042621799832,
+      "first_content_advantage_seconds": 17.95553987299354,
+      "judgments_equal": true
+    },
+    {
+      "group": "3.6-35B",
+      "repeat": 1,
+      "window": 3,
+      "same_provider": false,
+      "both_reused_connections": true,
+      "provider_nonstream": "Phala",
+      "provider_stream": "Io Net",
+      "nonstream_seconds": 20.83582007500081,
+      "stream_seconds": 15.771685309999157,
+      "stream_minus_nonstream_seconds": -5.064134765001654,
+      "first_content_advantage_seconds": 14.734845760001917,
+      "judgments_equal": true
+    }
+  ],
+  "metadata_statuses": {
+    "200": 56
+  },
+  "phala_summary": {
+    "False": {
+      "attempts": 4,
+      "success": 4,
+      "first_content_seconds": {
+        "n": 4,
+        "min": 3.1215725080037373,
+        "median": 3.6228473555020173,
+        "mean": 3.624165757501032,
+        "p95": 4.129395810996357,
+        "max": 4.129395810996357
+      },
+      "validated_result_seconds": {
+        "n": 4,
+        "min": 3.1217932220024522,
+        "median": 3.6229982645018026,
+        "mean": 3.6245803575020545,
+        "p95": 4.130531679002161,
+        "max": 4.130531679002161
+      },
+      "new_tls_connections": 0
+    },
+    "True": {
+      "attempts": 4,
+      "success": 4,
+      "first_content_seconds": {
+        "n": 4,
+        "min": 1.6003260479992605,
+        "median": 2.252531033500418,
+        "mean": 2.393952036250994,
+        "p95": 3.470420030003879,
+        "max": 3.470420030003879
+      },
+      "validated_result_seconds": {
+        "n": 4,
+        "min": 2.9073905879995436,
+        "median": 3.6950389675002953,
+        "mean": 3.777382835500248,
+        "p95": 4.812062819000857,
+        "max": 4.812062819000857
+      },
+      "new_tls_connections": 0
+    }
+  },
+  "phala_pairs": [
+    {
+      "window": 0,
+      "pts": 1.7916666666666667,
+      "nonstream_seconds": 4.130531679002161,
+      "stream_seconds": 4.812062819000857,
+      "stream_first_content_seconds": 3.470420030003879,
+      "difference_seconds": 0.6815311399986967,
+      "judgments_equal": true
+    },
+    {
+      "window": 1,
+      "pts": 10.958333333333334,
+      "nonstream_seconds": 3.33615958300652,
+      "stream_seconds": 2.9073905879995436,
+      "stream_first_content_seconds": 1.6168600129967672,
+      "difference_seconds": -0.4287689950069762,
+      "judgments_equal": true
+    },
+    {
+      "window": 2,
+      "pts": 12.716666666666667,
+      "nonstream_seconds": 3.1217932220024522,
+      "stream_seconds": 4.234847656000056,
+      "stream_first_content_seconds": 2.8882020540040685,
+      "difference_seconds": 1.113054433997604,
+      "judgments_equal": true
+    },
+    {
+      "window": 3,
+      "pts": 48.23166666666667,
+      "nonstream_seconds": 3.9098369459970854,
+      "stream_seconds": 3.155230279000534,
+      "stream_first_content_seconds": 1.6003260479992605,
+      "difference_seconds": -0.7546066669965512,
+      "judgments_equal": true
+    }
+  ],
+  "date": "2026-09-22",
+  "real_model_calls": 56,
+  "scope": "Four cached video evidence windows; API-only; no production streaming integration or full pipeline/delivery rerun.",
+  "source_snapshot": "outputs/vlm-route-latency-20260922/source-snapshot",
+  "report": "outputs/vlm-stream-provider-20260922/REPORT.zh-CN.md",
+  "phala_generation_time_seconds": {
+    "False": {
+      "values": [
+        2.626,
+        2.663,
+        2.247,
+        3.386
+      ],
+      "median": 2.6445
+    },
+    "True": {
+      "values": [
+        3.539,
+        2.341,
+        2.629,
+        2.567
+      ],
+      "median": 2.598
+    }
+  },
+  "limitations": [
+    "60-second diagnostic timeout; 15-second counts are retrospective.",
+    "Successful requests only in timing statistics; failures are excluded from timing and not treated as negative judgments.",
+    "Main run has cold/warm connections and automatic routing on 35B.",
+    "Separate warm Phala controls exclude HEAD prewarming from model-request time.",
+    "Synchronous per-chunk logging adds overhead; offline calibration is not subtracted.",
+    "No positive weapon sample; four selected windows do not measure whole-video precision or recall.",
+    "One invalid streaming response final text was not retained on the exception path."
+  ]
+}

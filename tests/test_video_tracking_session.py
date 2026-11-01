@@ -507,6 +507,27 @@ def test_coordinator_keeps_one_epoch_and_flushes_tail_before_idle(connection):
         coordinator.close()
 
 
+def test_native_display_is_available_before_session_scene_commit(connection):
+    _, client = connection
+    order = []
+
+    def commit(result):
+        assert order[-1] == ("native", result)
+        order.append(("scene", result))
+
+    coordinator = VideoSessionTrackingCoordinator(client, on_batch=commit)
+    coordinator.on_native_batch = lambda result, generation: order.append(
+        ("native", result),
+    )
+    try:
+        coordinator.reset("camera")
+        submit(coordinator, frames())
+        assert coordinator.wait_until_idle()
+        assert [kind for kind, _ in order] == ["native", "scene"]
+    finally:
+        coordinator.close()
+
+
 def test_initial_empty_emission_is_not_a_callback_or_negative_scene(connection):
     server, client = connection
     server.empty_first = True

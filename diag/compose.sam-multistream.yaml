@@ -1,0 +1,14 @@
+# Overlay for the multi-stream GPU-contention run: make the rented worker serve
+# N camera lanes from one shared model (default 4), so diag/run_multistream_diag.sh
+# SAM=on can push 1/2/4 real streams through the same GPU and measure the ceiling.
+#
+# Use together with the tunnel overlay:
+#   SAM31_LIVE_CAMERAS=4 docker compose \
+#     -f compose.yaml -f compose.sam31-remote.yaml \
+#     -f diag/compose.sam-tunnel.yaml -f diag/compose.sam-multistream.yaml \
+#     up --build sam-remote
+# Wait for "SAM is ready", then run the rig (SAM=on) against localhost:8092.
+services:
+  sam-remote:
+    environment:
+      SAM31_LIVE_CAMERAS: "${SAM31_LIVE_CAMERAS:-4}"

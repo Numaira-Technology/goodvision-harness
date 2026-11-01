@@ -10,13 +10,13 @@ from pathlib import Path
 from threading import RLock
 from uuid import uuid4
 
+from .rich_label_models import validate_rich_label_model
 from .service_locations import SERVICE_LOCATION_FIELDS, validate_service_location
 
 SETTINGS_SCHEMA_VERSION = 1
-# Stable, neutral names keep each route's credentials independent. The original
-# record belongs to the default route so existing deployments remain usable.
+# Stable neutral filenames preserve existing OpenRouter and other active keys.
+# The retired default record is never migrated into a different provider.
 _API_KEY_FILENAMES = {
-    "aiclub": "model-api-key",
     "openrouter": "model-api-key-2",
     "dashscope": "model-api-key-3",
     "local": "local-model-api-key",
@@ -44,6 +44,26 @@ class DeploymentSettings:
     tracking_server_capacity: int | None = None
     tracking_server_protocol: str | None = None
     tracking_sample_fps: float | None = None
+    inference_server_protocol: str | None = None
+    # Console-selected rich-label model key (brand-neutral: contour / det-balanced
+    # / det-fast / det-accurate); see rich_label_models.RICH_LABEL_MODELS.
+    rich_label_model: str | None = None
+
+
+def _load_rich_label_model(payload: dict) -> str | None:
+    """Read a persisted rich-label model key, tolerating an unknown value.
+
+    The save path validates strictly, but a stored key may be absent, or stale
+    from an earlier build / hand edit. Treat an unrecognized key as unset
+    (falls back to the default) rather than failing the whole settings load.
+    """
+    value = payload.get("rich_label_model")
+    if value is None:
+        return None
+    try:
+        return validate_rich_label_model(value)
+    except ValueError:
+        return None
 
 
 def validate_local_gpu_enabled(value: object, name: str) -> bool:
@@ -84,8 +104,7 @@ class DeploymentSettingsStore:
 
     def __init__(self, settings_path: str | Path) -> None:
         self.path = Path(settings_path).expanduser().resolve()
-        self.api_key_path = self.path.with_name("model-api-key")
-        self._legacy_api_key_path = self.path.with_name("openrouter-api-key")
+        self.api_key_path = self._provider_api_key_path("openrouter")
         self._lock = RLock()
 
     def load(self) -> DeploymentSettings | None:
@@ -115,7 +134,8 @@ class DeploymentSettingsStore:
         return DeploymentSettings(
             **{
                 name: validate_service_location(name, payload[name])
-                for name in SERVICE_LOCATION_FIELDS if name in payload
+                for name in SERVICE_LOCATION_FIELDS
+                if name in payload
             },
             stream_url=stream_url.strip(),
             dry_run=dry_run,
@@ -123,13 +143,19 @@ class DeploymentSettingsStore:
             buffer_delay_seconds=buffer_delay_seconds,
             local_inference_enabled=(
                 validate_local_gpu_enabled(
-                    payload["local_inference_enabled"], "local_inference_enabled",
-                ) if "local_inference_enabled" in payload else None
+                    payload["local_inference_enabled"],
+                    "local_inference_enabled",
+                )
+                if "local_inference_enabled" in payload
+                else None
             ),
             local_tracking_enabled=(
                 validate_local_gpu_enabled(
-                    payload["local_tracking_enabled"], "local_tracking_enabled",
-                ) if "local_tracking_enabled" in payload else None
+                    payload["local_tracking_enabled"],
+                    "local_tracking_enabled",
+                )
+                if "local_tracking_enabled" in payload
+                else None
             ),
             camera_layout=(
                 validate_camera_layout(payload["camera_layout"])
@@ -145,6 +171,7 @@ class DeploymentSettingsStore:
                 if "processing_method" in payload
                 else None
             ),
+            rich_label_model=_load_rich_label_model(payload),
         )
 
     def save(self, settings: DeploymentSettings) -> None:
@@ -163,6 +190,10 @@ class DeploymentSettingsStore:
         if settings.processing_method is not None:
             payload["processing_method"] = validate_processing_method(
                 settings.processing_method
+            )
+        if settings.rich_label_model is not None:
+            payload["rich_label_model"] = validate_rich_label_model(
+                settings.rich_label_model
             )
         for name in ("local_inference_enabled", "local_tracking_enabled"):
             value = getattr(settings, name)
@@ -184,42 +215,27 @@ class DeploymentSettingsStore:
             raise ValueError("unsupported inference provider") from exc
         return self.path.with_name(filename)
 
-    def load_api_key(self, *, provider: str = "aiclub") -> str | None:
+    def load_api_key(self, *, provider: str = "openrouter") -> str | None:
         key_path = self._provider_api_key_path(provider)
         with self._lock:
-            if key_path.exists():
-                value = key_path.read_text(encoding="utf-8").strip()
-                if provider == "aiclub":
-                    self._legacy_api_key_path.unlink(missing_ok=True)
-                return value or None
-            if provider != "aiclub" or not self._legacy_api_key_path.exists():
-                return None
-            # One-time migration keeps the secret while removing the old
-            # provider-branded record from persistent storage.
-            value = self._legacy_api_key_path.read_text(encoding="utf-8").strip()
-            if value:
-                self._atomic_write(self.api_key_path, value + "\n")
-            self._legacy_api_key_path.unlink(missing_ok=True)
-        return value or None
+            return (
+                key_path.read_text(encoding="utf-8").strip() or None
+                if key_path.exists()
+                else None
+            )
 
-    def save_api_key(self, api_key: str, *, provider: str = "aiclub") -> None:
+    def save_api_key(self, api_key: str, *, provider: str = "openrouter") -> None:
         key_path = self._provider_api_key_path(provider)
         rendered = api_key.strip()
         if not rendered:
             raise ValueError("API key must not be empty")
         self._atomic_write(key_path, rendered + "\n")
-        with self._lock:
-            if provider == "aiclub":
-                self._legacy_api_key_path.unlink(missing_ok=True)
 
-    def delete_api_key(self, *, provider: str = "aiclub") -> bool:
+    def delete_api_key(self, *, provider: str = "openrouter") -> bool:
         key_path = self._provider_api_key_path(provider)
         with self._lock:
             existed = key_path.exists()
             key_path.unlink(missing_ok=True)
-            if provider == "aiclub":
-                existed = existed or self._legacy_api_key_path.exists()
-                self._legacy_api_key_path.unlink(missing_ok=True)
             return existed
 
     def _atomic_write(self, destination: Path, content: str) -> None:
@@ -261,8 +277,11 @@ class DeploymentSettingsStore:
             payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict) or payload.get("schema_version") != 1:
             raise ValueError("invalid analysis settings")
-        return {name: payload[name] for name in ("features", "event_sensitivities")
-                if name in payload}
+        return {
+            name: payload[name]
+            for name in ("features", "event_sensitivities")
+            if name in payload
+        }
 
     def save_analysis_settings(self, settings: dict) -> None:
         self._atomic_write(

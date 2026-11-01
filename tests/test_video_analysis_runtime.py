@@ -90,6 +90,41 @@ def test_missing_analysis_key_does_not_disconnect_or_clear_preview(
     assert runtime._session is None
 
 
+@pytest.mark.parametrize(
+    ("scene_mode", "independent", "dry_run", "features"),
+    [
+        ("active", False, False, ["smoking"]),
+        ("disabled", True, False, ["smoking"]),
+        ("active", True, True, ["smoking"]),
+        ("active", True, False, ["stranger"]),
+    ],
+)
+def test_preflight_preserves_processing_readiness_outside_independent_events(
+    connected_runtime, monkeypatch, scene_mode, independent, dry_run, features,
+):
+    runtime, connection, _adapter, _ = connected_runtime
+    runtime.config = replace(
+        runtime.config,
+        runtime=replace(
+            runtime.config.runtime,
+            scene_mode=scene_mode,
+            scene_independent_vlm=independent,
+        ),
+    )
+    runtime._scene_enabled = scene_mode == "active"
+    runtime.dry_run = dry_run
+    runtime.update_analysis_settings({"features": features})
+
+    def unavailable():
+        raise RuntimeError("selected processing method is unavailable")
+
+    monkeypatch.setattr(runtime, "_require_processing_ready", unavailable)
+    with pytest.raises(RuntimeError, match="selected processing method"):
+        runtime.prepare_analysis()
+    assert connection.running
+    assert runtime._session is None
+
+
 def test_camera_analysis_choices_persist_independently_and_invalid_save_is_atomic(
     rig, tmp_path,
 ):

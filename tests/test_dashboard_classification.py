@@ -17,6 +17,18 @@ import pytest
         "dashboard_camera_transport.cjs",
         "dashboard_routes.cjs",
         "dashboard_processing_methods.cjs",
+        "dashboard_modular_console.cjs",
+        "dashboard_i18n.cjs",
+        "dashboard_event_catalog.cjs",
+        "dashboard_diagnostics.cjs",
+        "dashboard_inference_errors.cjs",
+        "local_camera_publish.cjs",
+        "workflow_canvas.cjs",
+        "console_sections.cjs",
+        "quick_task_judgment.cjs",
+        "task_judgment_cards.cjs",
+        "task_observation.cjs",
+        "workflow_summary_display.cjs",
     ]
 )
 def test_dashboard_handlers(script_name: str) -> None:

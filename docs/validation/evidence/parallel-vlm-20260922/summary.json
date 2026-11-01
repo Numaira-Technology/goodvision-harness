@@ -1,0 +1,486 @@
+{
+  "source_sync_snapshot": "7c9a789c26b7bb857bd0c52f12641eac2776c09c",
+  "sync_merge": "ac09e75",
+  "implementation_commit": "54787d6",
+  "total_real_requests": 922,
+  "total_openrouter_reported_cost_usd": 0.15321732400000002,
+  "failed_v1": {
+    "completed_requests": 455,
+    "formal_requests": 450,
+    "successes": 455,
+    "openrouter_cost_usd": 0.067105064,
+    "by_case": {
+      "full": {
+        "attempts": 90,
+        "successes": 90,
+        "seconds": {
+          "count": 90,
+          "p50": 2.3910589999977674,
+          "p95": 3.090460439999515
+        },
+        "completion_tokens": {
+          "count": 90,
+          "p50": 233.0,
+          "p95": 263.55
+        },
+        "compact_negative_count": 0,
+        "smoking_clips_hit": 10,
+        "fall_clips_hit": 10,
+        "adl_clips_false_positive": 3,
+        "adl_clips_any_unknown": 5,
+        "target_positive_calls": 60,
+        "target_positive_grounded_calls": 50,
+        "per_group_seconds": {
+          "fall": {
+            "count": 30,
+            "p50": 2.3011310000001686,
+            "p95": 2.9728768350010784
+          },
+          "smoking": {
+            "count": 30,
+            "p50": 2.412487300000066,
+            "p95": 2.9783846950012953
+          },
+          "adl": {
+            "count": 30,
+            "p50": 2.483467099998961,
+            "p95": 3.256769944998448
+          }
+        },
+        "omitted_labels": 9,
+        "incomplete_label_calls": 3
+      },
+      "compact": {
+        "attempts": 90,
+        "successes": 90,
+        "seconds": {
+          "count": 90,
+          "p50": 0.8075557999982266,
+          "p95": 1.260121715001514
+        },
+        "completion_tokens": {
+          "count": 90,
+          "p50": 10.0,
+          "p95": 10.0
+        },
+        "compact_negative_count": 90,
+        "smoking_clips_hit": 0,
+        "fall_clips_hit": 0,
+        "adl_clips_false_positive": 0,
+        "adl_clips_any_unknown": 0,
+        "target_positive_calls": 0,
+        "target_positive_grounded_calls": 0,
+        "per_group_seconds": {
+          "fall": {
+            "count": 30,
+            "p50": 0.7863494999983232,
+            "p95": 1.031063204996826
+          },
+          "smoking": {
+            "count": 30,
+            "p50": 0.808097799999814,
+            "p95": 1.2936615700014948
+          },
+          "adl": {
+            "count": 30,
+            "p50": 0.8313548500009347,
+            "p95": 1.260121715001514
+          }
+        },
+        "omitted_labels": 0,
+        "incomplete_label_calls": 0
+      },
+      "events": {
+        "attempts": 90,
+        "successes": 90,
+        "seconds": {
+          "count": 90,
+          "p50": 0.8555430999986129,
+          "p95": 1.2888632299960592
+        },
+        "completion_tokens": {
+          "count": 90,
+          "p50": 22.0,
+          "p95": 22.0
+        },
+        "compact_negative_count": 0,
+        "smoking_clips_hit": 10,
+        "fall_clips_hit": 10,
+        "adl_clips_false_positive": 3,
+        "adl_clips_any_unknown": 1,
+        "target_positive_calls": 60,
+        "target_positive_grounded_calls": 0,
+        "per_group_seconds": {
+          "fall": {
+            "count": 30,
+            "p50": 0.8203469000000041,
+            "p95": 1.5425745199994694
+          },
+          "smoking": {
+            "count": 30,
+            "p50": 0.896891250002227,
+            "p95": 1.2888632299960592
+          },
+          "adl": {
+            "count": 30,
+            "p50": 0.8676161000003049,
+            "p95": 1.2634039850021508
+          }
+        },
+        "omitted_labels": 0,
+        "incomplete_label_calls": 0
+      },
+      "dual_events": {
+        "attempts": 90,
+        "successes": 90,
+        "seconds": {
+          "count": 90,
+          "p50": 0.8644767500009038,
+          "p95": 1.3146071849983854
+        },
+        "completion_tokens": {
+          "count": 90,
+          "p50": 22.0,
+          "p95": 22.0
+        },
+        "compact_negative_count": 0,
+        "smoking_clips_hit": 10,
+        "fall_clips_hit": 10,
+        "adl_clips_false_positive": 3,
+        "adl_clips_any_unknown": 1,
+        "target_positive_calls": 60,
+        "target_positive_grounded_calls": 0,
+        "per_group_seconds": {
+          "fall": {
+            "count": 30,
+            "p50": 0.8519487999983539,
+            "p95": 1.2456919749998627
+          },
+          "smoking": {
+            "count": 30,
+            "p50": 0.8777428499997768,
+            "p95": 1.3146071849983854
+          },
+          "adl": {
+            "count": 30,
+            "p50": 0.8760989000002155,
+            "p95": 1.232385754999268
+          }
+        },
+        "omitted_labels": 0,
+        "incomplete_label_calls": 0
+      },
+      "dual_compact": {
+        "attempts": 90,
+        "successes": 90,
+        "seconds": {
+          "count": 90,
+          "p50": 1.0060734500002582,
+          "p95": 1.6794140149984742
+        },
+        "completion_tokens": {
+          "count": 90,
+          "p50": 10.0,
+          "p95": 10.0
+        },
+        "compact_negative_count": 90,
+        "smoking_clips_hit": 0,
+        "fall_clips_hit": 0,
+        "adl_clips_false_positive": 0,
+        "adl_clips_any_unknown": 0,
+        "target_positive_calls": 0,
+        "target_positive_grounded_calls": 0,
+        "per_group_seconds": {
+          "fall": {
+            "count": 30,
+            "p50": 0.9582305000003544,
+            "p95": 1.5420705949974935
+          },
+          "smoking": {
+            "count": 30,
+            "p50": 1.0901516000012634,
+            "p95": 1.7443345299998323
+          },
+          "adl": {
+            "count": 30,
+            "p50": 1.0351902000038535,
+            "p95": 1.3661218600005665
+          }
+        },
+        "omitted_labels": 0,
+        "incomplete_label_calls": 0
+      }
+    },
+    "paired": {
+      "count": 90,
+      "information_first": 75,
+      "information_lead_seconds": {
+        "count": 90,
+        "p50": 0.12566689999584923,
+        "p95": 0.5575478200029464
+      },
+      "events_slowdown_ratio": {
+        "count": 90,
+        "p50": 0.9900660522814894,
+        "p95": 1.4691833893804163
+      },
+      "grounding_slowdown_ratio": {
+        "count": 90,
+        "p50": 1.2271168015377327,
+        "p95": 1.8335198246494562
+      },
+      "dispatch_skew_seconds": {
+        "count": 90,
+        "p50": 0.007184949998190859,
+        "p95": 0.017245394999190467
+      },
+      "any_decision_disagreements": 71,
+      "positive_negative_disagreements": 69
+    }
+  },
+  "revised_v2": {
+    "completed_requests": 455,
+    "formal_requests": 450,
+    "successes": 455,
+    "openrouter_cost_usd": 0.08264395100000001,
+    "by_case": {
+      "full": {
+        "attempts": 90,
+        "successes": 90,
+        "seconds": {
+          "count": 90,
+          "p50": 2.504758999999467,
+          "p95": 3.630946450000192
+        },
+        "completion_tokens": {
+          "count": 90,
+          "p50": 232.0,
+          "p95": 263.0
+        },
+        "compact_negative_count": 0,
+        "smoking_clips_hit": 10,
+        "fall_clips_hit": 10,
+        "adl_clips_false_positive": 3,
+        "adl_clips_any_unknown": 5,
+        "target_positive_calls": 60,
+        "target_positive_grounded_calls": 50,
+        "per_group_seconds": {
+          "fall": {
+            "count": 30,
+            "p50": 2.4315772999980254,
+            "p95": 3.5716884949979417
+          },
+          "smoking": {
+            "count": 30,
+            "p50": 2.537136000002647,
+            "p95": 3.2959918500011547
+          },
+          "adl": {
+            "count": 30,
+            "p50": 2.637001400002191,
+            "p95": 3.769432719998076
+          }
+        },
+        "omitted_labels": 15,
+        "incomplete_label_calls": 5
+      },
+      "compact": {
+        "attempts": 90,
+        "successes": 90,
+        "seconds": {
+          "count": 90,
+          "p50": 2.470604500002082,
+          "p95": 3.2797129850012423
+        },
+        "completion_tokens": {
+          "count": 90,
+          "p50": 222.0,
+          "p95": 271.0
+        },
+        "compact_negative_count": 0,
+        "smoking_clips_hit": 10,
+        "fall_clips_hit": 10,
+        "adl_clips_false_positive": 1,
+        "adl_clips_any_unknown": 7,
+        "target_positive_calls": 60,
+        "target_positive_grounded_calls": 56,
+        "per_group_seconds": {
+          "fall": {
+            "count": 30,
+            "p50": 1.876540200002637,
+            "p95": 2.9165264650011524
+          },
+          "smoking": {
+            "count": 30,
+            "p50": 2.4213493499992182,
+            "p95": 3.452229714999703
+          },
+          "adl": {
+            "count": 30,
+            "p50": 2.625287999999273,
+            "p95": 3.1451675200038154
+          }
+        },
+        "omitted_labels": 81,
+        "incomplete_label_calls": 27
+      },
+      "events": {
+        "attempts": 90,
+        "successes": 90,
+        "seconds": {
+          "count": 90,
+          "p50": 0.9073006999969948,
+          "p95": 1.2735270849996592
+        },
+        "completion_tokens": {
+          "count": 90,
+          "p50": 22.0,
+          "p95": 22.0
+        },
+        "compact_negative_count": 0,
+        "smoking_clips_hit": 10,
+        "fall_clips_hit": 10,
+        "adl_clips_false_positive": 3,
+        "adl_clips_any_unknown": 1,
+        "target_positive_calls": 60,
+        "target_positive_grounded_calls": 0,
+        "per_group_seconds": {
+          "fall": {
+            "count": 30,
+            "p50": 0.8863626499987731,
+            "p95": 1.2358708149993611
+          },
+          "smoking": {
+            "count": 30,
+            "p50": 0.9300494999988587,
+            "p95": 1.312488129996563
+          },
+          "adl": {
+            "count": 30,
+            "p50": 0.8957684999986668,
+            "p95": 1.199592714999744
+          }
+        },
+        "omitted_labels": 0,
+        "incomplete_label_calls": 0
+      },
+      "dual_events": {
+        "attempts": 90,
+        "successes": 90,
+        "seconds": {
+          "count": 90,
+          "p50": 0.9102156999979343,
+          "p95": 1.531093979997968
+        },
+        "completion_tokens": {
+          "count": 90,
+          "p50": 22.0,
+          "p95": 22.0
+        },
+        "compact_negative_count": 0,
+        "smoking_clips_hit": 10,
+        "fall_clips_hit": 10,
+        "adl_clips_false_positive": 3,
+        "adl_clips_any_unknown": 1,
+        "target_positive_calls": 60,
+        "target_positive_grounded_calls": 0,
+        "per_group_seconds": {
+          "fall": {
+            "count": 30,
+            "p50": 0.9041610500025854,
+            "p95": 1.3336289449965988
+          },
+          "smoking": {
+            "count": 30,
+            "p50": 0.9660375499988731,
+            "p95": 1.531093979997968
+          },
+          "adl": {
+            "count": 30,
+            "p50": 0.9139518499978294,
+            "p95": 1.6094350700026543
+          }
+        },
+        "omitted_labels": 0,
+        "incomplete_label_calls": 0
+      },
+      "dual_compact": {
+        "attempts": 90,
+        "successes": 90,
+        "seconds": {
+          "count": 90,
+          "p50": 2.504110700003366,
+          "p95": 3.369573180000225
+        },
+        "completion_tokens": {
+          "count": 90,
+          "p50": 222.0,
+          "p95": 268.75
+        },
+        "compact_negative_count": 0,
+        "smoking_clips_hit": 10,
+        "fall_clips_hit": 10,
+        "adl_clips_false_positive": 1,
+        "adl_clips_any_unknown": 7,
+        "target_positive_calls": 60,
+        "target_positive_grounded_calls": 57,
+        "per_group_seconds": {
+          "fall": {
+            "count": 30,
+            "p50": 1.9078165999999328,
+            "p95": 2.9426587750007456
+          },
+          "smoking": {
+            "count": 30,
+            "p50": 2.518553600002633,
+            "p95": 3.295753024997975
+          },
+          "adl": {
+            "count": 30,
+            "p50": 2.6087929000022996,
+            "p95": 4.061166470001989
+          }
+        },
+        "omitted_labels": 78,
+        "incomplete_label_calls": 26
+      }
+    },
+    "paired": {
+      "count": 90,
+      "information_first": 90,
+      "information_lead_seconds": {
+        "count": 90,
+        "p50": 1.5557247500000813,
+        "p95": 2.45280200499983
+      },
+      "events_slowdown_ratio": {
+        "count": 90,
+        "p50": 0.99048388828379,
+        "p95": 1.5919633545054874
+      },
+      "grounding_slowdown_ratio": {
+        "count": 90,
+        "p50": 1.01470449888497,
+        "p95": 1.398272711684515
+      },
+      "dispatch_skew_seconds": {
+        "count": 90,
+        "p50": 0.006227499998203712,
+        "p95": 0.011607690000892035
+      },
+      "any_decision_disagreements": 57,
+      "positive_negative_disagreements": 5
+    }
+  },
+  "gpu_stage": "pending_user_replacement_gpu",
+  "tests": {
+    "relevant_suite_passed": 151,
+    "after_final_metrics_fix_passed": 26
+  },
+  "audit": {
+    "payloads_reconstructed_and_identical": 455,
+    "same_images_all_routes": true,
+    "references_not_sent": true,
+    "source_default_full_mode_unchanged": true
+  }
+}

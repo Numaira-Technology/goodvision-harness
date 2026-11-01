@@ -5,6 +5,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const {payload} = require("./event_catalog.cjs");
+const catalogScript = new vm.Script(fs.readFileSync(path.join(__dirname,"../../src/goodvision_harness/assets/event_catalog.js"),"utf8"));
 
 const filename = path.join(__dirname, "../../src/goodvision_harness/dashboard.html");
 const html = fs.readFileSync(filename, "utf8");
@@ -60,13 +62,18 @@ function createDocument(features = [], {rejectInnerHTML = false} = {}) {
     return elements.get(id);
   };
   return {element, document: {
+    testFeatures: features,
     hidden: false, getElementById: element, createElement,
-    querySelectorAll: () => inputs,
+    querySelectorAll: selector => selector === "[data-event-presets]" ? [element("test-presets")] : inputs,
   }};
 }
 
 function runDashboard(context, setup) {
+  catalogScript.runInContext(context);
   handlers.runInContext(context);
+  context.testCatalog = payload();
+  vm.runInContext(`renderEventCatalog(testCatalog);
+    for(const input of featureInputs)input.checked=document.testFeatures.includes(input.dataset.feature);`, context);
   vm.runInContext(setup, context);
 }
 

@@ -330,7 +330,7 @@ class EventArchive:
         )
         records = []
         for event in scene.get("events", ()):
-            if event.get("event_label") not in {"smoking", "fall", "fight", "weapon"}:
+            if event.get("event_label") not in {"smoking", "fall", "fight", "weapon", "ppe_violation", "ground_litter"}:
                 continue
             record = {key: copy.deepcopy(event[key]) for key in keys if key in event}
             positives = [
@@ -363,7 +363,7 @@ class EventArchive:
             }
             for item in latest_transitions.values()
             if (item.get("type") in {"end", "retract"} or item.get("phase") == "ended")
-            and item.get("event_label") in {"smoking", "fall", "fight", "weapon"}
+            and item.get("event_label") in {"smoking", "fall", "fight", "weapon", "ppe_violation", "ground_litter"}
         ]
         if not records and not transitions:
             return True
@@ -1627,8 +1627,12 @@ class EventArchive:
                     for subject in record.get("subject_ids", ())
                 }
             )
-            if not subjects:
+            scene_scoped = record["event_label"] == "ground_litter"
+            if not subjects and not scene_scoped:
                 continue
+            if scene_scoped:
+                # Archive schema already supports a scene target identifier.
+                subjects = ["scene-ground-litter"]
             phase = record["phase"]
             dismissed = (
                 phase == "retracted" or record.get("review_outcome") == "unconfirmed"
@@ -1694,7 +1698,10 @@ class EventArchive:
                 if len(subjects) == 1
                 else "group:" + ":".join(subjects),
                 "subject_ids": subjects,
-                "subject_type": "person" if len(subjects) == 1 else "group",
+                "subject_type": (
+                    "scene" if scene_scoped else "person"
+                    if len(subjects) == 1 else "group"
+                ),
                 "event_label": record["event_label"],
                 "state": "ended" if ended else "active",
                 "status": "ended" if ended else "active",
@@ -1736,7 +1743,7 @@ class EventArchive:
                 if record.get("confidence") is not None
                 else previous["confidence"] if previous else 0.0,
                 "description": previous["description"] if previous else "",
-                "identity_state": "group"
+                "identity_state": "not_applicable" if scene_scoped else "group"
                 if len(subjects) > 1
                 else previous["identity_state"]
                 if previous

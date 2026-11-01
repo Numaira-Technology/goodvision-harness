@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.routing import APIRoute
 from starlette.routing import Match
 
+from .grounding import DETECTION_EVENT_LABELS
 from .privacy import public_safe_value
 
 log = logging.getLogger(__name__)
@@ -30,13 +31,16 @@ PREFIX = "/v1/fleet/cameras/{camera_id}"
 # Fixed routes precede variable event IDs. This is an allowlist, not a URL proxy.
 OUTPUT_PATHS = (
     "/status",
+    "/workflow/results",
+    "/workflow/summaries",
+    "/video/source/latest.jpg",
     "/results/latest",
     "/results/events",
     "/results/overall/latest",
     "/results/overall/events",
     *(
         f"/results/{feature}/{kind}"
-        for feature in ("fight", "smoking", "fall", "weapon", "stranger")
+        for feature in DETECTION_EVENT_LABELS
         for kind in ("latest", "events")
     ),
     "/rich-labels/latest",
@@ -54,6 +58,8 @@ OUTPUT_PATHS = (
     "/scene/history",
     "/scene/evidence",
     "/scene/evidence/{request_id}/{frame_sequence}.jpg",
+    "/scene/diagnostics",
+    "/scene/diagnostics/{request_id}/{frame_sequence}.jpg",
     "/events",
     "/events/stream",
     "/events/{event_id}/video",
@@ -76,6 +82,9 @@ _OUTPUT_RE = re.compile(
 )
 _FORWARD_HEADERS = {"range", "if-range", "last-event-id"}
 _RESPONSE_HEADERS = {
+    b"x-source-frame-sequence",
+    b"x-source-timestamp",
+    b"x-connection-id",
     b"content-type",
     b"content-length",
     b"content-range",

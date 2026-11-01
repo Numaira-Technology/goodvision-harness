@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const {test} = require("node:test");
+const {runDashboard}=require("./helpers/dashboard.cjs");
 
 class Element {
   constructor() {
@@ -36,7 +37,7 @@ function dashboard() {
   const document = {
     hidden: false,
     getElementById(id) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); },
-    querySelectorAll: () => inputs,
+    testFeatures: features, querySelectorAll: () => [],
     createElement: () => new Element(),
   };
   class Clock extends Date { static now() { return now; } }
@@ -58,7 +59,7 @@ function dashboard() {
   const html = fs.readFileSync(path.join(__dirname, "../src/goodvision_harness/dashboard.html"), "utf8");
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
   new vm.Script(script);
-  vm.runInContext(script.slice(0, script.indexOf("ui.defaultStreamUrl.oninput=")) + `
+  runDashboard(context, `
     state.running=true;state.sessionId="session-a";state.sessionFeatures=detectionEvents;
     state.gallery={ready:true};state.galleryLoading=false;
     globalThis.app={state,sceneView,sceneUi,acceptSceneSnapshot,renderScene,renderSceneDecision,
@@ -519,4 +520,23 @@ test("persistent native memory is distinguished from batch resets and still show
   assert.match(view.element("scene-summary").textContent, /分析落后画面 6\.3 秒/);
   assert.match(view.element("scene-summary").textContent, /当前会话保持人物编号/);
   assert.doesNotMatch(view.element("scene-summary").textContent, /片段之间人物重新编号/);
+});
+
+
+test("event scene polling pauses with its parent and status resumes it on return",async()=>{
+  const view=dashboard(),parent={page:"events",GoodvisionConsole:{currentPage:()=>parent.page}};
+  Object.assign(view.context,{GoodvisionDiagnostic:true,GoodvisionDiagnosticView:"events"});view.context.window.parent=parent;
+  view.app.startScenePolling();assert.equal(view.requests.length,1);
+  parent.page="settings";view.requests[0].resolve({ok:true,json:async()=>snapshot()});await settle();
+  assert.equal(view.app.sceneView.polling,false);assert.equal([...view.timers.values()].some(timer=>timer.delay===750),false);
+  await view.app.status();assert.equal(view.requests.length,1);
+  parent.page="events";const status=view.app.status();
+  view.requests[1].resolve({ok:true,json:async()=>({pipeline_state:"running",stream_session_id:"session-a",input_mode:"stream",features:["fight"],ready:true})});
+  await status;assert.equal(view.requests.filter(request=>request.url==="/v1/scene").length,2);
+  view.app.stopScenePolling();await settle();
+});
+
+test("managed main console never starts a second scene loop before fleet JS is ready",()=>{
+  const view=dashboard();view.context.GoodvisionConsoleManaged=true;view.app.startScenePolling();
+  assert.equal(view.requests.length,0);assert.equal(view.app.sceneView.polling,false);
 });

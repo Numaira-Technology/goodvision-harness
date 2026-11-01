@@ -1,4 +1,4 @@
-"""Start the CPU application, a standalone SAM server, or a standalone VLM server.
+"""Start a console gateway, GPU-host analysis, SAM, or VLM.
 
 Python 3.10+ standard library only. Modules can run on different machines.
 --dry-run prints a credential-free plan, without writing files or calling Docker.
@@ -20,8 +20,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 if __package__:
     from . import start_local_gpu as local
+    from .relay_bootstrap import valid_relay_key
 else:
     import start_local_gpu as local
+    from relay_bootstrap import valid_relay_key
 
 ROOT = Path(__file__).resolve().parents[1]
 QUEUE_SETTINGS = {
@@ -38,6 +40,7 @@ SETTINGS = (
         "TRACKING_EXECUTION_MODE",
         "INFERENCE_SERVER_URL",
         "INFERENCE_SERVER_MODEL",
+        "INFERENCE_SERVER_PROTOCOL",
         "TRACKING_SERVER_URL",
         "TRACKING_SERVER_CAPACITY",
         "TRACKING_SERVER_PROTOCOL",
@@ -48,11 +51,15 @@ SETTINGS = (
         "VLM_SERVER_PORT",
         "LOCAL_INFERENCE_GPU_ID",
         "PERCEPTION_METHOD",
+        "HARNESS_ANALYSIS_URL",
+        "HARNESS_RELAY_KEY",
+        "HARNESS_VIDEO_PULL_LOCATION",
     }
     | QUEUE_SETTINGS
 )
 COMPOSE_FILES = {
     "main": "compose.main-server.yaml",
+    "analysis": "compose.main-server.yaml",
     "sam": "compose.sam-server.yaml",
     "vlm": "compose.vlm-server.yaml",
 }
@@ -203,6 +210,11 @@ def main_environment(settings: Mapping[str, str], args) -> dict[str, str]:
     protocol = settings.get("TRACKING_SERVER_PROTOCOL", "legacy")
     if protocol not in {"legacy", "contour"}:
         raise LaunchError("TRACKING_SERVER_PROTOCOL must be legacy or contour")
+    inference_protocol = args.inference_protocol or settings.get(
+        "INFERENCE_SERVER_PROTOCOL", "compatible"
+    )
+    if inference_protocol not in {"compatible", "goodvision"}:
+        raise LaunchError("INFERENCE_SERVER_PROTOCOL must be compatible or goodvision")
     environment = {
         "HARNESS_FLEET_CAPACITY": str(streams),
         "HARNESS_FLEET_CAMERA_INDEX": "1",
@@ -215,6 +227,7 @@ def main_environment(settings: Mapping[str, str], args) -> dict[str, str]:
         "TRACKING_EXECUTION_MODE": tracking_mode,
         "INFERENCE_SERVER_URL": inference_url,
         "INFERENCE_SERVER_MODEL": model.strip(),
+        "INFERENCE_SERVER_PROTOCOL": inference_protocol,
         "TRACKING_SERVER_URL": tracking_url,
         "TRACKING_SERVER_CAPACITY": str(capacity),
         "TRACKING_SERVER_PROTOCOL": protocol,
@@ -239,11 +252,15 @@ def queue_environment(settings: Mapping[str, str], args) -> dict[str, str]:
     if args.sam_queue_policy is not None:
         environment["SAM31_QUEUE_POLICY"] = args.sam_queue_policy
     policy = environment.get("SAM31_QUEUE_POLICY")
-    if policy is not None and policy not in {"durable_ordered", "realtime_latest"}:
-        raise LaunchError("SAM31_QUEUE_POLICY must be durable_ordered|realtime_latest")
-    if policy == "realtime_latest":
+    if policy is not None and policy not in {
+        "durable_ordered", "realtime_latest", "latest_only",
+    }:
+        raise LaunchError(
+            "SAM31_QUEUE_POLICY must be latest_only|durable_ordered|realtime_latest"
+        )
+    if policy in {"realtime_latest", "latest_only"}:
         if environment.get("PERCEPTION_METHOD", "sam_live") != "sam_live":
-            raise LaunchError("realtime_latest requires PERCEPTION_METHOD=sam_live")
+            raise LaunchError(f"{policy} requires PERCEPTION_METHOD=sam_live")
         environment["PERCEPTION_METHOD"] = "sam_live"
     # Match the runtime's bounded settings; validate even when the policy is off,
     # because config loading also validates dormant experiment parameters.
@@ -264,6 +281,12 @@ def queue_environment(settings: Mapping[str, str], args) -> dict[str, str]:
         if key == "SAM31_REALTIME_APPEND_FRAMES" and value not in {1, 2, 4}:
             raise LaunchError("SAM31_REALTIME_APPEND_FRAMES must be 1, 2, or 4")
     return environment
+
+
+def gateway_shared_memory(streams: int) -> str:
+    """Budget 32 MiB slots, metadata and simultaneous replacement receivers."""
+    streams = positive_integer(streams, "--streams")
+    return f"{64 * (streams + 1)}m"
 
 
 def application_fleet(streams: int, *, root: Path = ROOT) -> str:
@@ -398,20 +421,25 @@ def compose_command(
     streams: int,
     fleet_file: Path | None,
     build: bool,
+    gateway: bool = False,
 ) -> list[str]:
     command = ["docker", "compose", "--project-directory", str(ROOT)]
     if env_file is not None:
         command.extend(["--env-file", str(env_file)])
-    command.extend(["-f", str(ROOT / COMPOSE_FILES[module])])
+    filename = "compose.analysis-gateway.yaml" if gateway else COMPOSE_FILES[module]
+    command.extend(["-f", str(ROOT / filename)])
     if fleet_file is not None:
         command.extend(["-f", str(fleet_file)])
     command.extend(["up", "--detach", "--wait", "--wait-timeout", "900"])
-    if build and module != "vlm":
+    if build:
         command.append("--build")
+    else:
+        command.append("--no-build")
     command.extend(
         ["harness", *(f"harness-{index:02d}" for index in range(2, streams + 1))]
-        if module == "main"
-        else [f"{module}-server"]
+        if module in {"main", "analysis"}
+        else ["vlm-server", "vlm-processing"] if module == "vlm"
+        else ["sam-server"]
     )
     return command
 
@@ -426,13 +454,20 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--no-build", action="store_true")
         command.add_argument("--bind", help="Host IP for the published service port")
         command.add_argument("--port", type=int)
-        if module in {"main", "sam"}:
+        if module in {"main", "analysis", "sam"}:
             command.add_argument("--streams", type=int, default=1)
-        if module == "main":
+        if module in {"main", "analysis"}:
+            command.add_argument(
+                "--analysis-server",
+                help=(
+                    "Full GPU-host Harness origin; explicitly enables the main "
+                    "gateway instead of local CPU analysis"
+                ),
+            )
             command.add_argument(
                 "--sam-queue-policy",
-                choices=("durable_ordered", "realtime_latest"),
-                help="Explicit queue override; realtime_latest is an opt-in experiment",
+                choices=("latest_only", "durable_ordered", "realtime_latest"),
+                help="Queue override; latest_only keeps two replaceable candidates",
             )
             command.add_argument(
                 "--tracking-fps",
@@ -452,6 +487,10 @@ def parser() -> argparse.ArgumentParser:
             )
             command.add_argument(
                 "--inference-model", help="Served model alias, default local-vision"
+            )
+            command.add_argument(
+                "--inference-protocol", choices=("compatible", "goodvision"),
+                help="compatible: direct API; goodvision: delegate VLM CPU processing",
             )
         else:
             command.add_argument(
@@ -475,8 +514,45 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         devices = []
         streams = getattr(args, "streams", 1)
-        if args.module == "main":
+        gateway = False
+        if args.module in {"main", "analysis"}:
             environment = main_environment(settings, args)
+            if args.module == "analysis":
+                environment["HARNESS_MANAGED_ANALYSIS"] = "true"
+            analysis_url = (
+                args.analysis_server if args.analysis_server is not None
+                else settings.get("HARNESS_ANALYSIS_URL", "")
+            )
+            if args.module == "main":
+                analysis_url = server_origin(analysis_url, "Analysis server")
+                if args.analysis_server is not None and not analysis_url:
+                    raise LaunchError(
+                        "Analysis server must be a non-empty HTTP(S) origin"
+                    )
+            # Tracking settings can also live in the existing analysis volumes.
+            # Only an explicit full analysis origin switches main to a gateway.
+            if args.module == "main" and analysis_url:
+                environment["HARNESS_ANALYSIS_URL"] = analysis_url
+                environment["HARNESS_GATEWAY_SHM_SIZE"] = gateway_shared_memory(streams)
+                gateway = True
+                key = settings.get("HARNESS_RELAY_KEY", "").strip()
+                if key and not valid_relay_key(key):
+                    raise LaunchError(
+                        "HARNESS_RELAY_KEY must contain 32-512 "
+                        "ASCII nonspace characters"
+                    )
+                if (
+                    not args.dry_run and not key
+                    and settings.get("HARNESS_VIDEO_PULL_LOCATION", "local") != "gpu"
+                ):
+                    raise LaunchError(
+                        "Local video ingress requires matching HARNESS_RELAY_KEY "
+                        "on the main gateway and analysis host"
+                    )
+            elif args.module == "analysis" and args.analysis_server:
+                raise LaunchError(
+                    "analysis runs on the GPU host; --analysis-server belongs to main",
+                )
         else:
             if args.gpu_count is not None:
                 if not args.dry_run or not 1 <= args.gpu_count <= 64:
@@ -492,7 +568,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             environment = worker_environment(args.module, settings, args, devices)
         fleet_file = (
             ROOT / ".goodvision" / "main-server-compose.yaml"
-            if args.module == "main"
+            if args.module in {"main", "analysis"} and not gateway
             else None
         )
         overlay = (
@@ -501,20 +577,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         command = compose_command(
             args.module,
             env_file=env_file if env_file.is_file() else None,
-            streams=streams,
+            streams=1 if gateway else streams,
             fleet_file=fleet_file,
             build=not args.no_build,
+            gateway=gateway,
         )
+        checks = []
+        if args.module == "vlm" and args.no_build:
+            compose = command[:command.index("up")]
+            checks.append([
+                *compose, "run", "--rm", "--no-deps", "--pull", "never", "-T",
+                "vlm-processing", "python", "-c",
+                local.runtime_check("local-vlm-processing", root=ROOT),
+            ])
         # Cloud and worker keys go directly from the existing environment to Compose.
         # They are never included in this plan or written to the generated overlay.
         print(
             json.dumps(
                 {
                     "module": args.module,
+                    "analysis_location": "gpu_host" if gateway else "this_host",
                     "devices": devices,
                     "environment": environment,
                     "command": command,
                     "fleet_overlay": overlay,
+                    "preflight_commands": checks,
                 },
                 indent=2,
             )
@@ -531,6 +618,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         process_environment = dict(os.environ)
         process_environment.update(environment)
         try:
+            for check in checks:
+                checked = subprocess.run(
+                    check, cwd=ROOT, env=process_environment, check=False,
+                    timeout=120,
+                )
+                if checked.returncode:
+                    raise LaunchError(
+                        "VLM CPU companion preflight failed; rebuild or import "
+                        "the image matching this source."
+                    )
             result = subprocess.run(
                 command, cwd=ROOT, env=process_environment, check=False
             )

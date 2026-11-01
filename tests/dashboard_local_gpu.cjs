@@ -3,19 +3,58 @@ const fs=require("node:fs");
 const path=require("node:path");
 const vm=require("node:vm");
 const {test}=require("node:test");
+const {createDocument,runDashboard}=require("./helpers/dashboard.cjs");
+const {payload:catalogPayload}=require("./helpers/event_catalog.cjs");
+
+test("analysis protocol defaults to compatible API and persists GoodVision independently",async()=>{
+  const view=dashboard({inference_mode:"server",tracking_mode:"legacy",
+    inference_server_url:"http://analysis:8094",inference_server_model:"vision"});
+  const protocol=view.element("inference-server-protocol");
+  assert.equal(protocol.value,"compatible");
+  protocol.value="goodvision";view.renderLocalGpuSettings();
+  assert.match(view.element("local-gpu-status").textContent,/待保存/);
+  await view.saveDeploymentSettings();
+  const payload=view.requests.at(-1).payload;
+  assert.equal(payload.inference_server_protocol,"goodvision");
+  assert.equal(payload.inference_server_url,"http://analysis:8094");
+  assert.equal(payload.inference_server_model,"vision");
+  assert.equal(payload.tracking_mode,"legacy");
+  assert.equal(Object.hasOwn(payload,"api_key"),false);
+  assert.equal(view.state.deployment.inference_server_protocol,"goodvision");
+  protocol.value="compatible";await view.loadDeploymentSettings(true);
+  assert.equal(protocol.value,"goodvision");
+});
+
+test("invalid analysis protocol is rejected and failed save preserves the draft",async()=>{
+  const view=dashboard({inference_mode:"server",inference_server_url:"http://analysis:8094"});
+  const protocol=view.element("inference-server-protocol");
+  protocol.value="invalid";await view.saveDeploymentSettings();
+  assert.equal(view.requests.length,0);assert.equal(protocol.focused,true);
+  protocol.value="goodvision";view.context.fail=true;await view.saveDeploymentSettings();
+  assert.equal(view.state.deployment.inference_server_protocol,undefined);
+  assert.equal(protocol.value,"goodvision");
+});
+
+test("analysis protocol locks with shared settings and survives route saves",async()=>{
+  const view=dashboard({inference_mode:"server",inference_server_protocol:"goodvision",
+    inference_server_url:"http://analysis:8094"});
+  view.context.GoodvisionFleet={extraBusy:()=>true};view.controls();
+  assert.equal(view.element("inference-server-protocol").disabled,true);
+  view.context.GoodvisionFleet={extraBusy:()=>false};
+  for(const mode of ["local","cloud"]){
+    view.element("inference-mode").value=mode;view.renderLocalGpuSettings();view.controls();
+    assert.equal(view.element("inference-server-fields").hidden,true);
+    await view.saveDeploymentSettings();
+    assert.equal(Object.hasOwn(view.requests.at(-1).payload,"inference_server_protocol"),false);
+    assert.equal(view.state.deployment.inference_server_protocol,"goodvision");
+  }
+});
 
 function dashboard(settings={}){
-  const elements=new Map(),requests=[],messages=[];
-  function element(id){
-    if(!elements.has(id))elements.set(id,{
-      value:"",textContent:"",className:"",style:{},checked:false,
-      querySelectorAll:()=>[],classList:{toggle(){}},replaceChildren(){},
-      scrollIntoView(){},focus(){this.focused=true},
-    });
-    return elements.get(id)
-  }
+  const requests=[],messages=[];
+  const {document,element}=createDocument(["smoking"]);
   const context=vm.createContext({
-    document:{getElementById:element,querySelectorAll:()=>[{checked:true,dataset:{feature:"smoking"}}]},
+    document,
     window:{isSecureContext:true},location:{hostname:"localhost"},URL,
     initial:{persistence_available:true,configured_stream:true,dry_run:false,
       local_inference_enabled:false,local_tracking_enabled:false,
@@ -30,12 +69,12 @@ function dashboard(settings={}){
         if(tracking_api_key)context.saved.tracking_key_present=true;
         if(clear_tracking_api_key)context.saved.tracking_key_present=false
       }
-      return {ok:true,json:async()=>({...context.saved})}
+      return {ok:true,json:async()=>({...context.saved,...catalogPayload()})}
     },
   });
   const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
   const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
-  vm.runInContext(script.slice(0,script.indexOf("ui.defaultStreamUrl.oninput="))+`
+  runDashboard(context,`
     state.info={api_key_present:false};state.gallery={ready:true};state.deployment={...initial};
     state.routes={can_probe:true,can_select:true,state:"idle"};globalThis.saved={...initial};
     reset=()=>{};connect=async()=>({send:capture});
@@ -106,6 +145,26 @@ test("cloud GPU selection saves without a local GPU and shows editable rental co
   assert.equal(view.requests.at(-1).payload.local_tracking_enabled,false);
   assert.match(view.html,/id="cloud-gpu-count"/);
   assert.match(view.html,/id="cloud-gpu-script"/);
+});
+
+test("SAM-only deployment allows local tracking while disabling the absent local VLM",async()=>{
+  const view=dashboard({local_gpu:{available:true,gpu_count:2,
+    tracking_device:0,tracking_available:true,inference_available:false}});
+  view.controls();
+  assert.equal(view.element("inference-mode-local").disabled,true);
+  assert.equal(view.element("tracking-mode-local").disabled,false);
+  view.element("tracking-mode").value="local";
+  view.renderLocalGpuSettings();
+  assert.match(view.element("local-gpu-status").textContent,/人物追踪 → GPU 0/);
+  assert.match(view.element("local-gpu-status").textContent,/大模型可使用云端 API/);
+  await view.saveDeploymentSettings();
+  assert.equal(view.requests.at(-1).payload.tracking_mode,"local");
+  assert.equal(view.requests.at(-1).payload.inference_mode,"cloud");
+  const count=view.requests.length;
+  view.element("inference-mode").value="local";
+  await view.saveDeploymentSettings();
+  assert.equal(view.requests.length,count);
+  assert.match(view.element("deployment-note").textContent,/服务未部署或不可用/);
 });
 
 test("one GPU is shared and two GPUs reserve the second for tracking and other work",()=>{

@@ -218,9 +218,7 @@ def test_binary_memory_result_keeps_detection_independent_from_known_matches(
     assert classification.matched_memory_ids == tuple(matched_memory_ids)
 
 
-def test_qwen_client_applies_the_memory_allowlist(monkeypatch) -> None:
-    monkeypatch.setenv("INFERENCE_PROVIDER", "aiclub")
-    monkeypatch.setenv("INFERENCE_MODEL", "")
+def test_qwen_client_applies_the_memory_allowlist() -> None:
     config = load_config(ROOT / "config.yaml")
     transport = _Transport(
         '{"detected":true,"confidence":0.9,"description":"match",'
@@ -237,7 +235,7 @@ def test_qwen_client_applies_the_memory_allowlist(monkeypatch) -> None:
     assert response.classification is None
     assert response.error is not None
     assert response.error == "analysis request failed"
-    assert config.inference.model == "qwen3.5-plus"
+    assert config.inference.model == "qwen/qwen3.5-35b-a3b:nitro"
     assert transport.calls[0]["model"] == config.inference.model
     assert transport.calls[0]["model"] != PUBLIC_MODEL_NAME
     assert transport.calls[0]["messages"][1]["content"][0]["text"].startswith(

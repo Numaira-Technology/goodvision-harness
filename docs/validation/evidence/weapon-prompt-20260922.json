@@ -1,0 +1,1168 @@
+{
+  "date": "2026-09-22",
+  "route": "C",
+  "requested_model": "qwen/qwen3-vl-30b-a3b-instruct:nitro",
+  "provider_pinned": false,
+  "video_sha256": "2ac7a0f3271c4c9937b1796bdc43526617d9b1715de9bdf15713d8d3d80dacb9",
+  "annotation": "video_samples/sample_video.annotation.json",
+  "paired_timeout_seconds": 25,
+  "realtime_timeout_seconds": 15,
+  "sensitivities": {
+    "fight": "standard",
+    "smoking": "high",
+    "fall": "standard",
+    "weapon": "standard"
+  },
+  "paired_results": [
+    {
+      "case": "smoking-control",
+      "variant": "old",
+      "endpoint": 1.7916666666666667,
+      "evidence": [
+        {
+          "sequence": 23,
+          "timestamp": 0.45833333333333337,
+          "jpeg_sha256": "91b14939144000ff675f7d023691476cb72116bf332fa28b904f86a979afbd8e"
+        },
+        {
+          "sequence": 44,
+          "timestamp": 0.9166666666666667,
+          "jpeg_sha256": "51a5e8314a02c3f96dd74143c543610b6a2bd2ac2d4adc0e54cac84630929932"
+        },
+        {
+          "sequence": 67,
+          "timestamp": 1.3333333333333335,
+          "jpeg_sha256": "63b5e12e568464b497d3ba5e60fec93088067f596744605d2c58c09d0937cedb"
+        },
+        {
+          "sequence": 89,
+          "timestamp": 1.7916666666666667,
+          "jpeg_sha256": "2aaa130455eb5f4af1962aa440eb3a90f161718182a77a6028c01998f84535b8"
+        }
+      ],
+      "verdicts": [
+        {
+          "label": "fight",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        },
+        {
+          "label": "smoking",
+          "detected": true,
+          "confidence": 0.8,
+          "grounding_issues": []
+        },
+        {
+          "label": "fall",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        },
+        {
+          "label": "weapon",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        }
+      ]
+    },
+    {
+      "case": "smoking-control",
+      "variant": "new",
+      "endpoint": 1.7916666666666667,
+      "evidence": [
+        {
+          "sequence": 23,
+          "timestamp": 0.45833333333333337,
+          "jpeg_sha256": "91b14939144000ff675f7d023691476cb72116bf332fa28b904f86a979afbd8e"
+        },
+        {
+          "sequence": 44,
+          "timestamp": 0.9166666666666667,
+          "jpeg_sha256": "51a5e8314a02c3f96dd74143c543610b6a2bd2ac2d4adc0e54cac84630929932"
+        },
+        {
+          "sequence": 67,
+          "timestamp": 1.3333333333333335,
+          "jpeg_sha256": "63b5e12e568464b497d3ba5e60fec93088067f596744605d2c58c09d0937cedb"
+        },
+        {
+          "sequence": 89,
+          "timestamp": 1.7916666666666667,
+          "jpeg_sha256": "2aaa130455eb5f4af1962aa440eb3a90f161718182a77a6028c01998f84535b8"
+        }
+      ],
+      "verdicts": [
+        {
+          "label": "fight",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        },
+        {
+          "label": "smoking",
+          "detected": true,
+          "confidence": 0.85,
+          "grounding_issues": []
+        },
+        {
+          "label": "fall",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        },
+        {
+          "label": "weapon",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        }
+      ]
+    },
+    {
+      "case": "fight-weapon-false-positive",
+      "variant": "old",
+      "endpoint": 10.958333333333334,
+      "evidence": [
+        {
+          "sequence": 479,
+          "timestamp": 9.658333333333333,
+          "jpeg_sha256": "bf76effae760ae92da6b2bdb38d2c76dfd4d953c13e9f561a582865e79525ed7"
+        },
+        {
+          "sequence": 503,
+          "timestamp": 10.100000000000001,
+          "jpeg_sha256": "f33a7bef3f303280cad6fb2f6e7219a6f4f212c8b8e85632e1f43dcc9910342f"
+        },
+        {
+          "sequence": 524,
+          "timestamp": 10.516666666666667,
+          "jpeg_sha256": "92195ffe06611e275e5128d2179e313bf9ebff27234d3730c153a6d2ada3ec19"
+        },
+        {
+          "sequence": 548,
+          "timestamp": 10.958333333333334,
+          "jpeg_sha256": "d7657c1d76e27fe59fec187d6eb5c4dc25af2ba9c35e1a25085e031e7f74a684"
+        }
+      ],
+      "verdicts": [
+        {
+          "label": "fight",
+          "detected": true,
+          "confidence": 0.9,
+          "grounding_issues": []
+        },
+        {
+          "label": "smoking",
+          "detected": false,
+          "confidence": 0.1,
+          "grounding_issues": []
+        },
+        {
+          "label": "fall",
+          "detected": false,
+          "confidence": 0.1,
+          "grounding_issues": []
+        },
+        {
+          "label": "weapon",
+          "detected": true,
+          "confidence": 0.85,
+          "grounding_issues": []
+        }
+      ]
+    },
+    {
+      "case": "fight-weapon-false-positive",
+      "variant": "new",
+      "endpoint": 10.958333333333334,
+      "evidence": [
+        {
+          "sequence": 479,
+          "timestamp": 9.658333333333333,
+          "jpeg_sha256": "bf76effae760ae92da6b2bdb38d2c76dfd4d953c13e9f561a582865e79525ed7"
+        },
+        {
+          "sequence": 503,
+          "timestamp": 10.100000000000001,
+          "jpeg_sha256": "f33a7bef3f303280cad6fb2f6e7219a6f4f212c8b8e85632e1f43dcc9910342f"
+        },
+        {
+          "sequence": 524,
+          "timestamp": 10.516666666666667,
+          "jpeg_sha256": "92195ffe06611e275e5128d2179e313bf9ebff27234d3730c153a6d2ada3ec19"
+        },
+        {
+          "sequence": 548,
+          "timestamp": 10.958333333333334,
+          "jpeg_sha256": "d7657c1d76e27fe59fec187d6eb5c4dc25af2ba9c35e1a25085e031e7f74a684"
+        }
+      ],
+      "verdicts": [
+        {
+          "label": "fight",
+          "detected": true,
+          "confidence": 0.9,
+          "grounding_issues": []
+        },
+        {
+          "label": "smoking",
+          "detected": false,
+          "confidence": 0.1,
+          "grounding_issues": []
+        },
+        {
+          "label": "fall",
+          "detected": false,
+          "confidence": 0.1,
+          "grounding_issues": []
+        },
+        {
+          "label": "weapon",
+          "detected": false,
+          "confidence": 0.1,
+          "grounding_issues": []
+        }
+      ]
+    },
+    {
+      "case": "fall-control",
+      "variant": "old",
+      "endpoint": 12.716666666666667,
+      "evidence": [
+        {
+          "sequence": 571,
+          "timestamp": 11.4,
+          "jpeg_sha256": "2b24d0ef140ea575336ca3d8d1d3ea4a7c08f5c98a9471dc68c05bd8e630c9ae"
+        },
+        {
+          "sequence": 595,
+          "timestamp": 11.850000000000001,
+          "jpeg_sha256": "71bbf4a7389eb7b32572fadc0c3888cc99b4fc514dacf5a279253a7316ed8ab7"
+        },
+        {
+          "sequence": 617,
+          "timestamp": 12.291666666666668,
+          "jpeg_sha256": "a6f72e70d4724bc07d05028e9c8bad980f14673f54050f69d61fd4a931ab7635"
+        },
+        {
+          "sequence": 641,
+          "timestamp": 12.716666666666667,
+          "jpeg_sha256": "101ca4ecf4d302bf3c1839266bb63e66e4d4521f6d893db54c8d4f647b5876f7"
+        }
+      ],
+      "verdicts": [
+        {
+          "label": "fight",
+          "detected": true,
+          "confidence": 0.9,
+          "grounding_issues": []
+        },
+        {
+          "label": "smoking",
+          "detected": false,
+          "confidence": 0.1,
+          "grounding_issues": []
+        },
+        {
+          "label": "fall",
+          "detected": true,
+          "confidence": 0.95,
+          "grounding_issues": []
+        },
+        {
+          "label": "weapon",
+          "detected": false,
+          "confidence": 0.1,
+          "grounding_issues": []
+        }
+      ]
+    },
+    {
+      "case": "fall-control",
+      "variant": "new",
+      "endpoint": 12.716666666666667,
+      "evidence": [
+        {
+          "sequence": 571,
+          "timestamp": 11.4,
+          "jpeg_sha256": "2b24d0ef140ea575336ca3d8d1d3ea4a7c08f5c98a9471dc68c05bd8e630c9ae"
+        },
+        {
+          "sequence": 595,
+          "timestamp": 11.850000000000001,
+          "jpeg_sha256": "71bbf4a7389eb7b32572fadc0c3888cc99b4fc514dacf5a279253a7316ed8ab7"
+        },
+        {
+          "sequence": 617,
+          "timestamp": 12.291666666666668,
+          "jpeg_sha256": "a6f72e70d4724bc07d05028e9c8bad980f14673f54050f69d61fd4a931ab7635"
+        },
+        {
+          "sequence": 641,
+          "timestamp": 12.716666666666667,
+          "jpeg_sha256": "101ca4ecf4d302bf3c1839266bb63e66e4d4521f6d893db54c8d4f647b5876f7"
+        }
+      ],
+      "verdicts": [
+        {
+          "label": "fight",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        },
+        {
+          "label": "smoking",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        },
+        {
+          "label": "fall",
+          "detected": true,
+          "confidence": 0.9,
+          "grounding_issues": []
+        },
+        {
+          "label": "weapon",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        }
+      ]
+    },
+    {
+      "case": "fall-false-positive",
+      "variant": "old",
+      "endpoint": 25.666666666666668,
+      "evidence": [
+        {
+          "sequence": 1231,
+          "timestamp": 24.333333333333336,
+          "jpeg_sha256": "f233e98ee127194505a77f99ddd165a0f487ea65bb6e820bae0df7886ec66a5d"
+        },
+        {
+          "sequence": 1252,
+          "timestamp": 24.758333333333336,
+          "jpeg_sha256": "b82ee25a219a8d0ab153cc4106b1cb7220fdb3d0f46f6edac8595a6660260cc5"
+        },
+        {
+          "sequence": 1270,
+          "timestamp": 25.200000000000003,
+          "jpeg_sha256": "5aaa2df60e8502f5fdff0fbad7a27bf25bd8a61cd50d940ee61939bfa3fedd29"
+        },
+        {
+          "sequence": 1292,
+          "timestamp": 25.666666666666668,
+          "jpeg_sha256": "dba5658c04ee700afc182b07b14fca939b46705146b83442bc4c4f126453c888"
+        }
+      ],
+      "verdicts": [
+        {
+          "label": "fight",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        },
+        {
+          "label": "smoking",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": [
+            "unlocalized_event"
+          ]
+        },
+        {
+          "label": "fall",
+          "detected": true,
+          "confidence": 0.9,
+          "grounding_issues": []
+        },
+        {
+          "label": "weapon",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": [
+            "unlocalized_event"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "fall-false-positive",
+      "variant": "new",
+      "endpoint": 25.666666666666668,
+      "evidence": [
+        {
+          "sequence": 1231,
+          "timestamp": 24.333333333333336,
+          "jpeg_sha256": "f233e98ee127194505a77f99ddd165a0f487ea65bb6e820bae0df7886ec66a5d"
+        },
+        {
+          "sequence": 1252,
+          "timestamp": 24.758333333333336,
+          "jpeg_sha256": "b82ee25a219a8d0ab153cc4106b1cb7220fdb3d0f46f6edac8595a6660260cc5"
+        },
+        {
+          "sequence": 1270,
+          "timestamp": 25.200000000000003,
+          "jpeg_sha256": "5aaa2df60e8502f5fdff0fbad7a27bf25bd8a61cd50d940ee61939bfa3fedd29"
+        },
+        {
+          "sequence": 1292,
+          "timestamp": 25.666666666666668,
+          "jpeg_sha256": "dba5658c04ee700afc182b07b14fca939b46705146b83442bc4c4f126453c888"
+        }
+      ],
+      "verdicts": [
+        {
+          "label": "fight",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        },
+        {
+          "label": "smoking",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": [
+            "unlocalized_event"
+          ]
+        },
+        {
+          "label": "fall",
+          "detected": true,
+          "confidence": 0.9,
+          "grounding_issues": []
+        },
+        {
+          "label": "weapon",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": [
+            "unlocalized_event"
+          ]
+        }
+      ]
+    },
+    {
+      "case": "weapon-handling-false-positive",
+      "variant": "old",
+      "endpoint": 48.23166666666667,
+      "evidence": [
+        {
+          "sequence": 2351,
+          "timestamp": 46.95666666666667,
+          "jpeg_sha256": "ff4f2baec70fc83692b68fe8ea0417fa0db0550a9edc53e4e239abdfe612bdd9"
+        },
+        {
+          "sequence": 2372,
+          "timestamp": 47.39833333333333,
+          "jpeg_sha256": "8d96e9de8d4c0fc2b91d984aad96264e30dfe50990d27ece6675308e1e5b5787"
+        },
+        {
+          "sequence": 2393,
+          "timestamp": 47.815000000000005,
+          "jpeg_sha256": "85ca63269422bdc6b492ae4384a557c69f4e2c5500c980b08a7915257b4bfa84"
+        },
+        {
+          "sequence": 2411,
+          "timestamp": 48.23166666666667,
+          "jpeg_sha256": "e3230da697f6c1acae9dc8ee7c214a558970ba1c5a06cb7e2524f5ef120fd6bc"
+        }
+      ],
+      "verdicts": [
+        {
+          "label": "fight",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        },
+        {
+          "label": "smoking",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": [
+            "unlocalized_event"
+          ]
+        },
+        {
+          "label": "fall",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": [
+            "unlocalized_event"
+          ]
+        },
+        {
+          "label": "weapon",
+          "detected": true,
+          "confidence": 0.85,
+          "grounding_issues": []
+        }
+      ]
+    },
+    {
+      "case": "weapon-handling-false-positive",
+      "variant": "new",
+      "endpoint": 48.23166666666667,
+      "evidence": [
+        {
+          "sequence": 2351,
+          "timestamp": 46.95666666666667,
+          "jpeg_sha256": "ff4f2baec70fc83692b68fe8ea0417fa0db0550a9edc53e4e239abdfe612bdd9"
+        },
+        {
+          "sequence": 2372,
+          "timestamp": 47.39833333333333,
+          "jpeg_sha256": "8d96e9de8d4c0fc2b91d984aad96264e30dfe50990d27ece6675308e1e5b5787"
+        },
+        {
+          "sequence": 2393,
+          "timestamp": 47.815000000000005,
+          "jpeg_sha256": "85ca63269422bdc6b492ae4384a557c69f4e2c5500c980b08a7915257b4bfa84"
+        },
+        {
+          "sequence": 2411,
+          "timestamp": 48.23166666666667,
+          "jpeg_sha256": "e3230da697f6c1acae9dc8ee7c214a558970ba1c5a06cb7e2524f5ef120fd6bc"
+        }
+      ],
+      "verdicts": [
+        {
+          "label": "fight",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        },
+        {
+          "label": "smoking",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": [
+            "unlocalized_event"
+          ]
+        },
+        {
+          "label": "fall",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": [
+            "unlocalized_event"
+          ]
+        },
+        {
+          "label": "weapon",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        }
+      ]
+    },
+    {
+      "case": "ordinary-bend-control",
+      "variant": "old",
+      "endpoint": 53.02333333333333,
+      "evidence": [
+        {
+          "sequence": 2576,
+          "timestamp": 51.690000000000005,
+          "jpeg_sha256": "31d142785a12d40b926ed158ebab0bf5e0056d2a13ce84edc57013f8d344f059"
+        },
+        {
+          "sequence": 2596,
+          "timestamp": 52.15666666666667,
+          "jpeg_sha256": "8f7ff4975c3cc8bdec5eb7665c287a70d71fa52da790d1f7844143f3a04f375a"
+        },
+        {
+          "sequence": 2618,
+          "timestamp": 52.57333333333334,
+          "jpeg_sha256": "a8d586b66a567be7df90bb66e059ae1dad79a3c471f21e1c4d0d076c4357aa7c"
+        },
+        {
+          "sequence": 2639,
+          "timestamp": 53.02333333333333,
+          "jpeg_sha256": "c30b449a43b25bf1c015b20b78893d567f7d167efbd6e4f5077ad743b56c6301"
+        }
+      ],
+      "verdicts": [
+        {
+          "label": "fight",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        },
+        {
+          "label": "smoking",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        },
+        {
+          "label": "fall",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        },
+        {
+          "label": "weapon",
+          "detected": false,
+          "confidence": null,
+          "grounding_issues": []
+        }
+      ]
+    },
+    {
+      "case": "ordinary-bend-control",
+      "variant": "new",
+      "endpoint": 53.02333333333333,
+      "evidence": [
+        {
+          "sequence": 2576,
+          "timestamp": 51.690000000000005,
+          "jpeg_sha256": "31d142785a12d40b926ed158ebab0bf5e0056d2a13ce84edc57013f8d344f059"
+        },
+        {
+          "sequence": 2596,
+          "timestamp": 52.15666666666667,
+          "jpeg_sha256": "8f7ff4975c3cc8bdec5eb7665c287a70d71fa52da790d1f7844143f3a04f375a"
+        },
+        {
+          "sequence": 2618,
+          "timestamp": 52.57333333333334,
+          "jpeg_sha256": "a8d586b66a567be7df90bb66e059ae1dad79a3c471f21e1c4d0d076c4357aa7c"
+        },
+        {
+          "sequence": 2639,
+          "timestamp": 53.02333333333333,
+          "jpeg_sha256": "c30b449a43b25bf1c015b20b78893d567f7d167efbd6e4f5077ad743b56c6301"
+        }
+      ],
+      "error_type": "ModelAPIError"
+    }
+  ],
+  "runs": {
+    "full-video-1280": {
+      "session_id": "354602aa-d03a-4987-9a39-629dafe5f98d",
+      "sent_frames": 767,
+      "frame_ack_states": {
+        "True": 767
+      },
+      "report_states": {
+        "failed": 9,
+        "completed": 11
+      },
+      "failure_codes": {
+        "timeout": 9
+      },
+      "report_count": 20,
+      "published_report_count": 20,
+      "common_stream_matching_messages": 20,
+      "weapon_positive_reports": 0,
+      "positive_reports": [],
+      "report_windows": [
+        {
+          "pts": 0.9166666666666667,
+          "evidence_pts": [
+            0.0,
+            0.45833333333333337,
+            0.9166666666666667
+          ],
+          "state": "failed"
+        },
+        {
+          "pts": 1.7916666666666667,
+          "evidence_pts": [
+            0.45833333333333337,
+            0.9166666666666667,
+            1.3333333333333335,
+            1.7916666666666667
+          ],
+          "state": "failed"
+        },
+        {
+          "pts": 2.6833333333333336,
+          "evidence_pts": [
+            1.3333333333333335,
+            1.7916666666666667,
+            2.2333333333333334,
+            2.6833333333333336
+          ],
+          "state": "failed"
+        },
+        {
+          "pts": 3.516666666666667,
+          "evidence_pts": [
+            2.2333333333333334,
+            2.6833333333333336,
+            3.1166666666666667,
+            3.516666666666667
+          ],
+          "state": "failed"
+        },
+        {
+          "pts": 16.1,
+          "evidence_pts": [
+            14.816666666666668,
+            15.266666666666667,
+            15.683333333333334,
+            16.1
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 16.983333333333334,
+          "evidence_pts": [
+            15.683333333333334,
+            16.1,
+            16.55,
+            16.983333333333334
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 17.85,
+          "evidence_pts": [
+            16.55,
+            16.983333333333334,
+            17.400000000000002,
+            17.85
+          ],
+          "state": "failed"
+        },
+        {
+          "pts": 18.71666666666667,
+          "evidence_pts": [
+            17.400000000000002,
+            17.85,
+            18.291666666666668,
+            18.71666666666667
+          ],
+          "state": "failed"
+        },
+        {
+          "pts": 26.1,
+          "evidence_pts": [
+            24.758333333333336,
+            25.200000000000003,
+            25.666666666666668,
+            26.1
+          ],
+          "state": "failed"
+        },
+        {
+          "pts": 29.55666666666667,
+          "evidence_pts": [
+            28.28166666666667,
+            28.715000000000003,
+            29.148333333333333,
+            29.55666666666667
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 32.665,
+          "evidence_pts": [
+            31.315,
+            31.748333333333335,
+            32.19833333333334,
+            32.665
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 33.54833333333333,
+          "evidence_pts": [
+            32.19833333333334,
+            32.665,
+            33.098333333333336,
+            33.54833333333333
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 41.35666666666667,
+          "evidence_pts": [
+            40.09,
+            40.52333333333333,
+            40.95666666666667,
+            41.35666666666667
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 42.215,
+          "evidence_pts": [
+            40.95666666666667,
+            41.35666666666667,
+            41.781666666666666,
+            42.215
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 43.05666666666667,
+          "evidence_pts": [
+            41.781666666666666,
+            42.215,
+            42.615,
+            43.05666666666667
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 45.215,
+          "evidence_pts": [
+            43.93166666666667,
+            44.33166666666667,
+            44.790000000000006,
+            45.215
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 51.25666666666667,
+          "evidence_pts": [
+            49.99,
+            50.39833333333333,
+            50.83166666666667,
+            51.25666666666667
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 52.15666666666667,
+          "evidence_pts": [
+            50.83166666666667,
+            51.25666666666667,
+            51.690000000000005,
+            52.15666666666667
+          ],
+          "state": "failed"
+        },
+        {
+          "pts": 53.02333333333333,
+          "evidence_pts": [
+            51.690000000000005,
+            52.15666666666667,
+            52.57333333333334,
+            53.02333333333333
+          ],
+          "state": "failed"
+        },
+        {
+          "pts": 53.93166666666667,
+          "evidence_pts": [
+            52.57333333333334,
+            53.02333333333333,
+            53.498333333333335,
+            53.93166666666667
+          ],
+          "state": "completed"
+        }
+      ],
+      "live_frames_received": 748,
+      "annotated_frames_received": 736,
+      "publish_to_receive_median_seconds": 0.009437918663024902,
+      "person_tracking_enabled": false,
+      "rich_labeling_enabled": false,
+      "face_result_count": 0,
+      "observation_alert_count": 0
+    },
+    "full-video-repeat": {
+      "session_id": "808764ed-757b-4831-8dd6-2848f9c60269",
+      "sent_frames": 767,
+      "frame_ack_states": {
+        "True": 767
+      },
+      "report_states": {
+        "failed": 5,
+        "completed": 15
+      },
+      "failure_codes": {
+        "timeout": 5
+      },
+      "report_count": 20,
+      "published_report_count": 20,
+      "common_stream_matching_messages": 20,
+      "weapon_positive_reports": 0,
+      "positive_reports": [
+        {
+          "pts": 1.7916666666666667,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 2.6833333333333336,
+          "labels": [
+            "smoking"
+          ]
+        },
+        {
+          "pts": 3.516666666666667,
+          "labels": [
+            "smoking"
+          ]
+        }
+      ],
+      "report_windows": [
+        {
+          "pts": 0.9166666666666667,
+          "evidence_pts": [
+            0.0,
+            0.45833333333333337,
+            0.9166666666666667
+          ],
+          "state": "failed"
+        },
+        {
+          "pts": 1.7916666666666667,
+          "evidence_pts": [
+            0.45833333333333337,
+            0.9166666666666667,
+            1.3333333333333335,
+            1.7916666666666667
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 2.6833333333333336,
+          "evidence_pts": [
+            1.3333333333333335,
+            1.7916666666666667,
+            2.2333333333333334,
+            2.6833333333333336
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 3.516666666666667,
+          "evidence_pts": [
+            2.2333333333333334,
+            2.6833333333333336,
+            3.1166666666666667,
+            3.516666666666667
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 16.1,
+          "evidence_pts": [
+            14.816666666666668,
+            15.266666666666667,
+            15.683333333333334,
+            16.1
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 16.983333333333334,
+          "evidence_pts": [
+            15.683333333333334,
+            16.1,
+            16.55,
+            16.983333333333334
+          ],
+          "state": "failed"
+        },
+        {
+          "pts": 17.85,
+          "evidence_pts": [
+            16.55,
+            16.983333333333334,
+            17.400000000000002,
+            17.85
+          ],
+          "state": "failed"
+        },
+        {
+          "pts": 18.71666666666667,
+          "evidence_pts": [
+            17.400000000000002,
+            17.85,
+            18.291666666666668,
+            18.71666666666667
+          ],
+          "state": "failed"
+        },
+        {
+          "pts": 25.200000000000003,
+          "evidence_pts": [
+            23.875,
+            24.333333333333336,
+            24.758333333333336,
+            25.200000000000003
+          ],
+          "state": "failed"
+        },
+        {
+          "pts": 31.748333333333335,
+          "evidence_pts": [
+            30.415000000000003,
+            30.85666666666667,
+            31.315,
+            31.748333333333335
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 32.665,
+          "evidence_pts": [
+            31.315,
+            31.748333333333335,
+            32.19833333333334,
+            32.665
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 33.54833333333333,
+          "evidence_pts": [
+            32.19833333333334,
+            32.665,
+            33.098333333333336,
+            33.54833333333333
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 40.09,
+          "evidence_pts": [
+            38.815000000000005,
+            39.24,
+            39.656666666666666,
+            40.09
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 43.05666666666667,
+          "evidence_pts": [
+            41.781666666666666,
+            42.215,
+            42.615,
+            43.05666666666667
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 43.93166666666667,
+          "evidence_pts": [
+            42.615,
+            43.05666666666667,
+            43.49,
+            43.93166666666667
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 44.790000000000006,
+          "evidence_pts": [
+            43.49,
+            43.93166666666667,
+            44.33166666666667,
+            44.790000000000006
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 48.656666666666666,
+          "evidence_pts": [
+            47.39833333333333,
+            47.815000000000005,
+            48.23166666666667,
+            48.656666666666666
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 51.25666666666667,
+          "evidence_pts": [
+            49.99,
+            50.39833333333333,
+            50.83166666666667,
+            51.25666666666667
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 54.79833333333334,
+          "evidence_pts": [
+            53.498333333333335,
+            53.93166666666667,
+            54.365,
+            54.79833333333334
+          ],
+          "state": "completed"
+        },
+        {
+          "pts": 55.65666666666667,
+          "evidence_pts": [
+            54.365,
+            54.79833333333334,
+            55.223333333333336,
+            55.65666666666667
+          ],
+          "state": "completed"
+        }
+      ],
+      "live_frames_received": 746,
+      "annotated_frames_received": 733,
+      "publish_to_receive_median_seconds": 0.010864615440368652,
+      "person_tracking_enabled": false,
+      "rich_labeling_enabled": false,
+      "face_result_count": 0,
+      "observation_alert_count": 3
+    }
+  },
+  "audits": {
+    "attempts": 52,
+    "responses_with_id": 37,
+    "response_providers": {
+      "DeepInfra": 36,
+      "Alibaba": 1
+    },
+    "known_response_cost_usd": 0.01443026,
+    "response_ids": [
+      "gen-1790008233-tw53mhDpPhWyHvOK4y6C",
+      "gen-1790008233-uloO2lrImqYL2Fg9ufAI",
+      "gen-1790008240-mM6issu58VuXKouB0aiA",
+      "gen-1790008240-IC3QGcEkQHnlmO2BcR52",
+      "gen-1790008250-mNo3t4FYSQQS2a5nLbpN",
+      "gen-1790008250-jFNoGOxb4yFRxK3tZNI5",
+      "gen-1790008257-bi6zcPEnzAaErqD3c8ae",
+      "gen-1790008257-HlCd1fQY8BNnfo6uEAno",
+      "gen-1790008266-zu9kNJbniRUGmYhZaKnO",
+      "gen-1790008266-qcxrPGiUr2G38Y1btVyZ",
+      "gen-1790008279-xUnkwc0cef78WSuW0huU",
+      "gen-1790008420-WURcuCzOT0wlYHaxjzCP",
+      "gen-1790008420-CCPe5laEmiLReadLzodN",
+      "gen-1790008433-SRpI2qplGzui19NUOI9L",
+      "gen-1790008436-OBSLRkC20lIzoiX6w30E",
+      "gen-1790008437-p6fZEQAcYBAqvnu8SgMa",
+      "gen-1790008446-fk37s75UEGoJeQUL6k1Z",
+      "gen-1790008445-15MbjWFGJFj5wWAslTCP",
+      "gen-1790008444-mhPIg6dxdPlPdEDYP1Gh",
+      "gen-1790008448-znUe48Kt5Z2rjfRzQ5uf",
+      "gen-1790008455-yQTRsYPJsDacjZRdw7N2",
+      "gen-1790008457-VXt4PpLs5BAqTPTcJ5Sx",
+      "gen-1790008500-fDxFU2zijYfLGsQ9IE2w",
+      "gen-1790008501-R0kKoij2iddPiXq3Pnnn",
+      "gen-1790008502-1a62DHKjHoCiSCNWieEm",
+      "gen-1790008514-MBP8NHYWQFl9YBwnKn5d",
+      "gen-1790008531-lBiUV0qBM4cYkG7M6Unq",
+      "gen-1790008530-q6zzot4wVqgAF4ClD2lK",
+      "gen-1790008532-L8o0P1dgLvPvYOqLgDZt",
+      "gen-1790008539-rZsx8RqaYOZxl9UklOaI",
+      "gen-1790008541-lkIPoeQZTHdeDsAx9H4E",
+      "gen-1790008543-VbYFiqggxkcluzlbyDnB",
+      "gen-1790008542-EY85KcM3ASKL3lFoHfEv",
+      "gen-1790008547-vl6dc9OObLuPuayDwrDG",
+      "gen-1790008553-niU7Wy8ULJb80kwXYPRu",
+      "gen-1790008550-z2c1lJ8da1M4weyRnL9K",
+      "gen-1790008554-sW7n00ZCM5hpg3iwtjKf"
+    ]
+  }
+}

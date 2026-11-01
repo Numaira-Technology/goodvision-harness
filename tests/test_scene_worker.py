@@ -298,6 +298,27 @@ def test_invalid_jpeg_is_failed_before_inspector_is_called():
         worker.close()
 
 
+def test_delegated_worker_skips_pixel_decode_but_checks_job_metadata(monkeypatch):
+    def forbidden(_jpeg):
+        raise AssertionError("pixel validation belongs to the companion")
+
+    monkeypatch.setattr(scene_worker, "_read_image", forbidden)
+    valid = _job("valid")
+    invalid = replace(_job("invalid"), stream_session_id="wrong-session")
+    runtime, inspector = Runtime((valid, invalid)), Inspector()
+    worker = SceneInspectionWorker(
+        runtime, inspector, validate_source_images=False,
+    )
+    worker.start()
+    try:
+        _await(lambda: len(runtime.completions) == 2)
+        assert inspector.calls == [valid]
+        assert runtime.completions[0][2] is True
+        assert runtime.completions[1][2] is False
+    finally:
+        worker.close()
+
+
 def test_callback_error_does_not_stop_next_inspection_or_expose_exception():
     def update():
         raise RuntimeError("SECRET callback")

@@ -1,0 +1,44 @@
+# Rent a GPU and run the YOLO / RF-DETR detector rich-label worker, SAM-style.
+#
+#   DETECTOR_MODEL=yolo26-s docker compose -f compose.yaml \
+#     -f compose.detector-remote.yaml up --build detector-remote
+#
+# Wait for "Detector ready", then point the harness rich-label backend at it:
+#   RICH_LABEL_BACKEND=paddle RICH_LABEL_ENDPOINT=http://127.0.0.1:8093/v1/labels
+# DETECTOR_MODEL picks the model: yolo26-s | yolov8-m | rfdetr-l.
+# Unlike SAM there is no HF_TOKEN / checkpoint download (weights auto-fetch).
+services:
+  detector-remote:
+    build:
+      context: .
+      target: detector-remote
+    image: goodvision-detector-remote:controller
+    init: true
+    # Restarting this service creates a new paid instance.
+    restart: "no"
+    environment:
+      VAST_API_KEY: "${VAST_API_KEY:?Set your Vast team API key in .env}"
+      SAM_SSH_KEY: /run/secrets/sam_ssh_key
+      SAM_GPU_NAME: "${SAM_GPU_NAME:-RTX_4090}"
+      SAM_DISK_GB: "${SAM_DISK_GB:-50}"
+      SAM_GEOLOCATION: "${SAM_GEOLOCATION:-=US}"
+      SAM_OFFER_ORDER: "${SAM_OFFER_ORDER:-dph_total}"
+      DETECTOR_MODEL: "${DETECTOR_MODEL:-yolo26-s}"
+    volumes:
+      - type: bind
+        source: "${SAM_SSH_KEY:?Set the absolute SSH private-key path in .env}"
+        target: /run/secrets/sam_ssh_key
+        read_only: true
+        bind:
+          create_host_path: false
+    # Publish the tunnel to the host so the harness reaches the worker locally.
+    ports:
+      - "127.0.0.1:8093:8093"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    stop_grace_period: 90s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file

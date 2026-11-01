@@ -1,0 +1,8 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+numpy>=1.26,<3
+opencv-python-headless>=4.10,<5
+# Detector engines (GPU). ultralytics covers YOLOv8 + YOLO26; rfdetr covers RF-DETR.
+ultralytics>=8.3,<9
+rfdetr>=1.0
+torch>=2.1

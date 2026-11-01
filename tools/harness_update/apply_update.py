@@ -348,8 +348,9 @@ if __name__ == "__main__":
     parser.add_argument("--verification-base-id")
     parser.add_argument("--installation", type=Path)
     parser.add_argument("--containers", help="Comma-separated exact container names")
+    parser.add_argument("--manifest", type=Path, default=Path("/update/manifest.json"))
     args = parser.parse_args()
-    manifest = json.loads(Path("/update/manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     try:
         upgrade(
             Engine(),

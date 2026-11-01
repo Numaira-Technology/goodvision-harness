@@ -13,7 +13,7 @@ Windows PowerShell 5.1 会逐个检查已知底版镜像，避免多镜像数组
 
 更新使用已安装镜像的依赖和模型，无需下载。包含完整受版本管理的应用代码、浏览器资源和许可证，不含个人数据、访问密钥、测试视频或模型权重。
 
-支持原 Windows 20260919 安装、Lemon 已核对镜像 ID 的 diagnostics2 安装、scene-results 20260919、本机 diagnostics1、single-video1、cloud-health1，以及从已验证底版连续升级的 cloud-health2–7。请保留原底版镜像（更新器自动保留的 goodvision-harness-update-base 镜像），供离线核验和运行检查器。更新前校验镜像来源、发布文件和包内文件，并校验原 Windows 安装的启动器元数据；未知、文件不匹配或混合版本不会修改。名字包含 `-before-` 的历史备份容器不参与更新。多个安装可运行 `update_harness.ps1 -Project 项目名` 指定。
+支持 20260923-full1 完整交付底版、原 Windows 20260919 安装、Lemon 已核对镜像 ID 的 diagnostics2 安装、scene-results 20260919、本机 diagnostics1、single-video1、cloud-health1，以及从已验证底版连续升级的 cloud-health2–7。请保留原底版镜像（更新器自动保留的 goodvision-harness-update-base 镜像），供离线核验和运行检查器。更新前校验镜像来源、发布文件和包内文件，并校验原 Windows 安装的启动器元数据；未知、文件不匹配或混合版本不会修改。名字包含 `-before-` 的历史备份容器不参与更新。多个安装可运行 `update_harness.ps1 -Project 项目名` 指定。
 
 如需精确选择其他已有容器，可使用 `update_harness.ps1 -Containers "主容器名,第二路容器名"`；加 `-CheckOnly` 只检查。所有指定容器都必须存在、属于同一部署且版本相同，否则不会修改任何容器。
 
@@ -22,6 +22,17 @@ Windows PowerShell 5.1 会逐个检查已知底版镜像，避免多镜像数组
 `update-state` 仅保存安装状态和容器标识，不含密钥。只更新所选 GoodVision 主程序，不清理其他 Docker 项目。仅部署 Contour 的 GPU 服务器无需安装本包。
 
 这是现有安装的主程序升级包，不能用于空白电脑全新安装。不包含 Docker 基础镜像、模型权重或 Vast 控制器镜像；不会租用服务器、重启现有 Vast 租赁容器或启动分析。Vast 控制器本身仍使用原有已更新镜像。
+
+## 新的 Windows 双击更新包
+
+收到含 **`Update.exe`** 的新更新 ZIP 时，保持 Docker Desktop 运行，完整解压后双击
+`Update.exe`，在窗口中等待进度和更新结果。窗口自动找到已安装的主程序，停止本机分析、
+安装随包镜像，并在完成后恢复原自动启动设置；存在多个安装时只需在窗口中选择。
+客户无需 Git、Python、终端命令或镜像构建，模型、数据和设置保留。
+
+本目录的 Windows 离线程序更新包、底版校验、打包和客户入口保持原流程；
+新工具不改变这些入口，也不取代原包的发布与验收要求。完整步骤见
+[Docker 更新指南](../../docs/guides/docker-updates.md)。
 
 ## 维护者打包
 

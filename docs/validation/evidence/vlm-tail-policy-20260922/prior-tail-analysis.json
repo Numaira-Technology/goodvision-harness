@@ -1,0 +1,1507 @@
+{
+  "groups": {
+    "warmup/grounding/all": {
+      "positive": {
+        "n": 47,
+        "http": {
+          "n": 47,
+          "median": 2.859887749000336,
+          "p95": 5.192303691001143,
+          "max": 5.333969008992426
+        },
+        "generation": {
+          "n": 47,
+          "median": 2.1,
+          "p95": 2.562,
+          "max": 3.576
+        },
+        "tokens": {
+          "n": 47,
+          "median": 219,
+          "p95": 246,
+          "max": 284
+        },
+        "http_gt3": 18,
+        "http_gt5": 3,
+        "reorder": {
+          "n": 47,
+          "median": 0.003325413999846205,
+          "p95": 0.008484343998134136,
+          "max": 0.02955027500865981
+        }
+      },
+      "negative": {
+        "n": 147,
+        "http": {
+          "n": 147,
+          "median": 2.66234677900502,
+          "p95": 4.338572945998749,
+          "max": 8.785108789990772
+        },
+        "generation": {
+          "n": 147,
+          "median": 2.021,
+          "p95": 2.994,
+          "max": 3.947
+        },
+        "tokens": {
+          "n": 147,
+          "median": 218,
+          "p95": 280,
+          "max": 289
+        },
+        "http_gt3": 42,
+        "http_gt5": 2,
+        "reorder": {
+          "n": 147,
+          "median": 0.005120335990795866,
+          "p95": 0.8302266289974796,
+          "max": 3.023469774998375
+        }
+      },
+      "unknown": {
+        "n": 11,
+        "http": {
+          "n": 11,
+          "median": 2.6709389890020248,
+          "p95": 4.246776410000166,
+          "max": 4.246776410000166
+        },
+        "generation": {
+          "n": 11,
+          "median": 2.056,
+          "p95": 2.721,
+          "max": 2.721
+        },
+        "tokens": {
+          "n": 11,
+          "median": 215,
+          "p95": 283,
+          "max": 283
+        },
+        "http_gt3": 3,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 11,
+          "median": 0.004023055997095071,
+          "p95": 0.8441777330008335,
+          "max": 0.8441777330008335
+        }
+      }
+    },
+    "warmup/grounding/after12s": {
+      "positive": {
+        "n": 14,
+        "http": {
+          "n": 14,
+          "median": 2.7365920990050654,
+          "p95": 3.4815835320041515,
+          "max": 3.4815835320041515
+        },
+        "generation": {
+          "n": 14,
+          "median": 2.1174999999999997,
+          "p95": 2.506,
+          "max": 2.506
+        },
+        "tokens": {
+          "n": 14,
+          "median": 216.5,
+          "p95": 284,
+          "max": 284
+        },
+        "http_gt3": 3,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 14,
+          "median": 0.005054925502918195,
+          "p95": 0.008484343998134136,
+          "max": 0.008484343998134136
+        }
+      },
+      "negative": {
+        "n": 143,
+        "http": {
+          "n": 143,
+          "median": 2.66234677900502,
+          "p95": 4.338572945998749,
+          "max": 8.785108789990772
+        },
+        "generation": {
+          "n": 143,
+          "median": 2.018,
+          "p95": 2.994,
+          "max": 3.947
+        },
+        "tokens": {
+          "n": 143,
+          "median": 218,
+          "p95": 280,
+          "max": 289
+        },
+        "http_gt3": 42,
+        "http_gt5": 2,
+        "reorder": {
+          "n": 143,
+          "median": 0.005120335990795866,
+          "p95": 0.8302266289974796,
+          "max": 3.023469774998375
+        }
+      },
+      "unknown": {
+        "n": 8,
+        "http": {
+          "n": 8,
+          "median": 2.6977984304976417,
+          "p95": 4.246776410000166,
+          "max": 4.246776410000166
+        },
+        "generation": {
+          "n": 8,
+          "median": 2.077,
+          "p95": 2.721,
+          "max": 2.721
+        },
+        "tokens": {
+          "n": 8,
+          "median": 241.0,
+          "p95": 283,
+          "max": 283
+        },
+        "http_gt3": 2,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 8,
+          "median": 0.002645371001563035,
+          "p95": 0.007943646996864118,
+          "max": 0.007943646996864118
+        }
+      }
+    },
+    "warmup/information/all": {
+      "positive": {
+        "n": 37,
+        "http": {
+          "n": 37,
+          "median": 1.415428118998534,
+          "p95": 2.955417018994922,
+          "max": 3.96541232499294
+        },
+        "generation": {
+          "n": 37,
+          "median": 0.548,
+          "p95": 0.985,
+          "max": 1.119
+        },
+        "tokens": {
+          "n": 37,
+          "median": 22,
+          "p95": 22,
+          "max": 22
+        },
+        "http_gt3": 1,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 37,
+          "median": 0.0027669770061038435,
+          "p95": 0.822970269000507,
+          "max": 0.882273740004166
+        }
+      },
+      "negative": {
+        "n": 164,
+        "http": {
+          "n": 164,
+          "median": 1.0474297295004362,
+          "p95": 2.65477311500581,
+          "max": 7.396136183990166
+        },
+        "generation": {
+          "n": 164,
+          "median": 0.543,
+          "p95": 0.904,
+          "max": 1.645
+        },
+        "tokens": {
+          "n": 164,
+          "median": 22.0,
+          "p95": 22,
+          "max": 22
+        },
+        "http_gt3": 6,
+        "http_gt5": 1,
+        "reorder": {
+          "n": 164,
+          "median": 0.005067477504780982,
+          "p95": 0.6274461120046908,
+          "max": 3.8741523630014854
+        }
+      },
+      "unknown": {
+        "n": 4,
+        "http": {
+          "n": 4,
+          "median": 1.046814204994007,
+          "p95": 1.7427659270033473,
+          "max": 1.7427659270033473
+        },
+        "generation": {
+          "n": 4,
+          "median": 0.573,
+          "p95": 1.443,
+          "max": 1.443
+        },
+        "tokens": {
+          "n": 4,
+          "median": 22.0,
+          "p95": 22,
+          "max": 22
+        },
+        "http_gt3": 0,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 4,
+          "median": 0.005154771504749078,
+          "p95": 0.006631634998484515,
+          "max": 0.006631634998484515
+        }
+      }
+    },
+    "warmup/information/after12s": {
+      "positive": {
+        "n": 15,
+        "http": {
+          "n": 15,
+          "median": 0.9861392669990892,
+          "p95": 2.868090450007003,
+          "max": 2.868090450007003
+        },
+        "generation": {
+          "n": 15,
+          "median": 0.548,
+          "p95": 0.985,
+          "max": 0.985
+        },
+        "tokens": {
+          "n": 15,
+          "median": 22,
+          "p95": 22,
+          "max": 22
+        },
+        "http_gt3": 0,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 15,
+          "median": 0.0030129910010145977,
+          "p95": 0.882273740004166,
+          "max": 0.882273740004166
+        }
+      },
+      "negative": {
+        "n": 147,
+        "http": {
+          "n": 147,
+          "median": 1.038901234001969,
+          "p95": 2.65477311500581,
+          "max": 7.396136183990166
+        },
+        "generation": {
+          "n": 147,
+          "median": 0.545,
+          "p95": 0.934,
+          "max": 1.645
+        },
+        "tokens": {
+          "n": 147,
+          "median": 22,
+          "p95": 22,
+          "max": 22
+        },
+        "http_gt3": 5,
+        "http_gt5": 1,
+        "reorder": {
+          "n": 147,
+          "median": 0.005101228001876734,
+          "p95": 0.9796412899886491,
+          "max": 3.8741523630014854
+        }
+      },
+      "unknown": {
+        "n": 3,
+        "http": {
+          "n": 3,
+          "median": 1.0425317659974098,
+          "p95": 1.0510966439906042,
+          "max": 1.0510966439906042
+        },
+        "generation": {
+          "n": 3,
+          "median": 0.5,
+          "p95": 0.646,
+          "max": 0.646
+        },
+        "tokens": {
+          "n": 3,
+          "median": 22,
+          "p95": 22,
+          "max": 22
+        },
+        "http_gt3": 0,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 3,
+          "median": 0.00585108800441958,
+          "p95": 0.006631634998484515,
+          "max": 0.006631634998484515
+        }
+      }
+    },
+    "5fps/combined/all": {
+      "positive": {
+        "n": 30,
+        "http": {
+          "n": 30,
+          "median": 3.671303076494951,
+          "p95": 6.65538177601411,
+          "max": 7.2870540720032295
+        },
+        "generation": {
+          "n": 30,
+          "median": 2.1315,
+          "p95": 3.126,
+          "max": 3.29
+        },
+        "tokens": {
+          "n": 30,
+          "median": 216.5,
+          "p95": 246,
+          "max": 284
+        },
+        "http_gt3": 23,
+        "http_gt5": 12,
+        "reorder": {
+          "n": 30,
+          "median": 0.0036401144971023314,
+          "p95": 0.17766937000851613,
+          "max": 1.0123377130075824
+        }
+      },
+      "negative": {
+        "n": 110,
+        "http": {
+          "n": 110,
+          "median": 2.9337477944936836,
+          "p95": 4.349646857997868,
+          "max": 4.573964238996268
+        },
+        "generation": {
+          "n": 110,
+          "median": 2.02,
+          "p95": 2.779,
+          "max": 3.629
+        },
+        "tokens": {
+          "n": 110,
+          "median": 223.0,
+          "p95": 279,
+          "max": 304
+        },
+        "http_gt3": 51,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 110,
+          "median": 0.0042730409986688755,
+          "p95": 0.009153945007710718,
+          "max": 0.852016660006484
+        }
+      },
+      "unknown": {
+        "n": 6,
+        "http": {
+          "n": 6,
+          "median": 3.3195643604994984,
+          "p95": 4.364389135007514,
+          "max": 4.364389135007514
+        },
+        "generation": {
+          "n": 6,
+          "median": 2.45,
+          "p95": 3.6,
+          "max": 3.6
+        },
+        "tokens": {
+          "n": 6,
+          "median": 257.0,
+          "p95": 280,
+          "max": 280
+        },
+        "http_gt3": 4,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 6,
+          "median": 0.003153407000354491,
+          "p95": 0.703878286993131,
+          "max": 0.703878286993131
+        }
+      }
+    },
+    "5fps/combined/after12s": {
+      "positive": {
+        "n": 10,
+        "http": {
+          "n": 10,
+          "median": 3.1279786934974254,
+          "p95": 3.738996950996807,
+          "max": 3.738996950996807
+        },
+        "generation": {
+          "n": 10,
+          "median": 1.964,
+          "p95": 2.448,
+          "max": 2.448
+        },
+        "tokens": {
+          "n": 10,
+          "median": 217.0,
+          "p95": 284,
+          "max": 284
+        },
+        "http_gt3": 5,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 10,
+          "median": 0.002926985500380397,
+          "p95": 0.1695439479954075,
+          "max": 0.1695439479954075
+        }
+      },
+      "negative": {
+        "n": 109,
+        "http": {
+          "n": 109,
+          "median": 2.9254779549955856,
+          "p95": 4.267454828994232,
+          "max": 4.573964238996268
+        },
+        "generation": {
+          "n": 109,
+          "median": 2.02,
+          "p95": 2.779,
+          "max": 3.629
+        },
+        "tokens": {
+          "n": 109,
+          "median": 223,
+          "p95": 279,
+          "max": 304
+        },
+        "http_gt3": 50,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 109,
+          "median": 0.0043284429993946105,
+          "p95": 0.009153945007710718,
+          "max": 0.852016660006484
+        }
+      },
+      "unknown": {
+        "n": 5,
+        "http": {
+          "n": 5,
+          "median": 3.3232259759970475,
+          "p95": 4.364389135007514,
+          "max": 4.364389135007514
+        },
+        "generation": {
+          "n": 5,
+          "median": 2.531,
+          "p95": 3.6,
+          "max": 3.6
+        },
+        "tokens": {
+          "n": 5,
+          "median": 259,
+          "p95": 280,
+          "max": 280
+        },
+        "http_gt3": 4,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 5,
+          "median": 0.0029842430085409433,
+          "p95": 0.005504843997186981,
+          "max": 0.005504843997186981
+        }
+      }
+    },
+    "5fps/grounding/all": {
+      "positive": {
+        "n": 27,
+        "http": {
+          "n": 27,
+          "median": 3.7803512800019234,
+          "p95": 7.3026885139988735,
+          "max": 8.193021309009055
+        },
+        "generation": {
+          "n": 27,
+          "median": 2.075,
+          "p95": 3.257,
+          "max": 4.111
+        },
+        "tokens": {
+          "n": 27,
+          "median": 215,
+          "p95": 242,
+          "max": 242
+        },
+        "http_gt3": 21,
+        "http_gt5": 12,
+        "reorder": {
+          "n": 27,
+          "median": 0.004314716003136709,
+          "p95": 1.028397815010976,
+          "max": 1.4959020419919398
+        }
+      },
+      "negative": {
+        "n": 111,
+        "http": {
+          "n": 111,
+          "median": 2.9940035580075346,
+          "p95": 3.6246704229997704,
+          "max": 3.9634142790018814
+        },
+        "generation": {
+          "n": 111,
+          "median": 2.042,
+          "p95": 2.631,
+          "max": 2.976
+        },
+        "tokens": {
+          "n": 111,
+          "median": 218,
+          "p95": 283,
+          "max": 300
+        },
+        "http_gt3": 54,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 111,
+          "median": 0.00476337899453938,
+          "p95": 0.017272167999180965,
+          "max": 1.3015448980004294
+        }
+      },
+      "unknown": {
+        "n": 4,
+        "http": {
+          "n": 4,
+          "median": 3.342085203497845,
+          "p95": 3.76453582700924,
+          "max": 3.76453582700924
+        },
+        "generation": {
+          "n": 4,
+          "median": 2.3605,
+          "p95": 2.702,
+          "max": 2.702
+        },
+        "tokens": {
+          "n": 4,
+          "median": 242.5,
+          "p95": 283,
+          "max": 283
+        },
+        "http_gt3": 3,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 4,
+          "median": 0.004688577500928659,
+          "p95": 0.008814023996819742,
+          "max": 0.008814023996819742
+        }
+      }
+    },
+    "5fps/grounding/after12s": {
+      "positive": {
+        "n": 10,
+        "http": {
+          "n": 10,
+          "median": 2.998270443000365,
+          "p95": 4.0935245389991906,
+          "max": 4.0935245389991906
+        },
+        "generation": {
+          "n": 10,
+          "median": 2.0115,
+          "p95": 3.257,
+          "max": 3.257
+        },
+        "tokens": {
+          "n": 10,
+          "median": 216.5,
+          "p95": 235,
+          "max": 235
+        },
+        "http_gt3": 5,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 10,
+          "median": 0.0026518974991631694,
+          "p95": 0.2851885440031765,
+          "max": 0.2851885440031765
+        }
+      },
+      "negative": {
+        "n": 109,
+        "http": {
+          "n": 109,
+          "median": 2.9849206029903144,
+          "p95": 3.6246704229997704,
+          "max": 3.9634142790018814
+        },
+        "generation": {
+          "n": 109,
+          "median": 2.042,
+          "p95": 2.631,
+          "max": 2.976
+        },
+        "tokens": {
+          "n": 109,
+          "median": 218,
+          "p95": 283,
+          "max": 300
+        },
+        "http_gt3": 52,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 109,
+          "median": 0.00476337899453938,
+          "p95": 0.014748739005881362,
+          "max": 0.7593325740017463
+        }
+      },
+      "unknown": {
+        "n": 4,
+        "http": {
+          "n": 4,
+          "median": 3.342085203497845,
+          "p95": 3.76453582700924,
+          "max": 3.76453582700924
+        },
+        "generation": {
+          "n": 4,
+          "median": 2.3605,
+          "p95": 2.702,
+          "max": 2.702
+        },
+        "tokens": {
+          "n": 4,
+          "median": 242.5,
+          "p95": 283,
+          "max": 283
+        },
+        "http_gt3": 3,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 4,
+          "median": 0.004688577500928659,
+          "p95": 0.008814023996819742,
+          "max": 0.008814023996819742
+        }
+      }
+    },
+    "5fps/information/all": {
+      "positive": {
+        "n": 22,
+        "http": {
+          "n": 22,
+          "median": 1.657742329996836,
+          "p95": 5.065744800987886,
+          "max": 5.460869735994493
+        },
+        "generation": {
+          "n": 22,
+          "median": 0.581,
+          "p95": 1.198,
+          "max": 1.307
+        },
+        "tokens": {
+          "n": 22,
+          "median": 22.0,
+          "p95": 22,
+          "max": 22
+        },
+        "http_gt3": 9,
+        "http_gt5": 2,
+        "reorder": {
+          "n": 22,
+          "median": 0.006174893998831976,
+          "p95": 0.4868525199999567,
+          "max": 1.690041909008869
+        }
+      },
+      "negative": {
+        "n": 119,
+        "http": {
+          "n": 119,
+          "median": 1.4832661809923593,
+          "p95": 2.22391876099573,
+          "max": 4.684555208994425
+        },
+        "generation": {
+          "n": 119,
+          "median": 0.587,
+          "p95": 0.794,
+          "max": 1.366
+        },
+        "tokens": {
+          "n": 119,
+          "median": 22,
+          "p95": 22,
+          "max": 22
+        },
+        "http_gt3": 3,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 119,
+          "median": 0.003605637000873685,
+          "p95": 0.009447329997783527,
+          "max": 1.3772156269988045
+        }
+      },
+      "unknown": {
+        "n": 1,
+        "http": {
+          "n": 1,
+          "median": 1.491579230001662,
+          "p95": 1.491579230001662,
+          "max": 1.491579230001662
+        },
+        "generation": {
+          "n": 1,
+          "median": 0.619,
+          "p95": 0.619,
+          "max": 0.619
+        },
+        "tokens": {
+          "n": 1,
+          "median": 22,
+          "p95": 22,
+          "max": 22
+        },
+        "http_gt3": 0,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 1,
+          "median": 0.0028009329980704933,
+          "p95": 0.0028009329980704933,
+          "max": 0.0028009329980704933
+        }
+      }
+    },
+    "5fps/information/after12s": {
+      "positive": {
+        "n": 10,
+        "http": {
+          "n": 10,
+          "median": 1.4985574330057716,
+          "p95": 1.6680107510037487,
+          "max": 1.6680107510037487
+        },
+        "generation": {
+          "n": 10,
+          "median": 0.5609999999999999,
+          "p95": 0.75,
+          "max": 0.75
+        },
+        "tokens": {
+          "n": 10,
+          "median": 22.0,
+          "p95": 22,
+          "max": 22
+        },
+        "http_gt3": 0,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 10,
+          "median": 0.0025610414959373884,
+          "p95": 0.01563837900175713,
+          "max": 0.01563837900175713
+        }
+      },
+      "negative": {
+        "n": 112,
+        "http": {
+          "n": 112,
+          "median": 1.4633588835058617,
+          "p95": 2.0306990630051587,
+          "max": 2.6290275750070577
+        },
+        "generation": {
+          "n": 112,
+          "median": 0.587,
+          "p95": 0.794,
+          "max": 1.366
+        },
+        "tokens": {
+          "n": 112,
+          "median": 22.0,
+          "p95": 22,
+          "max": 22
+        },
+        "http_gt3": 0,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 112,
+          "median": 0.0035964894996141084,
+          "p95": 0.009446330004720949,
+          "max": 0.017736311012413353
+        }
+      },
+      "unknown": {
+        "n": 1,
+        "http": {
+          "n": 1,
+          "median": 1.491579230001662,
+          "p95": 1.491579230001662,
+          "max": 1.491579230001662
+        },
+        "generation": {
+          "n": 1,
+          "median": 0.619,
+          "p95": 0.619,
+          "max": 0.619
+        },
+        "tokens": {
+          "n": 1,
+          "median": 22,
+          "p95": 22,
+          "max": 22
+        },
+        "http_gt3": 0,
+        "http_gt5": 0,
+        "reorder": {
+          "n": 1,
+          "median": 0.0028009329980704933,
+          "p95": 0.0028009329980704933,
+          "max": 0.0028009329980704933
+        }
+      }
+    }
+  },
+  "slow_information": [
+    {
+      "slow": {
+        "run": "parallel-face-prepared",
+        "pts": 49.565000000000005,
+        "outcome": "negative",
+        "labels": {
+          "fight": false,
+          "smoking": false,
+          "fall": false,
+          "weapon": false
+        },
+        "http_total_seconds": 7.396136183990166,
+        "openrouter_generation_time_seconds": 0.569,
+        "completion_tokens": 22,
+        "evidence_signature": [
+          2408,
+          2430,
+          2451,
+          2472
+        ]
+      },
+      "same_frames": [
+        {
+          "dataset": "warmup",
+          "run": "parallel-warm-only",
+          "outcome": "negative",
+          "http_total_seconds": 1.4754885800066404,
+          "openrouter_generation_time_seconds": 0.945
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-2",
+          "outcome": "negative",
+          "http_total_seconds": 1.4645440020103706,
+          "openrouter_generation_time_seconds": 0.629
+        }
+      ]
+    },
+    {
+      "slow": {
+        "run": "parallel-both-watchdog",
+        "pts": 39.165,
+        "outcome": "negative",
+        "labels": {
+          "fight": false,
+          "smoking": false,
+          "fall": false,
+          "weapon": false
+        },
+        "http_total_seconds": 4.854270543990424,
+        "openrouter_generation_time_seconds": 0.499,
+        "completion_tokens": 22,
+        "evidence_signature": [
+          1870,
+          1899,
+          1929,
+          1949
+        ]
+      },
+      "same_frames": [
+        {
+          "dataset": "warmup",
+          "run": "parallel-warm-only",
+          "outcome": "negative",
+          "http_total_seconds": 0.8952961059985682,
+          "openrouter_generation_time_seconds": 0.558
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-0",
+          "outcome": "negative",
+          "http_total_seconds": 1.6287704840069637,
+          "openrouter_generation_time_seconds": 0.592
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-2",
+          "outcome": "negative",
+          "http_total_seconds": 1.1372208470129408,
+          "openrouter_generation_time_seconds": 0.451
+        }
+      ]
+    },
+    {
+      "slow": {
+        "run": "parallel-face-prepared",
+        "pts": 46.59,
+        "outcome": "negative",
+        "labels": {
+          "fight": false,
+          "smoking": false,
+          "fall": false,
+          "weapon": false
+        },
+        "http_total_seconds": 4.721201099004247,
+        "openrouter_generation_time_seconds": 0.567,
+        "completion_tokens": 22,
+        "evidence_signature": [
+          2249,
+          2280,
+          2303,
+          2334
+        ]
+      },
+      "same_frames": [
+        {
+          "dataset": "warmup",
+          "run": "parallel-warm-only",
+          "outcome": "negative",
+          "http_total_seconds": 0.8117443380033365,
+          "openrouter_generation_time_seconds": 0.563
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-0",
+          "outcome": "negative",
+          "http_total_seconds": 1.6286671179987025,
+          "openrouter_generation_time_seconds": 0.635
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-2",
+          "outcome": "negative",
+          "http_total_seconds": 1.2749677560059354,
+          "openrouter_generation_time_seconds": 0.533
+        }
+      ]
+    },
+    {
+      "slow": {
+        "run": "parallel-both-watchdog",
+        "pts": 31.598333333333336,
+        "outcome": "negative",
+        "labels": {
+          "fight": false,
+          "smoking": false,
+          "fall": false,
+          "weapon": false
+        },
+        "http_total_seconds": 4.015559479987132,
+        "openrouter_generation_time_seconds": 0.467,
+        "completion_tokens": 22,
+        "evidence_signature": [
+          1490,
+          1519,
+          1551,
+          1572
+        ]
+      },
+      "same_frames": [
+        {
+          "dataset": "warmup",
+          "run": "parallel-warm-only",
+          "outcome": "negative",
+          "http_total_seconds": 0.8180486689961981,
+          "openrouter_generation_time_seconds": 0.545
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-0",
+          "outcome": "negative",
+          "http_total_seconds": 1.4479929789958987,
+          "openrouter_generation_time_seconds": 0.595
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-2",
+          "outcome": "negative",
+          "http_total_seconds": 1.1777472529938677,
+          "openrouter_generation_time_seconds": 0.452
+        }
+      ]
+    },
+    {
+      "slow": {
+        "run": "parallel-warm-only",
+        "pts": 3.3833333333333337,
+        "outcome": "positive",
+        "labels": {
+          "fight": false,
+          "smoking": true,
+          "fall": false,
+          "weapon": false
+        },
+        "http_total_seconds": 3.96541232499294,
+        "openrouter_generation_time_seconds": 0.738,
+        "completion_tokens": 22,
+        "evidence_signature": [
+          89,
+          119,
+          146,
+          167
+        ]
+      },
+      "same_frames": [
+        {
+          "dataset": "warmup",
+          "run": "parallel-baseline",
+          "outcome": "positive",
+          "http_total_seconds": 2.0103448139998363,
+          "openrouter_generation_time_seconds": 0.609
+        },
+        {
+          "dataset": "warmup",
+          "run": "parallel-both-profile",
+          "outcome": "positive",
+          "http_total_seconds": 1.5129301140113967,
+          "openrouter_generation_time_seconds": 0.544
+        },
+        {
+          "dataset": "warmup",
+          "run": "parallel-both-watchdog",
+          "outcome": "positive",
+          "http_total_seconds": 1.6965219739940949,
+          "openrouter_generation_time_seconds": 0.56
+        },
+        {
+          "dataset": "warmup",
+          "run": "parallel-face-prepared",
+          "outcome": "positive",
+          "http_total_seconds": 1.4565296350046992,
+          "openrouter_generation_time_seconds": 0.494
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-1",
+          "outcome": "positive",
+          "http_total_seconds": 4.703103609004756,
+          "openrouter_generation_time_seconds": 0.588
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-2",
+          "outcome": "positive",
+          "http_total_seconds": 4.726940912994905,
+          "openrouter_generation_time_seconds": 0.466
+        }
+      ]
+    },
+    {
+      "slow": {
+        "run": "parallel-face-prepared",
+        "pts": 43.781666666666666,
+        "outcome": "negative",
+        "labels": {
+          "fight": false,
+          "smoking": false,
+          "fall": false,
+          "weapon": false
+        },
+        "http_total_seconds": 3.168322794008418,
+        "openrouter_generation_time_seconds": 1.008,
+        "completion_tokens": 22,
+        "evidence_signature": [
+          2109,
+          2140,
+          2162,
+          2190
+        ]
+      },
+      "same_frames": [
+        {
+          "dataset": "warmup",
+          "run": "parallel-baseline",
+          "outcome": "negative",
+          "http_total_seconds": 0.9360695110080997,
+          "openrouter_generation_time_seconds": 0.603
+        },
+        {
+          "dataset": "warmup",
+          "run": "parallel-both-profile",
+          "outcome": "negative",
+          "http_total_seconds": 0.79170749799232,
+          "openrouter_generation_time_seconds": 0.506
+        },
+        {
+          "dataset": "warmup",
+          "run": "parallel-both-watchdog",
+          "outcome": "negative",
+          "http_total_seconds": 1.2492570530012017,
+          "openrouter_generation_time_seconds": 0.611
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-1",
+          "outcome": "negative",
+          "http_total_seconds": 2.6290275750070577,
+          "openrouter_generation_time_seconds": 0.639
+        }
+      ]
+    },
+    {
+      "slow": {
+        "run": "parallel-warm-only",
+        "pts": 5.550000000000001,
+        "outcome": "negative",
+        "labels": {
+          "fight": false,
+          "smoking": false,
+          "fall": false,
+          "weapon": false
+        },
+        "http_total_seconds": 3.1022464689885965,
+        "openrouter_generation_time_seconds": 0.677,
+        "completion_tokens": 22,
+        "evidence_signature": [
+          195,
+          216,
+          244,
+          275
+        ]
+      },
+      "same_frames": [
+        {
+          "dataset": "warmup",
+          "run": "parallel-both-profile",
+          "outcome": "positive",
+          "http_total_seconds": 1.9636082259967225,
+          "openrouter_generation_time_seconds": 0.68
+        },
+        {
+          "dataset": "warmup",
+          "run": "parallel-both-watchdog",
+          "outcome": "positive",
+          "http_total_seconds": 1.096004349004943,
+          "openrouter_generation_time_seconds": 0.481
+        },
+        {
+          "dataset": "warmup",
+          "run": "parallel-face-prepared",
+          "outcome": "positive",
+          "http_total_seconds": 1.2833563369931653,
+          "openrouter_generation_time_seconds": 0.502
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-2",
+          "outcome": "positive",
+          "http_total_seconds": 1.5480842270044377,
+          "openrouter_generation_time_seconds": 0.567
+        }
+      ]
+    },
+    {
+      "slow": {
+        "run": "parallel-warm-only",
+        "pts": 4.391666666666667,
+        "outcome": "positive",
+        "labels": {
+          "fight": false,
+          "smoking": true,
+          "fall": false,
+          "weapon": false
+        },
+        "http_total_seconds": 2.955417018994922,
+        "openrouter_generation_time_seconds": 1.119,
+        "completion_tokens": 22,
+        "evidence_signature": [
+          146,
+          167,
+          195,
+          216
+        ]
+      },
+      "same_frames": [
+        {
+          "dataset": "warmup",
+          "run": "parallel-baseline",
+          "outcome": "unknown",
+          "http_total_seconds": 11.903789251999115,
+          "openrouter_generation_time_seconds": null
+        },
+        {
+          "dataset": "warmup",
+          "run": "parallel-both-profile",
+          "outcome": "positive",
+          "http_total_seconds": 0.8989698869991116,
+          "openrouter_generation_time_seconds": 0.509
+        },
+        {
+          "dataset": "warmup",
+          "run": "parallel-both-watchdog",
+          "outcome": "positive",
+          "http_total_seconds": 1.2998318210011348,
+          "openrouter_generation_time_seconds": 0.554
+        },
+        {
+          "dataset": "warmup",
+          "run": "parallel-face-prepared",
+          "outcome": "positive",
+          "http_total_seconds": 1.0852764459996251,
+          "openrouter_generation_time_seconds": 0.573
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-1",
+          "outcome": "positive",
+          "http_total_seconds": 4.66450603499834,
+          "openrouter_generation_time_seconds": 0.593
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-2",
+          "outcome": "positive",
+          "http_total_seconds": 4.573981908994028,
+          "openrouter_generation_time_seconds": 0.565
+        }
+      ]
+    },
+    {
+      "slow": {
+        "run": "parallel-both-profile",
+        "pts": 12.983333333333334,
+        "outcome": "positive",
+        "labels": {
+          "fight": false,
+          "smoking": false,
+          "fall": true,
+          "weapon": false
+        },
+        "http_total_seconds": 2.868090450007003,
+        "openrouter_generation_time_seconds": 0.733,
+        "completion_tokens": 22,
+        "evidence_signature": [
+          571,
+          603,
+          633,
+          655
+        ]
+      },
+      "same_frames": [
+        {
+          "dataset": "warmup",
+          "run": "parallel-both-watchdog",
+          "outcome": "positive",
+          "http_total_seconds": 0.9792906420043437,
+          "openrouter_generation_time_seconds": 0.502
+        },
+        {
+          "dataset": "warmup",
+          "run": "parallel-face-prepared",
+          "outcome": "positive",
+          "http_total_seconds": 0.9814209839969408,
+          "openrouter_generation_time_seconds": 0.498
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-1",
+          "outcome": "positive",
+          "http_total_seconds": 1.4909661740093725,
+          "openrouter_generation_time_seconds": 0.597
+        }
+      ]
+    },
+    {
+      "slow": {
+        "run": "parallel-face-prepared",
+        "pts": 53.18166666666667,
+        "outcome": "negative",
+        "labels": {
+          "fight": false,
+          "smoking": false,
+          "fall": false,
+          "weapon": false
+        },
+        "http_total_seconds": 2.7067262820055475,
+        "openrouter_generation_time_seconds": 0.57,
+        "completion_tokens": 22,
+        "evidence_signature": [
+          2561,
+          2588,
+          2618,
+          2645
+        ]
+      },
+      "same_frames": [
+        {
+          "dataset": "warmup",
+          "run": "parallel-both-profile",
+          "outcome": "negative",
+          "http_total_seconds": 0.875453437998658,
+          "openrouter_generation_time_seconds": 0.58
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-0",
+          "outcome": "negative",
+          "http_total_seconds": 1.445704238009057,
+          "openrouter_generation_time_seconds": 0.626
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-1",
+          "outcome": "negative",
+          "http_total_seconds": 1.3439842270017834,
+          "openrouter_generation_time_seconds": 0.497
+        }
+      ]
+    },
+    {
+      "slow": {
+        "run": "parallel-both-watchdog",
+        "pts": 25.8,
+        "outcome": "negative",
+        "labels": {
+          "fight": false,
+          "smoking": false,
+          "fall": false,
+          "weapon": false
+        },
+        "http_total_seconds": 2.6905633220012533,
+        "openrouter_generation_time_seconds": 0.487,
+        "completion_tokens": 22,
+        "evidence_signature": [
+          1242,
+          1262,
+          1279,
+          1299
+        ]
+      },
+      "same_frames": [
+        {
+          "dataset": "warmup",
+          "run": "parallel-both-profile",
+          "outcome": "negative",
+          "http_total_seconds": 1.6960633479902754,
+          "openrouter_generation_time_seconds": 0.687
+        },
+        {
+          "dataset": "warmup",
+          "run": "parallel-face-prepared",
+          "outcome": "negative",
+          "http_total_seconds": 0.8946623660012847,
+          "openrouter_generation_time_seconds": 0.601
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-1",
+          "outcome": "negative",
+          "http_total_seconds": 1.3657748109981185,
+          "openrouter_generation_time_seconds": 0.59
+        }
+      ]
+    },
+    {
+      "slow": {
+        "run": "parallel-both-watchdog",
+        "pts": 24.158333333333335,
+        "outcome": "negative",
+        "labels": {
+          "fight": false,
+          "smoking": false,
+          "fall": false,
+          "weapon": false
+        },
+        "http_total_seconds": 2.65477311500581,
+        "openrouter_generation_time_seconds": 0.478,
+        "completion_tokens": 22,
+        "evidence_signature": [
+          1151,
+          1172,
+          1195,
+          1223
+        ]
+      },
+      "same_frames": [
+        {
+          "dataset": "warmup",
+          "run": "parallel-both-profile",
+          "outcome": "negative",
+          "http_total_seconds": 0.8188184080063365,
+          "openrouter_generation_time_seconds": 0.586
+        },
+        {
+          "dataset": "warmup",
+          "run": "parallel-face-prepared",
+          "outcome": "negative",
+          "http_total_seconds": 1.0050648800097406,
+          "openrouter_generation_time_seconds": 0.518
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-0",
+          "outcome": "negative",
+          "http_total_seconds": 1.5114385730121285,
+          "openrouter_generation_time_seconds": 0.612
+        },
+        {
+          "dataset": "5fps",
+          "run": "parallel-1",
+          "outcome": "negative",
+          "http_total_seconds": 1.3808068579965038,
+          "openrouter_generation_time_seconds": 0.461
+        }
+      ]
+    }
+  ],
+  "method": {
+    "sources": [
+      "../vlm-prewarm-20260922",
+      "../parallel-delivery-5fps-20260922"
+    ],
+    "warmup_analysis_excludes": "parallel-baseline",
+    "tail_threshold_http_seconds": 3,
+    "matched_windows": "exact ordered source-frame indices on the same video",
+    "limitations": [
+      "Observational repeated playback, not proof of statistically independent random latency.",
+      "Positive windows cluster near startup; after12s is an exploratory startup exclusion.",
+      "Positive means model observation, not independent ground truth.",
+      "Unknown outcomes remain separate; failures are not negatives."
+    ]
+  }
+}

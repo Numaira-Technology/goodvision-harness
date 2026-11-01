@@ -235,7 +235,10 @@ def test_queue_full_and_shutdown_are_bounded(tmp_path, monkeypatch):
         assert not archive.submit(snapshot(event_id="after-close"))
     finally:
         release.set()
-        archive.close()
+        # The bounded close is asserted above; cleanup must await durable writes
+        # even when the Windows runner's filesystem takes longer than a second.
+        archive.close(timeout_seconds=10)
+    assert archive.stats()["state"] == "closed"
     assert archive.stats()["persisted_batches"] == 2
 
 

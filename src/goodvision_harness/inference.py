@@ -14,7 +14,12 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .config import InferenceSettings
-from .model_api import ModelAPIClient, ModelAPIError, ModelAPISettings
+from .model_api import (
+    ModelAPIClient,
+    ModelAPIError,
+    ModelAPISettings,
+    inference_error_detail,
+)
 from .privacy import PUBLIC_ANALYSIS_ERROR
 from .prompt import (
     BinaryClassification,
@@ -36,6 +41,7 @@ class WindowResponse:
     response_id: str | None = None
     usage: Mapping[str, Any] | None = None
     error: str | None = None
+    error_detail: Mapping[str, Any] | None = None
 
     @property
     def ok(self) -> bool:
@@ -84,13 +90,14 @@ class QwenWindowClient:
                 **dict(self.settings.request_parameters),
             )
             text = self._transport.assistant_text(response)
-        except (ModelAPIError, ValueError):
+        except (ModelAPIError, ValueError) as exc:
             return WindowResponse(
                 window=window,
                 classification=None,
                 raw_text=None,
                 latency_seconds=time.monotonic() - started,
                 error=PUBLIC_ANALYSIS_ERROR,
+                error_detail=inference_error_detail(exc),
             )
         latency = time.monotonic() - started
         try:
@@ -109,6 +116,7 @@ class QwenWindowClient:
                 raw_text=None,
                 latency_seconds=latency,
                 error=PUBLIC_ANALYSIS_ERROR,
+                error_detail=inference_error_detail(code="invalid_response"),
             )
         return WindowResponse(
             window=window,
@@ -140,9 +148,7 @@ class DryRunWindowClient:
         detected = window.index % 6 in {2, 3, 4}
         confidence = round(0.6 + (window.index * 37 % 100) / 250.0, 3)
         memory_ids = (
-            self.memory_context.memory_ids
-            if self.memory_context is not None
-            else ()
+            self.memory_context.memory_ids if self.memory_context is not None else ()
         )
         if self.memory_context is not None and not memory_ids:
             detected = False

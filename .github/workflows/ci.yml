@@ -21,10 +21,12 @@ jobs:
         include:
           - os: ubuntu-latest
             python: '3.11'
+            timeout_minutes: 15
           - os: windows-latest
             python: '3.12'
+            timeout_minutes: 25
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -46,4 +48,87 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ffmpeg --no-progress -y
       - name: Run regression suite (no models or service credentials)
-        run: python -m pytest -q
+        run: python -m pytest -vv -o faulthandler_timeout=60 --durations=20
+
+  sam3-onnx-contract:
+    name: Optional SAM3 ONNX contract (no weights)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install pinned optional adapter
+        run: python -m pip install '.[dev,sam3-onnx]'
+      - name: Check offline adapter and worker contracts
+        run: python -m pytest tests/test_sam3_onnx.py tests/test_sam3_onnx_package.py workers/detector_rich_label/test_contract.py
+
+  preview-browser:
+    name: Preview layouts and live recordings (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            tools/vlm_benchmark/monitor-requirements.txt
+      - name: Install offline preview test dependencies
+        run: |
+          python -m pip install ".[dev,video,vlm]" -r tools/vlm_benchmark/monitor-requirements.txt
+          python -m playwright install --with-deps chromium
+          sudo apt-get install -y fonts-noto-cjk
+      - name: Verify three modes, layouts, tracking and complete recordings
+        env:
+          VLM_MONITOR_BROWSER_TESTS: '1'
+          VLM_TRACKING_REVIEW_OUTPUT: outputs/preview-browser/tracking
+        run: |
+          mkdir -p outputs/preview-browser
+          python -m pytest tests/test_vlm_monitor.py tests/test_vlm_preview_tracking.py tests/test_tracked_grounding_browser.py --basetemp=outputs/preview-browser/tests -q
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: preview-browser-evidence
+          path: |
+            outputs/preview-browser/**/*.png
+            outputs/preview-browser/**/*.json
+            outputs/preview-browser/**/viewport.mp4
+          if-no-files-found: warn
+
+  gateway-video-integration:
+    name: Two-route WHEP gateway (Linux container)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the deployment gateway image
+        run: docker build --target analysis-gateway -t goodvision-analysis-gateway:verification .
+      - name: Prepare the private relay key with controller permissions
+        run: |
+          docker volume create gateway-relay-auth-${{ github.run_id }}-${{ github.run_attempt }}
+          docker run --rm --network none --read-only --user 0:0 \
+            --tmpfs /tmp:size=16m --security-opt no-new-privileges:true \
+            --volume gateway-relay-auth-${{ github.run_id }}-${{ github.run_attempt }}:/relay-auth \
+            --volume "$PWD/tools/relay_bootstrap.py:/verification/relay_bootstrap.py:ro" \
+            goodvision-analysis-gateway:verification \
+            python -c 'import runpy; from pathlib import Path; f = runpy.run_path("/verification/relay_bootstrap.py")["controller_environment"]; env = {"SAM_ANALYSIS_ENABLED": "true", "HARNESS_RELAY_KEY": "", "HARNESS_RELAY_KEY_FILE": "/relay-auth/key"}; first = f(env, Path("/tmp/controller")); second = f(env, Path("/tmp/controller")); assert first["HARNESS_RELAY_KEY"] == second["HARNESS_RELAY_KEY"]; assert len(first["HARNESS_RELAY_KEY"]) == 64'
+      - name: Verify authenticated offline WHEP relays with deployment memory limits
+        run: |
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:size=64m --shm-size=192m \
+            --security-opt no-new-privileges:true \
+            --env PYTHONDONTWRITEBYTECODE=1 \
+            --env HARNESS_RELAY_KEY_FILE=/relay-auth/key \
+            --volume gateway-relay-auth-${{ github.run_id }}-${{ github.run_attempt }}:/relay-auth:ro \
+            --volume "$PWD/tests/gateway_whep_container.py:/verification/gateway_whep_container.py:ro" \
+            goodvision-analysis-gateway:verification \
+            python /verification/gateway_whep_container.py
+      - name: Remove the verification relay key volume
+        if: always()
+        run: docker volume rm gateway-relay-auth-${{ github.run_id }}-${{ github.run_attempt }}

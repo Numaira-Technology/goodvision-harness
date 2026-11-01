@@ -186,7 +186,14 @@ def test_real_whep_survives_parent_compute_and_slow_frame_consumption(monkeypatc
         assert first.bgr.shape == (720, 2560, 3)
         child = adapter._whep_receiver
         before = udp_drops()
-        workers = [threading.Thread(target=computation, args=(done,)) for _ in range(4)]
+        # One busy Python thread still exercises GIL contention. Four such
+        # threads oversubscribe shared Windows runners and measure host capacity
+        # instead of receiver isolation; retain the heavier load elsewhere.
+        worker_count = 1 if os.name == "nt" else 4
+        workers = [
+            threading.Thread(target=computation, args=(done,))
+            for _ in range(worker_count)
+        ]
         for worker in workers:
             worker.start()
         # Exercise handoff synchronization while the consumer itself contends

@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException, Request
@@ -49,14 +50,33 @@ LOGGER = logging.getLogger("goodvision.sam31.session")
 MAX_H264_BYTES = 8 * 1024 * 1024
 
 
-def _timing_log(message, fields, *, level=logging.INFO):
+def _trace_identifier(value):
+    """Opaque correlation only; never accept URLs, headers or free-form text."""
+    return value if isinstance(value, str) and re.fullmatch(
+        r"[A-Za-z0-9_.:-]{1,160}", value
+    ) else None
+
+
+def _session_ref(token):
+    # Session tokens authorize operations: correlate them without logging them.
+    return hashlib.sha256(token.encode()).hexdigest()[:16] if token else None
+
+
+def _timing_log(message, fields, *, level=logging.INFO, logger=LOGGER):
     """Selected scalar diagnostics must never change the operation's result."""
     try:
+        fields = {"recorded_at": datetime.now(timezone.utc).isoformat(), **fields}
         values = " ".join(
             f"{key}={value:.6f}" if isinstance(value, float) else f"{key}={value}"
             for key, value in fields.items()
         )
-        LOGGER.log(level, "%s %s", message, values, extra={"sam_timing": fields})
+        # Uvicorn configures its own logger, but not application INFO loggers.
+        # Keep existing logger/test integration and emit once through its stderr
+        # channel when application INFO would otherwise be silently discarded.
+        selected = logger if logger.isEnabledFor(level) else logging.getLogger(
+            "uvicorn.error"
+        )
+        selected.log(level, "%s %s", message, values, extra={"sam_timing": fields})
     except Exception:
         pass
 
@@ -126,6 +146,8 @@ class _AppendTiming:
         }
         # Preserve coarse names consumed by existing diagnostic tooling.
         fields.update(
+            inference_wall_seconds=self.seconds["native_advance"],
+            geometry_wall_seconds=self.seconds["snapshot"],
             validation_decode_seconds=(
                 self.seconds["validation"] + self.seconds["decode"]
             ),
@@ -869,6 +891,7 @@ class SessionEngine:
         timing = _AppendTiming(
             self.profile.route if self.profile else "sam31_session", diagnostics
         )
+        timing.fields["session_ref"] = _session_ref(token)
         outcome, status_code = "completed", 200
         try:
             return self._append(
@@ -1169,7 +1192,16 @@ def register_session_routes(
             "route": engine.profile.route if engine.profile else "sam31_session",
             "api_prefix": api_prefix,
             "request_id": None,
+            "transport_request_id": _trace_identifier(
+                request.headers.get("X-Goodvision-Request-ID")
+            ),
+            "http_attempt_id": _trace_identifier(
+                request.headers.get("X-Goodvision-HTTP-Attempt-ID")
+            ),
+            "session_ref": _session_ref(token),
         }
+        if match := re.search(r"/cameras/(camera-\d+)/", api_prefix):
+            diagnostics["camera_id"] = match.group(1)
         phase = "admission"
 
         def log_request(message, outcome, status_code):
@@ -1237,6 +1269,10 @@ def register_session_routes(
         async def acquire_gpu():
             nonlocal acquired, admission_started, admission_finished, phase
             phase = "admission"
+            diagnostics.update(
+                gpu_active_at_enqueue=getattr(admission, "active", None),
+                gpu_waiters_at_enqueue=getattr(admission, "waiting", None),
+            )
             admission_started = time.perf_counter()
             if queued_admission:
                 acquired = await admission.acquire_async(deadline)
@@ -1366,8 +1402,37 @@ def register_session_routes(
                 asyncio.shield(task), max(0, deadline - time.monotonic())
             )
             processing_finished = time.perf_counter()
+            if operation == "create":
+                diagnostics["session_ref"] = _session_ref(result["video_session_id"])
             phase = "response_encode"
-            response = JSONResponse(result)
+            class TimedResponse(JSONResponse):
+                async def __call__(self, scope, receive, send):
+                    send_started = time.perf_counter()
+                    outcome = "sent"
+                    try:
+                        return await super().__call__(scope, receive, send)
+                    except BaseException:
+                        outcome = "send_failed"
+                        raise
+                    finally:
+                        _timing_log(
+                            "Native session response timing",
+                            diagnostics | {
+                                "operation": operation,
+                                "outcome": outcome,
+                                "status_code": self.status_code,
+                                "response_bytes": len(self.body),
+                                # ASGI send includes local server backpressure;
+                                # it does not attest remote client receipt.
+                                "asgi_send_seconds": time.perf_counter() - send_started,
+                                "request_through_send_seconds": (
+                                    time.perf_counter() - started
+                                ),
+                                "timing_basis": "host_wall_clock",
+                            },
+                        )
+
+            response = TimedResponse(result)
             response_encode_seconds = time.perf_counter() - processing_finished
             log_request("Native session request completed", "completed", 200)
             return response

@@ -690,7 +690,9 @@ def test_stranger_earlier_observation_keeps_existing_playable_revision(
         for index in range(31):
             archive.submit_frame(jpeg(), index / 5, index, "session")
         archive.submit_result(result(3, "first", label="stranger"))
-        first = wait_ready(archive)
+        # This setup stages 31 frames on disk; the test checks revision reuse,
+        # not a three-second storage deadline on shared Windows runners.
+        first = wait_ready(archive, timeout=15)
         archive.submit_result(result(2, "earlier", label="stranger"))
         assert archive.wait_until_idle(3)
         event = archive.list_events()["events"][0]

@@ -12,7 +12,7 @@ import os
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
 
 from .privacy import public_safe_value
@@ -55,6 +55,19 @@ class FleetController:
     def __init__(self, application: FastAPI) -> None:
         self.application = application
         self.capacity = _positive_environment_integer("HARNESS_FLEET_CAPACITY", 1)
+        self.origins = json.loads(os.environ.get("HARNESS_FLEET_ORIGINS", "[]"))
+        if not isinstance(self.origins, list):
+            raise ValueError("HARNESS_FLEET_ORIGINS must be a list")
+        if self.origins:
+            from .service_locations import _service_origin
+
+            if len(self.origins) != self.capacity:
+                raise ValueError("HARNESS_FLEET_ORIGINS must match fleet capacity")
+            self.origins = [
+                _service_origin(value, "fleet origin") for value in self.origins
+            ]
+            if not all(self.origins):
+                raise ValueError("fleet origins must not be empty")
         self.camera_index = _positive_environment_integer(
             "HARNESS_FLEET_CAMERA_INDEX",
             1,
@@ -122,6 +135,8 @@ class FleetController:
     def _url(self, index: int, path: str) -> str:
         if index == self.camera_index:
             return f"http://fleet-self{path}"
+        if self.origins:
+            return self.origins[index - 1] + path
         service = "harness" if index == 1 else f"harness-{index:02d}"
         return f"http://{service}:8080{path}"
 
@@ -246,13 +261,24 @@ class FleetController:
         *,
         timeout: float = 60,
         coordinated: bool = False,
+        trusted_relay: bool = False,
     ) -> JSONResponse:
+        from .relay_auth import relay_headers
+
+        private_relay = bool(
+            path == "/v1/video/connect" and payload and payload.get("relay")
+        )
+        headers = {"X-Fleet-Coordinator": "1"} if coordinated else {}
+        if private_relay:
+            if not trusted_relay:
+                raise HTTPException(403, "Relay authentication required")
+            headers = relay_headers(headers)
         try:
             async with self._client(index).stream(
                 method,
                 self._url(index, path),
                 json=payload,
-                headers={"X-Fleet-Coordinator": "1"} if coordinated else None,
+                headers=headers or None,
                 timeout=httpx.Timeout(timeout, connect=3, pool=3),
             ) as upstream:
                 if 300 <= upstream.status_code < 400:
@@ -266,8 +292,20 @@ class FleetController:
                     result = json.loads(body)
                 except (ValueError, UnicodeDecodeError):
                     raise HTTPException(502, "camera response must be JSON") from None
+                # These private source transport settings must reach the local
+                # relay verbatim; public text filtering must not corrupt URLs
+                # or camera authentication headers.
+                relay = (
+                    result.pop("video_relay", None)
+                    if isinstance(result, dict) else None
+                )
+                if not private_relay or not trusted_relay:
+                    relay = None
+                rendered = public_safe_value(result)
+                if relay is not None:
+                    rendered["video_relay"] = relay
                 return JSONResponse(
-                    public_safe_value(result),
+                    rendered,
                     status_code=upstream.status_code,
                     headers=_NO_STORE,
                 )
@@ -453,8 +491,25 @@ class FleetController:
                 or status.get("connection_state") == "connected"
             )
         }
+        workflow_control = getattr(self.application.state, "workflows", None)
+        workflow_document, workflow_bindings, workflow_plans = None, {}, {}
+        if workflow_control is not None:
+            try:
+                workflow_document, workflow_bindings, workflow_plans = (
+                    workflow_control.bindings()
+                )
+            except (ValueError, RuntimeError, OSError):
+                raise HTTPException(
+                    503, "Workflow storage is unavailable. No cameras started.",
+                ) from None
+            cohort = {
+                index for index in cohort
+                if workflow_plans.get(f"camera{index:02d}", {}).get("enabled", True)
+            }
         if not cohort:
-            raise HTTPException(400, "请先连接至少一路视频。再开始全部分析。")
+            raise HTTPException(
+                400, "请先连接至少一路视频并启用其分析流程。再开始全部分析。",
+            )
         for index in cohort:
             self.require_enabled(index)
         self._analysis_indices = cohort
@@ -495,6 +550,33 @@ class FleetController:
                     status_code=409,
                     headers=_NO_STORE,
                 )
+            if workflow_document is not None:
+                # Applied snapshots are authoritative on the primary. Install
+                # all plans before preflight; a failed sync starts no cameras.
+                for index in sorted(cohort):
+                    response = await self.request_json(
+                        index, "PUT", "/v1/analysis/workflow",
+                        {"binding": workflow_bindings.get(f"camera{index:02d}")},
+                        coordinated=True,
+                    )
+                    if not 200 <= response.status_code < 300:
+                        try:
+                            failure = json.loads(response.body)
+                        except (ValueError, UnicodeDecodeError):
+                            failure = None
+                        if isinstance(failure, dict) and failure.get("detail") == (
+                            "Person tracking is not configured for this deployment."
+                        ):
+                            raise HTTPException(
+                                409,
+                                f"camera{index:02d} 未配置人物追踪服务。"
+                                "请配置服务或在 Canvas 关闭人物追踪后重试。"
+                                "未启动任何一路分析。",
+                            )
+                        raise HTTPException(
+                            409, f"Could not prepare workflow for camera{index:02d}. "
+                            "No cameras started.",
+                        )
             errors = await self._analysis_requests(cohort, "prepare")
             if errors:
                 self._analysis_errors = errors
@@ -678,7 +760,16 @@ def install_fleet_routes(application: FastAPI) -> FleetController:
     async def fleet() -> JSONResponse:
         controller._require_primary()
         await controller.refresh_analysis()
-        return JSONResponse(controller.descriptor(), headers=_NO_STORE)
+        descriptor = controller.descriptor()
+        workflows = getattr(application.state, "workflows", None)
+        if workflows is not None:
+            try:
+                managed = workflows.managed_cameras()
+            except (RuntimeError, ValueError, OSError):
+                raise HTTPException(503, "Workflow storage is unavailable.") from None
+            for camera in descriptor["cameras"]:
+                camera["workflow"] = managed.get(camera["id"])
+        return JSONResponse(descriptor, headers=_NO_STORE)
 
     @application.post("/v1/fleet/analysis/start")
     async def start_analysis(request: Request) -> JSONResponse:
@@ -738,8 +829,13 @@ def install_fleet_routes(application: FastAPI) -> FleetController:
 
     @application.post("/v1/fleet/cameras/{camera_id}/connect")
     async def connect(camera_id: str, request: Request) -> JSONResponse:
+        from .relay_auth import require_relay_auth
+
         index = controller.resolve_camera(camera_id)
         payload = await _json_body(request)
+        private_relay = bool(payload.get("relay"))
+        if private_relay:
+            require_relay_auth(request.headers)
         async with controller.control_lock:
             controller.require_enabled(index)
             await controller.assert_connections_mutable()
@@ -749,6 +845,7 @@ def install_fleet_routes(application: FastAPI) -> FleetController:
                 "/v1/video/connect",
                 payload,
                 coordinated=True,
+                **({"trusted_relay": True} if private_relay else {}),
             )
 
     @application.post("/v1/fleet/cameras/{camera_id}/disconnect")
@@ -763,6 +860,19 @@ def install_fleet_routes(application: FastAPI) -> FleetController:
                 "POST",
                 "/v1/video/disconnect",
                 coordinated=True,
+            )
+
+    @application.websocket("/v1/fleet/cameras/{camera_id}/video/relay/{token}")
+    async def relay(socket: WebSocket, camera_id: str, token: str):
+        from .video_relay import proxy_relay, receive_relay
+
+        index = controller.resolve_camera(camera_id)
+        controller.require_enabled(index)
+        if index == controller.camera_index:
+            await receive_relay(socket, application.state.runtime, token)
+        else:
+            await proxy_relay(
+                socket, controller._url(index, ""), f"/v1/video/relay/{token}",
             )
 
     @application.post("/v1/fleet/cameras/{camera_id}/start")
@@ -787,6 +897,19 @@ def install_fleet_routes(application: FastAPI) -> FleetController:
         payload = await _json_body(request)
         async with controller.control_lock:
             controller.require_enabled(index)
+            workflows = getattr(application.state, "workflows", None)
+            if workflows is not None:
+                try:
+                    managed = workflows.managed_cameras()
+                except (RuntimeError, ValueError, OSError):
+                    raise HTTPException(
+                        503, "Workflow storage is unavailable.",
+                    ) from None
+                if camera_id in managed:
+                    raise HTTPException(
+                        409, "Edit this camera's applied workflow in Camera groups, "
+                        "or remove it from the group to use manual settings.",
+                    )
             await controller.assert_connections_mutable()
             return await controller.request_json(
                 index,

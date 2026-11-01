@@ -1,0 +1,469 @@
+{
+  "parallel-baseline": {
+    "source_hash": "ef9b8772ab922742ca50f9d7ba379f1aa4b202e682881962dd9f6deb29b0dad1",
+    "source_accepted": 279,
+    "calls": 52,
+    "public_reports": 26,
+    "publication_states": {
+      "completed": 48,
+      "failed": 4
+    },
+    "face_reports": 70,
+    "face_errors": {
+      "None": 70
+    },
+    "warmups": [],
+    "normal_requests_with_new_tls": 11,
+    "protocol_profile": [
+      {
+        "function": "('~', 0, '<built-in method zlib.compressobj>')",
+        "calls": 1,
+        "own_seconds": 1.8501e-05,
+        "cumulative_seconds": 1.8501e-05
+      },
+      {
+        "function": "('~', 0, '<built-in method zlib.decompressobj>')",
+        "calls": 1,
+        "own_seconds": 5.001e-06,
+        "cumulative_seconds": 5.001e-06
+      },
+      {
+        "function": "('~', 0, \"<method 'compress' of 'zlib.Compress' objects>\")",
+        "calls": 283,
+        "own_seconds": 0.010982534,
+        "cumulative_seconds": 0.010982534
+      },
+      {
+        "function": "('~', 0, \"<method 'flush' of 'zlib.Compress' objects>\")",
+        "calls": 283,
+        "own_seconds": 0.13170467900000002,
+        "cumulative_seconds": 0.13170467900000002
+      },
+      {
+        "function": "('~', 0, \"<method 'decompress' of 'zlib.Decompress' objects>\")",
+        "calls": 560,
+        "own_seconds": 2.969470271,
+        "cumulative_seconds": 2.969470271
+      }
+    ],
+    "playback_event_loop_lag": {
+      "n": 483,
+      "median": 0.0005541400081710834,
+      "p95": 0.01244932899717241,
+      "max": 1.1054745999921578
+    },
+    "playback_watchdog_stalls": 0,
+    "maximum_native_threads_during_stalls": null,
+    "websocket_negotiation": null,
+    "face_preparation": null,
+    "receiver_errors": []
+  },
+  "parallel-both-profile": {
+    "source_hash": "2c73b162bbd5c407efb99ac01c245a659d90f8d7a4e3ea8f20054dafd14565e6",
+    "source_accepted": 279,
+    "calls": 106,
+    "public_reports": 53,
+    "publication_states": {
+      "completed": 106
+    },
+    "face_reports": 70,
+    "face_errors": {
+      "None": 70
+    },
+    "warmups": [
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072766.0155659,
+        "recorded_at": "2026-09-22T10:26:06.015358+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.1850613660062663,
+        "thread": "vlm-compact_2"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072766.0177536,
+        "recorded_at": "2026-09-22T10:26:06.017608+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.1932759930059547,
+        "thread": "vlm-events_0"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072766.0191977,
+        "recorded_at": "2026-09-22T10:26:06.019124+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.193989738007076,
+        "thread": "vlm-events_2"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072766.020206,
+        "recorded_at": "2026-09-22T10:26:06.020131+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.1929466720030177,
+        "thread": "vlm-compact_0"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072766.0212166,
+        "recorded_at": "2026-09-22T10:26:06.021129+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.1922482269874308,
+        "thread": "vlm-compact_1"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072766.022368,
+        "recorded_at": "2026-09-22T10:26:06.022276+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.19823250999616,
+        "thread": "vlm-compact_3"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072766.0228426,
+        "recorded_at": "2026-09-22T10:26:06.022771+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.198241510996013,
+        "thread": "vlm-events_1"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072766.165358,
+        "recorded_at": "2026-09-22T10:26:06.165229+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.3398672900075326,
+        "thread": "vlm-events_3"
+      }
+    ],
+    "normal_requests_with_new_tls": 0,
+    "protocol_profile": [],
+    "playback_event_loop_lag": {
+      "n": 481,
+      "median": 0.0008321309927850906,
+      "p95": 0.021807257994078094,
+      "max": 1.188097087002825
+    },
+    "playback_watchdog_stalls": 0,
+    "maximum_native_threads_during_stalls": null,
+    "websocket_negotiation": {
+      "extensions": null
+    },
+    "face_preparation": null,
+    "receiver_errors": []
+  },
+  "parallel-both-watchdog": {
+    "source_hash": "2c73b162bbd5c407efb99ac01c245a659d90f8d7a4e3ea8f20054dafd14565e6",
+    "source_accepted": 279,
+    "calls": 102,
+    "public_reports": 51,
+    "publication_states": {
+      "completed": 102
+    },
+    "face_reports": 70,
+    "face_errors": {
+      "None": 70
+    },
+    "warmups": [
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073065.8788185,
+        "recorded_at": "2026-09-22T10:31:05.878608+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 0.7686000079993391,
+        "thread": "vlm-compact_1"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073065.8796897,
+        "recorded_at": "2026-09-22T10:31:05.879619+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 0.7737949399888748,
+        "thread": "vlm-events_2"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073065.9490159,
+        "recorded_at": "2026-09-22T10:31:05.948882+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 0.8408982370019658,
+        "thread": "vlm-compact_0"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073065.9544473,
+        "recorded_at": "2026-09-22T10:31:05.954211+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 0.849114862998249,
+        "thread": "vlm-events_1"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073066.0408154,
+        "recorded_at": "2026-09-22T10:31:06.040647+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 0.9294212050008355,
+        "thread": "vlm-compact_2"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073066.1363778,
+        "recorded_at": "2026-09-22T10:31:06.136258+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.029898136999691,
+        "thread": "vlm-events_3"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073066.5713954,
+        "recorded_at": "2026-09-22T10:31:06.571279+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.4667524060059804,
+        "thread": "vlm-compact_3"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073066.718659,
+        "recorded_at": "2026-09-22T10:31:06.718497+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.6136027079919586,
+        "thread": "vlm-events_0"
+      }
+    ],
+    "normal_requests_with_new_tls": 0,
+    "protocol_profile": [],
+    "playback_event_loop_lag": {
+      "n": 456,
+      "median": 0.001263400501920836,
+      "p95": 0.02929140499909408,
+      "max": 1.6950072080129757
+    },
+    "playback_watchdog_stalls": 8,
+    "maximum_native_threads_during_stalls": 81,
+    "websocket_negotiation": {
+      "extensions": null
+    },
+    "face_preparation": null,
+    "receiver_errors": []
+  },
+  "parallel-face-prepared": {
+    "source_hash": "2c73b162bbd5c407efb99ac01c245a659d90f8d7a4e3ea8f20054dafd14565e6",
+    "source_accepted": 279,
+    "calls": 100,
+    "public_reports": 50,
+    "publication_states": {
+      "completed": 100
+    },
+    "face_reports": 70,
+    "face_errors": {
+      "None": 70
+    },
+    "warmups": [
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073485.0115883,
+        "recorded_at": "2026-09-22T10:38:05.011388+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.607724629007862,
+        "thread": "vlm-compact_3"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073485.0131772,
+        "recorded_at": "2026-09-22T10:38:05.013112+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.6079749450000236,
+        "thread": "vlm-events_2"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073485.0146172,
+        "recorded_at": "2026-09-22T10:38:05.014546+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.6074521109985653,
+        "thread": "vlm-compact_1"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073485.0164647,
+        "recorded_at": "2026-09-22T10:38:05.016311+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.6106592200085288,
+        "thread": "vlm-compact_0"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073485.0173395,
+        "recorded_at": "2026-09-22T10:38:05.017282+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.6133184919890482,
+        "thread": "vlm-events_0"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073485.0180614,
+        "recorded_at": "2026-09-22T10:38:05.018005+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.6137268189922906,
+        "thread": "vlm-events_1"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073485.1960268,
+        "recorded_at": "2026-09-22T10:38:05.195912+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.7905349499924341,
+        "thread": "vlm-events_3"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790073485.6862235,
+        "recorded_at": "2026-09-22T10:38:05.686055+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 2.2745442610030295,
+        "thread": "vlm-compact_2"
+      }
+    ],
+    "normal_requests_with_new_tls": 0,
+    "protocol_profile": [],
+    "playback_event_loop_lag": {
+      "n": 540,
+      "median": 0.0006985560015891623,
+      "p95": 0.016307821997907007,
+      "max": 0.06860254500352311
+    },
+    "playback_watchdog_stalls": 0,
+    "maximum_native_threads_during_stalls": null,
+    "websocket_negotiation": {
+      "extensions": null
+    },
+    "face_preparation": {
+      "prepared": true,
+      "warmup_seconds": 9.441378495001118
+    },
+    "receiver_errors": []
+  },
+  "parallel-warm-only": {
+    "source_hash": "837ac0a2930c69c933bbf697662efe91c93657200536736cb2f90d1778458865",
+    "source_accepted": 279,
+    "calls": 102,
+    "public_reports": 51,
+    "publication_states": {
+      "completed": 102
+    },
+    "face_reports": 70,
+    "face_errors": {
+      "None": 70
+    },
+    "warmups": [
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072634.5025227,
+        "recorded_at": "2026-09-22T10:23:54.502405+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.0128313480090583,
+        "thread": "vlm-compact_0"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072634.541736,
+        "recorded_at": "2026-09-22T10:23:54.541585+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.0504467300052056,
+        "thread": "vlm-compact_1"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072634.8807487,
+        "recorded_at": "2026-09-22T10:23:54.880645+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.391622338007437,
+        "thread": "vlm-events_2"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072635.0222692,
+        "recorded_at": "2026-09-22T10:23:55.022108+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.5277217580005527,
+        "thread": "vlm-compact_2"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072635.0228639,
+        "recorded_at": "2026-09-22T10:23:55.022798+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 1.5345267890079413,
+        "thread": "vlm-events_1"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072635.5131543,
+        "recorded_at": "2026-09-22T10:23:55.513040+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 2.0252495689928764,
+        "thread": "vlm-compact_3"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072636.2860394,
+        "recorded_at": "2026-09-22T10:23:56.285815+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 2.79642270700424,
+        "thread": "vlm-events_3"
+      },
+      {
+        "kind": "vlm_connection_warmup_timing",
+        "at": 1790072636.5596633,
+        "recorded_at": "2026-09-22T10:23:56.559444+00:00",
+        "outcome": "transport_ready",
+        "total_seconds": 3.0713755060132826,
+        "thread": "vlm-events_0"
+      }
+    ],
+    "normal_requests_with_new_tls": 0,
+    "protocol_profile": [
+      {
+        "function": "('~', 0, '<built-in method zlib.compressobj>')",
+        "calls": 1,
+        "own_seconds": 6.401e-06,
+        "cumulative_seconds": 6.401e-06
+      },
+      {
+        "function": "('~', 0, '<built-in method zlib.decompressobj>')",
+        "calls": 1,
+        "own_seconds": 5.3e-06,
+        "cumulative_seconds": 5.3e-06
+      },
+      {
+        "function": "('~', 0, \"<method 'compress' of 'zlib.Compress' objects>\")",
+        "calls": 283,
+        "own_seconds": 0.010858806,
+        "cumulative_seconds": 0.010858806
+      },
+      {
+        "function": "('~', 0, \"<method 'flush' of 'zlib.Compress' objects>\")",
+        "calls": 283,
+        "own_seconds": 0.119775563,
+        "cumulative_seconds": 0.119775563
+      },
+      {
+        "function": "('~', 0, \"<method 'decompress' of 'zlib.Decompress' objects>\")",
+        "calls": 560,
+        "own_seconds": 2.2449835190000003,
+        "cumulative_seconds": 2.2449835190000003
+      }
+    ],
+    "playback_event_loop_lag": {
+      "n": 492,
+      "median": 0.0005794480079202857,
+      "p95": 0.014584581999224605,
+      "max": 1.1144556660059606
+    },
+    "playback_watchdog_stalls": 0,
+    "maximum_native_threads_during_stalls": null,
+    "websocket_negotiation": null,
+    "face_preparation": null,
+    "receiver_errors": []
+  }
+}

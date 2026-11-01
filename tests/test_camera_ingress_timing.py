@@ -2,6 +2,7 @@
 
 import json
 import time
+from collections import OrderedDict
 from threading import RLock
 from types import SimpleNamespace
 
@@ -35,7 +36,8 @@ def runtime_for_ingress():
     runtime._camera_sample_period = 0.4
     runtime._camera_frame_sequence = 0
     runtime._session_started_monotonic = time.monotonic()
-    runtime._last_camera_receipt = None
+    runtime._camera_receipts = OrderedDict()
+    runtime._camera_blocked_receipt = None
     runtime._camera_display_metadata = CameraDisplayMetadata()
     runtime._camera_display_metadata.reset("ingress-run")
     queued, displayed = [], []
@@ -215,3 +217,59 @@ def test_camera_stop_freezes_capture_clock_before_slow_face_drain(tmp_path):
     finally:
         server.release.set()
         coordinator.close()
+
+
+def test_pipelined_receipts_deduplicate_earlier_frame_and_reject_changed_payload():
+    runtime, queued, displayed = runtime_for_ingress()
+    jpeg = source()
+
+    def admit(index, data=jpeg, **changes):
+        header = dict(stream_session_id="ingress-run", generation=3,
+                      crop_version=0, source_sequence=index, media_timestamp=index * .4)
+        header.update(changes)
+        return runtime.push_camera_frame(data, width=20, height=10,
+                                         owner="private-owner", **header)
+
+    assert admit(1) and admit(2) and admit(3)
+    assert admit(1) and admit(2)  # ACK loss after later frames were admitted
+    assert len(queued) == len(displayed) == 3
+    assert not admit(1, jpeg + b"changed")
+    assert not admit(1, generation=4)
+    assert not admit(1, stream_session_id="other")
+    assert not admit(1, media_timestamp=1.1)
+    for index in range(4, 70):
+        assert admit(index)
+    assert len(runtime._camera_receipts) == 64
+    assert not admit(1)  # evicted receipt is never silently re-admitted
+    assert len(queued) == 69
+
+
+def test_capacity_barrier_preserves_order_and_vlm_offers_exactly_once():
+    runtime, queued, displayed = runtime_for_ingress()
+    jpeg, offered = source(), []
+    runtime._vlm_branch = SimpleNamespace(
+        config=SimpleNamespace(stream_session_id="ingress-run"),
+        offer=lambda data, timestamp, sequence: offered.append(sequence),
+        dispatch_camera_source=lambda *_: False,
+    )
+    original = runtime._session.push_camera_frame
+
+    def admit(index):
+        return runtime.push_camera_frame(
+            jpeg, width=20, height=10, owner="private-owner",
+            stream_session_id="ingress-run", generation=3, crop_version=0,
+            source_sequence=index, media_timestamp=index * .4,
+        )
+
+    assert admit(0)
+    runtime._session.push_camera_frame = lambda *_, **__: False
+    assert not admit(1)
+    runtime._session.push_camera_frame = original
+    assert not admit(2) and not admit(3)  # even though downstream has space now
+    assert admit(0)  # earlier receipt is still safe through the barrier
+    assert offered == [0]
+    assert admit(1) and admit(2) and admit(3)
+    assert admit(1) and admit(2)
+    assert offered == [0, 1, 2, 3]
+    assert [stamp["source_frame_index"] for _, stamp in queued] == offered
+    assert len(displayed) == 4

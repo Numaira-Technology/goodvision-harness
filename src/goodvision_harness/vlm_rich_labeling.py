@@ -16,9 +16,13 @@ import cv2
 import httpx
 import numpy as np
 
-from .aiclub import AIClubClient, AIClubSettings
 from .contracts import NormalizedBBox
-from .model_api import ModelAPIError, environment_api_key
+from .model_api import (
+    ModelAPIClient,
+    ModelAPIError,
+    ModelAPISettings,
+    environment_api_key,
+)
 from .rich_labeling import RichLabelObject, RichLabelProtocolError, RichLabelSnapshot
 from .streaming_model_api import complete_stream
 from .video_to_stream import encode_jpeg
@@ -571,7 +575,7 @@ class VLMRichLabelClient:
 
     def __init__(
         self,
-        settings: AIClubSettings,
+        settings: ModelAPISettings,
         *,
         model: str,
         api_key: Callable[[], str | None] | str | None = None,
@@ -764,7 +768,7 @@ class VLMRichLabelClient:
         choices = response.get("choices", [])
         if choices and choices[0].get("finish_reason") == "length":
             raise RichLabelProtocolError("rich annotation response was truncated")
-        text = AIClubClient.assistant_text(response)
+        text = ModelAPIClient.assistant_text(response)
         if self.require_complete:
             validate_complete_compact_annotation(text, self.scope)
         objects = parse_rich_annotation(text)
@@ -895,7 +899,7 @@ class VLMRichLabelClient:
             # fails; this never publishes a partial annotation snapshot.
             if self._part_response_observer is not None:
                 self._part_response_observer(name, response)
-            text = AIClubClient.assistant_text(response)
+            text = ModelAPIClient.assistant_text(response)
             if self.require_complete:
                 validate_complete_compact_annotation(
                     text, "items" if name == "items" else "people",

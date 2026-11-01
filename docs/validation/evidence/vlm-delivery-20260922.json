@@ -1,0 +1,99 @@
+{
+  "date": "2026-09-22",
+  "scope": "one source, full original video replay, real OpenRouter + SAM GPU + CPU InsightFace",
+  "base_commit": "71115f8208bb377f4810a9c8e54cf74113b0201c",
+  "snapshot_manifest_sha256": "f0c033a911eab4acbb222508d687bb5a8616ff4588d89fe1c7ca2b2706db1850",
+  "versions_note": "Baseline main process loaded before concurrent workspace edits; controlled run froze the then-current source including uncommitted SAM display/webhook changes. This is an independence experiment, not a controlled performance A/B.",
+  "input_sha256": "2ac7a0f3271c4c9937b1796bdc43526617d9b1715de9bdf15713d8d3d80dacb9",
+  "input_duration_seconds": 55.798021,
+  "model_route": "C / AA / OpenRouter qwen/qwen3-vl-30b-a3b-instruct, provider alibaba",
+  "sam_gpu": "RTX 4090",
+  "sam_instance_id": 51931346,
+  "insightface_provider": "CPUExecutionProvider",
+  "baseline": {
+    "vlm_packets": 31,
+    "vlm_success": 31,
+    "vlm_failed": 0,
+    "general_stream_vlm_ids": 31,
+    "vlm_missing_from_general": [],
+    "published_to_received_seconds": {
+      "count": 31,
+      "min": 0.030678749084472656,
+      "median": 0.07860374450683594,
+      "p95": 0.5586473941802979,
+      "max": 1.2767307758331299
+    },
+    "source_to_received_seconds": {
+      "count": 31,
+      "min": 7.19844651222229,
+      "median": 11.171584844589233,
+      "p95": 18.35937476158142,
+      "max": 19.060752391815186
+    },
+    "model_seconds": {
+      "count": 31,
+      "min": 5.469758807000289,
+      "median": 7.700562140000329,
+      "p95": 10.395592822000253,
+      "max": 11.138112973000261
+    }
+  },
+  "controlled": {
+    "vlm_packets": 23,
+    "vlm_success": 21,
+    "vlm_failed": 2,
+    "general_stream_vlm_ids": 23,
+    "vlm_missing_from_general": [],
+    "published_to_received_seconds": {
+      "count": 23,
+      "min": 0.008037567138671875,
+      "median": 0.05018329620361328,
+      "p95": 0.5506267547607422,
+      "max": 0.801243782043457
+    },
+    "source_to_received_seconds": {
+      "count": 23,
+      "min": 7.489586591720581,
+      "median": 9.315346002578735,
+      "p95": 15.56465458869934,
+      "max": 15.892733573913574
+    },
+    "model_seconds": {
+      "count": 23,
+      "min": 6.9018030130000625,
+      "median": 8.534634250000181,
+      "p95": 15.112526108999646,
+      "max": 15.293371956000101
+    }
+  },
+  "controlled_hold_seconds_per_branch": 35,
+  "packets_received_while_both_held": 15,
+  "positive_labels_while_both_held": [
+    "fall",
+    "fight",
+    "smoking",
+    "weapon"
+  ],
+  "expected_episode_hits": {
+    "baseline": "3/3 observed positives",
+    "controlled": "3/3 observed positives"
+  },
+  "limitations": [
+    "One video is not an accuracy benchmark.",
+    "Smoking positive is the annotation high-sensitivity policy; smoking as a real-world fact is unresolved.",
+    "False weapon observations at source 10.96 s and 48.23 s, false fall at 25.67 s in baseline.",
+    "Controlled run contains two explicit model timeout reports.",
+    "Expected fall observation at 12.72 s had no SAM association or corresponding archived episode.",
+    "SSE delivery is verified; configured webhook delivery was not exercised.",
+    "Baseline receiver stopped before archive postprocessing ended; subsequent archive inspection is REST evidence, not live receipt."
+  ],
+  "receiver_contract_http_replay": {
+    "vlm_packets": 23,
+    "pending_positive_alerts": 8
+  },
+  "focused_tests_passed": 57,
+  "gpu_release": {
+    "verified_at_epoch": 1790007070.5180154,
+    "instances": []
+  }
+}

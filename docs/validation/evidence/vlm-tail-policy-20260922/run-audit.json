@@ -1,0 +1,307 @@
+{
+  "actual_models": {
+    "qwen/qwen3-vl-8b-instruct:nitro": 87
+  },
+  "actual_provider_policy": {
+    "sort": "throughput",
+    "allow_fallbacks": true,
+    "ignore": [
+      "coreweave",
+      "novita"
+    ]
+  },
+  "actual_providers": {
+    "Alibaba": 85
+  },
+  "calls": 87,
+  "information_calls": 49,
+  "information_publications": 48,
+  "publication_states": {
+    "completed": 84,
+    "failed": 2
+  },
+  "information_states": {
+    "completed": 46,
+    "failed": 2
+  },
+  "discarded": [
+    {
+      "kind": "vlm_information_report_discarded",
+      "at": 1790076556.9792385,
+      "recorded_at": "2026-09-22T11:29:16.979145+00:00",
+      "stream_session_id": "2528883a-29b4-43e7-b985-17859f7ca384",
+      "request_id": "e6b5f23b-c543-46a5-9aa8-41000a77516d",
+      "source_sequence": 758,
+      "reason": "superseded",
+      "error_code": null,
+      "model_seconds": 4.015171921986621,
+      "thread": "MainThread"
+    }
+  ],
+  "frames_sent_and_accepted": 279,
+  "all_reports_received": true,
+  "source_order_monotonic": true,
+  "preparation": {
+    "started_at": 1790076523.873208,
+    "completed_at": 1790076536.0398889,
+    "seconds": 12.172000000005937
+  },
+  "warmups": [
+    {
+      "kind": "vlm_connection_warmup_timing",
+      "at": 1790076535.8666577,
+      "recorded_at": "2026-09-22T11:28:55.866392+00:00",
+      "outcome": "transport_ready",
+      "total_seconds": 0.9892509130004328,
+      "thread": "vlm-compact_0"
+    },
+    {
+      "kind": "vlm_connection_warmup_timing",
+      "at": 1790076535.8688333,
+      "recorded_at": "2026-09-22T11:28:55.868728+00:00",
+      "outcome": "transport_ready",
+      "total_seconds": 0.98939092400542,
+      "thread": "vlm-compact_2"
+    },
+    {
+      "kind": "vlm_connection_warmup_timing",
+      "at": 1790076535.8699644,
+      "recorded_at": "2026-09-22T11:28:55.869876+00:00",
+      "outcome": "transport_ready",
+      "total_seconds": 0.9909766420023516,
+      "thread": "vlm-compact_1"
+    },
+    {
+      "kind": "vlm_connection_warmup_timing",
+      "at": 1790076535.8713984,
+      "recorded_at": "2026-09-22T11:28:55.871200+00:00",
+      "outcome": "transport_ready",
+      "total_seconds": 0.9944122000015341,
+      "thread": "vlm-events_3"
+    },
+    {
+      "kind": "vlm_connection_warmup_timing",
+      "at": 1790076535.8730166,
+      "recorded_at": "2026-09-22T11:28:55.872915+00:00",
+      "outcome": "transport_ready",
+      "total_seconds": 0.9967623759876005,
+      "thread": "vlm-events_1"
+    },
+    {
+      "kind": "vlm_connection_warmup_timing",
+      "at": 1790076535.8751447,
+      "recorded_at": "2026-09-22T11:28:55.875024+00:00",
+      "outcome": "transport_ready",
+      "total_seconds": 0.9985550109995529,
+      "thread": "vlm-events_2"
+    },
+    {
+      "kind": "vlm_connection_warmup_timing",
+      "at": 1790076535.8764393,
+      "recorded_at": "2026-09-22T11:28:55.876358+00:00",
+      "outcome": "transport_ready",
+      "total_seconds": 1.0004637549864128,
+      "thread": "vlm-events_0"
+    },
+    {
+      "kind": "vlm_connection_warmup_timing",
+      "at": 1790076536.0327196,
+      "recorded_at": "2026-09-22T11:28:56.032528+00:00",
+      "outcome": "transport_ready",
+      "total_seconds": 1.1569534939917503,
+      "thread": "vlm-compact_3"
+    }
+  ],
+  "face_preparation_logging_note": "The full-replay diagnostic handler excluded face_ records. The separate two-start no-frame check captures face preparation with the same application source.",
+  "residency_check": [
+    {
+      "index": 0,
+      "start_seconds": 13.25,
+      "stream_session_id": "83955b26-0611-4e4e-aa12-d4b7f4f49d2d",
+      "final_vlm": {
+        "state": "stopping",
+        "succeeded_requests": 0,
+        "failed_requests": 0,
+        "last_attempt_state": null,
+        "last_attempt_error": null,
+        "analysis_complete": false,
+        "localization_complete": false,
+        "pid": 194,
+        "transport_warmup_slots": 8,
+        "transport_warmup_ready": 8,
+        "transport_warmup_failed": 0,
+        "active_requests": 0,
+        "inflight_requests": 0,
+        "pending_requests": 0,
+        "retained_frames": 0,
+        "retained_bytes": 0,
+        "stream_session_id": "83955b26-0611-4e4e-aa12-d4b7f4f49d2d",
+        "generation": 1,
+        "route_id": "A",
+        "event_labels": [
+          "fight",
+          "smoking",
+          "fall",
+          "weapon"
+        ],
+        "independent": true,
+        "last_source_age_seconds": null,
+        "last_result_age_seconds": null,
+        "last_success_age_seconds": null,
+        "input_capacity": 8,
+        "output_capacity": 16,
+        "source_sample_fps": 2.5,
+        "observation_fps": 1.25,
+        "output_mode": "parallel",
+        "paired_admission": false,
+        "independent_lane_admission": true,
+        "running": false,
+        "ready": false,
+        "readiness_reason": "stopping"
+      }
+    },
+    {
+      "index": 1,
+      "start_seconds": 4.312000000005355,
+      "stream_session_id": "24320c60-a84c-48af-a427-5983cd8b845c",
+      "final_vlm": {
+        "state": "stopping",
+        "succeeded_requests": 0,
+        "failed_requests": 0,
+        "last_attempt_state": null,
+        "last_attempt_error": null,
+        "analysis_complete": false,
+        "localization_complete": false,
+        "pid": 230,
+        "transport_warmup_slots": 8,
+        "transport_warmup_ready": 8,
+        "transport_warmup_failed": 0,
+        "active_requests": 0,
+        "inflight_requests": 0,
+        "pending_requests": 0,
+        "retained_frames": 0,
+        "retained_bytes": 0,
+        "stream_session_id": "24320c60-a84c-48af-a427-5983cd8b845c",
+        "generation": 3,
+        "route_id": "A",
+        "event_labels": [
+          "fight",
+          "smoking",
+          "fall",
+          "weapon"
+        ],
+        "independent": true,
+        "last_source_age_seconds": null,
+        "last_result_age_seconds": null,
+        "last_success_age_seconds": null,
+        "input_capacity": 8,
+        "output_capacity": 16,
+        "source_sample_fps": 2.5,
+        "observation_fps": 1.25,
+        "output_mode": "parallel",
+        "paired_admission": false,
+        "independent_lane_admission": true,
+        "running": false,
+        "ready": false,
+        "readiness_reason": "stopping"
+      }
+    }
+  ],
+  "residency_faces": [
+    {
+      "kind": "face_analysis_preparation",
+      "at": 1790077100.3988078,
+      "recorded_at": "2026-09-22T11:38:20.398649+00:00",
+      "total_seconds": 9.39054218500678,
+      "model_warmup_seconds": 9.390477980996366,
+      "reused": false,
+      "thread": "ThreadPoolExecutor-0_0"
+    },
+    {
+      "kind": "face_analysis_preparation",
+      "at": 1790077105.3982437,
+      "recorded_at": "2026-09-22T11:38:25.398096+00:00",
+      "total_seconds": 6.1010068748146296e-06,
+      "model_warmup_seconds": 0.0,
+      "reused": true,
+      "thread": "ThreadPoolExecutor-0_0"
+    }
+  ],
+  "playback_event_loop_lag": {
+    "n": 547,
+    "median": 0.0005349789920728598,
+    "p95": 0.008775519998744125,
+    "max": 0.05313622300163842
+  },
+  "playback_watchdog_stalls": [],
+  "final_stats": {
+    "state": "stopped",
+    "succeeded_requests": 84,
+    "failed_requests": 2,
+    "last_attempt_state": "completed",
+    "last_attempt_error": null,
+    "analysis_complete": true,
+    "localization_complete": false,
+    "pid": 191,
+    "transport_warmup_slots": 8,
+    "transport_warmup_ready": 8,
+    "transport_warmup_failed": 0,
+    "active_requests": 0,
+    "inflight_requests": 0,
+    "pending_requests": 0,
+    "retained_frames": 6,
+    "retained_bytes": 432729,
+    "source_samples": 108,
+    "claimed_requests": 87,
+    "information_last_result": {
+      "frame_sequence": 2713,
+      "state": "completed",
+      "seconds": 3.6835451139922952
+    },
+    "ungrounded_verdicts": 277,
+    "unlocalized_reports": 73,
+    "last_result_at": "2026-09-22T11:29:59.219899+00:00",
+    "last_attempt_validation_reason": null,
+    "last_source_to_publish_seconds": 5.682122133002849,
+    "last_success_at": "2026-09-22T11:29:59.219899+00:00",
+    "grounding_last_result": {
+      "frame_sequence": 2764,
+      "state": "completed",
+      "seconds": 5.682122133002849
+    },
+    "incomplete_reports": 1,
+    "compact_busy_windows_skipped": 15,
+    "events_busy_windows_skipped": 4,
+    "late_information_reports_discarded": 1,
+    "information_http_timeouts": 2,
+    "admitted_samples": 108,
+    "published_reports": 86,
+    "stream_session_id": "2528883a-29b4-43e7-b985-17859f7ca384",
+    "generation": 1,
+    "route_id": "A",
+    "event_labels": [
+      "fight",
+      "smoking",
+      "fall",
+      "weapon"
+    ],
+    "independent": true,
+    "last_source_age_seconds": 12.24456778500462,
+    "last_result_age_seconds": 6.562447752003209,
+    "last_success_age_seconds": 6.562448451993987,
+    "input_capacity": 8,
+    "output_capacity": 16,
+    "source_sample_fps": 2.5,
+    "observation_fps": 1.25,
+    "output_mode": "parallel",
+    "paired_admission": false,
+    "independent_lane_admission": true,
+    "running": false,
+    "ready": false,
+    "readiness_reason": "stopped"
+  },
+  "gpu_calls": 0,
+  "face_reports": 70,
+  "metadata_successes": 85,
+  "receiver_errors": []
+}

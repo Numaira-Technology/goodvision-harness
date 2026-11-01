@@ -151,6 +151,7 @@ def rows(archive: EventArchive) -> list[dict[str, Any]]:
 
 def finish(archive: EventArchive) -> list[dict[str, Any]]:
     assert archive.end_session("session")
+    # This validates complete event records, not shared-runner disk throughput.
     assert archive.wait_until_idle(_ARCHIVE_DRAIN_TIMEOUT), archive.status()
     assert archive.status()["encoding_failures"] == 0
     return rows(archive)

@@ -22,10 +22,10 @@ def test_full_delivery_keeps_both_images_and_requires_gpu_profile_for_rich() -> 
     services = _load_delivery()["services"]
     assert set(services) == {"harness", "rich-label-worker"}
     assert services["harness"]["image"] == (
-        "goodvision-harness:2026.09.10-full.4"
+        "goodvision-harness:20260923-full1"
     )
     assert services["rich-label-worker"]["image"] == (
-        "goodvision-rich-label-worker:2026.09.10-full.4"
+        "goodvision-rich-label-worker:20260923-full1"
     )
     for service in services.values():
         assert "build" not in service
@@ -80,6 +80,15 @@ def test_full_gpu_delivery_preserves_project_and_persistent_volumes() -> None:
         services["harness"]["volumes"]
     )
     assert services["rich-label-worker"]["volumes"] == ["rich-models:/models"]
+
+
+def test_tracking_journal_uses_writable_delivery_volume() -> None:
+    service = _load_delivery()["services"]["harness"]
+    assert service["read_only"] is True
+    assert "face-data:/data" in service["volumes"]
+    assert service["environment"]["GOODVISION_TRACKING_SPOOL_DIRECTORY"] == (
+        "/data/tracking-spool"
+    )
 
 
 def test_full_gpu_worker_does_not_publish_host_ports() -> None:

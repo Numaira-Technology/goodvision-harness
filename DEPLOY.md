@@ -1,16 +1,15 @@
-# GoodVision 完整功能部署 · 2026.09.10-full.4
+# GoodVision 完整功能部署 · 20260923-full1
 
 本版提供完整双镜像，由随包启动脚本检查容器运行环境并自动选择 GPU 或 CPU 模式。
-所有应用代码、控制台和校验入口均来自本版源码；GPU 运行依赖复用经过版本与兼容性
-核对的依赖层。两个镜像始终使用本版程序。
+所有应用代码、控制台和校验入口均来自本版源码；GPU 运行依赖由本次 Docker 构建安装并完成依赖自检。两个镜像始终使用本版程序。
 
 容器平台为 Linux/amd64，使用 Docker Compose v2；自动启动脚本需要 Python 3.10 或以上。
 Windows Docker Desktop 使用 Linux 容器模式，启动命令可写为 `py -3 start_delivery.py`。
 
 | 服务 | 镜像 | 功能 |
 | --- | --- | --- |
-| 主服务 | `goodvision-harness:2026.09.10-full.4` | 五能力判断、人脸识别、连续事件视频证据、JSON/SSE、视频与叠框 |
-| 感知服务 | `goodvision-rich-label-worker:2026.09.10-full.4` | 人物/物品检测、会话内跟踪、异步行人属性 |
+| 主服务 | `goodvision-harness:20260923-full1` | 五能力判断、人脸识别、连续事件视频证据、JSON/SSE、视频与叠框 |
+| 感知服务 | `goodvision-rich-label-worker:20260923-full1` | 人物/物品检测、会话内跟踪、异步行人属性 |
 
 控制台支持 **A–H** 八条线路的手动选择与保存；自动测速按成功请求的中位耗时选最快线路，
 候选线路需所有测试请求成功。四类行为事件可以在运行前分别选择敏感度；吸烟默认高敏感度，
@@ -18,7 +17,7 @@ Windows Docker Desktop 使用 Linux 容器模式，启动命令可写为 `py -3 
 
 ## 1. 交付文件与模型
 
-完整包使用 `goodvision-full-2026.09.10.4.tar`，包含上述两个镜像。
+完整包使用 `goodvision-full-20260923-full1.tar.gz`，包含上述两个镜像。
 `IMAGES.json` 记录平台、镜像 ID 和归档校验值；`SHA256SUMS.txt` 用于校验镜像包。
 `SOURCE_HASHES.json` 记录与镜像内核对过的程序文件，`RELEASE.md` 记录本版验证范围。
 
@@ -62,15 +61,15 @@ GPU 感知功能还需要目标检测高精度模型包和属性标准模型包�
 
 ```bash
 sha256sum -c SHA256SUMS.txt
-docker load -i goodvision-full-2026.09.10.4.tar
+docker load -i goodvision-full-20260923-full1.tar.gz
 python3 start_delivery.py
 ```
 
 macOS 校验可用 `shasum -a 256 -c SHA256SUMS.txt`；Windows PowerShell 可用
-`Get-FileHash .\goodvision-full-2026.09.10.4.tar -Algorithm SHA256`，与
+`Get-FileHash .\goodvision-full-20260923-full1.tar.gz -Algorithm SHA256`，与
 `SHA256SUMS.txt` 比对后执行 `docker load` 和 `py -3 start_delivery.py`。
 
-本次 macOS Docker Desktop 环境的自动 GPU 探测返回无法确认设备，因此在本机使用
+如需显式选择 CPU 模式，可使用
 `python3 start_delivery.py --mode cpu`。确认不使用 GPU 的其他环境也可显式选择 CPU；
 这会保留完整主服务，并停止可选感知服务。自动探测遇到未知 GPU 运行时错误会明确停止，
 不会将“探测失败”当作“确定没有 GPU”。可加 `--dry-run` 先查看启动命令。

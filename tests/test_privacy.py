@@ -15,11 +15,6 @@ from fastapi.testclient import TestClient
 import goodvision_harness.config as config_module
 import goodvision_harness.model_api as transport_module
 import goodvision_harness.overlay as overlay_module
-from goodvision_harness.aiclub import (
-    AIClubClient,
-    AIClubError,
-    AIClubSettings,
-)
 from goodvision_harness.camera_display import CameraDisplayMetadata
 from goodvision_harness.contracts import (
     PUBLIC_MODEL_NAME,
@@ -30,6 +25,11 @@ from goodvision_harness.contracts import (
     NormalizedBBox,
 )
 from goodvision_harness.delivery import WebhookDelivery
+from goodvision_harness.model_api import (
+    ModelAPIClient,
+    ModelAPIError,
+    ModelAPISettings,
+)
 from goodvision_harness.privacy import (
     PUBLIC_ANALYSIS_ERROR,
     PUBLIC_INSPECTION_ERROR,
@@ -205,12 +205,12 @@ def test_provider_error_body_and_network_exception_are_not_echoed(
         raise error
 
     monkeypatch.setattr(transport_module, "urlopen", fail)
-    client = AIClubClient(
-        AIClubSettings(max_retries=0),
+    client = ModelAPIClient(
+        ModelAPISettings(max_retries=0),
         api_key="not-a-real-key",
     )
 
-    with pytest.raises(AIClubError) as raised:
+    with pytest.raises(ModelAPIError) as raised:
         client.chat_completion(model="private-model", messages=[{"role": "user"}])
 
     assert str(raised.value) == "model API returned HTTP 500"

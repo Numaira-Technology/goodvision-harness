@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent.parent
 BASE_ID = "sha256:03658e7552eed143aa9bbba1ae42321d811cb9bc5abd0fe3a1962170e6beba1b"
 LOCAL_BASE_IDS = (
+    # Fresh full GPU customer image; source hashes verified for this release.
+    "sha256:a88f6fc6864308172c6f6a45d8344e37a2a763e08c2256862939a6a951a22a45",
     "sha256:a805e6a6ea754590f064d74bb5d1c0ffa8521428ba675c08e65cc14b366de604",
     "sha256:8b1547f1ffa3ac3fdaca642cb0e38839184540099180d442532cf51a6b158e84",
     "sha256:62b4cb35e295bc15a7330733a07ee91b82a6fb691494c5eeeb53545e24dbfb4b",

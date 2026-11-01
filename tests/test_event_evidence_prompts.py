@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
 
+import httpx
 import pytest
 
 from goodvision_harness.config import load_config
@@ -22,7 +23,11 @@ from goodvision_harness.grounding import (
     parse_streaming_decision_prefix,
     parse_streaming_multi_decision_prefix,
 )
-from goodvision_harness.model_api import ModelAPIClient
+from goodvision_harness.model_api import (
+    ModelAPIClient,
+    ModelAPISettings,
+    PooledModelAPIClient,
+)
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -108,10 +113,10 @@ def test_evidence_rules_reach_model_in_each_detection_path(
     prompt = content[0]["text"]
     expected = (
         settings.multi_event_prompt
-        if not legacy_single and event_labels == SAFETY_EVENT_LABELS
+        if not legacy_single and event_labels == ("fight", "smoking", "fall", "weapon")
         else settings.prompt
     )
-    if not legacy_single and event_labels != SAFETY_EVENT_LABELS:
+    if not legacy_single and event_labels != ("fight", "smoking", "fall", "weapon"):
         expected = expected.split("Respond with only this JSON object:")[0].rstrip()
         assert "extend that same JSON object" not in prompt
     assert prompt.startswith(expected)
@@ -456,3 +461,76 @@ def test_streaming_multi_parser_never_invents_missing_positive_evidence() -> Non
         parse_multi_grounded_classification(
             json.dumps(payload), event_labels=("smoking", "fall"),
         )
+
+
+@pytest.mark.parametrize("failed_label", ["smoking", "fall"])
+def test_multi_stream_retries_only_before_any_preliminary_delivery(failed_label):
+    labels = ("smoking", "fall")
+    requests, delivered = [], []
+    failed = False
+
+    def decisions(detected):
+        return [
+            {"event_label": label, "detected": detected, "confidence": 0.9}
+            for label in labels
+        ]
+
+    def event(content, finish=None):
+        chunk = {"choices": [{
+            "index": 0, "delta": {"content": content}, "finish_reason": finish,
+        }]}
+        return ("data: " + json.dumps(chunk) + "\n\n").encode()
+
+    class Interrupted(httpx.SyncByteStream):
+        def __iter__(self):
+            yield event(json.dumps({"decisions": decisions(True)})[:-1] + ",")
+            raise httpx.ReadError("simulated interruption")
+
+    def handle(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"},
+                stream=Interrupted(),
+            )
+        content = json.dumps({"decisions": decisions(False), "no_events": 0.9})
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"},
+            content=event(content, "stop") + b"data: [DONE]\n\n",
+        )
+
+    def deliver(result):
+        nonlocal failed
+        if result.event_label == failed_label and not failed:
+            failed = True
+            raise OSError("advisory delivery failed")
+        delivered.append((result.event_label, result.detected))
+
+    transport = PooledModelAPIClient(
+        ModelAPISettings(max_retries=1, retry_backoff_seconds=0),
+        api_key="offline-fixture-key",
+    )
+    transport._http.close()
+    transport._http = httpx.Client(transport=httpx.MockTransport(handle))
+    try:
+        client = AIClubMultiGroundingClient(
+            load_config(ROOT / "config.yaml").inference, transport, labels,
+            stream_decisions=True, preliminary_callback=deliver,
+        )
+        window = FrameWindow(index=0, frames=(SampledFrame(
+            sample_index=0, source_frame_index=0, timestamp_seconds=0,
+            jpeg_bytes=b"test-frame", width=320, height=180,
+        ),))
+        response = client.classify_window(window)
+    finally:
+        transport.close()
+
+    if failed_label == "smoking":
+        assert len(requests) == 2
+        assert delivered == [("smoking", False), ("fall", False)]
+        assert response.ok and response.classification.detected is False
+    else:
+        assert len(requests) == 1
+        assert delivered == [("smoking", True)]
+        assert response.classification is None
+        assert response.branch_errors == (("safety", "connection"),)

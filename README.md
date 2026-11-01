@@ -6,6 +6,7 @@ It publishes structured observations, source-correlated images, continuous
 annotated video, and event video evidence. It has no runtime dependency on the
 original `goodvision` repository.
 
+`python tools/start_local_gpu.py` 自动检测本机 NVIDIA GPU，使用与 Contour 相同的 SAM 引擎运行人物追踪，大模型继续使用云端 API。
 本地 NVIDIA 部署**默认 1 路，使用 `--streams N` 按实际需要启动正整数路数**，
 12 路是容量参考值，不是软件上限。3、6、12、16 路示例见 [本地 GPU 部署说明](docs/guides/local-gpu.md)。
 同一控制台可以分别连接和并排显示已部署的 N 路视频；连接只预览，分析通过“开始全部分析”
@@ -15,14 +16,25 @@ original `goodvision` repository.
 自备 GPU 服务器均可多路，大模型仍可用云端。受管云 GPU 已支持 N 路视频和 UI 修改租用型号、数量，
 通过 `python tools/start_cloud_gpu.py --streams N` 启动，详见[云 GPU 多路追踪](docs/guides/cloud-gpu.md)。
 普通旧版外部单会话追踪服务保留兼容入口。
+云 GPU 和独立 GPU 部署将人脸识别、事件处理与证据生成放到 GPU 主机，使用该主机的 CPU。
+摄像头默认仍由本机拉流并进行必要的接入解码，再转发到 GPU 主机分析；控制台的
+“摄像头拉流位置”可选择 GPU 主机直接拉流。远端不可用时不会回退到本机分析。
+独立服务器先在 GPU 主机启动 `start_modular.py analysis`，再在本机启动 `main`，
+见 [模块化部署说明](docs/guides/modular-services.md)。
 主程序、人物追踪、大模型可以分别部署在不同机器，主程序无需显卡；控制台分别设置运行位置、
 服务器地址和追踪容量，见 [模块化部署说明](docs/guides/modular-services.md)。
-同机部署仍支持单卡共用、双卡将大模型与追踪及其他 GPU 工作分开。
+增加 `--with-local-inference` 可同时部署本地大模型和 GPU 人脸，支持单卡共用、双卡分配。
+本地大模型部署同时启动 CPU 处理服务，把图片解码、缩放、提示词构建和回复校验放到模型机器。
+已有 OpenAI 兼容端点继续支持；自备 GoodVision 模型服务器可在控制台选择对应协议，
+或使用 `--inference-protocol goodvision` 启用 CPU 委派，见[分机部署说明](docs/guides/modular-services.md)。
 每路大模型分析目标沿用 1.25 次/秒，N 路共 1.25 × N
 请求/秒，默认追踪共 2 × N 帧/秒；12 路参考目标为 15 请求/秒。
 容量验收需要真实 L40S 上的持续压测，部署成功不代表已达到该吞吐。
 
 ## Start here
+
+控制台按「实时工作台、能力与规则、事件与回放、输出与集成、部署与设置」组织，
+现有功能位置与操作流程见 [控制台使用说明](docs/guides/console.md)。
 
 | Task | Read |
 | --- | --- |
@@ -31,6 +43,20 @@ original `goodvision` repository.
 | Develop or review changes | [Contributor guide](CONTRIBUTING.md) |
 | Find detailed guides and past results | [Documentation index](docs/README.md) |
 | Run operational or evaluation tools | [Tool inventory](tools/README.md) |
+
+## Demo vs production
+
+Demo 与客户交付是**同一套代码的不同入口/配置，不是两条分支**：
+
+- **Demo / dry-run** — `HARNESS_DRY_RUN=true goodvision-harness-demo`（端口 7900，合成结果，
+  不调模型、不需人脸权重；见下方 Quick start）。
+- **Production / 客户交付** — `python tools/start_delivery.py`，配 `compose.full-gpu.delivery.yaml`
+  和 `config.delivery.yaml`，见 [DEPLOY.md](DEPLOY.md) / [RELEASE.md](RELEASE.md)。
+
+`goodvision-harness-demo` 与 `goodvision-harness` 共用同一个控制台，默认端口不同。切换环境靠
+**入口 + 运行标志 + delivery overlay/config**；按环境长期维护分支会增加共用代码的同步负担。
+目录整理须保留稳定根入口，并保持两份 `config.yaml` 一致。完整对照见
+[production vs demo 清单](docs/guides/demo-vs-delivery.md)。
 
 ## Quick start
 

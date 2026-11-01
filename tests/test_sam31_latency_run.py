@@ -2,6 +2,9 @@
 
 import importlib.util
 import json
+import threading
+import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -138,12 +141,61 @@ def test_short_eof_with_real_coordinator_closes_client_and_annotations(
 
 
 @pytest.mark.parametrize("method", tuple(perception.METHODS))
+@pytest.mark.parametrize("startup_delay", (0.0, 2.0))
 def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
-    tmp_path, monkeypatch, method
+    tmp_path, monkeypatch, method, startup_delay
 ):
     from test_perception_client import RouteServer
 
     monkeypatch.setenv("GOODVISION_SAM_SPOOL_DIRECTORY", str(tmp_path / "sam-spool"))
+    # Slow coordinator/spool setup must not consume the source replay clock.
+    # Advance only this runner's clock, without making the suite sleep for setup.
+    offset = [0.0]
+    clock = [time.perf_counter()]
+    coordinators = []
+    acknowledged_sequences = set()
+    acknowledgement = threading.Condition()
+
+    def capture_sleep(seconds):
+        # A source that expired also leaves the coordinator idle. Require its
+        # actual committed result before advancing this fixture's source clock.
+        expected = coordinators[0].stats()["submitted"]
+        with acknowledgement:
+            assert acknowledgement.wait_for(
+                lambda: len(acknowledged_sequences) == expected, timeout=5
+            )
+        assert coordinators[0].wait_until_idle(timeout_seconds=5)
+        clock[0] += seconds
+
+    monkeypatch.setattr(
+        runner,
+        "time",
+        SimpleNamespace(
+            perf_counter=lambda: clock[0] + offset[0],
+            sleep=capture_sleep,
+        ),
+    )
+    create_coordinator = runner.create_tracking_coordinator
+
+    def initialize(client, settings, on_batch):
+        def acknowledged(batch):
+            on_batch(batch)
+            with acknowledgement:
+                acknowledged_sequences.update(
+                    frame.frame_sequence for frame in batch.frames
+                )
+                acknowledgement.notify_all()
+
+        # This fixture checks route wiring and exact evidence, not host speed.
+        # Keep the real latest-only path while allowing more than the bounded
+        # acknowledgement wait for mock setup/preparation on a busy CI host.
+        settings = replace(settings, video_realtime_max_age_seconds=10)
+        coordinator = create_coordinator(client, settings, acknowledged)
+        coordinators.append(coordinator)
+        offset[0] += startup_delay
+        return coordinator
+
+    monkeypatch.setattr(runner, "create_tracking_coordinator", initialize)
 
     source = video(tmp_path, count=3)
     server = RouteServer(method)
@@ -174,7 +226,11 @@ def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
     )
     result = runner.run(args)
     assert result["ok"] and result["source_evidence_unchanged"]
-    assert result["tracking_coverage"]["all_capture_frames_processed"]
+    assert result["arrival_lateness_seconds"]["peak"] < 1
+    assert acknowledged_sequences == {0, 1, 2}
+    assert result["tracking_coverage"]["all_capture_frames_processed"], result[
+        "coordinator"
+    ]
     assert result["processing_method"] == method
     assert result["backend"] == perception.METHODS[method].backend
     assert (
@@ -184,7 +240,7 @@ def test_route_replay_uses_console_dispatch_real_backend_and_exact_sources(
     ) == (
         1,
         0.1,
-        4,
+        2,
     )
     assert result["startup_frames"] == 1 and result["max_append_frames"] == 4
     assert result["requested_batch_frames"] == 16

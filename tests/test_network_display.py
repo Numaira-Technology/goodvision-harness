@@ -57,6 +57,24 @@ def test_display_uses_new_raw_source_without_any_sam_result_or_annotation():
     assert data["config"]["enabled"] is True
 
 
+def test_canvas_tracking_gate_controls_geometry_without_interrupting_video():
+    run = runtime()
+    run._workflow_plan = {"tracking_enabled": False}
+    data, image = unpack(display_response(run))
+    assert image == b"jpeg"
+    assert data["frames"][0]["source_sequence"] == 101
+    assert data["config"]["enabled"] is False
+    assert data["metadata"] is None
+    assert data["config"]["delay_seconds"] == 6
+
+    run._workflow_plan = {"tracking_enabled": True}
+    data, image = unpack(display_response(run))
+    assert image == b"jpeg"
+    assert data["config"]["enabled"] is True
+    assert data["config"]["stream_session_id"] == "run"
+    assert data["metadata"] is not None
+
+
 def test_metadata_delta_and_connection_cursor_are_independent():
     run = runtime()
     afters = []
@@ -89,7 +107,7 @@ def test_stopping_analysis_keeps_live_video_and_removes_old_run_geometry():
     assert image == b"jpeg"
     assert data["config"]["enabled"] is False
     assert data["config"]["stream_session_id"] == "connection"
-    assert data["config"]["delay_seconds"] == 0
+    assert data["config"]["delay_seconds"] == 6
     assert data["metadata"] is None
     run._video_connection.status = lambda: {"connected": False}
     with pytest.raises(HTTPException) as exc:
@@ -156,6 +174,55 @@ def test_stream_keeps_cursor_and_observes_stop_without_a_model_result():
     data, _ = unpack(SimpleNamespace(body=second[4:], media_type=MEDIA_TYPE))
     assert cursors == [-1, 101]
     assert data["frames"] == [] and data["config"]["enabled"] is False
+    assert data["config"]["delay_seconds"] == 6
+
+
+@pytest.mark.parametrize("delay", [0, 2.5, 30])
+@pytest.mark.parametrize("mode", ["idle", "no_tracking", "other_backend"])
+def test_network_preview_buffer_is_independent_of_analysis(delay, mode):
+    run = runtime()
+    run._display_settings.delay_seconds = delay
+    if mode == "idle":
+        run._state["pipeline_state"] = "idle"
+    elif mode == "no_tracking":
+        run._workflow_plan = {"tracking_enabled": False}
+    else:
+        run.config.rich_labeling.backend = "none"
+    options = []
+    run._video_connection.display_frames = lambda after, **kwargs: (
+        options.append(kwargs) or ((101, 10.1, 1280, 720, b"jpeg"),)
+    )
+    data, _ = unpack(display_response(run))
+    assert data["config"]["enabled"] is False
+    assert data["metadata"] is None
+    assert data["config"]["delay_seconds"] == delay
+    assert data["config"]["max_history_seconds"] >= delay + 4
+    assert options[0]["max_age_seconds"] == delay + .5
+
+
+def test_live_stream_observes_buffer_changes_even_without_new_frames():
+    import asyncio
+
+    from goodvision_harness.network_display import display_stream_response
+
+    run = runtime()
+    run._state["pipeline_state"] = "idle"
+    run._video_connection.display_frames = lambda *a, **k: ()
+
+    async def read():
+        iterator = display_stream_response(run).body_iterator
+        packets = []
+        try:
+            for delay in [6, 3, 0, 8]:
+                run._display_settings.delay_seconds = delay
+                body = await anext(iterator)
+                data, _ = unpack(SimpleNamespace(body=body[4:], media_type=MEDIA_TYPE))
+                packets.append(data["config"]["delay_seconds"])
+        finally:
+            await iterator.aclose()
+        return packets
+
+    assert asyncio.run(read()) == [6, 3, 0, 8]
 
 
 def test_slow_contour_serialization_releases_source_identity_lock(monkeypatch):

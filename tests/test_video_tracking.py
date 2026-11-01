@@ -263,6 +263,27 @@ def test_async_batch_commit_is_ordered_and_partial_flush_works():
     assert client.closed.is_set()
 
 
+def test_native_display_precedes_blocked_scene_commit():
+    release, entered = Event(), Event()
+    native = []
+
+    def commit(_):
+        entered.set()
+        assert release.wait(5)
+
+    coordinator = VideoTrackingCoordinator(BatchClient(), on_batch=commit)
+    coordinator.on_native_batch = lambda result, generation: native.append(result)
+    try:
+        submit(coordinator, 0)
+        coordinator.flush()
+        assert entered.wait(2)
+        assert len(native) == 1
+        assert native[0].frames[0].frame_sequence == 0
+    finally:
+        release.set()
+        coordinator.close()
+
+
 def test_queue_is_bounded_and_reports_backpressure_while_gpu_is_busy():
     client = BatchClient(blocked=True)
     coordinator = VideoTrackingCoordinator(client, batch_frames=2)

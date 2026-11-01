@@ -1,0 +1,32 @@
+{
+  "_comment": "Running results Google Sheet for the event-recognition benchmark. Consumed by the bench-sheet-push skill. Non-secret: only the spreadsheet id + layout live here. Auth is the in-session Google OAuth connector (no keys stored).",
+  "spreadsheet_id": "1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA",
+  "spreadsheet_url": "https://docs.google.com/spreadsheets/d/1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA/edit",
+  "tab": "results",
+  "sheet_id": 0,
+  "header_rows": 2,
+  "upsert_keys": ["model", "dataset_n"],
+  "columns": [
+    {"col": "A", "key": "model",          "header": "Model",          "type": "text"},
+    {"col": "B", "key": "backend",        "header": "Backend",        "type": "text"},
+    {"col": "C", "key": "single_inf_s",   "header": "Single inf (s)", "type": "num",  "scale": "lower_better"},
+    {"col": "D", "key": "p50_12_s",       "header": "P50 @12 (s)",    "type": "num",  "scale": "lower_better"},
+    {"col": "E", "key": "p95_12_s",       "header": "P95 @12 (s)",    "type": "num",  "scale": "lower_better"},
+    {"col": "F", "key": "overall_pct",    "header": "Overall acc %",  "type": "num",  "scale": "higher_better"},
+    {"col": "G", "key": "fight_pct",      "header": "Fight %",        "type": "num",  "scale": "higher_better", "note_key": "fight_note"},
+    {"col": "H", "key": "smoking_pct",    "header": "Smoking %",      "type": "num",  "scale": "higher_better", "note_key": "smoking_note"},
+    {"col": "I", "key": "fall_pct",       "header": "Fall %",         "type": "num",  "scale": "higher_better", "note_key": "fall_note"},
+    {"col": "J", "key": "weapon_pct",     "header": "Weapon %",       "type": "num",  "scale": "higher_better", "note_key": "weapon_note"},
+    {"col": "K", "key": "hardware",       "header": "Hardware",       "type": "text"},
+    {"col": "L", "key": "price_per_mtok", "header": "Price ($/Mtok)", "type": "num",  "scale": "lower_better"},
+    {"col": "M", "key": "dataset_n",      "header": "Dataset (n)",    "type": "num"},
+    {"col": "N", "key": "spec_ver",       "header": "Spec ver",       "type": "text"},
+    {"col": "O", "key": "run_date",       "header": "Run date",       "type": "text"},
+    {"col": "P", "key": "provisional",    "header": "Provisional",    "type": "bool"},
+    {"col": "Q", "key": "source",         "header": "Source",         "type": "text"}
+  ],
+  "color_scales": {
+    "higher_better": "F,G,H,I,J  red(0) -> yellow(50) -> green(100)",
+    "lower_better":  "C,D,E (latency) and L (price)  green(min) -> yellow(p50) -> red(max)"
+  }
+}

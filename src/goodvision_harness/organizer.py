@@ -13,6 +13,7 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Any
 
+from .model_api import inference_error_detail
 from .privacy import PUBLIC_ANALYSIS_ERROR, public_safe_value
 from .sliding_window import FrameWindow
 
@@ -24,10 +25,16 @@ if TYPE_CHECKING:
 STATUS_WARMING = "warming"
 STATUS_LIVE = "live"
 _BRANCHES = frozenset({"safety", "stranger"})
-_ERROR_CODES = frozenset({
-    "request_failed", "timeout", "connection", "http_error",
-    "invalid_response", "empty_response",
-})
+_ERROR_CODES = frozenset(
+    {
+        "request_failed",
+        "timeout",
+        "connection",
+        "http_error",
+        "invalid_response",
+        "empty_response",
+    }
+)
 
 
 class ResultOrganizer:
@@ -42,6 +49,7 @@ class ResultOrganizer:
         self._decision: dict[str, Any] | None = None
         self._last_error: str | None = None
         self._branch_health: dict[str, tuple[int, str | None]] = {}
+        self._branch_error_details: dict[str, dict[str, Any]] = {}
         self._counts = {
             "submitted": 0,
             "completed": 0,
@@ -130,7 +138,8 @@ class ResultOrganizer:
             return record, self._snapshot_locked()
 
     def _update_branch_health_locked(
-        self, response: WindowResponse | GroundingResponse,
+        self,
+        response: WindowResponse | GroundingResponse,
     ) -> None:
         """Only newer evidence for the same branch can change its health.
 
@@ -141,7 +150,8 @@ class ResultOrganizer:
 
         index = response.window.index
         completed = {
-            branch for branch in getattr(response, "completed_branches", ())
+            branch
+            for branch in getattr(response, "completed_branches", ())
             if branch in _BRANCHES
         }
         errors = {
@@ -151,9 +161,7 @@ class ResultOrganizer:
             for branch, code in getattr(response, "branch_errors", ())
         }
         if completed or errors:
-            updates: dict[str, str | None] = {
-                branch: None for branch in completed
-            }
+            updates: dict[str, str | None] = {branch: None for branch in completed}
             updates.update(errors)
             if not errors and self._is_complete_response(response):
                 # Unexpected future exceptions use the legacy generic error.
@@ -167,6 +175,19 @@ class ResultOrganizer:
             previous_index = self._branch_health.get(branch, (-1, None))[0]
             if index > previous_index:
                 self._branch_health[branch] = (index, code)
+                if code is None:
+                    self._branch_error_details.pop(branch, None)
+                else:
+                    detail = (
+                        getattr(response, "branch_error_details", None) or {}
+                    ).get(branch)
+                    if detail is None and branch == "generic":
+                        detail = getattr(response, "error_detail", None)
+                    detail = detail if isinstance(detail, dict) else {}
+                    self._branch_error_details[branch] = inference_error_detail(
+                        code=detail.get("code", code),
+                        http_status=detail.get("http_status"),
+                    )
         self._last_error = (
             PUBLIC_ANALYSIS_ERROR
             if any(code is not None for _, code in self._branch_health.values())
@@ -174,7 +195,8 @@ class ResultOrganizer:
         )
 
     def _is_complete_response(
-        self, response: WindowResponse | GroundingResponse,
+        self,
+        response: WindowResponse | GroundingResponse,
     ) -> bool:
         classification = response.classification
         if classification is None or response.error:
@@ -208,6 +230,10 @@ class ResultOrganizer:
                 branch: code
                 for branch, (_, code) in sorted(self._branch_health.items())
                 if code is not None
+            },
+            "branch_error_details": {
+                branch: dict(detail)
+                for branch, detail in self._branch_error_details.items()
             },
             "counts": counts,
         }

@@ -13,8 +13,10 @@ from .privacy import PUBLIC_FACE_ERROR
 class FaceFastResults:
     """One bounded snapshot per run. Never take a service, scene or store lock."""
 
-    def __init__(self, *, stream_session_id=None, source_id=None, generation=0):
+    def __init__(self, *, stream_session_id=None, source_id=None, generation=0,
+                 display_fusion=None):
         self._lock = threading.Lock()
+        self._display_fusion = display_fusion
         self._context = dict(
             stream_session_id=stream_session_id, source_id=source_id,
             generation=generation,
@@ -37,6 +39,8 @@ class FaceFastResults:
             self._latest = None
             self._published_at = None
             self._revision += 1
+            if self._display_fusion is not None:
+                self._display_fusion.require_gallery(version)
 
     def publish(self, observation):
         frame = observation.window.newest_frame
@@ -68,14 +72,18 @@ class FaceFastResults:
         }
         with self._lock:
             if (not self._active
-                    or frame.source_frame_index <= self._source_sequence
                     or (self._gallery_version is not None
                         and observation.gallery.version != self._gallery_version)):
                 return
-            self._latest = payload
-            self._source_sequence = frame.source_frame_index
-            self._published_at = time.monotonic()
-            self._revision += 1
+            if frame.source_frame_index > self._source_sequence:
+                self._latest = payload
+                self._source_sequence = frame.source_frame_index
+                self._published_at = time.monotonic()
+                self._revision += 1
+        # Publication has completed. The display handoff only writes an
+        # image-free mailbox; it never acquires the SAM/scene/service lock.
+        if self._display_fusion is not None:
+            self._display_fusion.offer_face(payload)
 
     def snapshot(self):
         with self._lock:

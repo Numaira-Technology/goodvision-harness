@@ -1,0 +1,21 @@
+# Minimal MediaMTX for the multi-stream pressure rig (RTSP only, localhost).
+# No WebRTC/HTTPS (no phone here — streams are looped local files over RTSP),
+# so there is no cert dependency. A catch-all path accepts stream1, stream2, ...
+#
+# Run:  mediamtx diag/mediamtx-multistream.yml
+# Publish: ffmpeg ... -f rtsp rtsp://127.0.0.1:8554/stream1
+# Harness pulls: rtsp://127.0.0.1:8554/stream1
+logLevel: info
+
+rtsp: yes
+rtspAddress: :8554
+
+webrtc: no
+rtmp: no
+hls: no
+api: no
+metrics: no
+
+paths:
+  all_others:
+    source: publisher

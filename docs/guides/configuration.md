@@ -32,11 +32,10 @@ stream variable takes precedence over the legacy RTSP variable:
 | --- | --- |
 | `HARNESS_STREAM_URL` | Primary RTSP/RTMP/WHEP input URL. |
 | `RTSP_URL` | Deprecated compatibility fallback when `HARNESS_STREAM_URL` is empty. |
-| `INFERENCE_PROVIDER` | Route: `aiclub` (default), `openrouter`, or `dashscope`. |
+| `INFERENCE_PROVIDER` | Route: `openrouter` (default) or `dashscope`. |
 | `INFERENCE_MODEL` | Optional model override for the selected route. Empty uses its configured default. |
 | `INFERENCE_ENDPOINT` | Optional complete chat-completions URL override for the selected route. |
 | `INFERENCE_API_KEY` | Optional shared credential override, ahead of provider-specific environment keys. |
-| `AICLUB_API_KEY` | AIClub credential, used only when that route is selected. |
 | `OPENROUTER_API_KEY` | OpenRouter credential, used only when that route is selected. |
 | `DASHSCOPE_API_KEY` | DashScope credential, used only when that route is selected. |
 | `HARNESS_DRY_RUN` | Disable external inference and emit deterministic results. |
@@ -63,6 +62,10 @@ Do not commit `.env`, RTSP credentials, or LLM API keys.
 
 ### 切换 AI 渠道和模型
 
+AIClub 路由已移除，源码默认使用 OpenRouter。旧的 `provider: aiclub`、
+`INFERENCE_PROVIDER=aiclub` 或 AIClub 地址会被拒绝，须修改配置后重启。
+旧 AIClub 密钥记录不会迁移到 OpenRouter；已有 OpenRouter 密钥存储保持不变。
+
 以下路由选择说明适用于当前源码开发运行及 `development` 镜像。
 完整交付包按 [DEPLOY.md](../../DEPLOY.md) 部署，控制台可选择并保存当前 A–H 八个模型。
 本节的任意渠道、模型及地址环境覆盖不适用于该交付包。
@@ -74,7 +77,6 @@ Do not commit `.env`, RTSP credentials, or LLM API keys.
 
 ```dotenv
 INFERENCE_PROVIDER=openrouter
-AICLUB_API_KEY=
 OPENROUTER_API_KEY=填入该渠道的密钥
 DASHSCOPE_API_KEY=
 INFERENCE_MODEL=
@@ -84,13 +86,12 @@ INFERENCE_API_KEY=
 
 | `INFERENCE_PROVIDER` | 默认模型 | 使用的渠道密钥 |
 | --- | --- | --- |
-| `aiclub` | `qwen3.5-plus` | `AICLUB_API_KEY` |
 | `openrouter` | `qwen/qwen3.5-35b-a3b:nitro` | `OPENROUTER_API_KEY` |
 | `dashscope` | `qwen3.5-plus` | `DASHSCOPE_API_KEY` |
 
 例如，将 `INFERENCE_PROVIDER=dashscope` 即可改走 DashScope。测试其他模型时，
 设置 `INFERENCE_MODEL` 为该渠道支持的模型 ID；留空则恢复该渠道的默认模型。
-三个渠道的默认模型并不完全相同。比较线路速度时，应选择各渠道都支持的同一模型，
+两个渠道的默认模型并不完全相同。比较线路速度时，应选择各渠道都支持的同一模型，
 并保持输入、提示词和请求参数一致。可用模型见
 [OpenRouter 模型页](https://openrouter.ai/qwen/qwen3.5-35b-a3b)。
 若要使用自定义网关、区域或工作空间地址，可设置完整 URL；DashScope 地址格式见

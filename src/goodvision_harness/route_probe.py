@@ -179,7 +179,8 @@ def probe_sample(
     transport: ModelAPIClient, settings: InferenceSettings,
     route: ModelRoute, index: int,
 ) -> dict[str, Any]:
-    fixed = bool(settings.multi_event_prompt.strip())
+    fixed = (bool(settings.multi_event_prompt.strip())
+             and SAFETY_EVENT_LABELS == ("fight", "smoking", "fall", "weapon"))
     messages = build_multi_grounding_messages(
         probe_window(index), system_prompt=settings.system_prompt,
         prompt=settings.multi_event_prompt if fixed else settings.prompt,

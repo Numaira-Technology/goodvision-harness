@@ -173,9 +173,11 @@ class StreamDiagnostics:
                                         jitter_seconds=jitter / self._clock_rate if self._clock_rate else None))
                     self._rtp_previous[stat.ssrc] = (received, lost)
                 elif stat.type == 'transport':
-                    transports.append({key: getattr(stat, attr, None) for key, attr in (
+                    transports.append(dict(
+                        transport_id=trace_id(stat.id),
+                        **{key: getattr(stat, attr, None) for key, attr in (
                         ('packets_received', 'packetsReceived'), ('bytes_received', 'bytesReceived'),
-                        ('packets_sent', 'packetsSent'), ('bytes_sent', 'bytesSent'), ('dtls_state', 'dtlsState'))})
+                        ('packets_sent', 'packetsSent'), ('bytes_sent', 'bytesSent'), ('dtls_state', 'dtlsState'))}))
             self._rtp, self._transport = streams[:8], transports[:8]
             while len(self._rtp_previous) > 8:
                 self._rtp_previous.pop(next(iter(self._rtp_previous)))

@@ -9,6 +9,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [持续人物与事件引擎](entity-event-engine.md) | 状态模型、持续分析与事件生命周期 |
+| [事件运行时代码组织](event-runtime-organization.md) | 运行时、事件、告警与离线重放的职责和兼容导入 |
 | [事件与视频证据](event-evidence.md) | 独立结果输出、身份连续性与证据修订 |
 | [人物身份与陌生人证据](person-identity-evidence.md) | 身份关联、姓名与陌生人判断 |
 | [网络视频连续显示](network-display.md) | 源画面、轮廓传播与显示统计 |

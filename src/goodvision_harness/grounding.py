@@ -24,7 +24,12 @@ from .event_sensitivity import (
     normalize_event_sensitivities,
     sensitivity_policy_text,
 )
-from .model_api import ModelAPIClient, ModelAPIError, ModelAPISettings
+from .model_api import (
+    ModelAPIClient,
+    ModelAPIError,
+    ModelAPISettings,
+    inference_error_detail,
+)
 from .privacy import PUBLIC_ANALYSIS_ERROR, PUBLIC_FACE_ERROR
 from .reference_memory import (
     FACE_RECOGNITION_PURPOSE,
@@ -41,7 +46,9 @@ SAFETY_MULTI_ANALYSIS_KIND = "safety_events"
 FIXED_FIVE_ANALYSIS_KIND = "fixed_five_events"
 SELECTED_FEATURES_ANALYSIS_KIND = "selected_features"
 
-SAFETY_EVENT_LABELS = ("fight", "smoking", "fall", "weapon")
+SAFETY_EVENT_LABELS = (
+    "fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter",
+)
 STRANGER_EVENT_LABEL = "stranger"
 DETECTION_EVENT_LABELS = (*SAFETY_EVENT_LABELS, STRANGER_EVENT_LABEL)
 MIN_MULTI_EVENT_MAX_TOKENS = 1024
@@ -81,6 +88,13 @@ def _system_prompt_with_evidence_rules(
             return SENSITIVITY_SYSTEM_PROMPT + "\n\n" + sensitivity_policy_text(
                 settings, smoking_standard_rule=SMOKING_EVIDENCE_RULE,
             )
+    extra = normalize_event_sensitivities(
+        None, set(event_labels) & {"ppe_violation", "ground_litter"},
+    )
+    if extra:
+        system_prompt += "\n\n" + sensitivity_policy_text(
+            extra, smoking_standard_rule=SMOKING_EVIDENCE_RULE,
+        )
     if "smoking" in {label.strip().casefold() for label in event_labels}:
         return f"{system_prompt}\n\n{SMOKING_EVIDENCE_RULE}"
     return system_prompt
@@ -191,6 +205,7 @@ _EVENT_NAMES_ZH = {
     "smoking": "吸烟",
     "fall": "跌倒",
     "weapon": "武器",
+    "ppe_violation": "防护装备缺失", "ground_litter": "地面垃圾",
     "stranger": "陌生人",
     "unknown_person": "陌生人",
 }
@@ -421,6 +436,7 @@ class GroundingResponse:
     classification_diagnostics: Mapping[str, Any] | None = field(
         default=None, repr=False,
     )
+    branch_error_details: Mapping[str, Mapping[str, Any]] | None = None
 
     @property
     def ok(self) -> bool:
@@ -1415,6 +1431,7 @@ class AIClubGroundingClient:
                 latency_seconds=time.monotonic() - started,
                 error=PUBLIC_ANALYSIS_ERROR,
                 branch_errors=(("safety", code),),
+                branch_error_details={"safety": inference_error_detail(exc)},
             )
         latency = time.monotonic() - started
         try:
@@ -1518,7 +1535,7 @@ class DryRunGroundingClient:
 
 
 class AIClubMultiGroundingClient:
-    """Run one Qwen request for all four visual safety event labels."""
+    """Run one Qwen request for the selected visual safety event labels."""
 
     def __init__(
         self,
@@ -1571,7 +1588,9 @@ class AIClubMultiGroundingClient:
                         latency_seconds=time.monotonic() - started,
                     ))
                 except Exception:
-                    return False
+                    # Once any verdict reached the caller, retrying could mix
+                    # decisions from different model attempts for one window.
+                    return bool(preliminary_labels)
                 preliminary_labels.add(event_label)
             return len(preliminary_labels) == len(self.event_labels)
         multi_prompt = str(getattr(self.settings, "multi_event_prompt", "")).strip()
@@ -1579,7 +1598,8 @@ class AIClubMultiGroundingClient:
         # JSON example. Reuse it only for that exact request; selected subsets use
         # the generic prompt plus the dynamic authoritative contract below.
         use_fixed_prompt = (
-            bool(multi_prompt) and self.event_labels == SAFETY_EVENT_LABELS
+            bool(multi_prompt)
+            and self.event_labels == ("fight", "smoking", "fall", "weapon")
         )
         prompt = multi_prompt if use_fixed_prompt else self.settings.prompt
         request_parameters = dict(self.settings.request_parameters)
@@ -1632,6 +1652,7 @@ class AIClubMultiGroundingClient:
                 latency_seconds=time.monotonic() - started,
                 error=PUBLIC_ANALYSIS_ERROR,
                 branch_errors=(("safety", code),),
+                branch_error_details={"safety": inference_error_detail(exc)},
             )
 
         latency = time.monotonic() - started
@@ -1675,7 +1696,7 @@ class AIClubMultiGroundingClient:
 
 
 class DryRunMultiGroundingClient:
-    """Deterministic four-event client for local demos and tests."""
+    """Deterministic multi-event client for local demos and tests."""
 
     def __init__(
         self,
@@ -1697,11 +1718,11 @@ class DryRunMultiGroundingClient:
             objects = (
                 (
                     ModelObject(
-                        label="person",
+                        label="litter" if event_label == "ground_litter" else "person",
                         bbox=NormalizedBBox(0.18, 0.12, 0.72, 0.9),
                         confidence=confidence,
                         attributes={"dry_run": True},
-                        actor_ids=("a1",),
+                        actor_ids=() if event_label == "ground_litter" else ("a1",),
                     ),
                 )
                 if detected
@@ -2068,6 +2089,7 @@ class SelectedFeaturesGroundingClient:
         judgments: list[GroundedEventClassification] = []
         supporting_objects: tuple[ModelObject, ...] = ()
         branch_errors: list[tuple[str, str]] = []
+        branch_error_details: dict[str, Mapping[str, Any]] = {}
         completed_branches: list[str] = []
         safety_failed = False
         face_diagnostics = None
@@ -2113,6 +2135,10 @@ class SelectedFeaturesGroundingClient:
                     ),
                 )
                 branch_errors.append(("safety", code))
+                branch_error_details["safety"] = (
+                    (safety_response.branch_error_details or {}).get("safety")
+                    if safety_response is not None else None
+                ) or inference_error_detail(safety_error, code=code)
 
         if include_stranger:
             face_classification = (
@@ -2187,6 +2213,10 @@ class SelectedFeaturesGroundingClient:
                     ),
                 )
                 branch_errors.append(("stranger", code))
+                branch_error_details["stranger"] = (
+                    (stranger_response.branch_error_details or {}).get("stranger")
+                    if stranger_response is not None else None
+                ) or inference_error_detail(stranger_error, code=code)
 
         if not judgments:
             return GroundingResponse(
@@ -2196,6 +2226,7 @@ class SelectedFeaturesGroundingClient:
                 latency_seconds=time.monotonic() - started,
                 error=(PUBLIC_ANALYSIS_ERROR if safety_failed else PUBLIC_FACE_ERROR),
                 branch_errors=tuple(branch_errors),
+                branch_error_details=branch_error_details,
                 classification_diagnostics=classification_diagnostics,
             )
 
@@ -2239,6 +2270,7 @@ class SelectedFeaturesGroundingClient:
                     else PUBLIC_FACE_ERROR
                 ),
                 branch_errors=tuple(branch_errors),
+                branch_error_details=branch_error_details,
             )
         return GroundingResponse(
             window=window,
@@ -2246,6 +2278,7 @@ class SelectedFeaturesGroundingClient:
             raw_text=None,
             latency_seconds=time.monotonic() - started,
             branch_errors=tuple(branch_errors),
+            branch_error_details=branch_error_details,
             completed_branches=tuple(completed_branches),
             face_diagnostics=face_diagnostics,
             classification_diagnostics=classification_diagnostics,

@@ -39,13 +39,19 @@ def _display_batch(
         and getattr(runtime._session, "mode", None) != "camera"
         and runtime.config.rich_labeling.backend == "sam31_stream"
         and runtime._scene_mode == "active"
+        and (
+            getattr(runtime, "_workflow_plan", None) is None
+            or runtime._workflow_plan.get("tracking_enabled", False)
+        )
     )
     config = runtime.video_display_config()
     config.update(
         source_mode="network",
         transport="frames",
         enabled=active,
-        delay_seconds=runtime._display_settings.delay_seconds if active else 0,
+        # Playback buffering belongs to the video connection, independently of
+        # whether this run supplies tracking geometry (including local WHEP).
+        delay_seconds=runtime._display_settings.delay_seconds,
         **(
             identity
             if active

@@ -126,6 +126,7 @@ def run_case(directory, policy, batch_size, *, pending_frames=4, max_age=2.0):
                     "source_frames": 28,
                     "processed_during_capture": live[lane]["processed_frames"],
                     "processed_total": stats["processed_frames"],
+                    "durably_admitted_frames": stats["session_admitted_frames"],
                     "skipped": stats["skipped_by_reason"],
                     "max_sampled_pending_frames": peak[lane],
                     "result_seconds_p50": quantile(ages[lane], 0.5),
@@ -150,9 +151,15 @@ def run_case(directory, policy, batch_size, *, pending_frames=4, max_age=2.0):
                     ),
                 }
             )
-            assert stats["session_admitted_frames"] == (
+            assert stats["submitted"] == (
                 stats["processed_frames"] + sum(stats["skipped_by_reason"].values())
             )
+            if policy == "latest_only":
+                # Selected sources can now expire after preparation, before send.
+                assert stats["session_admitted_frames"] == (
+                    stats["processed_frames"]
+                    + len(coordinator._spool.skipped_records())
+                )
             assert servers[lane].creates == [f"camera-{lane}"]
         return result
     finally:
@@ -165,6 +172,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--pending-frames", type=int, default=4)
     parser.add_argument("--max-age-seconds", type=float, default=2.0)
+    parser.add_argument("--latest-only-comparison", action="store_true",
+                        help="Compare FIFO with the fixed latest candidate policy")
     args = parser.parse_args()
     report = {
         "kind": "synthetic_protocol_experiment_not_gpu_benchmark",
@@ -179,12 +188,15 @@ def main():
         "No accuracy or actual rendered-contour coverage is measured.",
         "cases": [],
     }
-    for policy, limit in [
+    cases = [
         ("durable_ordered", 4),
         ("realtime_latest", 1),
         ("realtime_latest", 2),
         ("realtime_latest", 4),
-    ]:
+    ]
+    if args.latest_only_comparison:
+        cases = [("durable_ordered", 4), ("latest_only", 1)]
+    for policy, limit in cases:
         with tempfile.TemporaryDirectory(prefix="sam-realtime-") as directory:
             case = run_case(
                 Path(directory),
