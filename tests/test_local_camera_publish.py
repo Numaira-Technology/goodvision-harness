@@ -173,13 +173,23 @@ def test_abandoned_offer_expires_without_leaving_media_tasks():
                 assert response.status_code == 201
                 publication = next(iter(cameras.publications.values()))
                 # Simulate a tab closing before applying the SDP answer.
-                await asyncio.sleep(0.15)
+                # Expiry closes the peer asynchronously; its closed state can
+                # precede completed cleanup on a busy Windows event loop.
+                # Shield the task so a timeout cannot make the leak check pass
+                # by cancelling the very work whose completion we are testing.
+                await asyncio.wait_for(asyncio.shield(publication.drain), 5)
                 assert not cameras.publications
                 assert publication.peer.connectionState == "closed"
                 assert publication.drain.done()
                 assert (
                     await client.get(response.headers["Location"])
                 ).status_code == 404
+                # ICE/connection callbacks can finish just after the drain.
+                # wait() leaves unfinished tasks alive, so the assertion below
+                # still detects leaks instead of cleaning them up for the test.
+                pending = asyncio.all_tasks() - baseline
+                if pending:
+                    await asyncio.wait(pending, timeout=5)
                 assert not (asyncio.all_tasks() - baseline)
         finally:
             track.stop()
