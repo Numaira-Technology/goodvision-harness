@@ -1130,8 +1130,10 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         """Activate validated routes only after persistence succeeds, while idle."""
         previous = self.config
         if self._workflow_event_baseline is not None:
-            self._workflow_event_baseline = (configuration.runtime.scene_vlm_output_mode,
-                                             configuration.runtime.scene_independent_vlm)
+            self._workflow_event_baseline = (
+                configuration.runtime.scene_vlm_output_mode,
+                configuration.runtime.scene_independent_vlm,
+            )
         self._temporal_clients.invalidate()
         if self._route_transport is not None:
             self._route_transport.close()
@@ -2197,19 +2199,22 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 self._event_vocabulary().branch(SAFETY_BRANCH)
             )
             summary_config = self._workflow_summary_configuration()
-            if (not self.dry_run and self._workflow_plan and self._workflow_plan["summaries"]
-                    and not self._aiclub_api_key and summary_config.model_api.provider != "local"):
+            if (not self.dry_run and self._workflow_plan
+                    and self._workflow_plan["summaries"] and not self._aiclub_api_key
+                    and summary_config.model_api.provider != "local"):
                 raise MissingAPIKeyError(PUBLIC_MISSING_API_KEY_ERROR)
             if (not self.dry_run
                     and (any(item in model_labels for item in features)
                          or bool(self._workflow_plan
                                  and self._workflow_plan["summaries"]))
                     and not self._aiclub_api_key
-                    and self._workflow_event_configuration().model_api.provider != "local"):
+                    and self._workflow_event_configuration().model_api.provider
+                    != "local"):
                 raise MissingAPIKeyError(PUBLIC_MISSING_API_KEY_ERROR)
         if bbox:
             self._workflow_bbox_probe(self._workflow_plan.get("tracking_service_url"))
-        if self._workflow_plan and self._workflow_plan.get("events_engine") in {"system1", "neural"} and not self.dry_run:
+        if (self._workflow_plan and not self.dry_run
+                and self._workflow_plan.get("events_engine") in {"system1", "neural"}):
             self._workflow_event_probe(self._workflow_plan)
         if (tracking and not bbox) or (
             features and self._workflow_plan is None and not independent_events
@@ -2431,7 +2436,8 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 and any(feature in model_backed for feature in selected_features)
             )
             if (needs_model_key and not use_dry_run and not self._aiclub_api_key
-                    and self._workflow_event_configuration().model_api.provider != "local"):
+                    and self._workflow_event_configuration().model_api.provider
+                    != "local"):
                 raise MissingAPIKeyError(
                     "missing model API key; set " + self.config.model_api.api_key_env
                 )
@@ -2810,7 +2816,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                         event_configuration.model_api.extra_headers
                     )),
                 )
-                parameters = copy.deepcopy(event_configuration.inference.request_parameters)
+                parameters = copy.deepcopy(
+                    event_configuration.inference.request_parameters
+                )
                 # Freeze credentials and routing for this generation. Retired
                 # requests must never pick up a later run's replacement key.
                 api_key = self._aiclub_api_key or (
@@ -3951,7 +3959,8 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     self._rich_labels.latest(session.stream_session_id)
                     if self._rich_labels is not None else None
                 )
-                if snapshot is None or snapshot.stream_session_id != session.stream_session_id:
+                if (snapshot is None
+                        or snapshot.stream_session_id != session.stream_session_id):
                     return False, "waiting_for_tracking"
                 timestamp = self._state.get("last_media_timestamp")
                 if timestamp is not None and not (
@@ -5449,7 +5458,9 @@ def create_app(
             )
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
-        return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+        return Response(
+            jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"},
+        )
 
     @application.get("/v1/video/source/latest.jpg")
     def workflow_source_frame(request: Request) -> Response:

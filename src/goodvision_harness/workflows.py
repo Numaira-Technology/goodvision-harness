@@ -217,7 +217,8 @@ def _config(kind: str, value: Any, vocabulary: EventVocabulary | None = None) ->
             _fail("event sensitivities must refer to selected safety events")
         if neural and supplied:
             _fail(
-                "Neural network recognition uses fixed visual prompts, without sensitivity settings"
+                "Neural network recognition uses fixed visual prompts, "
+                "without sensitivity settings"
             )
         sensitivities = {}
         for feature in catalog:

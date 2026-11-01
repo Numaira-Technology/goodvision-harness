@@ -14,7 +14,7 @@ test('dragging video sources assigns distinct deployed channels and preserves br
  const app=appFixture();app.graph.nodes[0].config.camera_id='camera01';
  app.data.cameras.push({id:'camera02',enabled:true,status:{analysis_state:'idle'}});
  app.add('source',{x:50,y:400});const source=app.graph.nodes.at(-1);
- assert.equal(source.config.camera_id,'camera02');assert.equal(source.x,50);
+ assert.equal(source.config.camera_id,'camera02');assert.equal(source.x,50);assert.equal(source.config.name,app.cameraName('camera02'));
  assert.equal(app.connect(source.id,'frames','face','frames'),true);
  assert.deepEqual(validateGraph(app.graph,{complete:true}),[]);
  app.add('source');assert.equal(app.graph.nodes.filter(n=>n.type==='source').length,2);

@@ -344,7 +344,8 @@ class IndependentEventState:
 
 
 def _inspector(config):
-    if config.model_settings.provider == "local" and config.model == "openai/clip-vit-large-patch14":
+    if (config.model_settings.provider == "local"
+            and config.model == "openai/clip-vit-large-patch14"):
         from .neural_model import NeuralInspector
 
         return NeuralInspector(config)

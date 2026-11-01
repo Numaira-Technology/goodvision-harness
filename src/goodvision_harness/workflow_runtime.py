@@ -714,14 +714,30 @@ class WorkflowRuntimeMixin:
                     if anchors
                     else value.get("timestamp_seconds")
                 )
-                frames = connection.display_frames(
-                    after=0, max_age_seconds=2, limit=120
+                tracked_sequence = (
+                    anchors[-1].get("source_sequence")
+                    if anchors
+                    else value.get("frame_sequence")
+                )
+                # The history cursor excludes sequence zero. Include the current
+                # snapshot explicitly so a stream's first frame can carry tracks.
+                frames = (
+                    *connection.display_frames(after=0, max_age_seconds=2, limit=120),
+                    (
+                        snapshot.source_frame_sequence,
+                        snapshot.timestamp_seconds,
+                        None,
+                        None,
+                        snapshot.jpeg_bytes,
+                    ),
                 )
                 matched = next(
                     (
                         f
                         for f in reversed(frames)
-                        if tracked_time is not None and abs(f[1] - tracked_time) < 0.001
+                        if f[0] == tracked_sequence
+                        and tracked_time is not None
+                        and abs(f[1] - tracked_time) < 0.001
                     ),
                     None,
                 )

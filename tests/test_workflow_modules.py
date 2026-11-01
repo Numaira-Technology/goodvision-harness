@@ -280,6 +280,72 @@ def test_output_preview_is_scoped_to_active_output_and_stops_with_session(rig):
         runtime.workflow_output_preview("out")
 
 
+@pytest.mark.parametrize("engine", ["bbox", "contour"])
+@pytest.mark.parametrize("sequence", [0, 7])
+def test_output_geometry_uses_exact_source_sequence(rig, monkeypatch, engine, sequence):
+    runtime, connection, _, _ = rig
+    configure(runtime, graph(frames=True))
+    runtime.start_connected_analysis()
+    white = jpeg()
+    red = io.BytesIO()
+    Image.new("RGB", (640, 360), "red").save(red, "JPEG")
+    tracked_frame = (sequence, 1.0, 640, 360, white)
+    frames = [tracked_frame]
+    if sequence:
+        # Adjacent source frames can have very close presentation timestamps.
+        frames.append((sequence + 1, 1.0005, 640, 360, red.getvalue()))
+
+    def history(after=-1, **_):
+        return tuple(frames[-1:] if after < 0 else [f for f in frames if f[0] > after])
+
+    monkeypatch.setattr(connection, "display_frames", history)
+    metadata = (
+        {
+            "frame_sequence": sequence,
+            "timestamp_seconds": 1.0,
+            "objects": [{"bbox": {"x1": 0.25, "y1": 0.25, "x2": 0.75, "y2": 0.75}}],
+        }
+        if engine == "bbox"
+        else {
+            "anchors": [
+                {
+                    "source_sequence": sequence,
+                    "media_timestamp": 1.0,
+                    "subjects": [
+                        {"polygons": [[[0.25, 0.25], [0.25, 0.75], [0.75, 0.75]]]}
+                    ],
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(
+        runtime,
+        "workflow_results",
+        lambda: {
+            "outputs": [
+                {
+                    "node_id": "out",
+                    "inputs": [
+                        {
+                            "port": "tracks",
+                            "value": {"metadata": metadata},
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    image = Image.open(io.BytesIO(runtime.workflow_output_preview("out")))
+    assert min(image.getpixel((20, 20))) > 240, "must use the tracked white frame"
+    green = image.getpixel((160, 120))
+    assert green[1] > green[0] + 50, "include geometry on source sequence zero too"
+    if sequence:
+        frames.remove(tracked_frame)
+        image = Image.open(io.BytesIO(runtime.workflow_output_preview("out")))
+        red_pixel = image.getpixel((160, 120))
+        assert red_pixel[0] > 200 and red_pixel[1] < 50, "omit mismatched geometry"
+
+
 def test_summary_output_remains_live_after_native_analysis_ends(rig):
     from test_video_connection import wait_for
 
