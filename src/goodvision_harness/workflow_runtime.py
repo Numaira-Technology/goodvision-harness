@@ -656,11 +656,15 @@ class WorkflowRuntimeMixin:
             }
         )
 
-    def workflow_output_preview(self, node_id, language="zh"):
+    def workflow_output_preview(self, node_id, language="zh", *, workflow_id=None):
         from .workflow_render import render_output
         from .workflow_summary import SummarySnapshot, snapshot_from_connection
 
         with self._control_lock:
+            if workflow_id is not None and workflow_id != (
+                self._workflow_binding or {}
+            ).get("workflow_id"):
+                raise ValueError("This camera is running a different workflow.")
             connection, context = self._video_connection, self._workflow_result_context
             operation = self._workflow_operation
             generation = self._generation
@@ -672,10 +676,7 @@ class WorkflowRuntimeMixin:
                     and self._workflow_summaries.state == "running"
                 )
             )
-            if (
-                not running
-                or not self._workflow_context_valid(context)
-            ):
+            if not running or not self._workflow_context_valid(context):
                 raise ValueError("Start the applied workflow to preview its output.")
             snapshot = snapshot_from_connection(connection)
             if snapshot is None:

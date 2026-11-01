@@ -311,5 +311,17 @@ def test_output_http_route_is_no_store_and_rejects_unknown_outputs(rig):
         assert response.headers["content-type"] == "image/jpeg"
         assert response.headers["cache-control"] == "no-store"
         assert client.get("/v1/workflow/output.jpg?node_id=unknown").status_code == 404
+        assert (
+            client.get(
+                "/v1/workflow/output.jpg?node_id=out&workflow_id=other"
+            ).status_code
+            == 404
+        )
+        assert (
+            client.get(
+                "/v1/workflow/output.jpg?node_id=out&workflow_id=recipe"
+            ).status_code
+            == 200
+        )
     finally:
         client.close()

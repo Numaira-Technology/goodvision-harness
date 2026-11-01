@@ -5425,9 +5425,14 @@ def create_app(
         )
 
     @application.get("/v1/workflow/output.jpg")
-    def workflow_output_image(request: Request, node_id: str, language: str = "zh") -> Response:
+    def workflow_output_image(
+        request: Request, node_id: str, language: str = "zh",
+        workflow_id: str | None = None,
+    ) -> Response:
         try:
-            jpeg = _runtime(request).workflow_output_preview(node_id, language)
+            jpeg = _runtime(request).workflow_output_preview(
+                node_id, language, workflow_id=workflow_id,
+            )
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
         return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
