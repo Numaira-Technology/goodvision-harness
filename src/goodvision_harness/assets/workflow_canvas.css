@@ -1,4 +1,5 @@
 /* Workflow authoring owns this bounded surface; existing video controllers stay mounted. */
+#workflow-root .wc-test-mode{display:flex;align-items:center;gap:10px;flex-wrap:wrap;flex-shrink:0;padding:9px 16px;background:#fff7df;border-bottom:1px solid #ead9a6;color:#735114}
 #workflow-root{--wc-line:#dbe4f0;--wc-blue:#2767f5;--wc-ink:#203451;--wc-muted:#657b98;--wc-soft:#f3f7fd;color:var(--wc-ink);font-size:13px;min-width:0}
 #workflow-root *{box-sizing:border-box}#workflow-root [hidden]{display:none!important}#workflow-root button,#workflow-root input,#workflow-root select,#workflow-root textarea{font:inherit}#workflow-root button{cursor:pointer}#workflow-root button:disabled{cursor:default;opacity:.5}#workflow-root :focus-visible{outline:2px solid var(--wc-blue);outline-offset:2px}
 #workflow-root .wc-shell{height:var(--wc-height,760px);min-height:0;display:flex;flex-direction:column;border:1px solid var(--wc-line);border-radius:9px;background:#fff;overflow:hidden;position:relative}

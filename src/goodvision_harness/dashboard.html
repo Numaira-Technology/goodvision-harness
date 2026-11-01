@@ -1652,6 +1652,13 @@ function workflowServiceFields(section){
     [ui.trackingMode,ui.trackingServerUrl,ui.trackingServerCapacity,ui.trackingServerProtocol,ui.trackingSampleFps,
       ui.trackingNodeKey,ui.clearTrackingNodeKey,ui.richlabelModel];
 }
+function workflowUsesSimulation(){return state.deployment?.dry_run===true;}
+async function useRealWorkflowAnalysis(){
+  if(!workflowUsesSimulation())return true;
+  return updateDeploymentSettings({dry_run:false},"已切换为真实分析，下次开始分析时使用已配置的服务。",{
+    syncRun:true,preserveFields:[...workflowServiceFields("analysis"),...workflowServiceFields("tracking"),ui.defaultApiKey,ui.defaultStreamUrl]
+  });
+}
 async function saveDeploymentSettings(section=null){
   // Native click handlers pass an Event; only explicit section names scope a save.
   if(!["analysis","tracking"].includes(section))section=null;
@@ -3276,9 +3283,19 @@ setInterval(()=>{
   const footer=doc.getElementById('deployment-note')?.parentElement;footer?.classList.remove('settings-save-actions');
   const api={
     park(){active=null;for(const {card} of sections.values())store.append(card);},
-    mount(host){api.park();if(!host)return;active=sections.get(host.dataset.wcService)||null;if(active)host.append(active.card);api.sync();},
-    sync(){const disabled=doc.getElementById('save-deployment-button')?.disabled!==false;for(const item of sections.values())item.save.disabled=disabled;},
-    say(text,error=false){if(active){active.status.textContent=text;active.status.className='wc-note'+(error?' is-error':'');}}
+    mount(host){api.park();if(host){active=sections.get(host.dataset.wcService)||null;if(active)host.append(active.card);}api.sync();},
+    sync(){
+      const disabled=doc.getElementById('save-deployment-button')?.disabled!==false;
+      for(const item of sections.values())item.save.disabled=disabled;
+      const notice=doc.getElementById('workflow-test-mode'),button=doc.getElementById('workflow-real-analysis');
+      if(notice)notice.hidden=root.workflowUsesSimulation?.()!==true;
+      if(button)button.disabled=disabled;
+    },
+    useRealAnalysis(){return root.useRealWorkflowAnalysis();},
+    say(text,error=false){
+      if(active){active.status.textContent=text;active.status.className='wc-note'+(error?' is-error':'');}
+      const status=doc.getElementById('workflow-mode-status');if(status){status.textContent=text;status.className='wc-note'+(error?' is-error':'');}
+    }
   };
   root.GoodvisionWorkflowServices=api;api.sync();
 })(globalThis);

@@ -84,6 +84,28 @@ test("only service forms move into the node inspector and survive canvas rerende
   assert.deepEqual(routes,[]);
 });
 
+test("workflow test-mode recovery stays accessible without a selected service node",async()=>{
+  const view=fixture();organizeSettings(view.document);
+  const all=new Element(),workflows=new Element('section');workflows.id='console-workflows';all.append(view.page,workflows);
+  const notice=new Element(),button=new Element('button'),status=new Element();
+  notice.id='workflow-test-mode';button.id='workflow-real-analysis';status.id='workflow-mode-status';
+  notice.append(button,status);workflows.append(notice);
+  view.document.getElementById=id=>all.querySelector('#'+id);
+  view.document.querySelector=selector=>selector==='#console-settings .deployment-panel'?view.panel:all.querySelector(selector);
+  const save=view.document.getElementById('save-deployment-button');save.disabled=false;
+  let simulated=true,requests=0;
+  const sandbox=vm.createContext({document:view.document,workflowUsesSimulation:()=>simulated,useRealWorkflowAnalysis:async()=>{requests++;simulated=false;return true;}});
+  const html=fs.readFileSync(path.join(__dirname,'../src/goodvision_harness/dashboard.html'),'utf8');
+  vm.runInContext(html.match(/<script id="workflow-services-script">([\s\S]*?)<\/script>/)[1],sandbox);
+  const api=sandbox.GoodvisionWorkflowServices;
+  assert.equal(notice.hidden,false);assert.equal(button.disabled,false);assert.equal(requests,0);
+  api.mount(null);assert.equal(notice.hidden,false);
+  save.disabled=true;api.sync();assert.equal(button.disabled,true);
+  api.say('Stop analysis before switching.',true);assert.equal(status.textContent,'Stop analysis before switching.');
+  save.disabled=false;api.sync();assert.equal(button.disabled,false);
+  assert.equal(await api.useRealAnalysis(),true);api.sync();assert.equal(notice.hidden,true);assert.equal(requests,1);
+});
+
 test("settings move each original control once without replacing drafts or handlers",()=>{
   const view=fixture(),original=view.page.querySelectorAll("[id]");
   const input=view.document.getElementById("inference-server-url"),save=view.document.getElementById("save-deployment-button");

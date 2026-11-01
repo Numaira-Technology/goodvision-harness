@@ -6,6 +6,34 @@ const {test}=require("node:test");
 const {createDocument,runDashboard}=require("./helpers/dashboard.cjs");
 const {payload:catalogPayload}=require("./helpers/event_catalog.cjs");
 
+test("persisted test mode can switch to real analysis without saving service drafts or starting analysis",async()=>{
+  const view=dashboard({dry_run:true});
+  view.element('inference-server-url').value='pending-analysis';
+  view.element('tracking-server-url').value='pending-tracking';
+  view.element('tracking-node-key').value='pending-node-key';
+  view.element('default-api-key').value='pending-cloud-key';
+  assert.equal(view.workflowUsesSimulation(),true);
+  assert.equal(await view.useRealWorkflowAnalysis(),true);
+  assert.deepEqual(view.requests.map(request=>request.payload),[{dry_run:false}]);
+  assert.equal(view.workflowUsesSimulation(),false);
+  assert.equal(view.element('default-dry-run').checked,false);
+  assert.equal(view.element('dry-run').checked,false);
+  for(const [id,value] of [['inference-server-url','pending-analysis'],['tracking-server-url','pending-tracking'],['tracking-node-key','pending-node-key'],['default-api-key','pending-cloud-key']])
+    assert.equal(view.element(id).value,value);
+  assert.deepEqual(view.messages,[]);
+  await view.useRealWorkflowAnalysis();assert.equal(view.requests.length,1);
+});
+
+test("test-mode recovery remains locked during analysis and preserves test mode if saving fails",async()=>{
+  const view=dashboard({dry_run:true});view.state.running=true;
+  assert.equal(await view.useRealWorkflowAnalysis(),false);
+  assert.equal(view.requests.length,0);assert.equal(view.workflowUsesSimulation(),true);
+  view.state.running=false;view.context.fail=true;
+  assert.equal(await view.useRealWorkflowAnalysis(),false);
+  assert.equal(view.workflowUsesSimulation(),true);
+  assert.equal(view.element('default-dry-run').checked,true);
+});
+
 test("analysis sidebar saves only analysis settings and preserves other pending fields",async()=>{
   const view=dashboard({inference_mode:'cloud',tracking_mode:'legacy'});
   view.element('tracking-mode').value='server';view.element('tracking-server-url').value='unfinished';
@@ -107,7 +135,7 @@ function dashboard(settings={}){
     renderDeploymentSettings(true,true);
     globalThis.app={state,start,controls,renderDeploymentSettings,renderLocalGpuSettings,
       saveDeploymentSettings,loadDeploymentSettings,checkRoutes,selectRoute,loadRoutes,
-      localInferenceEnabled,savedExecutionMode,originalInfo,saveApiKey};
+      localInferenceEnabled,savedExecutionMode,originalInfo,saveApiKey,workflowUsesSimulation,useRealWorkflowAnalysis};
   `,context);
   return {html,element,requests,messages,context,...context.app}
 }

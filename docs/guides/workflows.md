@@ -58,6 +58,12 @@ the service host must be able to reach the video server; saving the URL alone
 does not establish network access. WHEP also requires the negotiated media
 address to be reachable after its HTTP signaling request succeeds.
 
+If a deployment still has test mode enabled, the workflow displays a persistent
+notice that analysis results are simulated. Stop analysis and select **Use real
+analysis** to persist `dry_run: false` without saving unrelated service drafts or
+starting a model. The next Start uses the configured real services; their usual
+readiness and credential checks still apply.
+
 ## Camera and group switches
 
 Camera groups display the applied graph read-only. Select **All cameras** for

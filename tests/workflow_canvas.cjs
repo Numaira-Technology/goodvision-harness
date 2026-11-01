@@ -424,6 +424,7 @@ test('Canvas exposes direct Apply with no Save button or visible draft stage',()
  const app=eventEditorFixture();const html=canvasHtml(app);assert(!html.includes('data-wc-action="save"'));assert(html.includes('data-wc-action="apply"'));assert.doesNotMatch(html,/Save draft|Draft saved|Draft only|Enabled in draft|Save the draft before applying|Edit the shared draft/);
  assert(!app.renderInspector().includes('Enabled in draft'));assert(!app.renderNode(currentEvents(app)).includes('Draft only'));
  assert(!html.includes('data-wc-action="services"'));
+ assert(html.includes('id="workflow-test-mode"'));assert(html.includes('data-wc-action="real-analysis"'));
  assert(app.renderInspector().includes('data-wc-service="analysis"'));
  assert(!app.renderInspector().includes('data-wc-action="analysis-settings"'));
 });
@@ -544,6 +545,14 @@ test('Fit includes the supported 64-block graph and zooming in continues from it
  }
 });
 
+
+test('real-analysis recovery invokes the shared settings action without applying or starting a workflow',async()=>{
+ const app=appFixture(),before=clone(app.graph),previous=globalThis.GoodvisionWorkflowServices;let calls=0;
+ globalThis.GoodvisionWorkflowServices={useRealAnalysis:async()=>{calls++;return true;}};
+ app.request=async()=>assert.fail('recovery must not issue a workflow command');
+ try{await app.handleAction('real-analysis',{});assert.equal(calls,1);assert.deepEqual(app.graph,before);assert.equal(app.notice,'Real analysis enabled.');}
+ finally{if(previous)globalThis.GoodvisionWorkflowServices=previous;else delete globalThis.GoodvisionWorkflowServices;}
+});
 
 test('source preview reads the shared input endpoint and clears the image after external disconnect',async()=>{
  const app=appFixture(),camera=app.data.cameras[0];
