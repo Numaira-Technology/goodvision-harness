@@ -97,6 +97,7 @@ from .grounding import (
 )
 from .identity_review_worker import IdentityReviewWorker
 from .latency_trace import log_timing, trace_id
+from .local_camera import install_local_camera_routes
 from .local_gpu import LocalGPUDeployment, local_choices
 from .model_api import (
     DEFAULT_OPENROUTER_ENDPOINT,
@@ -4820,6 +4821,7 @@ def create_app(
             yield
         finally:
             stop_resource_sampling()
+            await application.state.local_cameras.aclose()
             runtime.stop()
             await application.state.fleet.aclose()
 
@@ -4832,6 +4834,7 @@ def create_app(
         swagger_ui_oauth2_redirect_url=None,
     )
     install_event_routes(application)
+    install_local_camera_routes(application)
     install_fleet_routes(application)
     from .workflow_routes import install_workflow_routes
     install_workflow_routes(application)
