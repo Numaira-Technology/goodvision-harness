@@ -14,7 +14,7 @@ test('dragging video sources assigns distinct deployed channels and preserves br
  const app=appFixture();app.graph.nodes[0].config.camera_id='camera01';
  app.data.cameras.push({id:'camera02',enabled:true,status:{analysis_state:'idle'}});
  app.add('source',{x:50,y:400});const source=app.graph.nodes.at(-1);
- assert.equal(source.config.camera_id,'camera02');assert.equal(source.x,50);
+ assert.equal(source.config.camera_id,'camera02');assert.equal(source.x,50);assert.equal(source.config.name,app.cameraName('camera02'));
  assert.equal(app.connect(source.id,'frames','face','frames'),true);
  assert.deepEqual(validateGraph(app.graph,{complete:true}),[]);
  app.add('source');assert.equal(app.graph.nodes.filter(n=>n.type==='source').length,2);
@@ -372,13 +372,13 @@ async function connectedTrackingFixture(configured=true){
 }
 test('person tracking is visible in the library and authoring enforces its singleton rule',()=>{
  const app=trackingEditorFixture(false);assert.equal(definitions.tracking.single,true);assert.deepEqual(definitions.tracking.inputs,[['frames','frames']]);assert.deepEqual(definitions.tracking.outputs,[['tracks','tracks']]);assert(definitions.output.inputs.some(port=>port[0]==='tracks'&&port[1]==='tracks'));
- assert(app.renderLibrary().includes('data-wc-add="tracking"'));app.add('tracking');const tracker=app.graph.nodes.find(n=>n.type==='tracking');assert(tracker);assert.deepEqual(Object.keys(tracker.config),['name']);const history=app.history().length;
+ assert(app.renderLibrary().includes('data-wc-add="tracking"'));app.add('tracking');const tracker=app.graph.nodes.find(n=>n.type==='tracking');assert(tracker);assert.deepEqual(Object.keys(tracker.config),['name','engine']);const history=app.history().length;
  app.add('tracking');assert.equal(app.graph.nodes.filter(n=>n.type==='tracking').length,1);assert.equal(app.history().length,history);assert.match(app.renderLibrary(),/data-wc-add="tracking"[^>]*disabled/);
 });
 test('tracking bindings apply a frames to tracks route beside independent events and summaries',async()=>{
  const {app,tracker}=await connectedTrackingFixture();assert.deepEqual(app.validation(true),[]);assert.equal(connectionError(app.graph,tracker.id,'tracks','out','events'),'These port types do not match.');
  let body;app.request=async(url,options)=>{assert.equal(url,'/v1/workflows/command');body=JSON.parse(options.body);const response=clone(app.data);response.document.revision++;response.document.workflows[0].graph=clone(body.graph);return response;};
- await app.handleAction('apply',{});assert.equal(body.action,'apply');const saved=body.graph.nodes.find(n=>n.type==='tracking');assert.deepEqual(saved.config,{name:tracker.config.name});
+ await app.handleAction('apply',{});assert.equal(body.action,'apply');const saved=body.graph.nodes.find(n=>n.type==='tracking');assert.deepEqual(saved.config,{name:tracker.config.name,engine:'contour'});
  assert(body.graph.edges.some(e=>e.from_node==='input'&&e.to_node===tracker.id&&e.to_port==='frames'));assert(body.graph.edges.some(e=>e.from_node===tracker.id&&e.from_port==='tracks'&&e.to_node==='out'&&e.to_port==='tracks'));
  assert(body.graph.edges.some(e=>e.from_node==='events'&&e.to_port==='events'));assert(body.graph.edges.some(e=>e.from_node==='summary'&&e.to_port==='summary'));assert.equal(app.dirty(),false);
 });
@@ -569,4 +569,60 @@ test('source preview reads the shared input endpoint and clears the image after 
  camera.status.connection_state='error';camera.status.connection_error='连接视频服务器超时，请检查视频地址和网络连通性。';
  await app.updateSourcePreviews();clearTimeout(app.sourcePreviewTimer);
  assert.equal(note.textContent,camera.status.connection_error);assert.equal(note.hidden,false);assert.equal(img.hidden,true);
+});
+
+
+test('model palette groups five independent modules and retains inactive alternatives',async()=>{
+ const app=trackingEditorFixture();const library=app.renderLibrary();
+ for(const key of ['tracking','bbox','events','system1','neural'])assert(library.includes('data-wc-add="'+key+'"'));
+ assert(library.includes('Person tracking'));assert(library.includes('Event recognition'));
+ assert.doesNotMatch(library,/YOLO|VideoJev|CLIP|SAM/);
+ app.add('tracking');app.add('bbox');app.add('system1');app.add('neural');
+ assert.equal(app.graph.nodes.filter(n=>n.type==='tracking').length,2);
+ assert.equal(app.graph.nodes.filter(n=>n.type==='events').length,3);
+ const bbox=app.graph.nodes.find(n=>n.config?.engine==='bbox');
+ assert.equal(bbox.enabled,false);app.selected=bbox.id;
+ await app.fieldInput({wcField:'service_url'},{value:'http://localhost:8092/v1/labels'});
+ await app.fieldChange({wcNodeEnabled:''},{checked:true});
+ assert.equal(bbox.enabled,true);assert.equal(app.graph.nodes.find(n=>n.config?.engine==='contour').enabled,false);
+ assert.equal(app.graph.nodes.filter(n=>n.type==='events'&&n.enabled!==false).length,1);
+ const neural=app.graph.nodes.find(n=>n.config?.engine==='neural');app.selected=neural.id;
+ await app.fieldChange({wcNodeEnabled:''},{checked:true});
+ assert.equal(app.graph.nodes.filter(n=>n.type==='events'&&n.enabled!==false).length,1);
+ assert.deepEqual(neural.config.event_sensitivities,{});
+ assert(!app.renderInspector().includes('data-wc-sensitivity'));
+ assert(app.renderInspector().includes('Service URL'));
+});
+
+test('Output appearance persists separately from result connections and participates in Undo',async()=>{
+ const app=summaryOutputFixture();app.selected='out';const before=clone(app.graph.edges);
+ assert(app.renderInspector().includes('data-wc-display="summary:position"'));
+ await app.fieldChange({wcDisplay:'summary:position'},{value:'bottom-left'});
+ assert.equal(app.graph.nodes.find(n=>n.id==='out').config.display.summary.position,'bottom-left');
+ await app.fieldChange({wcDisplay:'summary:visible'},{checked:false});
+ assert.equal(app.graph.nodes.find(n=>n.id==='out').config.display.summary.visible,false);
+ assert.deepEqual(app.graph.edges,before);await app.handleAction('undo',{});
+ assert.notEqual(app.graph.nodes.find(n=>n.id==='out').config.display.summary.visible,false);
+ assert.equal(app.graph.nodes.find(n=>n.id==='out').config.display.summary.position,'bottom-left');
+});
+
+test('Output appearance cannot be changed while assigned cameras are running',async()=>{
+ const app=summaryOutputFixture();app.selected='out';app.data.cameras[0].status={analysis_state:'running'};
+ const before=clone(app.graph);await app.fieldChange({wcDisplay:'events:visible'},{checked:false});
+ assert.deepEqual(app.graph,before);
+});
+
+
+test('group Output preview uses the applied group workflow, independently of editor selection',async()=>{
+ const app=appFixture();app.mode='groups';app.selected='out';app.group.workflow_id='workflow-2';app.testCamera='camera01';app.data.cameras[0].status={analysis_state:'running'};
+ const img={dataset:{wcOutputPreview:'out'},hidden:true,isConnected:true};app.el.querySelector=selector=>selector==='[data-wc-output-preview]'?img:null;
+ let requested;app.fetch=async url=>{requested=url;return{ok:true,blob:async()=>new Blob(['jpeg'],{type:'image/jpeg'})};};
+ try{await app.updateOutputPreview();assert(requested.includes('workflow_id=workflow-2'));assert.equal(img.hidden,false);assert.equal(app.workflowId,'workflow-1');}
+ finally{app.closed=true;clearTimeout(app.outputPreviewTimer);if(app.outputPreviewUrl)URL.revokeObjectURL(app.outputPreviewUrl);}
+});
+
+test('hidden workspaces stop requesting output frames',async()=>{
+ const app=appFixture();app.testCamera='camera01';app.selected='out';app.data.cameras[0].status={analysis_state:'running'};
+ const img={dataset:{wcOutputPreview:'out'},hidden:false};app.el.querySelector=()=>img;app.el.ownerDocument.hidden=true;
+ app.fetch=async()=>assert.fail('hidden preview must not fetch');await app.updateOutputPreview();assert.equal(img.hidden,true);
 });

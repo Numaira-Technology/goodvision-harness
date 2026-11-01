@@ -19,6 +19,14 @@ from uuid import uuid4
 
 from .event_catalog import event_catalog
 from .event_registry import EventVocabulary
+from .workflow_modules import (
+    ENGINES,
+    NAMES,
+    NEURAL_EVENTS,
+    display_settings,
+    engine_for,
+    service_url,
+)
 
 SCHEMA_VERSION = 1
 MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
@@ -144,14 +152,36 @@ def _event_options(vocabulary: EventVocabulary | None = None) -> dict[str, dict]
 
 def _config(kind: str, value: Any, vocabulary: EventVocabulary | None = None) -> dict:
     allowed = {"name"}
+    if kind in ENGINES:
+        allowed |= {"engine", "service_url"}
     if kind == "events":
         allowed |= {"features", "event_sensitivities"}
     elif kind == "summary":
         allowed |= {"interval_seconds", "prompt"}
     elif kind == "source":
         allowed |= {"camera_id"}
+    elif kind == "output":
+        allowed |= {"display"}
     raw = _object(value, allowed, "component configuration")
     config = {"name": _name(raw.get("name", _NAMES[kind]))}
+    if kind == "output" and "display" in raw:
+        try:
+            config["display"] = display_settings(raw["display"])
+        except ValueError as exc:
+            _fail(str(exc))
+    if kind in ENGINES:
+        engine = engine_for(kind, raw)
+        if engine not in ENGINES[kind]:
+            _fail("unsupported workflow engine")
+        if "engine" in raw:
+            config["engine"] = engine
+            if "name" not in raw:
+                config["name"] = NAMES[engine]
+        if "service_url" in raw:
+            try:
+                config["service_url"] = service_url(raw["service_url"])
+            except ValueError as exc:
+                _fail(str(exc))
     if kind == "source" and raw.get("camera_id") is not None:
         camera_id = raw["camera_id"]
         if not isinstance(camera_id, str) or not _CAMERA.fullmatch(camera_id):
@@ -159,6 +189,11 @@ def _config(kind: str, value: Any, vocabulary: EventVocabulary | None = None) ->
         config["camera_id"] = camera_id
     if kind == "events":
         catalog = _event_options(vocabulary=vocabulary)
+        neural = engine_for(kind, raw) == "neural"
+        if neural:
+            catalog = {
+                key: item for key, item in catalog.items() if key in NEURAL_EVENTS
+            }
         features = _list(
             raw.get(
                 "features",
@@ -180,8 +215,15 @@ def _config(kind: str, value: Any, vocabulary: EventVocabulary | None = None) ->
         supplied = raw.get("event_sensitivities", {})
         if not isinstance(supplied, dict) or set(supplied) - set(features):
             _fail("event sensitivities must refer to selected safety events")
+        if neural and supplied:
+            _fail(
+                "Neural network recognition uses fixed visual prompts, "
+                "without sensitivity settings"
+            )
         sensitivities = {}
         for feature in catalog:
+            if neural:
+                continue
             if feature not in features:
                 continue
             sensitivity = catalog[feature].get("sensitivity")
@@ -223,7 +265,7 @@ def validate_graph(
     """Normalize a draft; Apply additionally requires usable source-to-output paths."""
     graph = _object(graph, {"nodes", "edges"}, "graph")
     nodes, by_id = [], {}
-    counts = {kind: 0 for kind in NODE_PORTS}
+    counts = {}
     for raw in _list(graph.get("nodes", []), MAX_NODES, "nodes"):
         raw = _object(raw, {"id", "type", "x", "y", "config", "enabled"}, "node")
         nid = _identifier(raw.get("id"), "node id")
@@ -245,8 +287,9 @@ def validate_graph(
             ):
                 _fail("node coordinates must be finite and within 100000")
             node[axis] = number
-        counts[kind] += 1
-        if kind in {"face", "tracking", "events"} and counts[kind] > 1:
+        slot = (kind, engine_for(kind, node["config"]))
+        counts[slot] = counts.get(slot, 0) + 1
+        if kind in {"face", "tracking", "events"} and counts[slot] > 1:
             _fail(f"only one {kind} component is supported per workflow")
         by_id[nid] = node
         nodes.append(node)
@@ -309,6 +352,17 @@ def validate_graph(
         _fail("workflow connections must not contain a cycle")
     normalized = {"nodes": nodes, "edges": edges}
     if for_apply:
+        for node in nodes:
+            if (
+                node["enabled"]
+                and engine_for(node["type"], node["config"])
+                in {"bbox", "system1", "neural"}
+                and not node["config"].get("service_url")
+            ):
+                _fail("configure the module service URL before applying")
+        for kind in ENGINES:
+            if sum(n["type"] == kind and n["enabled"] for n in nodes) > 1:
+                _fail(f"Enable only one {kind} module at a time.")
         active = {n["id"] for n in nodes if n["enabled"]}
         sources = {n["id"] for n in nodes if n["type"] == "source"} & active
         outputs = {n["id"] for n in nodes if n["type"] == "output"} & active
@@ -414,6 +468,8 @@ def compile_graph(
         if inputs:
             inputs.sort(key=lambda binding: (binding["node_id"], binding["port"]))
             outputs.append({"node_id": nid, "inputs": inputs})
+            if "display" in node["config"]:
+                outputs[-1]["display"] = node["config"]["display"]
             consumed.update(binding["node_id"] for binding in inputs)
     features, sensitivities, summaries = set(), {}, []
     face_id = event_id = tracking_id = None
@@ -445,7 +501,7 @@ def compile_graph(
         )["events"]
         if item["id"] in features
     ]
-    return {
+    plan = {
         "features": ordered_features,
         "event_sensitivities": sensitivities,
         "summaries": summaries,
@@ -456,6 +512,11 @@ def compile_graph(
         "tracking_node_id": tracking_id,
         "tracking_enabled": tracking_id is not None,
     }
+    for kind, nid in (("tracking", tracking_id), ("events", event_id)):
+        if nid is not None and "engine" in nodes[nid]["config"]:
+            plan[kind + "_engine"] = nodes[nid]["config"]["engine"]
+            plan[kind + "_service_url"] = nodes[nid]["config"].get("service_url", "")
+    return plan
 
 
 def _workflow(value: Any, vocabulary: EventVocabulary | None = None) -> dict:
