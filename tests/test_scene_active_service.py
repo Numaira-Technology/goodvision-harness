@@ -138,10 +138,11 @@ def factory(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "TemporalVLMInspector", no_remote)
     monkeypatch.setattr(service, "RichLabelHTTPClient", no_remote)
 
-    def make(*, tracker=False, inspector=None, scene_side=720):
+    def make(*, tracker=False, inspector=None, scene_side=720, event_vocabulary=None):
         config = load_config(ROOT / "config.yaml")
         config = replace(
             config,
+            event_vocabulary=event_vocabulary or config.event_vocabulary,
             runtime=replace(
                 config.runtime,
                 scene_mode="active",
@@ -1049,3 +1050,50 @@ def test_blocked_status_does_not_stall_display_metadata_event_loop():
     finally:
         release.set()
         watchdog.cancel()
+
+
+def test_custom_event_session_finalizes_and_persists_both_archives(factory):
+    from test_event_injection import _injected
+
+    runtime = factory(event_vocabulary=_injected())
+    runtime.start_camera(dry_run=True, features=["fight", "opens_door"])
+    session, scene = runtime._session, runtime._scene
+    # Feed real SceneState evidence; the service owns both archive validators.
+    for sequence in (1, 2):
+        scene.scene.observe_person("person-1", timestamp_seconds=float(sequence),
+                                   frame_sequence=sequence, bbox=BOX,
+                                   tracking_confirmation="confirmed")
+        for label in ("fight", "opens_door"):
+            scene.scene.observe_event(label, ("person-1",),
+                                      timestamp_seconds=float(sequence),
+                                      frame_sequence=sequence, detected=True,
+                                      evidence_id=f"{label}-{sequence}")
+    runtime._on_scene_update()
+    assert runtime.stop_session()
+    _await_scene_drain(runtime)
+    assert runtime._run_postprocess[session.stream_session_id].state == "finalized"
+    assert {e["event_label"] for e in runtime._scene_archive.list_events()} == {
+        "fight", "opens_door",
+    }
+    assert {e["event_label"] for e in session.archive.list_events()["events"]} == {
+        "fight", "opens_door",
+    }
+
+
+def test_invalid_final_snapshot_fails_and_releases_identity_lock(factory, monkeypatch):
+    runtime = factory()
+    runtime.start_camera(dry_run=True, features=["smoking"])
+    session, scene = runtime._session, runtime._scene
+    original = scene.snapshot
+    def invalid_snapshot(*args, **kwargs):
+        result = original(*args, **kwargs)
+        result["scene"]["events"] = [{"event_label": "undeclared"}]
+        return result
+    # Avoid the earlier video-archive ingress to exercise the final journal gate.
+    monkeypatch.setattr(runtime, "_queue_archive_scene", lambda *_a, **_k: True)
+    monkeypatch.setattr(scene, "snapshot", invalid_snapshot)
+    assert runtime.stop_session()
+    _await(lambda: runtime._run_postprocess[session.stream_session_id].state == "failed")
+    assert runtime._identity_control_lock.acquire(timeout=1)
+    runtime._identity_control_lock.release()
+    assert runtime._scene_archive.stats()["invalid_snapshots"] > 0

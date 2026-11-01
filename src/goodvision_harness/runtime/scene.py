@@ -21,7 +21,12 @@ from uuid import uuid4
 from ..actions.alerts import apply_alert_policy
 from ..contracts import AnalysisResult, NormalizedBBox
 from ..diagnostics import SceneDiagnostics, note, record
-from ..event_registry import BUILTIN_VOCABULARY, SAFETY_BRANCH, EventVocabulary, branch_events
+from ..event_registry import (
+    BUILTIN_VOCABULARY,
+    SAFETY_BRANCH,
+    EventVocabulary,
+    branch_events,
+)
 from ..event_registry import labels as registry_labels
 from ..event_sensitivity import normalize_event_sensitivities
 from ..events.state_machine import SceneState
@@ -158,7 +163,9 @@ class SceneRuntime:
     ) -> None:
         if mode != "active":
             raise ValueError("scene mode must be active")
-        if not set(event_labels) <= set(registry_labels(vocabulary.branch(SAFETY_BRANCH))):
+        if not set(event_labels) <= set(
+            registry_labels(vocabulary.branch(SAFETY_BRANCH))
+        ):
             raise ValueError("unsupported temporal event label")
         if tracking_mode not in {"immediate", "batch"}:
             raise ValueError("tracking mode must be immediate or batch")

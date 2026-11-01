@@ -399,7 +399,22 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
     </div>
   </section>
 
-  <section id="local-camera-utility" class="panel local-camera-utility" aria-labelledby="local-camera-utility-title"><div><h2 id="local-camera-utility-title">本机摄像头</h2><p class="note">检查浏览器能否访问本机摄像头，预览本机画面。网络视频在实时工作台按通道管理。</p></div><button id="fleet-detail-toggle" type="button" class="btn" aria-controls="fleet-detail-console" aria-expanded="false">打开本机摄像头</button></section>
+  <section id="local-camera-utility" class="panel" aria-labelledby="local-camera-utility-title">
+    <h2 id="local-camera-utility-title">本机摄像头</h2>
+    <p class="note">一键将本机摄像头发布为 WebRTC 视频源。允许摄像头权限后，复制链接到工作台该路的视频源配置。</p>
+    <div class="row" style="margin-top:14px">
+      <button id="local-camera-start" type="button" class="btn primary">一键生成 WebRTC 链接</button>
+      <button id="local-camera-stop" type="button" class="btn danger" disabled>停止发布</button>
+      <button id="fleet-detail-toggle" type="button" class="btn" aria-controls="fleet-detail-console" aria-expanded="false">打开本机摄像头</button>
+    </div>
+    <p id="local-camera-status" class="note" role="status" aria-live="polite">尚未发布摄像头。</p>
+    <div id="local-camera-result" class="field" hidden>
+      <label for="local-camera-url">WebRTC 视频源链接</label>
+      <div class="row"><input id="local-camera-url" class="grow" type="text" readonly spellcheck="false" autocomplete="off"><button id="local-camera-copy" type="button" class="btn" disabled>复制链接</button></div>
+    </div>
+    <video id="local-camera-preview" autoplay playsinline muted hidden aria-label="本机摄像头发布预览" style="display:block;width:100%;max-width:640px;max-height:360px;margin-top:14px;border-radius:10px;background:#111827"></video>
+    <p class="note">发布期间请保持此页面打开；停止发布、关闭页面或重启服务后链接失效。链接可在本机或可直连的局域网使用，其他设备需使用可访问的服务地址。</p>
+  </section>
 </section>  <div id="console-reference-panels" hidden aria-hidden="true"><section id="event-archive-panel" class="panel log" aria-labelledby="event-history-title">
     <div class="deployment-head section-title"><h2 id="event-history-title">主通道事件记录</h2>
       <button id="refresh-events" class="btn" type="button">刷新记录</button></div>
@@ -441,7 +456,7 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
       <span id="buffer-delay-current" class="note">正在读取缓存时间…</span>
     </div>
     <div id="local-camera-buffer-note" class="note" hidden></div>
-    <div class="note">此设置仅适用于网络视频，额外显示缓存可设为 0–30 秒，运行中可调整，重启后保留。调小后会跳过旧画面、追上最新结果。本机摄像头使用独立的描边缓冲，由部署配置设置。</div>
+    <div class="note">网络视频（包括本机摄像头生成的 WebRTC 链接）的显示缓存可设为 0–30 秒，预览和分析时均生效，运行中可调整，重启后保留。调小后会跳过旧画面；设为 0 秒恢复实时显示。</div>
     <div id="buffer-delay-note" class="status deployment-note" role="status" aria-live="polite"></div>
     <div id="output-metrics" class="metrics">
       <div class="metric"><span class="metric-label">Source frames</span><strong id="source-frame-count" class="metric-value">0</strong><span id="last-frame-note" class="metric-note">No frame received</span></div>
@@ -1126,7 +1141,7 @@ function controls(){
   const localBuffer=state.mode==="camera"&&state.info?.local_camera_display?.enabled;
   ui.localCameraBufferNote.hidden=!localBuffer;
   if(localBuffer)ui.localCameraBufferNote.textContent="本机描边缓冲："+
-    state.info.local_camera_display.delay_seconds+" 秒（由部署配置设置）。网络视频缓存不影响本机摄像头。";
+    state.info.local_camera_display.delay_seconds+" 秒（由部署配置设置）。此处为摄像头直接采集，不使用网络视频缓存。";
   ui.bufferDelay.disabled=!persistenceReady||deploymentBusy||state.pending||!!localBuffer;
   ui.saveBufferDelay.disabled=ui.bufferDelay.disabled;
   ui.clearApiKey.disabled=!persistenceReady||deploymentBusy||sharedBusy||
@@ -2940,6 +2955,7 @@ setInterval(()=>{
 <script src="/assets/fleet_console.js"></script>
 <script src="/assets/scene_diagnostics.js"></script>
 <script src="/assets/cloud_gpu_console.js"></script>
+<script src="/assets/local_camera.js"></script>
 <script id="modular-console-script">
 (function(root){
   "use strict";

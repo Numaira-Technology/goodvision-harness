@@ -92,14 +92,20 @@ class SceneArchive:
         self._thread.start()
         self._ready.wait(1.0)
 
-    def _record(self, event: Mapping, session: str, source: str) -> dict[str, Any]:
+    @staticmethod
+    def _record(
+        event: Mapping, session: str, source: str,
+        vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
+    ) -> dict[str, Any]:
         label, phase = event.get("event_label"), event.get("phase")
-        if not isinstance(label, str) or label not in self.vocabulary:
+        if not isinstance(label, str) or label not in vocabulary:
             raise ValueError("invalid event label")
         if not isinstance(phase, str) or phase not in _PHASES:
             raise ValueError("invalid event phase")
         subjects = event.get("subject_ids")
-        if not isinstance(subjects, (list, tuple)) or not (0 if label == "ground_litter" else 1) <= len(subjects) <= 128:
+        minimum_subjects = 0 if label == "ground_litter" else 1
+        if (not isinstance(subjects, (list, tuple))
+                or not minimum_subjects <= len(subjects) <= 128):
             raise ValueError("invalid event participants")
         record: dict[str, Any] = {
             "event_id": _text(event.get("event_id")),
@@ -172,6 +178,7 @@ class SceneArchive:
                     },
                     session,
                     source,
+                    vocabulary=self.vocabulary,
                 )
                 record["_retraction_only"] = True
                 records[record["event_id"]] = record
@@ -179,7 +186,9 @@ class SceneArchive:
             for event in events:
                 if not isinstance(event, Mapping):
                     raise ValueError("invalid event record")
-                record = self._record(event, session, source)
+                record = self._record(
+                    event, session, source, vocabulary=self.vocabulary,
+                )
                 records[record["event_id"]] = record
             if len(records) > 1000:
                 raise ValueError("oversized event batch")

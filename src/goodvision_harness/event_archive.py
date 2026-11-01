@@ -24,9 +24,8 @@ from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from .event_registry import BUILTIN_VOCABULARY, SAFETY_BRANCH, EventVocabulary, labels
-
 from .archive_ingress import ArchiveIngress
+from .event_registry import BUILTIN_VOCABULARY, SAFETY_BRANCH, EventVocabulary, labels
 from .latency_trace import log_timing
 from .person_identity import stranger_evidence
 from .video_evidence import (

@@ -422,8 +422,9 @@ class SceneDisplayWorker:
                         self._stats["discarded_frames"] += 1
                     continue
                 rendered = render_scene_jpeg(
-                    packet.jpeg, snapshot, packet.media_timestamp, quality=self._quality,
-                    vocabulary=self.scene.vocabulary,
+                    packet.jpeg, snapshot, packet.media_timestamp,
+                    quality=self._quality,
+                    vocabulary=getattr(self.scene, "vocabulary", BUILTIN_VOCABULARY),
                 )
                 output = replace(
                     packet,
@@ -739,7 +740,7 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
                     source.timestamp_seconds,
                     quality=self._quality,
                     breakdown=render_breakdown,
-                    vocabulary=self.scene.vocabulary,
+                    vocabulary=getattr(self.scene, "vocabulary", BUILTIN_VOCABULARY),
                 )
                 render_seconds = time.monotonic() - render_started
                 with self._condition:

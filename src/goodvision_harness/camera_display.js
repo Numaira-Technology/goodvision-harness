@@ -1508,7 +1508,7 @@
         grayWidth=Math.max(16,Math.floor(width*motionScale)),grayHeight=Math.max(16,Math.floor(height*motionScale));
       if(this.grayCanvas.width!==grayWidth)this.grayCanvas.width=grayWidth;
       if(this.grayCanvas.height!==Math.min(240,grayHeight))this.grayCanvas.height=Math.min(240,grayHeight);
-      if(!this.motionFailed&&this.motionFrames.size<2){
+      if(this.config.enabled!==false&&!this.motionFailed&&this.motionFrames.size<2){
         this.grayContext.drawImage(bitmap,0,0,this.grayCanvas.width,this.grayCanvas.height);
         const motionBitmap=this.grayCanvas.transferToImageBitmap();
         try{this.postMotion({type:"frame_bitmap",queued_at:performance.now(),frame:{sequence:seq,timestamp,
@@ -1655,6 +1655,7 @@
             for(const key of collection.keys())if(key<=discarded)collection.delete(key);
         }
         for(const frame of this.frames.frames){
+          if(this.config.enabled===false)break;
           if(frame.timestamp>mediaNow-this.frames.delay+this.presentPrefetchSeconds)break;
           if(!this.requested.has(frame.sequence)&&!this.pendingPresent.has(frame.sequence)){
             // Display retirement does not cancel a message already in a worker
@@ -1736,7 +1737,7 @@
       this.animationId=requestAnimationFrame(()=>this.animate());
     }
     async pollMetadata(){
-      if(this.closed||this.metadataPending||["websocket","frames"].includes(this.config.transport))return;
+      if(this.closed||this.config.enabled===false||this.metadataPending||["websocket","frames"].includes(this.config.transport))return;
       this.metadataPending=true;
       const controller=new AbortController(),started=performance.now();
       this.metadataController=controller;this.stats.metadata_requests++;
@@ -1769,7 +1770,7 @@
         if(!this.closed)this.metadataTimer=setTimeout(()=>this.pollMetadata(),150);}
     }
     receiveMetadata(data,{transport="http"}={}){
-      if(this.closed)return false;
+      if(this.closed||this.config.enabled===false)return false;
       if(!data||!sameRun(data,this.config)){
         this.stats.metadata_failures++;this.stats.metadata_run_mismatches++;return false;
       }
@@ -1963,15 +1964,15 @@
       this.key=JSON.stringify([connectionId,config.stream_session_id,config.generation,config.crop_version,
         config.enabled,config.delay_seconds]);
       this.canvas.getContext("2d").clearRect(0,0,this.canvas.width,this.canvas.height);
-      if(config.enabled){
-        this.controller=new BrowserController({video:null,canvas:this.canvas,socket:this.socket,
-          config:{...config,source_mode:"network",transport:config.transport==="stream"?"stream":"frames",
-            metadata_url:this.url.replace(/\/frames(?:\?.*)?$/,"/metadata"),metrics_url:this.metricsUrl},
-          settings:{sample_fps:0,max_image_side:1280,jpeg_quality:80},
-          onStatus:this.onStatus,onFailure:this.onFailure});
-        this.controller.stats.network_requests=this.streamConnections;
-        this.controller.start();
-      }
+      // Tracking is optional. Use one playback clock and status stream even
+      // with a zero-second buffer, so settings never leave stale delay/FPS UI.
+      this.controller=new BrowserController({video:null,canvas:this.canvas,socket:this.socket,
+        config:{...config,source_mode:"network",transport:config.transport==="stream"?"stream":"frames",
+          metadata_url:this.url.replace(/\/frames(?:\?.*)?$/,"/metadata"),metrics_url:this.metricsUrl},
+        settings:{sample_fps:0,max_image_side:1280,jpeg_quality:80},
+        onStatus:this.onStatus,onFailure:this.onFailure});
+      this.controller.stats.network_requests=this.streamConnections;
+      this.controller.start();
     }
     enqueue(data){
       const config=data.config,key=JSON.stringify([data.connection_id,config.stream_session_id,
@@ -2015,19 +2016,12 @@
         try{
           if(this.closed||epoch!==this.acceptEpoch)return;
           if(bitmap.width!==frame.width||bitmap.height!==frame.height)throw new Error("display dimensions changed");
-          if(this.controller){
-            this.controller.noteTiming("network_decode",performance.now()-decodeStarted);
-            this.controller.stats.network_frames_received++;
-            if(this.after>=0)this.controller.stats.network_source_gap_frames+=Math.max(0,frame.source_sequence-this.after-1);
-            this.controller.capture(receivedAt-(latest-frame.media_timestamp)*1000,
-              {mediaTime:frame.media_timestamp,presentedFrames:frame.source_sequence},bitmap);
-          }else{
-            this.canvas.width=bitmap.width;this.canvas.height=bitmap.height;
-            this.canvas.getContext("2d").drawImage(bitmap,0,0);
-            this.canvas.dataset.frameSequence=String(frame.source_sequence);
-            this.canvas.dataset.mediaTimestamp=String(frame.media_timestamp);
-          }
-          this.after=frame.source_sequence;this.onFrame({buffering:!!this.controller&&!this.controller.frames.presented,presented:!this.controller});
+          this.controller.noteTiming("network_decode",performance.now()-decodeStarted);
+          this.controller.stats.network_frames_received++;
+          if(this.after>=0)this.controller.stats.network_source_gap_frames+=Math.max(0,frame.source_sequence-this.after-1);
+          this.controller.capture(receivedAt-(latest-frame.media_timestamp)*1000,
+            {mediaTime:frame.media_timestamp,presentedFrames:frame.source_sequence},bitmap);
+          this.after=frame.source_sequence;this.onFrame({buffering:!this.controller.frames.presented,presented:false});
         }finally{bitmap.close();}
       }
       if(data.metadata&&this.controller&&this.controller.receiveMetadata(data.metadata,{transport:"websocket"}))

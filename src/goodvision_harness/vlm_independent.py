@@ -363,7 +363,14 @@ def _inspector(config):
     options = dict(config.options)
     settings = config.model_settings
     if config.output_mode == "events":
-        options["max_tokens"] = 160
+        # Keep the built-in budget, with a conservative ASCII-character allowance
+        # for every additional JSON key/value. Long injected identifiers may
+        # tokenize poorly; truncation invalidates the entire strict response.
+        options["max_tokens"] = 160 + sum(
+            len(label) + 16
+            for label in config.labels
+            if label not in BUILTIN_VOCABULARY
+        )
         # The transport uses asyncio.wait_for: expiry cancels the HTTP request
         # and releases its worker, rather than abandoning a running Future.
         settings = replace(

@@ -2,7 +2,8 @@
 
 The registry replaced hard-coded label tuples and frozensets spread across the
 grounding, sensitivity, scene and overlay modules. The fixture was generated
-from the code immediately before that replacement, so a diff here means the
+from unmodified main f38db83e45a2caf291bfc3aa88819b409d89e022
+(seven built-ins, including PPE and ground litter) during the integration, so a diff here means the
 refactor changed observable behaviour rather than just its source of truth.
 
 Regenerate only with a recorded reason:
@@ -233,5 +234,5 @@ def test_verdict_log_stays_restricted_to_the_built_in_safety_labels() -> None:
     """A session-supplied label must never widen what the verdict log records."""
 
     assert scene_worker._PUBLIC_VERDICT_LABELS == frozenset(
-        {"fight", "smoking", "fall", "weapon"}
+        {"fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter"}
     )

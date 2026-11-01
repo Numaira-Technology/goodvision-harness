@@ -41,13 +41,18 @@ def event_catalog(vocabulary: EventVocabulary | None = None) -> dict:
     """Build fresh values from the authoritative supported event list."""
     sensitivities = sensitivity_ui_info()
     events = []
-    supported = vocabulary.labels() if vocabulary is not None else grounding.DETECTION_EVENT_LABELS
+    supported = (
+        vocabulary.labels()
+        if vocabulary is not None
+        else grounding.DETECTION_EVENT_LABELS
+    )
     for key in supported:
         definition = vocabulary.get(key) if vocabulary is not None else None
         injected = definition is not None and not definition.builtin
         metadata = (
             {"labels": {"zh": definition.zh_name, "en": key}, "default_enabled": False}
-            if injected else EVENT_PRESENTATION.get(key, {})
+            if injected
+            else EVENT_PRESENTATION.get(key, {})
         )
         item = {
             "id": key,

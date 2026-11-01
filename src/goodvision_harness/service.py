@@ -103,6 +103,7 @@ from .grounding import (
 )
 from .identity_review_worker import IdentityReviewWorker
 from .latency_trace import log_timing, trace_id
+from .local_camera import install_local_camera_routes
 from .local_gpu import LocalGPUDeployment, local_choices
 from .model_api import (
     DEFAULT_OPENROUTER_ENDPOINT,
@@ -1514,7 +1515,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             result = {
                 "configured": False,
                 "error": "configuration unavailable",
-                "event_catalog": event_catalog(self.config.event_vocabulary if self.config else None),
+                "event_catalog": event_catalog(self._event_vocabulary()),
             }
             safe = public_safe_value(result)
             assert isinstance(safe, dict)
@@ -1674,7 +1675,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             if self._events is None:
                 if self.config is None or self._closed:
                     raise RuntimeError("event archive unavailable")
-                self._events = EventArchive(self.config.events, vocabulary=self._event_vocabulary())
+                self._events = EventArchive(
+                    self.config.events, vocabulary=self._event_vocabulary(),
+                )
             return self._events
 
     def _tracking_coordinator(self, client: Any, rich: Any = None) -> Any:
@@ -2086,7 +2089,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         return {
             **copy.deepcopy(self._analysis_settings),
             **sensitivity_ui_info(),
-            "event_catalog": event_catalog(self.config.event_vocabulary if self.config else None),
+            "event_catalog": event_catalog(self._event_vocabulary()),
         }
 
     def update_analysis_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2182,8 +2185,11 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             independent_events = self._independent_events_requested(
                 features, dry_run=self.dry_run,
             )
+            model_labels = registry_labels(
+                self._event_vocabulary().branch(SAFETY_BRANCH)
+            )
             if (not self.dry_run
-                    and (any(item in registry_labels(self._event_vocabulary().branch(SAFETY_BRANCH)) for item in features)
+                    and (any(item in model_labels for item in features)
                          or bool(self._workflow_plan
                                  and self._workflow_plan["summaries"]))
                     and not self._aiclub_api_key
@@ -2321,7 +2327,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     )
                 selected_features = ()
             else:
-                selected_features = _normalize_features(features, self._event_vocabulary())
+                selected_features = _normalize_features(
+                    features, self._event_vocabulary(),
+                )
             label = ",".join(selected_features)
             use_dry_run = self.dry_run if dry_run is None else bool(dry_run)
         elif selected_analysis == FACE_ANALYSIS_MODE:
@@ -2355,7 +2363,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         # Events the model judges, as opposed to the face branch. Injected
         # events sit here too: they are answered by the same request and run
         # the same lifecycle, so anything keyed off "is this a safety event"
-        # has to read the session vocabulary rather than the built-in five.
+        # has to read the session vocabulary, including configured custom labels.
         model_backed = frozenset(
             registry_labels(self._event_vocabulary().branch(SAFETY_BRANCH))
         )
@@ -3718,7 +3726,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         control = self._archive_run(session)
         with control.lock:
             pending = control.pending_scene
-            model_labels = registry_labels(self._event_vocabulary().branch(SAFETY_BRANCH))
+            model_labels = registry_labels(
+                self._event_vocabulary().branch(SAFETY_BRANCH)
+            )
             if snapshot is not None:
                 current = snapshot.get("scene")
                 if not current or current.get("stream_session_id") != (
@@ -4865,6 +4875,7 @@ def create_app(
             yield
         finally:
             stop_resource_sampling()
+            await application.state.local_cameras.aclose()
             runtime.stop()
             await application.state.fleet.aclose()
 
@@ -4877,6 +4888,7 @@ def create_app(
         swagger_ui_oauth2_redirect_url=None,
     )
     install_event_routes(application)
+    install_local_camera_routes(application)
     install_fleet_routes(application)
     from .workflow_routes import install_workflow_routes
     install_workflow_routes(application)

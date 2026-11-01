@@ -1,5 +1,8 @@
 """Fixed native VideoJev scene choices and three-way response decoding."""
 
+import json
+
+from .event_registry import BUILTIN_VOCABULARY, EventVocabulary
 from .event_sensitivity import normalize_event_sensitivities, sensitivity_policy_text
 from .videojev_core import CONTEXT, MODEL, OPTIONS, REVISION, VALUES, choice_indices
 from .vlm_questions import QuestionTemplate
@@ -17,7 +20,10 @@ _PERSON_GUIDANCE = (
 
 
 
-def scene_question_template(*, labels, sensitivities=None):
+def scene_question_template(
+    *, labels, sensitivities=None,
+    vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
+):
     """Bind the existing Harness rules once, leaving only frame times dynamic."""
     policy = sensitivity_policy_text(
         normalize_event_sensitivities(sensitivities, labels),
@@ -28,6 +34,20 @@ def scene_question_template(*, labels, sensitivities=None):
         ),
         include_output_guidance=False,
     )
+    injected = {
+        definition.label: {
+            "definition": definition.definition,
+            "counter_examples": definition.counter_examples,
+        }
+        for definition in vocabulary.resolve(labels)
+        if not definition.builtin
+    }
+    if injected:
+        policy += (
+            "\nFor these additional events, judge each independently using its "
+            "stated visible criteria without a safety-event recall preference. "
+            "Event definitions: " + json.dumps(injected, ensure_ascii=False)
+        )
     before = policy + '\nEvidence metadata: {"source_times": '
     after = "}" + _WINDOW_GUIDANCE + _PERSON_GUIDANCE
     return tuple({

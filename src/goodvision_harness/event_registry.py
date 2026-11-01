@@ -171,8 +171,8 @@ BUILTIN_EVENTS: tuple[EventDefinition, ...] = (
         target=PERSON_TARGET,
         default_sensitivity=_STANDARD,
         sensitivity_options=_levels(
-            "人员未穿反光服或未戴安全头盔；遮挡不视为缺失",
-            "人员未穿反光服或未戴安全头盔；遮挡不视为缺失",
+            "人员未穿反光服或未戴安全头盔；遮挡不视为缺失",  # noqa: RUF001
+            "人员未穿反光服或未戴安全头盔；遮挡不视为缺失",  # noqa: RUF001
         ),
         builtin=True,
         recall=HIGH_RECALL,
@@ -184,8 +184,8 @@ BUILTIN_EVENTS: tuple[EventDefinition, ...] = (
         requires_subject=False,
         default_sensitivity=_STANDARD,
         sensitivity_options=_levels(
-            "地面上可见被丢弃的垃圾；无需有人在场",
-            "地面上可见被丢弃的垃圾；无需有人在场",
+            "地面上可见被丢弃的垃圾；无需有人在场",  # noqa: RUF001
+            "地面上可见被丢弃的垃圾；无需有人在场",  # noqa: RUF001
         ),
         builtin=True,
         recall=HIGH_RECALL,
@@ -200,6 +200,7 @@ BUILTIN_EVENTS: tuple[EventDefinition, ...] = (
         recall=HIGH_RECALL,
     ),
 )
+
 
 def labels(definitions: Iterable[EventDefinition]) -> tuple[str, ...]:
     """Return the labels of the supplied definitions, in their given order."""
@@ -262,9 +263,7 @@ def targets(
     """Return the labels whose positive boxes must be of one target kind."""
 
     return frozenset(
-        definition.label
-        for definition in definitions
-        if definition.target == target
+        definition.label for definition in definitions if definition.target == target
     )
 
 
@@ -290,7 +289,11 @@ class EventVocabulary:
         """Return the built-ins followed by injected events, in supplied order."""
 
         added = tuple(injected)
-        builtin = {definition.label for definition in BUILTIN_EVENTS}
+        builtin = {
+            name
+            for definition in BUILTIN_EVENTS
+            for name in (definition.label, *definition.aliases)
+        }
         for definition in added:
             if definition.builtin or definition.label in builtin:
                 raise ValueError("an injected event cannot replace a built-in event")
@@ -329,9 +332,7 @@ class EventVocabulary:
         )
 
     def display_names(self) -> dict[str, str]:
-        return {
-            definition.label: definition.zh_name for definition in self.definitions
-        }
+        return {definition.label: definition.zh_name for definition in self.definitions}
 
     def resolve(self, requested: Iterable[str]) -> tuple[EventDefinition, ...]:
         """Order requested labels as the vocabulary does, rejecting unknown ones.
@@ -407,10 +408,20 @@ def definition_from_json(payload: object) -> EventDefinition:
     label = _injected_text(
         payload.get("label"), "label", limit=_MAX_LABEL_LENGTH, required=True
     ).casefold()
-    if not set(label) <= _LABEL_CHARACTERS:
-        raise ValueError("event label must use lowercase letters, digits or _")
+    if (
+        label[0] not in "abcdefghijklmnopqrstuvwxyz"
+        or not set(label) <= _LABEL_CHARACTERS
+    ):
+        raise ValueError(
+            "event label must start with a lowercase letter "
+            "and use letters, digits or _"
+        )
     target = payload.get("target", PERSON_TARGET)
-    if target not in {PERSON_TARGET, OBJECT_TARGET, ANY_TARGET}:
+    if not isinstance(target, str) or target not in {
+        PERSON_TARGET,
+        OBJECT_TARGET,
+        ANY_TARGET,
+    }:
         raise ValueError("event target must be person, object or any")
     return EventDefinition(
         label=label,
@@ -450,6 +461,4 @@ def vocabulary_from_json(payload: object) -> EventVocabulary:
         return BUILTIN_VOCABULARY
     if len(payload) > MAX_INJECTED_EVENTS:
         raise ValueError("too many injected event definitions")
-    return EventVocabulary.extend(
-        definition_from_json(row) for row in payload
-    )
+    return EventVocabulary.extend(definition_from_json(row) for row in payload)

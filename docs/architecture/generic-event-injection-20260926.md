@@ -1,5 +1,13 @@
 # 通用事件注入（Generic Event Injection）设计方案
 
+> 2026-11-01 集成说明：下文保留 9 月的设计记录。当前实现基于 main
+> `f38db83e45a2caf291bfc3aa88819b409d89e022`，内置集合包含新增的
+> `ppe_violation` 和 `ground_litter`，共七项。`scene_runtime.py` / `scene_state.py`
+> 已成为兼容入口，实际代码在 `runtime/scene.py` / `events/state_machine.py`。
+> 部署词表现贯穿两类归档、场景显示和工作流校验；新增事件默认关闭。
+> 最终归档提交能区分永久无效数据与暂时队列背压。自定义场景级事件仍不支持，
+> `ground_litter` 保留内置场景级行为。本文的离线 benchmark 设想不属于本次交付。
+
 设计基线：2026-09-28，基于 `origin/main`（`9256d99`）。最初写在 `pengyu/harness-offline-benchmark` 上，因为离线 benchmark 只在那条分支。该分支不准备合入 main，所以注册表、prompt 和生命周期按当前 main 重做。`benchmark/` 不在 main 上，按题目自动勾选事件的 runner 不在这次实现里。本文只描述设计与拆解，不代表已验收。相关：[持续人物与事件引擎](entity-event-engine.md)。
 
 ## 1. 问题
