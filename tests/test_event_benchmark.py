@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from bench.event_benchmark import run_eval as runner
+from tools.event_benchmark import run_eval as runner
 
 
 def language(content, finish="stop"):
