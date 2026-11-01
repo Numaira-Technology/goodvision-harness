@@ -13,7 +13,7 @@ class Element{
   constructor(tag="div"){
     this.tagName=tag.toUpperCase();this.children=[];this.attributes={};this.dataset={};
     this.className="";this.hidden=false;this.handlers={};this.value="";
-    this.classList={contains:name=>this.className.split(/\s+/).includes(name),add:name=>{if(!this.classList.contains(name))this.className+=(this.className?" ":"")+name;}};
+    this.classList={contains:name=>this.className.split(/\s+/).includes(name),add:name=>{if(!this.classList.contains(name))this.className+=(this.className?" ":"")+name;},remove:name=>{this.className=this.className.split(/\s+/).filter(value=>value!==name).join(' ');}};
   }
   append(...nodes){for(const node of nodes){node.remove();node.parentElement=this;this.children.push(node);}}
   insertBefore(node,before){node.remove();node.parentElement=this;this.children.splice(this.children.indexOf(before),0,node);}
@@ -51,6 +51,38 @@ function fixture(){
   const document={getElementById:id=>page.id===id?page:page.querySelector("#"+id),createElement:tag=>new Element(tag)};
   return {document,page,panel:page.querySelector(".deployment-panel")};
 }
+
+test("only service forms move into the node inspector and survive canvas rerenders",async()=>{
+  const view=fixture();organizeSettings(view.document);
+  const all=new Element(),workflows=new Element("section"),canvas=new Element();
+  workflows.id="console-workflows";canvas.id="workflow-root";workflows.append(canvas);all.append(view.page,workflows);
+  view.document.getElementById=id=>all.querySelector("#"+id);
+  view.document.querySelector=selector=>selector==="#console-settings .deployment-panel"?view.panel:all.querySelector(selector);
+  const input=view.document.getElementById("inference-server-url"),save=view.document.getElementById("save-deployment-button");
+  input.value="http://pending:8000";input.oninput=()=>"original handler";save.disabled=false;
+  const routePanel=new Element('section');routePanel.id='cloud-route-panel';view.page.append(routePanel);
+  const html=fs.readFileSync(path.join(__dirname,"../src/goodvision_harness/dashboard.html"),"utf8");
+  const script=html.match(/<script id="workflow-services-script">([\s\S]*?)<\/script>/)[1];
+  const saves=[],routes=[],sandbox=vm.createContext({document:view.document,saveDeploymentSettings:async kind=>saves.push(kind),GoodvisionConsole:{navigate:page=>routes.push(page)}});
+  vm.runInContext(script,sandbox);
+  assert.equal(input.closest("#console-workflows"),workflows);
+  assert.equal(view.page.querySelector("#tracking-mode"),null);
+  assert.equal(view.page.querySelector('#default-api-key').closest('#console-settings'),view.page);
+  assert.equal(routePanel.parentElement,view.page);
+  assert.equal(view.document.getElementById('workflow-services'),null);
+  for(const id of ['settings-startup','processing-method-field','processing-comparison','settings-video'])
+    assert.equal(view.document.getElementById(id).closest('#workflow-service-store').hidden,true);
+  const api=sandbox.GoodvisionWorkflowServices,host=new Element();host.dataset.wcService='analysis';canvas.append(host);
+  api.mount(host);assert.equal(input.closest('#workflow-root'),canvas);assert.equal(canvas.hidden,false);
+  assert.equal(input.value,"http://pending:8000");assert.equal(input.oninput(),"original handler");
+  await host.querySelector('.wc-service-actions').children[0].onclick();assert.deepEqual(saves,['analysis']);
+  api.park();host.remove();const next=new Element();next.dataset.wcService='tracking';canvas.append(next);api.mount(next);
+  assert.equal(view.document.getElementById('tracking-mode').closest('#workflow-root'),canvas);
+  assert.equal(input.closest('#workflow-service-store').hidden,true);
+  api.park();next.dataset.wcService='analysis';api.mount(next);assert.equal(input.value,'http://pending:8000');
+  save.disabled=true;api.sync();assert.equal(next.querySelector('.wc-service-actions').children[0].disabled,true);
+  assert.deepEqual(routes,[]);
+});
 
 test("settings move each original control once without replacing drafts or handlers",()=>{
   const view=fixture(),original=view.page.querySelectorAll("[id]");

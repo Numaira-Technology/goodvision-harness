@@ -6,6 +6,30 @@ const {test}=require("node:test");
 const {createDocument,runDashboard}=require("./helpers/dashboard.cjs");
 const {payload:catalogPayload}=require("./helpers/event_catalog.cjs");
 
+test("analysis sidebar saves only analysis settings and preserves other pending fields",async()=>{
+  const view=dashboard({inference_mode:'cloud',tracking_mode:'legacy'});
+  view.element('tracking-mode').value='server';view.element('tracking-server-url').value='unfinished';
+  view.element('tracking-sample-fps').value='invalid';view.element('tracking-node-key').value='pending-node-key';
+  view.element('default-api-key').value='pending-cloud-key';
+  await view.saveDeploymentSettings('analysis');
+  assert.deepEqual(view.requests.at(-1).payload,{inference_mode:'cloud',local_inference_enabled:false});
+  assert.equal(view.element('tracking-server-url').value,'unfinished');
+  assert.equal(view.element('tracking-sample-fps').value,'invalid');
+  assert.equal(view.element('tracking-node-key').value,'pending-node-key');
+  assert.equal(view.element('default-api-key').value,'pending-cloud-key');
+});
+
+test("tracking sidebar never validates or submits an unrelated analysis draft",async()=>{
+  const view=dashboard({inference_mode:'cloud',tracking_mode:'legacy'});
+  view.element('inference-mode').value='server';view.element('inference-server-url').value='unfinished';
+  view.element('default-api-key').value='pending-cloud-key';view.element('tracking-sample-fps').value='3';
+  await view.saveDeploymentSettings('tracking');const payload=view.requests.at(-1).payload;
+  assert.equal(payload.tracking_sample_fps,3);assert.equal(payload.tracking_mode,'legacy');
+  for(const key of ['inference_mode','inference_server_url','api_key','dry_run','autostart','stream_url','camera_layout'])assert.equal(Object.hasOwn(payload,key),false,key);
+  assert.equal(view.element('inference-server-url').value,'unfinished');assert.equal(view.element('inference-mode').value,'server');
+  assert.equal(view.element('default-api-key').value,'pending-cloud-key');
+});
+
 test("analysis protocol defaults to compatible API and persists GoodVision independently",async()=>{
   const view=dashboard({inference_mode:"server",tracking_mode:"legacy",
     inference_server_url:"http://analysis:8094",inference_server_model:"vision"});

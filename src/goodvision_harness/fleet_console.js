@@ -98,9 +98,10 @@
         let row=this.rows.get(camera.id);
         if(!row){row=this.makeRow(camera);this.rows.set(camera.id,row);}
         row.camera=camera;
-        if(camera.enabled&&(camera.own===true||!this.visible.size))this.visible.add(camera.id);
+        if(camera.enabled&&(camera.own===true||camera.workflow||!this.visible.size))this.visible.add(camera.id);
         if(!camera.enabled&&!connectionBusy(row.status)&&!analyzing(row.status))this.visible.delete(camera.id);
         row.card.hidden=!this.visible.has(camera.id);this.updateRow(row);
+        if(!row.card.hidden&&row.tool==='playback')void this.loadPlayback(row);
       }
     }
     makeRow(camera){
@@ -127,7 +128,7 @@
       for(const button of [start,stop,save,detail,remove])button.type="button";
       remove.setAttribute("aria-label","移除 "+camera.label);
       const replay=this.element("button","btn fleet-replay-link","事件回放");replay.type="button";replay.setAttribute("aria-label",camera.label+" 事件回放");replay.onclick=()=>root.GoodvisionConsole?.openEvents(camera.id);
-      buttons.append(start,stop,remove,replay);
+      buttons.append(start,stop,replay);
       const message=this.element("div","fleet-card-detail");message.setAttribute("role","status");
       const sourceActions=this.element("div","fleet-card-buttons");sourceActions.append(save);
       fields.append(source,layoutField,sourceNote,sourceActions);
@@ -139,17 +140,17 @@
       const monitoring=this.element("div","fleet-monitoring-layout"),videoColumn=this.element("div","fleet-video-column"),insights=this.element("aside","fleet-insights");
       insights.setAttribute("aria-label",camera.label+" 全画面描述与任务实时判断");
       videoColumn.append(viewport,displayNote,vlmNote,buttons,message);monitoring.append(videoColumn,insights);
-      row.insightsPanel=insights;card.append(head,tools,monitoring,fields);this.makeDetail(row);this.makePlayback(row);
+      row.insightsPanel=insights;card.append(head,tools,monitoring);this.makeDetail(row);row.detailPanel.hidden=true;this.makePlayback(row);
       const diagnosticsPanel=this.element("div","fleet-diagnostics fleet-tool-panel");diagnosticsPanel.hidden=true;
       diagnosticsPanel.id="diagnostics-"+camera.id;card.append(diagnosticsPanel);
-      Object.assign(row,{sourcePanel:fields,diagnosticsPanel,diagnosticsFrame:null,tool:"input",toolButtons:new Map()});
+      Object.assign(row,{sourcePanel:fields,diagnosticsPanel,diagnosticsFrame:null,tool:"playback",toolButtons:new Map()});
       row.toolPanels=new Map([["input",fields],["tasks",row.detailPanel],["playback",row.playbackPanel]]);
-      for(const [key,label] of [["input","视频接入"],["tasks","检测任务"],["results","实时结果"],["playback","播放设置"],["diagnostics","服务诊断"]]){
+      for(const [key,label] of [["playback","播放设置"],["results","实时结果"],["diagnostics","服务诊断"]]){
         const button=key==="tasks"?detail:this.element("button","fleet-tool-tab",label);button.type="button";
         button.id="fleet-tool-"+camera.id+"-"+key;button.setAttribute("role","tab");
         const panel=row.toolPanels.get(key)||diagnosticsPanel;
         if(!panel.id)panel.id="fleet-panel-"+camera.id+"-"+key;
-        button.setAttribute("aria-controls",panel.id);button.setAttribute("aria-selected",String(key==="input"));button.tabIndex=key==="input"?0:-1;
+        button.setAttribute("aria-controls",panel.id);button.setAttribute("aria-selected",String(key==="playback"));button.tabIndex=key==="playback"?0:-1;
         button.onclick=()=>this.selectTool(row,key);
         button.onkeydown=event=>{
           const keys=[...row.toolButtons.keys()],index=keys.indexOf(key);
@@ -159,7 +160,7 @@
         row.toolButtons.set(key,button);tools.append(button);
         if(key==="diagnostics")row.diagnostics=button;
       }
-      for(const [key,panel] of row.toolPanels){panel.setAttribute("role","tabpanel");panel.setAttribute("aria-labelledby",row.toolButtons.get(key).id);panel.hidden=key!=="input";}
+      for(const [key,panel] of row.toolPanels){panel.setAttribute("role","tabpanel");panel.setAttribute("aria-labelledby",row.toolButtons.get(key)?.id||"");panel.hidden=key!=="playback";}
       start.onclick=()=>this.start(row);stop.onclick=()=>this.stop(row);save.onclick=()=>this.save(row);
       remove.onclick=()=>this.remove(row);
       input.oninput=()=>{row.notice="";row.error="";this.updateRow(row);};layout.onchange=()=>{row.layoutDirty=true;};
@@ -353,19 +354,14 @@
       const spare=this.fleet.cameras.some(camera=>camera.enabled&&!this.visible.has(camera.id));
       this.ui.mode.textContent=!this.fleet.trackingEnabled?"视频播放 · 人脸与事件识别":this.fleet.allowed?MODES[this.fleet.trackingMode]:
         MODES[this.fleet.trackingMode].replace("多路模式","当前可用 "+this.fleet.usableCapacity+" 路");
-      const capacityNote=!this.fleet.trackingEnabled?"可使用已部署的视频通道；人物描边未启用。":this.fleet.trackingMode==="server"
-        ?"可用路数由追踪服务器容量与已部署通道共同决定。"
-        :this.fleet.trackingMode==="local"?"可按需添加通道，实际可同时运行的路数以本机 GPU 负载为准。"
-        :this.fleet.trackingMode==="cloud"?"可按需部署 N 路通道；各路分配到云 GPU，实际容量取决于租用算力和负载。"
-        :"原部署追踪服务仅支持单路；选择本机 GPU 或独立 GPU 追踪服务器后可使用多路通道。";
-      this.ui.capacity.textContent="已部署 "+this.fleet.capacity+" 路通道，当前可用 "+this.fleet.usableCapacity+" 路。"+(this.fleet.reason||capacityNote)+(disabledActive?" 停用通道仍有历史会话运行，可在下方停止。":"");
+      this.ui.capacity.textContent="视频源、分析模块和服务连接在工作流页面配置。"+(disabledActive?" 停用通道仍有历史会话运行，可在下方停止。":"");
       this.ui.count.textContent="视频已连接 "+active+" 路 · 正在分析 "+analyzed+" 路 · 显示 "+displayed.length+" 路 · 可用 "+available+" 路";
       this.ui.grid.dataset.single=String(displayed.length===1);
       this.ui.grid.className="fleet-grid"+(this.compact&&displayed.length>1?" compact":"");
       this.ui["view-toggle"].hidden=displayed.length<2;
       this.ui["view-toggle"].setAttribute("aria-pressed",String(this.compact));
-      this.ui["view-toggle"].textContent=this.compact?"展开连接设置":"只看画面";
-      this.ui.add.hidden=false;this.ui.add.disabled=!this.metadataOk||!this.fleet.allowed||!spare||this.bulk||locked;
+      this.ui["view-toggle"].textContent=this.compact?"展开详情":"只看画面";
+      this.ui.add.hidden=true;this.ui.add.disabled=!this.metadataOk||!this.fleet.allowed||!spare||this.bulk||locked;
       this.ui.add.setAttribute("aria-describedby","fleet-capacity");
       this.ui.add.title=!this.metadataOk?"正在确认可用通道，请等待配置恢复。":this.bulk?"正在处理视频连接，请稍候。":
         locked?"请先停止全部分析，再添加视频。":!this.fleet.allowed?
@@ -398,7 +394,7 @@
       row.title.textContent=row.camera.label;row.card.dataset.connected=String(connected(status));
       const videoFresh=Number.isFinite(row.lastPresentedAt)&&this.clock()-row.lastPresentedAt<2500;
       row.state.textContent=row.busy?"正在处理":row.unreachable?(videoFresh?"视频播放中 · 状态更新延迟":"暂时无法确认服务状态"):(CONNECTION[connectionState(status)]||"正在检查")+" · "+(ANALYSIS[status.analysis_state||status.pipeline_state]||"未分析");
-      row.state.className="fleet-camera-state"+(row.unreachable||row.error||status.last_error?" error":active?" good":"");
+      row.state.className="fleet-camera-state"+(row.unreachable||row.error||status.connection_error||status.last_error?" error":active?" good":"");
       const vlm=status.vlm,age=vlm?.last_success_age_seconds;
       if(row.unreachable)row.vlmNote.textContent="事件分析 · 状态更新延迟，正在重新确认";
       else if(status.workflow_test_running)row.vlmNote.textContent="事件分析 · 工作流测试中，请查看工作流输出";
@@ -422,20 +418,20 @@
       row.start.disabled=!enabled||row.busy||active||locked||!row.status||row.unreachable||!row.camera.connect_url;
       row.stop.disabled=row.busy||!active||locked||connectionState(status)==="disconnecting"||!row.camera.disconnect_url;
       row.save.disabled=!enabled||row.busy||active||locked||!row.input.value.trim();
-      row.remove.hidden=row.camera.own===true;row.remove.disabled=row.busy||active||locked;
+      row.remove.hidden=true;row.remove.disabled=row.busy||active||locked;
       row.detail.hidden=false;row.detail.disabled=false;row.replay.disabled=!enabled||!row.camera.diagnostics_url;this.syncInsights(row);
       const configured=status.configured_stream===true;
       row.input.placeholder=configured?"留空使用已保存的视频地址（不回显）":"RTSP / RTMP / WHEP 地址";
       row.sourceNote.textContent=configured?"已保存视频地址 · 连接时可留空；填写新地址仅用于本次连接，点击保存后重启继续使用。":"未保存视频地址 · 填写后可连接，也可保存以便下次使用。";
       if(!row.layoutDirty&&!active)row.layout.value=(status.camera_layout||status.stream?.camera_layout)==="stereo"?"stereo":"mono";
-      const serverError=root.runtimeErrorText?.(status)||(typeof status.last_error==="string"?status.last_error:"");
-      row.message.textContent=row.error||serverError||row.notice||(analyzing(status)?"正在按本路已保存设置进行分析":active?(connected(status)?"视频已连接；分析请使用顶部“开始全部分析”。":"正在建立或断开视频连接…"):"连接视频后，可选择检测任务并统一开始分析。");
+      const serverError=(typeof status.connection_error==="string"?status.connection_error:"")||root.runtimeErrorText?.(status)||(typeof status.last_error==="string"?status.last_error:"");
+      row.message.textContent=row.error||serverError||row.notice||(analyzing(status)?"正在按本路已保存设置进行分析":active?(connected(status)?"视频已连接；分析请使用顶部“开始全部分析”。":"正在建立或断开视频连接…"):"在工作流配置视频源与分析模块，再连接视频并开始分析。");
       row.message.className="fleet-card-detail"+(row.error||serverError?" error":"");
       const show=["connecting","connected"].includes(connectionState(status))&&this.visible.has(row.camera.id);
       if(!show)this.releasePreview(row);
       row.placeholder.hidden=!!(row.previewUrl||row.networkHasFrame)&&!row.previewError&&!row.networkBuffering;
       row.placeholder.className="fleet-preview-note"+(row.previewUrl&&row.previewError?" over-image":"");
-      row.placeholder.textContent=row.previewError?"画面暂不可用，正在重试…":row.networkBuffering?"正在缓冲连续画面…":row.unreachable?"正在重新确认通道状态…":active?"正在等待视频画面…":"连接后在此显示实时画面";
+      row.placeholder.textContent=row.previewError?"画面暂不可用，正在重试…":row.networkBuffering?"正在缓冲连续画面…":row.unreachable?"正在重新确认通道状态…":connectionState(status)==="error"&&serverError?serverError:active?"正在等待视频画面…":"连接后在此显示实时画面";
       const prefsBusy=locked||row.prefsLoading||row.prefsSaving||!row.prefsLoaded||!!row.camera.workflow;
       for(const [key,input] of row.features){input.disabled=prefsBusy;const sensitivity=row.sensitivities.get(key);if(sensitivity)sensitivity.select.disabled=prefsBusy||!input.checked;}
       row.prefsSave.disabled=prefsBusy||!row.prefsDirty;row.prefsReload.disabled=locked||row.prefsLoading||row.prefsSaving;
@@ -491,7 +487,7 @@
           if(sessionChanged){this.releasePreview(row);row.vlmReport=null;row.vlmEvents.textContent=analyzing(status)?"等待首次任务判断":"等待开始分析";}
           if(connectionState(row.status)!==connectionState(status))row.notice="";
           row.status=status;if(row.unreachable)row.error="";row.unreachable=false;
-          if(connectionBusy(status)||analyzing(status))this.visible.add(row.camera.id);
+          if(connectionBusy(status)||analyzing(status)||row.camera.enabled&&(status.configured_stream||row.camera.workflow))this.visible.add(row.camera.id);
           else if(!row.camera.enabled)this.visible.delete(row.camera.id);
           row.card.hidden=!this.visible.has(row.camera.id);
         }catch(error){if(generation!==row.generation||this.closed)return;row.unreachable=true;row.error="无法连接通道服务："+error.message;}
@@ -516,7 +512,7 @@
     async start(row){
       if(row.start.disabled||this.analysisLocked())return false;
       const streamUrl=row.input.value.trim();
-      if(!streamUrl&&row.status?.configured_stream!==true){row.error="请先填写该路视频地址。";this.updateRow(row);await this.selectTool(row,"input");row.input.focus();return false;}
+      if(!streamUrl&&row.status?.configured_stream!==true){row.error="请先在工作流的视频源节点中填写并保存地址。";this.updateRow(row);root.GoodvisionConsole?.navigate?.("workflows");return false;}
       const payload={camera_layout:row.layout.value};
       if(streamUrl)payload.stream_url=streamUrl;
       const ok=await this.command(row,row.camera.connect_url,"POST",payload);

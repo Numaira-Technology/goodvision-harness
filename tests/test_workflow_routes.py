@@ -636,11 +636,28 @@ def test_source_only_workflow_serves_real_preview_without_native_analysis(
         assert client.get(native).status_code == 404
         assert client.get(scoped).status_code == 404
         adapter = ControlledAdapter("rtsp://camera.test/source")
-        runtime.connect_stream("rtsp://camera.test/source", _adapter=adapter)
+        monkeypatch.setattr(
+            "goodvision_harness.video_connection.NetworkStreamAdapter",
+            lambda *args, **kwargs: adapter,
+        )
+        camera = client.get("/v1/workflows").json()["cameras"][0]
+        assert camera["source_preview_url"] == scoped
+        assert client.put(
+            camera["settings_url"], json={"stream_url": "rtsp://camera.test/source"}
+        ).status_code == 200
+        assert client.post(camera["connect_url"], json={}).status_code == 200
         connection = runtime._video_connection
         publish(connection, adapter, frame(15))
         wait_for(lambda: connection.latest_jpeg() is not None)
         assert runtime._session is None
+        state = client.get("/v1/workflows").json()["cameras"][0]["status"]
+        assert state["connected"] and state["analysis_state"] == "idle"
+        assert state["connection_id"] == connection.connection_id
+        image = client.get(camera["source_preview_url"])
+        assert image.status_code == 200
+        assert image.content.startswith(b"\xff\xd8")
+        assert image.content == client.get(camera["preview_url"]).content
+        assert adapter.frames_calls == 1
         runtime.configure_workflow(
             {
                 "binding": {
@@ -686,10 +703,12 @@ def test_source_only_workflow_serves_real_preview_without_native_analysis(
         assert client.post("/v1/analysis/stop", json={}).status_code == 200
         assert runtime._session is None
         assert client.get(scoped).status_code == 200
-        assert client.post("/v1/video/disconnect", json={}).status_code == 200
+        assert client.post(camera["disconnect_url"], json={}).status_code == 200
         wait_for(lambda: not connection.running)
         assert client.get(native).status_code == 404
         assert client.get(scoped).status_code == 404
+        state = client.get("/v1/workflows").json()["cameras"][0]["status"]
+        assert state["connection_state"] == "disconnected"
 
 
 @pytest.mark.parametrize("camera_id", [None, 1, {}, []])
