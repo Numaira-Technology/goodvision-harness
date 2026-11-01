@@ -195,7 +195,9 @@ def eval_video(backend, model, sample, media_index, key, interval=None):
     if failed:
         return sample, {"error": "incomplete frame evidence", **counts}
     pred = "yes" if best >= GATE else "no"
-    return sample, {"score": round(best, 4), "pred": pred,
+    # Preserve the exact maximum used for the verdict. Rounding here can turn a
+    # negative 0.49996 into 0.5 and change both baseline replay and tuned decisions.
+    return sample, {"score": best, "pred": pred,
                     "correct": pred == sample["proposed_answer"],
                     **counts}
 
@@ -322,6 +324,7 @@ def main():
 
     out = {
         "spec_version": SPEC_VERSION,
+        "score_precision": "lossless",
         "samples_json_sha256": sha256(a.samples),
         "manifest_sha256": sha256(a.manifest),
         "runner_sha256": sha256(Path(__file__)),

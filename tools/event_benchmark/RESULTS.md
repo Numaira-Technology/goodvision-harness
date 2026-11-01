@@ -83,12 +83,29 @@
 
 `tune_threshold.py` 现在只接受带媒体/答案/runner/spec 指纹的 v2 decision 输出，拒绝
 validation/test 交集（文件名与媒体 SHA-256）、模型或采样不一致、无效概率和部分帧分数。
-验证集必须完整且每类有正负例；测试集错误单列 attempted/scored/errors，不进入分数分母。
+新 runner 原样保存用于判定的完整精度分数，并记录 `score_precision=lossless`；
+调阈工具拒绝缺少该标记的旧 v2 输出及与分数不一致的基线判定。不得给旧存档补标记。
+当前选阈按精确正确题数排序，选择最长连续最优网格区间的中点（并列取离 0.5 最近、
+再取较低中点）；中点若不再最优，则回退到最近的最优网格点（并列取较低点）。
+报告保存全部候选正确题数、所选区间与回退情况；历史阈值不是这一新规则的输出。
+验证集必须与审阅 manifest 完全一致，且每类至少六题、同时有正负例；不足时本 CLI
+直接拒绝运行，不把缺失题目当成小样本回退。测试集错误单列 attempted/scored/errors，
+不进入分数分母；全错误事件仍展示覆盖数，准确率为 null。
 历史 v1 文件保留原样，不能输入当前工具来生成声称有效的 v2 校准报告。
 
 本仓库尚无留出集的已审阅 v2 manifest；`validation_split.json` 只是历史候选清单。
 120 题 manifest 仍为 draft。必须先完成答案审阅和媒体/答案哈希清单，再对所有候选重跑；
 不得把历史 JSON 改写为 v2，也不得据此发布 v2 比较。
+
+用于调阈的 manifest 还必须为每个 base-4 问题保存 `human_review=user_reviewed` 和
+经审阅的 `source_video_group`（同一原始视频或重叠片段使用同一组）。两个阶段都核验
+manifest/samples 哈希、题号、标签、媒体及题干；验证/测试不能共享来源组，题干也必须一致。
+来源分组必须在看分数前审阅；工具不验证人类审阅的真实性，也不证明模型训练集或开发集无交集。
+训练来源未知时须披露；完整来源审阅、开发集隔离和新的 v2 实测仍是验收前提。
+
+`select` 只读验证数据，写入不可覆盖的阈值 artifact 并打印其 SHA-256；`evaluate`
+只接受该已冻结文件及预先保存的哈希，不重新选阈。两个阶段输出都写入新文件。
+看过测试结果后不得改阈重试并继续声称该测试集未被使用。
 
 下面命令中的路径须替换成已审阅的实际文件。输出写入忽略目录 `outputs/`，不覆盖历史存档：
 
@@ -97,11 +114,19 @@ python tools/event_benchmark/run_eval.py --candidate luna \
   --samples /path/to/validation/samples.json \
   --manifest /path/to/validation/manifest-reviewed.json \
   --media /path/to/validation/videos --out outputs/luna_validation_v2.json
+python tools/event_benchmark/tune_threshold.py select \
+  --val outputs/luna_validation_v2.json \
+  --val-manifest /path/to/validation/manifest-reviewed.json \
+  --out outputs/luna_thresholds_v2.json
+# 保存上一步打印的 SHA-256；冻结阈值后才打开测试预测。
 python tools/event_benchmark/run_eval.py --candidate luna \
   --samples /path/to/test/samples.json \
   --manifest /path/to/test/manifest-reviewed.json \
   --media /path/to/test/videos --out outputs/luna_test_v2.json
-python tools/event_benchmark/tune_threshold.py \
-  --val outputs/luna_validation_v2.json --test outputs/luna_test_v2.json \
-  --out outputs/luna_thresholds_v2.json
+python tools/event_benchmark/tune_threshold.py evaluate \
+  --thresholds outputs/luna_thresholds_v2.json \
+  --thresholds-sha256 'REPLACE_WITH_SAVED_SHA256' \
+  --test outputs/luna_test_v2.json \
+  --test-manifest /path/to/test/manifest-reviewed.json \
+  --out outputs/luna_threshold_report_v2.json
 ```

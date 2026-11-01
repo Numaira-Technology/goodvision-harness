@@ -44,6 +44,18 @@
 validation/test 的文件名和媒体 SHA-256 均不重叠；测试错误单列，主表保留 gate=0.5。
 language 和未定义分数契约的 threshold backend 不能输入此工具。
 
+调阈 manifest 沿用 runner 的 `status=human_reviewed`、`samples_json_sha256` 与 `files`
+结构。每个 base-4 问题还须有 `human_review=user_reviewed` 和非空的
+`source_video_group`：同一原始视频、重叠片段或复用镜头必须使用同一组，不能直接用
+新文件名假定来源独立。此字段必须由实际来源审阅提供；本 PR 没有替现有文件生成或猜测分组。
+`select --val-manifest ...` 与 `evaluate --test-manifest ...` 都会校验 manifest 的精确哈希
+与完整题目集合；来源组和媒体均不得跨 validation/test，题干必须一致。
+
+本 CLI 要求每个事件至少六个完整验证问题且两类都有；不足时拒绝选阈，仍可另行报告固定
+0.5 基线。`select` 只读验证文件，输出独立、不可覆盖的阈值 artifact；`evaluate` 要求其
+预存 SHA-256，并只应用已冻结阈值。旧 v2 的四位小数分数也不具备精确回放资格；新的
+lossless 输出须由修正后的 runner 生成，不得给旧结果补写标记。详见 [运行示例](../RESULTS.md)。
+
 ## 为什么不直接改 Drive
 
 原地改无法回答"现在这份和上周跑分用的那份一样吗"。版本化文件夹 + git manifest 让

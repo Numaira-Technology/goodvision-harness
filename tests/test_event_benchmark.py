@@ -106,12 +106,32 @@ def test_complete_run_records_frozen_provenance_and_errors(tmp_path, monkeypatch
     monkeypatch.setattr(runner, "eval_video", lambda backend, model, sample, *args: (sample, {"error": "offline failure"}))
     result = runner.main()
     assert result["spec_version"] == "v2"
+    assert result["score_precision"] == "lossless"
     assert result["overall"] == {"correct": 0, "total": 0, "attempted": 1, "errors": 1}
     assert result["per_event"]["fight"]["err"] == 1
     assert result["samples_json_sha256"] == runner.sha256(dataset.samples)
     assert result["per_video"][0]["sha256"] == runner.sha256(dataset.clip)
     assert result["config"]["frame_rule"].startswith("n=max(1,round(dur/interval))")
     assert json.loads(output.read_text()) == result
+
+
+@pytest.mark.parametrize("score", [0.49996, 0.5, 0.30496, 0.305])
+def test_saved_decision_score_replays_exactly_at_fixed_and_tuned_gates(tmp_path, monkeypatch, score):
+    from tools.event_benchmark import tune_threshold as tuner
+
+    dataset = fixture_dataset(tmp_path)
+    monkeypatch.setattr(runner, "probe_duration", lambda _: 1.0)
+    monkeypatch.setattr(runner, "frame_uri", lambda *args: "offline-image")
+    monkeypatch.setattr(runner, "frame_score", lambda *args: score)
+    _, result = runner.eval_video("decision", "model", dataset.sample,
+                                  {dataset.clip.name: dataset.clip}, "offline", 1.0)
+    saved = json.loads(json.dumps(result))
+    assert saved["score"] == score
+    for gate in (0.5, 0.305):
+        replay = tuner.confusion([(saved["score"], False)], gate)
+        assert replay["FP"] == int(score >= gate)
+    assert saved["pred"] == ("yes" if score >= 0.5 else "no")
+    assert saved["correct"] == (score < 0.5)
 
 
 @pytest.mark.parametrize("interval", [0, -1, float("nan"), float("inf")])
