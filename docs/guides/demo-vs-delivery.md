@@ -3,21 +3,22 @@
 > 目的：厘清"生产环境"和"demo 环境"在本仓库里**到底是什么、由哪些文件/入口承载**，
 > 为日后的部署文档与运维脚本提供一张对照表。**本次不移动任何代码、不改目录结构。**
 >
-> 权威依据：[`README.md`](../README.md)（"Start here" 表 + Quick start + Repository layout）
-> 与 [`CONTRIBUTING.md`](../CONTRIBUTING.md)（"What belongs in Git" / "Organization and stable paths"）。
+> 权威依据：[`README.md`](../../README.md)（"Start here" 表 + Quick start + Repository layout）
+> 与 [`CONTRIBUTING.md`](../../CONTRIBUTING.md)（"What belongs in Git" / "Organization and stable paths"）。
 
 ## 先厘清一个关键认知
 
 **demo 和 production 不是两套平行文件，也不该用两条分支区分。** README / CONTRIBUTING 明确：
 
-- `goodvision-harness-demo` 与 `goodvision-harness` **是同一套代码、同一个控制台**，只是默认端口不同
+- `goodvision-harness-demo` 与 `goodvision-harness` **是同一套代码、同一个控制台**，默认端口不同（启动参数也各自独立）
   （demo `7900` / 生产 `8080`）。demo 是一个**运行模式/入口 + dry-run 标志**，不是独立代码。
 - 根目录的 Compose / Dockerfile / env 示例 / 客户交付文档是 **"脚本、测试、运维共用的稳定入口"**，
   移动前须审查其消费者（CONTRIBUTING "Organization and stable paths"）。
 - `config.yaml` 与 `src/goodvision_harness/config.yaml` **必须逐字节一致**，有回归测试强制。
 
 > 结论：**切换环境靠"入口 + 运行标志 + delivery overlay/config"，不是靠切分支。**
-> 用 branch-per-environment 会与该设计相悖、碰稳定入口、破坏 config 一致性测试、并让共用代码陷入合并地狱。
+> 按环境长期维护分支会增加共用代码的同步负担。分支本身不会破坏配置一致性；
+> 无论在哪个分支，目录整理都应保留稳定入口，并同步修改两份 `config.yaml`。
 
 ## 怎么"切换"这两个环境（现成做法）
 
@@ -72,22 +73,23 @@ README "Repository layout" 列的主体，demo 与 production 跑的都是它：
 | `schemas/` | 版本化分析与事件契约 |
 | `tools/`（除 A 列的交付工具外） | 部署/诊断/基准/评测通用入口（见 `tools/README.md`） |
 | `docs/` | 指南 / 参考 / 架构 / 验证 |
-| `bench/` · `benchmark/` · `bench_v1_sample/` | 评测体系（dev-only，与两个环境正交） |
+| `tools/event_benchmark/` | 当前 main 的冻结事件评测工具，与部署环境正交；后续目录迁移以合并后的实际路径为准 |
 | `pyproject.toml` · `.github/` | 构建与 CI |
 
 ### B/C 之间的模块化 overlay（按需叠加，非环境专属）
 
-这些 `compose.*.yaml` 是"叠在 `compose.yaml` 之上"的部署形态（本地/云 GPU、SAM、VLM、scene、
-perception、分机等），**按部署拓扑选择，不等于 demo 或 production 的归属**。delivery 形态用 A 里的
-`compose.full-gpu.delivery.yaml`；其余（`sam31*` / `scene` / `perception` / `local-gpu` / `cloud-gpu` /
-`detector-remote` / `main-server` / `analysis-gateway` / `vlm-server` / `local-tracking` / `gpu` /
-`full-gpu.accelerated` / `face-gpu`）是运维按场景叠加的入口。详见各文件头注释与 `docs/guides/`。
+这些 Compose 文件按部署拓扑选择，不等于 demo 或 production 的归属，也并非全部都要与
+`compose.yaml` 叠加。`compose.gpu.yaml`、`compose.face-gpu.yaml` 等提供 overlay；
+`compose.main-server.yaml` 通过 `extends` 引用基础服务；`compose.vlm-server.yaml`、
+`compose.analysis-gateway.yaml` 和 `compose.full-gpu.delivery.yaml` 是各自的部署入口。
+使用对应启动器或指南给出的 Compose 文件组合，见[源码部署](deployment.md)与[分机部署](modular-services.md)。
 
-## D. 本机杂物（git 未跟踪，不在 repo 内）
+## D. 本地运行数据与已审阅夹具
 
-`yolo*.pt` / `yolov8*.pt`、`testABvideos.zip` / `testABvideos/`、`auto.crt` / `auto.key`、
-`video_samples/`、`outputs/` 等是本机工作目录文件，git 未跟踪，不影响仓库体积。
-（CONTRIBUTING："凭据、模型权重、人脸库、录像、构建产物、本地 worktree 一律放在 Git 之外。"）
+凭据、模型权重、人脸库、录像和生成输出不应提交；以 `CONTRIBUTING.md` 的目录约定与
+`.gitignore` 为准。不要把整个 `video_samples/` 视为未跟踪目录：当前仓库保留了
+`sample_video.annotation.json` 和 `sample_video.annotation.md` 两个已跟踪标注文件。
+检查某个本地文件时使用 `git ls-files` 与 `git check-ignore -v`，不能从文件名推断跟踪状态。
 
 ---
 
