@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Offline validator for a single contributor row before it goes on the shared bench sheet.
 
-The sheet is PIVOTED: one row per model, with dataset size as a top band. A row is 25
-values in order A->Y (see ../references/column-contract.md). The three dataset blocks are
-50 (G-K), 100 (L-P) and all-120 (Q-U); each block is Overall + Fight/Smoking/Fall/Weapon.
+The sheet is PIVOTED and has NO tracking columns: one row per model, with dataset size as a top
+band. A row is 23 values in order A->W (see ../references/column-contract.md). The three dataset
+blocks are 50 (E-I), 100 (J-N) and all-120 (O-S); each block is Overall + Fight/Smoking/Fall/Weapon.
 A block you did not run is left blank; at least one block must carry an Overall %.
 
-Checks: column count, cell types, percentages in range, required cells, the per-subtask
-notes, and per-block consistency (a block with subtask %s must have its Overall %). Pure
-stdlib, no network, no credentials, no writes. Run with -I.
+Checks: column count, cell types, percentages in range, required cells, the per-subtask notes, and
+per-block consistency (a block with subtask %s must have its Overall %). Pure stdlib, no network,
+no credentials, no writes. Run with -I.
 
 Usage:
   python3 -I validate_row.py my_row.json
@@ -16,8 +16,8 @@ Usage:
 
 my_row.json shape:
   {
-    "values": [<A>, <B>, ..., <Y>],     # exactly 25, blanks as ""
-    "notes":  {"H": "...", "M": "..."}  # one per NON-BLANK subtask cell (H-K, M-P, R-U)
+    "values": [<A>, <B>, ..., <W>],     # exactly 23, blanks as ""
+    "notes":  {"F": "...", "K": "..."}  # one per NON-BLANK subtask cell (F-I, K-N, P-S)
   }
 Exit code 0 = OK, 1 = problems found (printed to stderr).
 """
@@ -25,45 +25,40 @@ import json
 import re
 import sys
 
-# col -> (key, kind). kind: text | backend | optnum (blank ok) | pct_opt (blank ok,
-# else 0..100) | date | status_run | status_val
+# col -> (key, kind). kind: text | backend | optnum (blank ok) | pct_opt (blank ok, else 0..100) | date
 CONTRACT = [
     ("A", "model",          "text"),
     ("B", "backend",        "backend"),
-    ("C", "run_status",     "status_run"),
-    ("D", "validation",     "status_val"),
-    ("E", "p50_s",          "optnum"),
-    ("F", "p95_s",          "optnum"),
-    ("G", "d50_overall",    "pct_opt"),
-    ("H", "d50_fight",      "pct_opt"),
-    ("I", "d50_smoking",    "pct_opt"),
-    ("J", "d50_fall",       "pct_opt"),
-    ("K", "d50_weapon",     "pct_opt"),
-    ("L", "d100_overall",   "pct_opt"),
-    ("M", "d100_fight",     "pct_opt"),
-    ("N", "d100_smoking",   "pct_opt"),
-    ("O", "d100_fall",      "pct_opt"),
-    ("P", "d100_weapon",    "pct_opt"),
-    ("Q", "d120_overall",   "pct_opt"),
-    ("R", "d120_fight",     "pct_opt"),
-    ("S", "d120_smoking",   "pct_opt"),
-    ("T", "d120_fall",      "pct_opt"),
-    ("U", "d120_weapon",    "pct_opt"),
-    ("V", "hardware",       "text"),
-    ("W", "price_per_mtok", "optnum"),
-    ("X", "spec_ver",       "text"),
-    ("Y", "run_date",       "date"),
+    ("C", "p50_s",          "optnum"),
+    ("D", "p95_s",          "optnum"),
+    ("E", "d50_overall",    "pct_opt"),
+    ("F", "d50_fight",      "pct_opt"),
+    ("G", "d50_smoking",    "pct_opt"),
+    ("H", "d50_fall",       "pct_opt"),
+    ("I", "d50_weapon",     "pct_opt"),
+    ("J", "d100_overall",   "pct_opt"),
+    ("K", "d100_fight",     "pct_opt"),
+    ("L", "d100_smoking",   "pct_opt"),
+    ("M", "d100_fall",      "pct_opt"),
+    ("N", "d100_weapon",    "pct_opt"),
+    ("O", "d120_overall",   "pct_opt"),
+    ("P", "d120_fight",     "pct_opt"),
+    ("Q", "d120_smoking",   "pct_opt"),
+    ("R", "d120_fall",      "pct_opt"),
+    ("S", "d120_weapon",    "pct_opt"),
+    ("T", "hardware",       "text"),
+    ("U", "price",          "optnum"),
+    ("V", "spec_ver",       "text"),
+    ("W", "run_date",       "date"),
 ]
 # dataset id -> (overall col, [subtask cols])
 BLOCKS = {
-    "50":  ("G", ["H", "I", "J", "K"]),
-    "100": ("L", ["M", "N", "O", "P"]),
-    "120": ("Q", ["R", "S", "T", "U"]),
+    "50":  ("E", ["F", "G", "H", "I"]),
+    "100": ("J", ["K", "L", "M", "N"]),
+    "120": ("O", ["P", "Q", "R", "S"]),
 }
 NOTE_COLS = [c for _, subs in BLOCKS.values() for c in subs]
 BACKENDS = {"language", "decision", "vision"}
-RUN_VALUES = {"yes", "running", "no"}
-VAL_VALUES = {"yes", "no"}
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 NOTE_RE = re.compile(r"\b\d+/\d+\b")  # expects an x/N somewhere in the note
 
@@ -90,7 +85,7 @@ def check(payload):
     if not isinstance(values, list):
         return ["'values' must be a list"], []
     if len(values) != len(CONTRACT):
-        errs.append("expected %d values (A->Y), got %d — send blanks as \"\", never drop a column"
+        errs.append("expected %d values (A->W), got %d — send blanks as \"\", never drop a column"
                     % (len(CONTRACT), len(values)))
         return errs, warns
 
@@ -120,13 +115,6 @@ def check(payload):
         elif kind == "date":
             if is_blank(v) or not DATE_RE.match(str(v).strip()):
                 errs.append("%s must be YYYY-MM-DD, got %r" % (tag, v))
-        elif kind == "status_run":
-            if is_blank(v) or str(v).strip().lower() not in RUN_VALUES:
-                errs.append("%s must be one of %s (lowercase)" % (tag, sorted(RUN_VALUES)))
-        elif kind == "status_val":
-            if is_blank(v) or str(v).strip().lower() not in VAL_VALUES:
-                errs.append("%s must be one of %s (lowercase) — 'yes' only for decision/clip models"
-                            % (tag, sorted(VAL_VALUES)))
 
     by_col = {col: v for (col, _, _), v in zip(CONTRACT, values)}
 

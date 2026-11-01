@@ -1,5 +1,5 @@
 {
-  "_comment": "Running results Google Sheet for the event-recognition benchmark. Consumed by the bench-sheet-push skill. Non-secret: only the spreadsheet id + layout live here. Auth is the in-session Google OAuth connector (no keys stored). Layout is PIVOTED: one row per model, with dataset size as a top band (50 / 100 / all 120). Each dataset block repeats Overall + the 4 subtasks; speed, cost, tracking and meta are single per-model columns.",
+  "_comment": "Running results Google Sheet for the event-recognition benchmark. Consumed by the bench-sheet-push skill. Non-secret: only the spreadsheet id + layout live here. Auth is the in-session Google OAuth connector (no keys stored). Layout is PIVOTED and has NO tracking columns: one row per model, dataset size as a top band (50 / 100 / all 120). Each dataset block repeats Overall + the 4 subtasks; speed, cost and meta are single per-model columns. Price = each run's cost: OpenRouter token price ($/Mtok) for API models, computed GPU run cost ($) for self-hosted models.",
   "spreadsheet_id": "1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA",
   "spreadsheet_url": "https://docs.google.com/spreadsheets/d/1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA/edit",
   "tab": "results",
@@ -7,46 +7,40 @@
   "header_rows": 2,
   "upsert_keys": ["model"],
   "datasets": [
-    {"id": "50",  "label": "DATASET · 50",      "cols": {"overall": "G", "fight": "H", "smoking": "I", "fall": "J", "weapon": "K"}},
-    {"id": "100", "label": "DATASET · 100",     "cols": {"overall": "L", "fight": "M", "smoking": "N", "fall": "O", "weapon": "P"}},
-    {"id": "120", "label": "DATASET · all 120", "cols": {"overall": "Q", "fight": "R", "smoking": "S", "fall": "T", "weapon": "U"}}
+    {"id": "50",  "label": "DATASET · 50",      "cols": {"overall": "E", "fight": "F", "smoking": "G", "fall": "H", "weapon": "I"}},
+    {"id": "100", "label": "DATASET · 100",     "cols": {"overall": "J", "fight": "K", "smoking": "L", "fall": "M", "weapon": "N"}},
+    {"id": "120", "label": "DATASET · all 120", "cols": {"overall": "O", "fight": "P", "smoking": "Q", "fall": "R", "weapon": "S"}}
   ],
   "columns": [
     {"col": "A", "key": "model",          "header": "Model",          "type": "text"},
     {"col": "B", "key": "backend",        "header": "Backend",        "type": "text"},
-    {"col": "C", "key": "run_status",     "header": "Run",            "type": "status", "status_scale": "run"},
-    {"col": "D", "key": "validation",     "header": "Val",            "type": "status", "status_scale": "validation"},
-    {"col": "E", "key": "p50_s",          "header": "P50 @{concurrency} (s)", "type": "num", "scale": "lower_better"},
-    {"col": "F", "key": "p95_s",          "header": "P95 @{concurrency} (s)", "type": "num", "scale": "lower_better"},
-    {"col": "G", "key": "d50_overall",    "header": "Overall %",      "type": "num", "scale": "higher_better", "dataset": "50"},
-    {"col": "H", "key": "d50_fight",      "header": "Fight %",        "type": "num", "scale": "higher_better", "dataset": "50",  "note_key": "d50_fight_note"},
-    {"col": "I", "key": "d50_smoking",    "header": "Smoking %",      "type": "num", "scale": "higher_better", "dataset": "50",  "note_key": "d50_smoking_note"},
-    {"col": "J", "key": "d50_fall",       "header": "Fall %",         "type": "num", "scale": "higher_better", "dataset": "50",  "note_key": "d50_fall_note"},
-    {"col": "K", "key": "d50_weapon",     "header": "Weapon %",       "type": "num", "scale": "higher_better", "dataset": "50",  "note_key": "d50_weapon_note"},
-    {"col": "L", "key": "d100_overall",   "header": "Overall %",      "type": "num", "scale": "higher_better", "dataset": "100"},
-    {"col": "M", "key": "d100_fight",     "header": "Fight %",        "type": "num", "scale": "higher_better", "dataset": "100", "note_key": "d100_fight_note"},
-    {"col": "N", "key": "d100_smoking",   "header": "Smoking %",      "type": "num", "scale": "higher_better", "dataset": "100", "note_key": "d100_smoking_note"},
-    {"col": "O", "key": "d100_fall",      "header": "Fall %",         "type": "num", "scale": "higher_better", "dataset": "100", "note_key": "d100_fall_note"},
-    {"col": "P", "key": "d100_weapon",    "header": "Weapon %",       "type": "num", "scale": "higher_better", "dataset": "100", "note_key": "d100_weapon_note"},
-    {"col": "Q", "key": "d120_overall",   "header": "Overall %",      "type": "num", "scale": "higher_better", "dataset": "120"},
-    {"col": "R", "key": "d120_fight",     "header": "Fight %",        "type": "num", "scale": "higher_better", "dataset": "120", "note_key": "d120_fight_note"},
-    {"col": "S", "key": "d120_smoking",   "header": "Smoking %",      "type": "num", "scale": "higher_better", "dataset": "120", "note_key": "d120_smoking_note"},
-    {"col": "T", "key": "d120_fall",      "header": "Fall %",         "type": "num", "scale": "higher_better", "dataset": "120", "note_key": "d120_fall_note"},
-    {"col": "U", "key": "d120_weapon",    "header": "Weapon %",       "type": "num", "scale": "higher_better", "dataset": "120", "note_key": "d120_weapon_note"},
-    {"col": "V", "key": "hardware",       "header": "Hardware",       "type": "text"},
-    {"col": "W", "key": "price_per_mtok", "header": "Price ($/Mtok)", "type": "num", "scale": "lower_better"},
-    {"col": "X", "key": "spec_ver",       "header": "Spec ver",       "type": "text"},
-    {"col": "Y", "key": "run_date",       "header": "Run date",       "type": "text"}
+    {"col": "C", "key": "p50_s",          "header": "P50 @{concurrency} (s)", "type": "num", "scale": "lower_better"},
+    {"col": "D", "key": "p95_s",          "header": "P95 @{concurrency} (s)", "type": "num", "scale": "lower_better"},
+    {"col": "E", "key": "d50_overall",    "header": "Overall %",      "type": "num", "scale": "higher_better", "dataset": "50"},
+    {"col": "F", "key": "d50_fight",      "header": "Fight %",        "type": "num", "scale": "higher_better", "dataset": "50",  "note_key": "d50_fight_note"},
+    {"col": "G", "key": "d50_smoking",    "header": "Smoking %",      "type": "num", "scale": "higher_better", "dataset": "50",  "note_key": "d50_smoking_note"},
+    {"col": "H", "key": "d50_fall",       "header": "Fall %",         "type": "num", "scale": "higher_better", "dataset": "50",  "note_key": "d50_fall_note"},
+    {"col": "I", "key": "d50_weapon",     "header": "Weapon %",       "type": "num", "scale": "higher_better", "dataset": "50",  "note_key": "d50_weapon_note"},
+    {"col": "J", "key": "d100_overall",   "header": "Overall %",      "type": "num", "scale": "higher_better", "dataset": "100"},
+    {"col": "K", "key": "d100_fight",     "header": "Fight %",        "type": "num", "scale": "higher_better", "dataset": "100", "note_key": "d100_fight_note"},
+    {"col": "L", "key": "d100_smoking",   "header": "Smoking %",      "type": "num", "scale": "higher_better", "dataset": "100", "note_key": "d100_smoking_note"},
+    {"col": "M", "key": "d100_fall",      "header": "Fall %",         "type": "num", "scale": "higher_better", "dataset": "100", "note_key": "d100_fall_note"},
+    {"col": "N", "key": "d100_weapon",    "header": "Weapon %",       "type": "num", "scale": "higher_better", "dataset": "100", "note_key": "d100_weapon_note"},
+    {"col": "O", "key": "d120_overall",   "header": "Overall %",      "type": "num", "scale": "higher_better", "dataset": "120"},
+    {"col": "P", "key": "d120_fight",     "header": "Fight %",        "type": "num", "scale": "higher_better", "dataset": "120", "note_key": "d120_fight_note"},
+    {"col": "Q", "key": "d120_smoking",   "header": "Smoking %",      "type": "num", "scale": "higher_better", "dataset": "120", "note_key": "d120_smoking_note"},
+    {"col": "R", "key": "d120_fall",      "header": "Fall %",         "type": "num", "scale": "higher_better", "dataset": "120", "note_key": "d120_fall_note"},
+    {"col": "S", "key": "d120_weapon",    "header": "Weapon %",       "type": "num", "scale": "higher_better", "dataset": "120", "note_key": "d120_weapon_note"},
+    {"col": "T", "key": "hardware",       "header": "Hardware",       "type": "text"},
+    {"col": "U", "key": "price",          "header": "Price",          "type": "num", "scale": "lower_better"},
+    {"col": "V", "key": "spec_ver",       "header": "Spec ver",       "type": "text"},
+    {"col": "W", "key": "run_date",       "header": "Run date",       "type": "text"}
   ],
   "color_scales": {
-    "_note": "Muted warm scheme (low contrast); green is reserved for best-only. Per-column independent gradient (one rule per column) on data rows (row 3+); blank cells uncolored. Palette: red #E67C73, orange #F9CB9C, pale #FCE5CD, green #B6D7A8, yellow #FFE599.",
+    "_note": "Muted warm scheme (low contrast); green is reserved for best-only. Per-column independent gradient (one rule per column) on data rows (row 3+); blank cells uncolored. Palette: red #E67C73, orange #F9CB9C, pale #FCE5CD, green #B6D7A8, yellow #FFE599. No tracking/status columns.",
     "mode": "per_column_relative",
-    "accuracy": "Every Overall + subtask column (G..U, all three dataset blocks) gets its own gradient red(min) -> orange(max); PLUS one boolean rule over G:U: value == 100 -> green (overrides the gradient, so green appears ONLY at a perfect 100.0).",
-    "lower_better": "E,F (latency) and W (price)  gradient pale(min) -> red(max); no green.",
-    "status": {
-      "_note": "Text cells with single-color rules, not gradients.",
-      "run": "C  yes -> green · running -> yellow · no -> red",
-      "validation": "D  yes -> green (decision + clip models) · no -> red (language models)"
-    }
+    "accuracy": "Every Overall + subtask column (E..S, all three dataset blocks) gets its own gradient red(min) -> orange(max); PLUS one boolean rule over E:S: value == 100 -> green (overrides the gradient, so green appears ONLY at a perfect 100.0).",
+    "lower_better": "C,D (latency) and U (price)  gradient pale(min) -> red(max); no green.",
+    "price_note": "U mixes units by model: API rows show OpenRouter token price ($/Mtok), self-hosted rows show computed GPU run cost ($). Each cell's note states which."
   }
 }
