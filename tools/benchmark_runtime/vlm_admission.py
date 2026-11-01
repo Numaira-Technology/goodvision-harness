@@ -39,11 +39,11 @@ class AdmissionTrace:
 
     @contextmanager
     def measure(self, name):
-        started = time.monotonic()
+        started = time.perf_counter()
         try:
             yield
         finally:
-            self.add(name, max(0, time.monotonic() - started))
+            self.add(name, max(0, time.perf_counter() - started))
 
 
 class AdmissionError(RuntimeError):
@@ -304,21 +304,21 @@ class SharedAdmission:
                 yield db
             return
         with diagnostics.measure("transaction_seconds"):
-            began = time.monotonic()
+            began = time.perf_counter()
             entered = False
             try:
                 with self._transaction() as db:
                     entered = True
                     diagnostics.add(
                         "transaction_begin_seconds",
-                        time.monotonic() - began,
+                        time.perf_counter() - began,
                     )
                     yield db
             finally:
                 if not entered:
                     diagnostics.add(
                         "transaction_begin_seconds",
-                        time.monotonic() - began,
+                        time.perf_counter() - began,
                     )
 
     @contextmanager

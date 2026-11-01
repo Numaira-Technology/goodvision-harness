@@ -210,6 +210,29 @@ def test_selected_health_cannot_borrow_default_detector_gpu(fake_model):
     assert engine.health("sam3-onnx")["ready"] is False
 
 
+def test_legacy_selection_uses_its_own_health_when_sam3_is_default(
+    fake_model, monkeypatch,
+):
+    monkeypatch.setenv("DETECTOR_MODEL", "sam3-onnx")
+    engine = worker.DetectorEngine()
+    engine.warmup()
+    monkeypatch.setattr(worker, "DetectorEngine", lambda: engine)
+    with TestClient(worker.create_app()) as client:
+        def handle(request):
+            response = client.get(request.url.path, headers=request.headers)
+            return httpx.Response(response.status_code, json=response.json())
+
+        with RichLabelHTTPClient(
+            "http://worker/v1/labels", mode="tracks",
+            headers={worker.DETECTOR_MODEL_HEADER: "dummy"},
+            transport=httpx.MockTransport(handle),
+        ) as rich:
+            assert rich.gpu_ready()
+            assert engine.health("dummy")["model"] == "dummy"
+            engine._detectors["dummy"]._ready = False
+            assert not rich.gpu_ready()
+
+
 @pytest.mark.parametrize("device", ["cpu", "cuda", "coreml"])
 def test_client_accepts_only_verified_selected_provider(fake_model, device):
     detector = build_detector("sam3-onnx")

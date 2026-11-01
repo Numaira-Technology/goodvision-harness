@@ -342,6 +342,10 @@ class IndependentEventState:
 
 
 def _inspector(config):
+    if config.model_settings.provider == "local" and config.model == "vllm-sr/d3-nano":
+        from .decision3_model import Decision3Inspector
+
+        return Decision3Inspector(config)
     if (
         config.model_settings.provider == "local"
         and config.model == "ZhuYuhan/VideoJev-4B"

@@ -96,23 +96,22 @@ class DetectorEngine:
 
     def health(self, requested: str | None = None) -> dict:
         key = self.resolve_model(requested)
-        # A selected optional model must attest its own provider, not the default
-        # detector's CUDA flag. Serialize its lazy warmup with inference, without
-        # queuing frames behind another request.
-        if key == "sam3-onnx":
-            if not self._lock.acquire(blocking=False):
-                return {"ready": False, "gpu_ready": False, "model": key,
-                        "provider_ready": False, "error": "inference busy"}
-            try:
-                detector = self._warm_model(key)
+        # Each selection must attest its own readiness, including switching away
+        # from a SAM3 default. Serialize lazy warmup with inference without queuing.
+        if not self._lock.acquire(blocking=False):
+            return {"ready": False, "gpu_ready": False, "model": key,
+                    "provider_ready": False, "error": "inference busy"}
+        try:
+            detector = self._warm_model(key)
+            if key == "sam3-onnx":
                 return {**detector.health(), "available": sorted(MODEL_REGISTRY)}
-            except Exception as exc:
-                return {"ready": False, "gpu_ready": False, "model": key,
-                        "provider_ready": False, "error": str(exc)}
-            finally:
-                self._lock.release()
-        return {"ready": True, "gpu_ready": self.gpu_ready,
-                "model": self.default_model, "available": sorted(MODEL_REGISTRY)}
+            return {"ready": detector.gpu_ready, "gpu_ready": detector.gpu_ready,
+                    "model": key, "available": sorted(MODEL_REGISTRY)}
+        except Exception as exc:
+            return {"ready": False, "gpu_ready": False, "model": key,
+                    "provider_ready": False, "error": str(exc)}
+        finally:
+            self._lock.release()
 
     @property
     def gpu_ready(self) -> bool:
