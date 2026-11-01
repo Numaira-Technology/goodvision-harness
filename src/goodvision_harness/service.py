@@ -3955,7 +3955,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     return False, "waiting_for_tracking"
                 timestamp = self._state.get("last_media_timestamp")
                 if timestamp is not None and not (
-                    0 <= timestamp - snapshot.timestamp_seconds
+                    -0.001 <= timestamp - snapshot.timestamp_seconds
                     <= self.settings.ready_max_result_age_seconds
                 ):
                     return False, "tracking_stale"

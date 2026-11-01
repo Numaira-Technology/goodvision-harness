@@ -331,6 +331,7 @@ def test_output_http_route_is_no_store_and_rejects_unknown_outputs(rig):
     "session, timestamp, expected",
     [
         ("current", 10, (True, "ready")),
+        ("current", 10.0004, (True, "ready")),
         ("previous", 10, (False, "waiting_for_tracking")),
         ("current", 1, (False, "tracking_stale")),
         ("current", 11, (False, "tracking_stale")),
