@@ -1515,7 +1515,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             result = {
                 "configured": False,
                 "error": "configuration unavailable",
-                "event_catalog": event_catalog(self._event_vocabulary()),
+                "event_catalog": event_catalog(),
             }
             safe = public_safe_value(result)
             assert isinstance(safe, dict)
@@ -2089,7 +2089,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         return {
             **copy.deepcopy(self._analysis_settings),
             **sensitivity_ui_info(),
-            "event_catalog": event_catalog(self._event_vocabulary()),
+            "event_catalog": event_catalog(
+                self.config.event_vocabulary if self.config else None
+            ),
         }
 
     def update_analysis_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
