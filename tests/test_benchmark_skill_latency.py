@@ -58,7 +58,11 @@ def decision(score=0.5, **extra):
             b'{"error":"provider failed",'
             b'"answers":{"answer":{"type":"noul","noul":0.2}}}',
         ),
-        ("language", b"x" * (latency.MAX_RESPONSE_BYTES + 1)),
+        pytest.param(
+            "language",
+            b"x" * (latency.MAX_RESPONSE_BYTES + 1),
+            id="oversized-response",
+        ),
     ],
 )
 def test_http_200_invalid_answers_fail_without_retries(monkeypatch, backend, body):
