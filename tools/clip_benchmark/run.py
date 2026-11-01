@@ -45,6 +45,9 @@ def main():
     parser.add_argument("--cache-dir", type=Path, required=True)
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
+    for split in ("validation", "test"):
+        if not isinstance(config, dict) or not isinstance(config.get(split), list) or not config[split]:
+            raise ValueError(f"{split} must contain a nonempty media list")
     output = args.output
     output.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(1)

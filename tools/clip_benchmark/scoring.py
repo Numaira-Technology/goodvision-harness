@@ -218,12 +218,16 @@ def _grouped(rows, field):
 
 def evaluate(records_path: Path, samples: list, thresholds: dict, output: Path, model_id: str) -> dict:
     """Score all supplied questions using already frozen thresholds."""
+    if not isinstance(thresholds, dict):
+        raise ValueError("Frozen thresholds must be an event-keyed object")
+    for event in EVENTS:
+        if not _finite(thresholds.get(event)):
+            raise ValueError(f"Missing or invalid frozen threshold for {event}")
+    frozen = {event: float(thresholds[event]) for event in EVENTS}
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     records, issues = _read_records(records_path)
     indexed = _index(records)
-    frozen = {event: float(thresholds[event]) if _finite(thresholds.get(event)) else 0.0
-              for event in EVENTS}
     rows = _question_rows(samples, indexed, frozen, model_id)
     quality_records = [record for record in records if record.get("quality_reference") is True]
     latencies = [_latency(record) for record in records]

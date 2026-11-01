@@ -14,11 +14,12 @@ def runner(monkeypatch, tmp_path):
     runtime = ModuleType("runtime")
     runtime.PROMPTS = {event: [] for event in ("fight", "smoking", "fall", "weapon", "bag_knife", "bag_alcohol_bottle")}
     runtime.REVISIONS = {"test/clip": "a", "test/siglip": "b"}
-    calls, closed = [], []
+    calls, loaded, closed = [], [], []
     outcomes = {}
 
     class Encoder:
         def __init__(self, model_id, cache_dir):
+            loaded.append(model_id)
             self.model_id = model_id
             self.metadata = {"model": model_id}
 
@@ -39,7 +40,8 @@ def runner(monkeypatch, tmp_path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     config = tmp_path / "config.json"
-    config.write_text(json.dumps({"validation": [], "test": []}))
+    config.write_text(json.dumps({split: [{"filename": f"{split}.mp4", "video_path": f"{split}.mp4"}]
+                                  for split in ("validation", "test")}))
     thresholds = tmp_path / "thresholds.json"
     frozen = {model: dict.fromkeys(runtime.PROMPTS, 0.1) for model in runtime.REVISIONS}
     thresholds.write_text(json.dumps(frozen))
@@ -47,7 +49,21 @@ def runner(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", [str(path), "--config", str(config), "--output", str(output),
                                     "--thresholds", str(thresholds), "--cache-dir", str(tmp_path / "cache")])
     return SimpleNamespace(module=module, calls=calls, closed=closed, outcomes=outcomes,
-                           thresholds=thresholds, frozen=frozen, output=output)
+                           loaded=loaded, config=config, thresholds=thresholds,
+                           frozen=frozen, output=output)
+
+
+@pytest.mark.parametrize("split", ["validation", "test"])
+@pytest.mark.parametrize("invalid", [[], None, {}])
+def test_invalid_media_groups_fail_before_loading_models(runner, split, invalid):
+    config = json.loads(runner.config.read_text())
+    config[split] = invalid
+    runner.config.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match=split):
+        runner.module.main()
+    assert runner.loaded == []
+    assert runner.calls == []
+    assert not runner.output.exists()
 
 
 def test_incomplete_validation_never_enters_test_or_waits_for_thresholds(runner):

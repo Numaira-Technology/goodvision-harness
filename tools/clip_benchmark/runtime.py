@@ -155,6 +155,8 @@ class ClipEncoder:
 
 def run_streams(media, encoder, thresholds, output, slots=12, interval=.8):
     """Read each video once for quality, with explicitly marked tail load."""
+    if not media:
+        raise ValueError("media must contain at least one primary video")
     if type(slots) is not int or not 1 <= slots <= 12:
         raise ValueError("slots must be an integer from one to twelve")
     if not math.isfinite(interval) or interval <= 0:
