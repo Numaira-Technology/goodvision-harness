@@ -219,7 +219,7 @@
       input.setAttribute("aria-label",row.camera.label+" 网络视频缓存（秒）");field.append(input);
       const save=this.element("button","btn","应用并保存缓存时间");save.type="button";save.disabled=true;
       const note=this.element("p","note","正在读取播放设置…");note.setAttribute("role","status");
-      panel.append(this.element("h4","","本路播放设置"),this.element("p","note","此设置仅适用于网络视频，额外显示缓存可设为 0–30 秒，运行中可调整，重启后保留。调小后会跳过旧画面、追上最新结果。本机摄像头使用独立的描边缓冲，由部署配置设置。"),field,save,note);
+      panel.append(this.element("h4","","本路播放设置"),this.element("p","note","网络视频（包括本机摄像头生成的 WebRTC 链接）的显示缓存可设为 0–30 秒，预览和分析时均生效，运行中可调整，重启后保留。调小后会跳过旧画面；设为 0 秒恢复实时显示。"),field,save,note);
       row.card.append(panel);Object.assign(row,{playbackPanel:panel,bufferInput:input,bufferSave:save,bufferNote:note,bufferLoaded:false,bufferDirty:false,bufferLoading:false,bufferSaving:false});
       input.oninput=()=>{row.bufferDirty=true;};save.onclick=()=>this.savePlayback(row);
     }

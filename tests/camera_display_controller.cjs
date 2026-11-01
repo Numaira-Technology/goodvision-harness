@@ -58,15 +58,56 @@ test("network run and crop changes dispose prior overlays and metadata cannot cr
   const second=feed.controller;await feed.accept(packet("run-two",3,1));assert.equal(second.closed,true);
   feed.stop();view.controller.stop();
 });
-test("raw network frames report their actual canvas presentation without tracker telemetry",async()=>{
+test("raw network frames use the playback clock with zero delay and report actual presentation",async()=>{
   const view=browser({globals:{createImageBitmap:async()=>({width:640,height:480,origin:42,close(){}})}});
-  const observed=[];const feed=new view.api.NetworkController({canvas:view.canvas,url:"/frames",
+  const observed=[],statuses=[];const feed=new view.api.NetworkController({canvas:view.canvas,url:"/frames",onStatus:value=>statuses.push(value),
     onFrame:value=>observed.push({value,origin:view.canvas.origin})});
   await feed.accept({connection_id:"connection",config:{stream_session_id:"raw-run",generation:1,crop_version:0,enabled:false,delay_seconds:0},
     frames:[{source_sequence:1,media_timestamp:1,width:640,height:480,jpeg:new Uint8Array([1])}]});
-  assert.equal(observed.length,1);assert.equal(observed[0].value.presented,true);
-  assert.equal(observed[0].value.buffering,false);assert.equal(observed[0].origin,42);
-  assert.equal(feed.controller,null);feed.stop();view.controller.stop();
+  assert.equal(observed.length,1);assert.equal(observed[0].value.presented,false);
+  feed.controller.animate();assert.equal(view.canvas.origin,42);
+  assert.equal(feed.controller.snapshot().last_source_to_present_seconds,0);
+  view.setClock(1);feed.controller.animate();
+  assert.equal(statuses.at(-1).configured_display_delay_seconds,0);
+  assert.equal(statuses.at(-1).distinct_presented_frames,1);
+  feed.stop();view.controller.stop();
+});
+
+test("untracked network video waits for the configured buffer without requesting contours",async t=>{
+  const view=browser({globals:{createImageBitmap:async()=>({width:640,height:480,origin:42,close(){}})}});
+  const feed=new view.api.NetworkController({canvas:view.canvas,url:"/frames",metricsUrl:"/metrics"});
+  t.after(()=>{feed.stop();view.controller.stop();});
+  const config={stream_session_id:"connection",generation:0,crop_version:0,enabled:false,delay_seconds:2,transport:"stream"};
+  await feed.accept({connection_id:"connection",config,
+    frames:[{source_sequence:1,media_timestamp:10,width:640,height:480,jpeg:new Uint8Array([1])}]});
+  assert.ok(feed.controller,"buffering must not depend on tracking being enabled");
+  view.setClock(1.999);feed.controller.animate();assert.equal(view.canvas.origin,undefined);
+  view.setClock(2);feed.controller.animate();assert.equal(view.canvas.origin,42);
+  assert.equal(view.canvas.dataset.frameSequence,"1");
+  assert.equal(feed.controller.snapshot().last_source_to_present_seconds,2);
+  assert.equal(view.reports.length,0);
+  assert.equal(view.workerMessages.filter(m=>["frame_bitmap","present","metadata"].includes(m.type)).length,0);
+  assert.equal(view.packets.length,0);
+});
+
+test("buffer changes apply to an existing untracked stream and zero resumes immediate video",async t=>{
+  const view=browser({globals:{createImageBitmap:async()=>({width:640,height:480,close(){}})}});
+  const feed=new view.api.NetworkController({canvas:view.canvas,url:"/frames"});
+  t.after(()=>{feed.stop();view.controller.stop();});
+  const packet=(delay,seq)=>({connection_id:"connection",config:{stream_session_id:"connection",generation:0,crop_version:0,
+    enabled:false,delay_seconds:delay,transport:"stream"},frames:seq?[{source_sequence:seq,media_timestamp:seq,
+      width:640,height:480,jpeg:new Uint8Array([1])}]:[]});
+  await feed.accept(packet(0,1));feed.controller.animate();assert.equal(view.canvas.dataset.frameSequence,"1");
+  await feed.accept(packet(3));assert.equal(feed.controller.frames.delay,3);
+  await feed.accept(packet(3,2));const old=feed.controller;
+  view.setClock(1);old.animate();assert.equal(old.snapshot().distinct_presented_frames,0);
+  await feed.accept(packet(1));assert.equal(old.closed,true);
+  await feed.accept(packet(1,3));view.setClock(2);feed.controller.animate();
+  assert.equal(view.canvas.dataset.frameSequence,"3");
+  const buffered=feed.controller;
+  await feed.accept(packet(0,4));assert.equal(buffered.closed,true);
+  feed.controller.animate();assert.equal(feed.controller.frames.delay,0);
+  assert.equal(view.canvas.dataset.frameSequence,"4");
 });
 
 function browser({autoAck=true,metadataResponse,config={},globals={},settings:providedSettings,onMotionTrace=null,motionTraceOptions={}}={}){

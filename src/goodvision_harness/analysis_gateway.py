@@ -18,6 +18,7 @@ from starlette.background import BackgroundTask
 from starlette.websockets import WebSocketDisconnect
 
 from .gateway_video import CONNECT, DISCONNECT, GatewayVideo
+from .local_camera import install_local_camera_routes
 from .relay_auth import strip_relay_header
 from .service_locations import _service_origin
 
@@ -70,11 +71,13 @@ def create_app(origin=None, *, controller=None, transport=None):
             try:
                 yield
             finally:
+                await app.state.local_cameras.aclose()
                 await video.close()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.control_lock = asyncio.Lock()
     app.state.video = video
+    install_local_camera_routes(app)
 
     @app.get("/gateway/video-source")
     async def video_source():
