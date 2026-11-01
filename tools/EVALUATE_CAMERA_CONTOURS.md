@@ -187,8 +187,8 @@ and does not rerun Chrome. A wide box can still contain thin or untextured regio
 
 `evaluate_camera_live.cjs` exercises a running dashboard and its real configured
 models, replacing only `getUserMedia` with a supplied video. Use an isolated
-service and authorized media/model access: it disables dry-run and selects all
-event features. Playwright and Chrome are required; `--chrome` overrides the
+service and authorized media/model access: it starts real analysis with all
+event features selected. Playwright and Chrome are required; `--chrome` overrides the
 Windows default executable. This is a separate workflow from the offline
 fixture evaluator above.
 
