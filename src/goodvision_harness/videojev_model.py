@@ -89,6 +89,7 @@ class VideoJevInspector:
         self._http = None
         self._question_template = scene_question_template(
             labels=config.labels, sensitivities=dict(config.sensitivities),
+            vocabulary=config.vocabulary,
         )
         self._expected = tuple(
             {"id": row["id"], "options": row["options"]}

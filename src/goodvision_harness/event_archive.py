@@ -25,6 +25,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from .archive_ingress import ArchiveIngress
+from .event_registry import BUILTIN_VOCABULARY, SAFETY_BRANCH, EventVocabulary, labels
 from .latency_trace import log_timing
 from .person_identity import stranger_evidence
 from .video_evidence import (
@@ -135,8 +136,10 @@ class EventArchive:
         *,
         encoder: Callable[..., dict[str, Any]] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
     ) -> None:
         self.settings = settings or EventArchiveSettings()
+        self._scene_labels = frozenset(labels(vocabulary.branch(SAFETY_BRANCH)))
         self._clock = clock
         self._encoder = encoder or encode_staged_clip
         self._queue = ArchiveIngress(
@@ -330,7 +333,7 @@ class EventArchive:
         )
         records = []
         for event in scene.get("events", ()):
-            if event.get("event_label") not in {"smoking", "fall", "fight", "weapon", "ppe_violation", "ground_litter"}:
+            if event.get("event_label") not in self._scene_labels:
                 continue
             record = {key: copy.deepcopy(event[key]) for key in keys if key in event}
             positives = [
@@ -363,7 +366,7 @@ class EventArchive:
             }
             for item in latest_transitions.values()
             if (item.get("type") in {"end", "retract"} or item.get("phase") == "ended")
-            and item.get("event_label") in {"smoking", "fall", "fight", "weapon", "ppe_violation", "ground_litter"}
+            and item.get("event_label") in self._scene_labels
         ]
         if not records and not transitions:
             return True

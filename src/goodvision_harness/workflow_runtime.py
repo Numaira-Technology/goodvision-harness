@@ -132,6 +132,7 @@ class WorkflowRuntimeMixin:
                 enabled=binding["enabled"],
                 block_enabled=binding["block_enabled"],
                 camera_override=binding["camera_override"],
+                vocabulary=self._event_vocabulary(),
             )
         with self._control_lock:
             if self._processing_lifecycle_busy():
@@ -589,7 +590,10 @@ class WorkflowRuntimeMixin:
         from .workflow_summary import snapshot_from_connection
         from .workflows import compile_graph
 
-        plan = compile_graph(graph, camera_id=f"camera{self._fleet_camera_index:02d}")
+        plan = compile_graph(
+            graph, camera_id=f"camera{self._fleet_camera_index:02d}",
+            vocabulary=self._event_vocabulary(),
+        )
         with self._control_lock:
             if self._processing_lifecycle_busy():
                 raise RuntimeError("stop this camera before testing a draft")
@@ -707,6 +711,7 @@ class WorkflowRuntimeMixin:
                         dry_run=self.dry_run,
                         api_key=self._aiclub_api_key,
                         event_sensitivities=plan["event_sensitivities"],
+                        vocabulary=self._event_vocabulary(),
                     )
                     response = (
                         client.classify_stranger_window(window)

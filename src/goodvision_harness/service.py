@@ -75,6 +75,12 @@ from .diagnostics import create_diagnostics
 from .display_telemetry import validate_display_metrics
 from .event_archive import EventArchive
 from .event_catalog import event_catalog
+from .event_registry import (
+    BUILTIN_VOCABULARY,
+    SAFETY_BRANCH,
+    EventVocabulary,
+)
+from .event_registry import labels as registry_labels
 from .event_routes import install_event_routes
 from .event_sensitivity import (
     EVENT_SENSITIVITY_DEFAULTS,
@@ -525,14 +531,17 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         self._video_connection: VideoConnection | None = None
         self._connection_camera_layout: str | None = None
         self._analysis_settings = {
-            "features": list(DETECTION_EVENT_LABELS),
+            "features": list(self._event_vocabulary().default_labels()),
             "event_sensitivities": dict(EVENT_SENSITIVITY_DEFAULTS),
         }
         if deployment_store is not None:
             try:
                 saved_analysis = deployment_store.load_analysis_settings()
                 if saved_analysis is not None:
-                    features = _normalize_features(saved_analysis.get("features"))
+                    features = _normalize_features(
+                        saved_analysis.get("features"),
+                        self._event_vocabulary(),
+                    )
                     self._analysis_settings = {
                         "features": list(features),
                         "event_sensitivities": normalize_event_sensitivities(
@@ -620,10 +629,11 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             "stream": None,
             "stream_session_id": None,
             "event_label": (
-                ",".join(DETECTION_EVENT_LABELS) if config is not None else None
+                ",".join(self._event_vocabulary().default_labels())
+                if config is not None else None
             ),
-            "event_labels": list(DETECTION_EVENT_LABELS),
-            "features": list(DETECTION_EVENT_LABELS),
+            "event_labels": list(self._event_vocabulary().default_labels()),
+            "features": list(self._event_vocabulary().default_labels()),
             "event_sensitivities": dict(EVENT_SENSITIVITY_DEFAULTS),
             "model": PUBLIC_MODEL_NAME if config is not None else None,
             "dry_run": self.dry_run,
@@ -1537,10 +1547,14 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             },
             "model": PUBLIC_MODEL_NAME,
             "event_label": self.config.inference.event_label,
-            "event_labels": list(DETECTION_EVENT_LABELS),
-            "features": list(DETECTION_EVENT_LABELS),
-            "supported_features": list(DETECTION_EVENT_LABELS),
-            "event_catalog": event_catalog(),
+            # supported_features is everything selectable; features is what a
+            # session gets without asking. Injected events are in the first but
+            # never the second, so declaring one cannot change live behaviour.
+            "event_labels": list(self._event_vocabulary().default_labels()),
+            "features": list(self._event_vocabulary().default_labels()),
+            "supported_features": list(self._event_vocabulary().labels()),
+            "event_display_names": self._event_vocabulary().display_names(),
+            "event_catalog": event_catalog(self._event_vocabulary()),
             **sensitivity_ui_info(),
             "local_camera_display": self.video_display_config(),
             "sample_fps": self.config.video.fps,
@@ -1661,7 +1675,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             if self._events is None:
                 if self.config is None or self._closed:
                     raise RuntimeError("event archive unavailable")
-                self._events = EventArchive(self.config.events)
+                self._events = EventArchive(
+                    self.config.events, vocabulary=self._event_vocabulary(),
+                )
             return self._events
 
     def _tracking_coordinator(self, client: Any, rich: Any = None) -> Any:
@@ -2062,11 +2078,20 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 raise ProcessingMethodUnavailableError()
             return revision, self._rich_labels
 
+    def _event_vocabulary(self) -> EventVocabulary:
+        """The built-ins plus whatever events.definitions this config declared."""
+
+        if self.config is None:
+            return BUILTIN_VOCABULARY
+        return self.config.event_vocabulary
+
     def analysis_settings(self) -> dict[str, Any]:
         return {
             **copy.deepcopy(self._analysis_settings),
             **sensitivity_ui_info(),
-            "event_catalog": event_catalog(),
+            "event_catalog": event_catalog(
+                self.config.event_vocabulary if self.config else None
+            ),
         }
 
     def update_analysis_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2077,9 +2102,10 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 raise RuntimeError("stop the active session before saving settings")
             if self._deployment_store is None:
                 raise RuntimeError("persistent deployment storage is not configured")
-            features = _normalize_features(payload.get(
-                "features", self._analysis_settings["features"],
-            ))
+            features = _normalize_features(
+                payload.get("features", self._analysis_settings["features"]),
+                self._event_vocabulary(),
+            )
             settings = {
                 "features": list(features),
                 "event_sensitivities": normalize_event_sensitivities(payload.get(
@@ -2133,7 +2159,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
     ) -> bool:
         return bool(
             self._scene_enabled and self.config.runtime.scene_independent_vlm
-            and not dry_run and set(features).intersection(SAFETY_EVENT_LABELS)
+            and not dry_run and set(features).intersection(
+                registry_labels(self._event_vocabulary().branch(SAFETY_BRANCH))
+            )
         )
 
     def prepare_analysis(self) -> dict[str, Any]:
@@ -2159,8 +2187,11 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             independent_events = self._independent_events_requested(
                 features, dry_run=self.dry_run,
             )
+            model_labels = registry_labels(
+                self._event_vocabulary().branch(SAFETY_BRANCH)
+            )
             if (not self.dry_run
-                    and (any(item in SAFETY_EVENT_LABELS for item in features)
+                    and (any(item in model_labels for item in features)
                          or bool(self._workflow_plan
                                  and self._workflow_plan["summaries"]))
                     and not self._aiclub_api_key
@@ -2298,7 +2329,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     )
                 selected_features = ()
             else:
-                selected_features = _normalize_features(features)
+                selected_features = _normalize_features(
+                    features, self._event_vocabulary(),
+                )
             label = ",".join(selected_features)
             use_dry_run = self.dry_run if dry_run is None else bool(dry_run)
         elif selected_analysis == FACE_ANALYSIS_MODE:
@@ -2329,6 +2362,13 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             event_sensitivities, sensitivity_labels,
         )
 
+        # Events the model judges, as opposed to the face branch. Injected
+        # events sit here too: they are answered by the same request and run
+        # the same lifecycle, so anything keyed off "is this a safety event"
+        # has to read the session vocabulary, including configured custom labels.
+        model_backed = frozenset(
+            registry_labels(self._event_vocabulary().branch(SAFETY_BRANCH))
+        )
         independent_requested = self._independent_events_requested(
             sensitivity_labels, dry_run=use_dry_run,
         )
@@ -2374,7 +2414,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 raise RuntimeError("人物处理方式或会话状态已变化。请重新开始检测。")
             needs_model_key = selected_analysis == EVENT_ANALYSIS_MODE or (
                 selected_analysis == MULTI_ANALYSIS_MODE
-                and any(feature in SAFETY_EVENT_LABELS for feature in selected_features)
+                and any(feature in model_backed for feature in selected_features)
             )
             if (needs_model_key and not use_dry_run and not self._aiclub_api_key
                     and self.config.model_api.provider != "local"):
@@ -2429,6 +2469,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 self._scene_archive = SceneArchive(
                     self.config.events.directory / "scene",
                     retention_days=self.config.events.retention_days,
+                    vocabulary=self._event_vocabulary(),
                 )
             if selected_analysis == FACE_ANALYSIS_MODE:
                 face_runtime = prepared_face
@@ -2534,6 +2575,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                         safety_max_image_side=self.config.video.max_image_side,
                         safety_jpeg_quality=self.config.video.jpeg_quality,
                         face_live_scheduler=face_live_scheduler,
+                        vocabulary=self._event_vocabulary(),
                         dry_run=use_dry_run,
                         api_key=self._aiclub_api_key,
                         transport=(
@@ -2677,11 +2719,11 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             scene_labels = tuple(
                 item
                 for item in (selected_features or ())
-                if item in SAFETY_EVENT_LABELS
+                if item in model_backed
             )
             if (
                 selected_analysis == EVENT_ANALYSIS_MODE
-                and label in SAFETY_EVENT_LABELS
+                and label in model_backed
             ):
                 scene_labels = (label,)
             next_scene = (
@@ -2694,6 +2736,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                         and not self.config.runtime.scene_independent_vlm
                     ),
                     event_labels=scene_labels,
+                    vocabulary=self._event_vocabulary(),
                     independent_temporal_inference=(
                         self.config.runtime.scene_independent_vlm and not use_dry_run and bool(scene_labels)
                     ),
@@ -2792,6 +2835,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                         candidate_fps=4.0 if prepared_native_vlm else None,
                         observation_window_frames=2 if prepared_native_vlm else 4,
                         observation_frame_delta_seconds=0.5 if prepared_native_vlm else None,
+                        vocabulary=self._event_vocabulary(),
                     )
                     next_worker = IndependentVLMBranch(
                         process_config, results=self.results,
@@ -3684,6 +3728,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         control = self._archive_run(session)
         with control.lock:
             pending = control.pending_scene
+            model_labels = registry_labels(
+                self._event_vocabulary().branch(SAFETY_BRANCH)
+            )
             if snapshot is not None:
                 current = snapshot.get("scene")
                 if not current or current.get("stream_session_id") != (
@@ -3702,10 +3749,10 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 current_events = {
                     event["event_id"]: event
                     for event in current.get("events", ())
-                    if event["event_label"] in SAFETY_EVENT_LABELS
+                    if event["event_label"] in model_labels
                 }
                 for transition in current.get("transitions", ()):
-                    if transition.get("event_label") not in SAFETY_EVENT_LABELS:
+                    if transition.get("event_label") not in model_labels:
                         continue
                     transitions[transition["event_id"]] = transition
                 for event_id, transition in transitions.items():
@@ -4555,7 +4602,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     final_snapshot = scene.snapshot()
                 scene_archive = self._scene_archive
                 if scene_archive is not None and final_snapshot is not None:
-                    while not scene_archive.submit(final_snapshot, timeout_seconds=0.1):
+                    while not scene_archive.submit(
+                        final_snapshot, timeout_seconds=0.1, raise_on_invalid=True,
+                    ):
                         if not final_snapshot.get("scene", {}).get("events"):
                             break
                         if scene_archive.stats()["state"] in {"failed", "closed"}:
@@ -4733,9 +4782,13 @@ def _analysis_overlay_arguments(analysis: DisplayAnalysis) -> dict[str, Any]:
     }
 
 
-def _normalize_features(features: Collection[str] | None) -> tuple[str, ...]:
+def _normalize_features(
+    features: Collection[str] | None,
+    vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
+) -> tuple[str, ...]:
+    supported = vocabulary.labels()
     if features is None:
-        return DETECTION_EVENT_LABELS
+        return vocabulary.default_labels()
     if not isinstance(features, (list, tuple)):
         raise ValueError("features must be an array")
     raw = tuple(features)
@@ -4747,13 +4800,11 @@ def _normalize_features(features: Collection[str] | None) -> tuple[str, ...]:
     if len(set(rendered)) != len(rendered):
         raise ValueError("features must not contain duplicates")
     unsupported = tuple(
-        feature for feature in rendered if feature not in DETECTION_EVENT_LABELS
+        feature for feature in rendered if feature not in supported
     )
     if unsupported:
         raise ValueError("unsupported feature")
-    return tuple(
-        feature for feature in DETECTION_EVENT_LABELS if feature in rendered
-    )
+    return tuple(feature for feature in supported if feature in rendered)
 
 
 def _api_reference_html(schema: dict[str, Any]) -> str:

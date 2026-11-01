@@ -672,3 +672,19 @@ def test_scene_disabled_native_run_finishes_identity_and_evidence_without_scene(
     assert runtime._last_scene_snapshot is None
     assert runtime._last_identity_review is not None
     assert "background run finalization failed" not in caplog.text
+
+
+def test_draft_snapshot_uses_configured_custom_event_vocabulary(rig):
+    from test_event_injection import _injected
+
+    runtime, _connection, _adapter, _clock = rig
+    runtime.config = replace(runtime.config, event_vocabulary=_injected())
+    value = graph("events")
+    value["nodes"][2]["config"] = {"features": ["opens_door"]}
+    before_epoch = runtime.results.epoch
+    result = runtime.test_workflow(value)
+    events = next(item for item in result["results"] if item["type"] == "events")
+    assert events["error_detail"] is None
+    assert [item["event_label"] for item in events["observations"]] == ["opens_door"]
+    assert runtime.results.epoch == before_epoch
+    assert runtime._session is None

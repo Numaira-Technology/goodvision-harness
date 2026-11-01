@@ -24,6 +24,7 @@ from uuid import uuid4
 from PIL import Image
 
 from .contracts import PUBLIC_MODEL_NAME
+from .event_registry import BUILTIN_VOCABULARY, EventVocabulary
 from .independent_diagnostics import (
     DIAGNOSTIC_QUEUE_CAPACITY,
     IndependentDiagnostics,
@@ -68,6 +69,7 @@ class VLMProcessConfig:
     candidate_fps: float | None = None
     observation_window_frames: int = 4
     observation_frame_delta_seconds: float | None = None
+    vocabulary: EventVocabulary = BUILTIN_VOCABULARY
 
     def __post_init__(self):
         if self.output_mode not in {"full", "compact", "parallel", "events"}:
@@ -361,7 +363,14 @@ def _inspector(config):
     options = dict(config.options)
     settings = config.model_settings
     if config.output_mode == "events":
-        options["max_tokens"] = 160
+        # Keep the built-in budget, with a conservative ASCII-character allowance
+        # for every additional JSON key/value. Long injected identifiers may
+        # tokenize poorly; truncation invalidates the entire strict response.
+        options["max_tokens"] = 160 + sum(
+            len(label) + 16
+            for label in config.labels
+            if label not in BUILTIN_VOCABULARY
+        )
         # The transport uses asyncio.wait_for: expiry cancels the HTTP request
         # and releases its worker, rather than abandoning a running Future.
         settings = replace(
@@ -871,6 +880,7 @@ def run_vlm_process(
                             request,
                             window,
                             event_sensitivities=config.sensitivities,
+                            vocabulary=config.vocabulary,
                             evidence_after_frame_sequence=last_endpoint,
                             grounding_required=bool(
                                 grounding_required and grounding_required.is_set()
