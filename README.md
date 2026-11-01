@@ -44,6 +44,20 @@ original `goodvision` repository.
 | Find detailed guides and past results | [Documentation index](docs/README.md) |
 | Run operational or evaluation tools | [Tool inventory](tools/README.md) |
 
+## Demo vs production
+
+Demo 与客户交付是**同一套代码的不同入口/配置，不是两条分支**：
+
+- **Demo / dry-run** — `HARNESS_DRY_RUN=true goodvision-harness-demo`（端口 7900，合成结果，
+  不调模型、不需人脸权重；见下方 Quick start）。
+- **Production / 客户交付** — `python tools/start_delivery.py`，配 `compose.full-gpu.delivery.yaml`
+  和 `config.delivery.yaml`，见 [DEPLOY.md](DEPLOY.md) / [RELEASE.md](RELEASE.md)。
+
+`goodvision-harness-demo` 与 `goodvision-harness` 共用同一个控制台，默认端口不同。切换环境靠
+**入口 + 运行标志 + delivery overlay/config**；按环境长期维护分支会增加共用代码的同步负担。
+目录整理须保留稳定根入口，并保持两份 `config.yaml` 一致。完整对照见
+[production vs demo 清单](docs/guides/demo-vs-delivery.md)。
+
 ## Quick start
 
 From the repository root, start a local dry-run console without model calls or
