@@ -49,7 +49,9 @@ def _display_batch(
         source_mode="network",
         transport="frames",
         enabled=active,
-        delay_seconds=runtime._display_settings.delay_seconds if active else 0,
+        # Playback buffering belongs to the video connection, independently of
+        # whether this run supplies tracking geometry (including local WHEP).
+        delay_seconds=runtime._display_settings.delay_seconds,
         **(
             identity
             if active

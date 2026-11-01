@@ -22,6 +22,7 @@ import pytest
         "dashboard_event_catalog.cjs",
         "dashboard_diagnostics.cjs",
         "dashboard_inference_errors.cjs",
+        "local_camera_publish.cjs",
         "workflow_canvas.cjs",
         "console_sections.cjs",
         "quick_task_judgment.cjs",
