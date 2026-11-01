@@ -16,8 +16,8 @@ test("persisted test mode can switch to real analysis without saving service dra
   assert.equal(await view.useRealWorkflowAnalysis(),true);
   assert.deepEqual(view.requests.map(request=>request.payload),[{dry_run:false}]);
   assert.equal(view.workflowUsesSimulation(),false);
-  assert.equal(view.element('default-dry-run').checked,false);
-  assert.equal(view.element('dry-run').checked,false);
+  assert.equal(view.state.deployment.dry_run,false);
+  assert.doesNotMatch(view.html,/id="(?:default-)?dry-run"/);
   for(const [id,value] of [['inference-server-url','pending-analysis'],['tracking-server-url','pending-tracking'],['tracking-node-key','pending-node-key'],['default-api-key','pending-cloud-key']])
     assert.equal(view.element(id).value,value);
   assert.deepEqual(view.messages,[]);
@@ -31,7 +31,8 @@ test("test-mode recovery remains locked during analysis and preserves test mode 
   view.state.running=false;view.context.fail=true;
   assert.equal(await view.useRealWorkflowAnalysis(),false);
   assert.equal(view.workflowUsesSimulation(),true);
-  assert.equal(view.element('default-dry-run').checked,true);
+  assert.equal(view.state.deployment.dry_run,true);
+  assert.doesNotMatch(view.html,/id="(?:default-)?dry-run"/);
 });
 
 test("analysis sidebar saves only analysis settings and preserves other pending fields",async()=>{

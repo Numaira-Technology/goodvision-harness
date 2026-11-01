@@ -3,7 +3,8 @@
 Run inside the already-running container:
     python /tmp/delivery_smoke.py --isolated
 
-The service must start with HARNESS_AUTOSTART=false, HARNESS_DRY_RUN=true,
+The isolated runner injects an offline runtime; production entrypoints reject
+synthetic analysis. The fixture uses HARNESS_AUTOSTART=false, HARNESS_DRY_RUN=true,
 RICH_LABEL_ENABLED=false, FACE_ALLOW_MODEL_DOWNLOAD=false, no webhook, and a
 fresh temporary data directory. Prefer a container with --network none. With
 --with-rich, enable rich labeling and connect only to an isolated deterministic
