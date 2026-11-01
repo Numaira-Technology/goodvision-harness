@@ -36,6 +36,8 @@ RICH_LABEL_MODELS: tuple[RichLabelModel, ...] = (
                    "fastest detector; boxes"),
     RichLabelModel("det-accurate", "高精度检测(最准)", "paddle", "yolov8-m",
                    "most accurate detector; boxes"),
+    RichLabelModel("det-segment", "单帧分割(可选)", "paddle", "sam3-onnx",
+                   "optional single-image person segmentation; speed varies"),
 )
 
 _BY_KEY = {m.key: m for m in RICH_LABEL_MODELS}

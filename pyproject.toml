@@ -31,6 +31,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Install only one extra in an isolated environment: the ORT builds conflict.
+sam3-onnx = ["osam[cpu]==0.9.4"]
+sam3-onnx-cuda = ["osam[gpu]==0.9.4"]
 vlm = [
   "httpx[http2]>=0.27,<1",
 ]

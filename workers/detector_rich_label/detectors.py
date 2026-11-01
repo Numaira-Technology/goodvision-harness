@@ -8,10 +8,12 @@ DETECTOR_MODEL env var (surfaced in the harness console):
     yolov8-m  -> YOLOv8-M   (accuracy pick; ultralytics)
     yolo26-s  -> YOLO26-S   (speed pick;    ultralytics)
     rfdetr-l  -> RF-DETR-L  (DETR pick;     rfdetr package)
+    sam3-onnx -> SAM3 ONNX text segmentation (optional OSAM; local files only)
     dummy     -> fixed box  (tests / no model deps)
 
 Weights resolve from DETECTOR_WEIGHTS (explicit path) or a per-model default
 filename under DETECTOR_WEIGHTS_DIR (default /models). COCO "person" is class 0.
+SAM3 uses its own SAM3_ONNX_* configuration; see docs/guides/sam3-onnx.md.
 """
 
 from __future__ import annotations
@@ -20,13 +22,18 @@ import os
 from typing import Protocol
 
 import numpy as np
-from tracker import Detection, valid_pixel_bbox
+
+if __package__:
+    from .tracker import Detection, valid_pixel_bbox
+else:
+    from tracker import Detection, valid_pixel_bbox
 
 # model key -> (engine, default weight filename)
 MODEL_REGISTRY: dict[str, tuple[str, str]] = {
     "yolov8-m": ("yolo", "yolov8m.pt"),
     "yolo26-s": ("yolo", "yolo26s.pt"),
     "rfdetr-l": ("rfdetr", "rfdetr-l.pth"),
+    "sam3-onnx": ("sam3-onnx", ""),
     "dummy": ("dummy", ""),
 }
 
@@ -70,6 +77,12 @@ def build_detector(model_key: str) -> Detector:
             f"choose one of {sorted(MODEL_REGISTRY)}"
         )
     engine, default_file = MODEL_REGISTRY[key]
+    if engine == "sam3-onnx":
+        if __package__:
+            from .sam3_onnx import Sam3OnnxDetector
+        else:
+            from sam3_onnx import Sam3OnnxDetector
+        return Sam3OnnxDetector()
     if engine == "dummy":
         return DummyDetector(name=key)
     if engine == "yolo":
