@@ -32,6 +32,7 @@ PREFIX = "/v1/fleet/cameras/{camera_id}"
 OUTPUT_PATHS = (
     "/status",
     "/workflow/results",
+    "/workflow/output.jpg",
     "/workflow/summaries",
     "/video/source/latest.jpg",
     "/results/latest",
