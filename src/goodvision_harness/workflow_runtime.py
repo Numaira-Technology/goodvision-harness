@@ -663,6 +663,7 @@ class WorkflowRuntimeMixin:
         with self._control_lock:
             connection, context = self._video_connection, self._workflow_result_context
             operation = self._workflow_operation
+            generation = self._generation
             running = (
                 self._workflow_raw_session_id is not None
                 or (self._session is not None and self._session.running)
@@ -674,7 +675,6 @@ class WorkflowRuntimeMixin:
             if (
                 not running
                 or not self._workflow_context_valid(context)
-                or context["generation"] != self._generation
             ):
                 raise ValueError("Start the applied workflow to preview its output.")
             snapshot = snapshot_from_connection(connection)
@@ -740,7 +740,7 @@ class WorkflowRuntimeMixin:
             if (
                 operation != self._workflow_operation
                 or not self._workflow_context_valid(context)
-                or context["generation"] != self._generation
+                or generation != self._generation
             ):
                 raise ValueError("The workflow changed; retry the preview.")
         return rendered

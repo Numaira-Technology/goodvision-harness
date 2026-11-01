@@ -278,3 +278,38 @@ def test_output_preview_is_scoped_to_active_output_and_stops_with_session(rig):
     runtime.stop_session()
     with pytest.raises(ValueError):
         runtime.workflow_output_preview("out")
+
+
+def test_summary_output_remains_live_after_native_analysis_ends(rig):
+    from test_video_connection import wait_for
+
+    runtime, _, _, _ = rig
+    configure(runtime, graph("face", "summary"))
+    runtime.start_connected_analysis()
+    native = runtime._session
+    native.stop(drain=True)
+    native.join(1)
+    wait_for(lambda: runtime._session is None)
+    assert runtime._workflow_summaries.is_running
+    assert runtime.workflow_output_preview("out").startswith(b"\xff\xd8")
+
+
+def test_output_http_route_is_no_store_and_rejects_unknown_outputs(rig):
+    from fastapi.testclient import TestClient
+
+    from goodvision_harness.service import create_app
+
+    runtime, _, _, _ = rig
+    configure(runtime, graph(frames=True))
+    runtime.start_connected_analysis()
+    app = create_app(lambda: runtime)
+    app.state.runtime = runtime
+    client = TestClient(app)
+    try:
+        response = client.get("/v1/workflow/output.jpg?node_id=out&language=en")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/jpeg"
+        assert response.headers["cache-control"] == "no-store"
+        assert client.get("/v1/workflow/output.jpg?node_id=unknown").status_code == 404
+    finally:
+        client.close()
