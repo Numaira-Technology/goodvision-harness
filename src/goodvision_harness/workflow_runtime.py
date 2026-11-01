@@ -37,6 +37,74 @@ class WorkflowRuntimeMixin:
     _workflow_result_context = None
     _workflow_raw_session_id = None
     _workflow_tracking_baseline = None
+    _workflow_tracking_engine = None
+    _workflow_event_baseline = None
+
+    def _workflow_summary_configuration(self):
+        return self.config
+
+    def _workflow_event_configuration(self, configuration=None):
+        from .model_api import ModelAPISettings
+        from .workflow_modules import MODELS, native_endpoints
+
+        configuration = configuration or self.config
+        plan = self._workflow_plan or {}
+        selected = plan.get("events_engine")
+        if selected not in MODELS:
+            return configuration
+        return replace(
+            configuration,
+            inference=replace(
+                configuration.inference, model=MODELS[selected], request_parameters={}
+            ),
+            aiclub=ModelAPISettings(
+                provider="local",
+                endpoint=native_endpoints(plan["events_service_url"])[0],
+                max_retries=0,
+            ),
+        )
+
+    def _workflow_bbox_probe(self, endpoint):
+        if not endpoint or self.config is None:
+            raise ValueError("Configure the Bbox service URL before starting.")
+        from .rich_label_models import DETECTOR_MODEL_HEADER
+
+        rich = replace(self.config.rich_labeling, endpoint=endpoint)
+        probe = self._create_rich_http_client(
+            rich, headers={DETECTOR_MODEL_HEADER: "yolo26-s"}
+        )
+        try:
+            if not probe.gpu_ready():
+                raise ValueError("The Bbox service is unavailable.")
+        finally:
+            probe.close()
+
+    @staticmethod
+    def _workflow_event_probe(plan):
+        import httpx
+
+        from .workflow_modules import MODELS, native_endpoints
+
+        endpoint = plan.get("events_service_url")
+        if not endpoint:
+            raise ValueError("Configure the recognition service URL before starting.")
+        try:
+            with httpx.Client(
+                timeout=5, trust_env=False, follow_redirects=False
+            ) as client:
+                response = client.get(native_endpoints(endpoint)[1])
+                response.raise_for_status()
+                value = response.json()
+            if (
+                not isinstance(value, dict)
+                or value.get("model") != MODELS[plan["events_engine"]]
+                or value.get("ready") is not True
+            ):
+                raise ValueError("model unavailable")
+        except Exception:
+            raise ValueError(
+                "The recognition service is unavailable or has a different model."
+            ) from None
 
     def workflow_tracking_capability(self):
         baseline = self._workflow_tracking_baseline
@@ -60,23 +128,37 @@ class WorkflowRuntimeMixin:
         rich = baseline["rich_labeling"]
         scene_mode = baseline["scene_mode"]
         if plan is not None:
-            tracking = plan["tracking_enabled"] and rich.backend == "sam31_stream"
+            bbox = plan.get("tracking_engine") == "bbox"
+            if bbox and plan["tracking_enabled"]:
+                endpoint = plan.get("tracking_service_url")
+                if not endpoint:
+                    raise ValueError("Configure the Bbox service URL before starting.")
+                rich = replace(
+                    rich, backend="paddle", endpoint=endpoint, model="yolo26-s"
+                )
+            tracking = plan["tracking_enabled"] and (
+                bbox or rich.backend == "sam31_stream"
+            )
             rich = replace(
                 rich,
                 enabled=False,
                 tracking_enabled=tracking,
-                processing_method="sam_live" if tracking else None,
+                processing_method="sam_live" if tracking and not bbox else None,
             )
             if tracking:
                 scene_mode = "active"
             elif not configuration.runtime.scene_independent_vlm:
                 # Native safety inference remains available with tracking off.
                 scene_mode = "disabled"
-        return replace(
-            configuration,
-            rich_labeling=rich,
-            runtime=replace(configuration.runtime, scene_mode=scene_mode),
-        )
+        runtime = replace(configuration.runtime, scene_mode=scene_mode)
+        if (plan or {}).get("events_engine") in {"system1", "neural"}:
+            runtime = replace(
+                runtime,
+                scene_mode="active",
+                scene_vlm_output_mode="events",
+                scene_independent_vlm=True,
+            )
+        return replace(configuration, rich_labeling=rich, runtime=runtime)
 
     def _set_workflow_tracking(self, plan):
         if self.config is None:
@@ -87,25 +169,56 @@ class WorkflowRuntimeMixin:
             "rich_labeling": self.config.rich_labeling,
             "scene_mode": self.config.runtime.scene_mode,
         }
-        if plan is not None and plan["tracking_enabled"]:
+        if (
+            plan is not None
+            and plan["tracking_enabled"]
+            and plan.get("tracking_engine") != "bbox"
+        ):
             capability = self.workflow_tracking_capability()
             if not capability["configured"]:
                 raise ValueError(capability["reason"])
-        configuration = self._workflow_tracking_configuration(
-            self.config,
-            plan,
-            baseline,
-        )
-        if (
-            configuration.rich_labeling != self.config.rich_labeling
-            or configuration.runtime.scene_mode != self.config.runtime.scene_mode
-        ):
-            self._replace_processing_method(
-                configuration.rich_labeling.processing_method,
-                config=configuration,
-                suppress_remote_config=True,
+        configuration = self.config
+        event_baseline = self._workflow_event_baseline
+        if event_baseline is not None:
+            configuration = replace(
+                configuration,
+                runtime=replace(
+                    configuration.runtime,
+                    scene_vlm_output_mode=event_baseline[0],
+                    scene_independent_vlm=event_baseline[1],
+                ),
             )
+        selected = (plan or {}).get("events_engine", "vlm")
+        if selected in {"system1", "neural"}:
+            if not plan.get("events_service_url"):
+                raise ValueError(
+                    "Configure the recognition service URL before starting."
+                )
+            event_baseline = (
+                configuration.runtime.scene_vlm_output_mode,
+                configuration.runtime.scene_independent_vlm,
+            )
+        configuration = self._workflow_tracking_configuration(
+            configuration, plan, baseline
+        )
+        # Client construction can precede installing the new plan. Publish only
+        # the selected tracking engine here, so its first probe uses that engine.
+        previous_engine = self._workflow_tracking_engine
+        self._workflow_tracking_engine = (plan or {}).get("tracking_engine")
+        try:
+            if configuration != self.config:
+                self._replace_processing_method(
+                    configuration.rich_labeling.processing_method,
+                    config=configuration,
+                    suppress_remote_config=True,
+                )
+        except Exception:
+            self._workflow_tracking_engine = previous_engine
+            raise
         self._workflow_tracking_baseline = baseline if plan is not None else None
+        self._workflow_event_baseline = (
+            event_baseline if selected in {"system1", "neural"} else None
+        )
 
     def configure_workflow(self, payload):
         from .workflows import _identifier, compile_graph
@@ -303,9 +416,10 @@ class WorkflowRuntimeMixin:
     def _make_summary_manager(self, specs, connection, *, session_id=None):
         from .workflow_summary import SummaryManager
 
+        configuration = self._workflow_summary_configuration()
         return SummaryManager.from_config(
             specs,
-            self.config,
+            configuration,
             source_id=self.source_id,
             stream_session_id=session_id or uuid4().hex,
             generation=self._generation,
@@ -478,6 +592,18 @@ class WorkflowRuntimeMixin:
                         and context["generation"] == self._generation
                     ):
                         metadata = self._camera_display_metadata.snapshot()
+                        bbox = plan.get("tracking_engine") == "bbox"
+                        if bbox:
+                            latest = (
+                                self._rich_labels.latest(context["session_id"])
+                                if self._rich_labels
+                                else None
+                            )
+                            metadata = (
+                                latest.as_dict()
+                                if latest
+                                else {"stream_session_id": context["session_id"]}
+                            )
                         if metadata.get("stream_session_id") == context["session_id"]:
                             value = {
                                 "node_id": item["node_id"],
@@ -485,9 +611,9 @@ class WorkflowRuntimeMixin:
                                 "source_id": self.source_id,
                                 "stream_session_id": context["session_id"],
                                 "generation": context["generation"],
-                                "processing_method": "sam_live",
+                                "processing_method": "bbox" if bbox else "sam_live",
                                 "state": "running"
-                                if metadata.get("anchors")
+                                if metadata.get("anchors") or "objects" in metadata
                                 else ("waiting_for_tracks"),
                                 "metadata": metadata,
                             }
@@ -515,7 +641,13 @@ class WorkflowRuntimeMixin:
                                 "timestamp_seconds": frame.timestamp_seconds,
                             }
                     values.append({**item, "value": value})
-                outputs.append({"node_id": output["node_id"], "inputs": values})
+                outputs.append(
+                    {
+                        "node_id": output["node_id"],
+                        "inputs": values,
+                        "display": output.get("display", {}),
+                    }
+                )
         return public_safe_value(
             {
                 "camera_id": f"camera{self._fleet_camera_index:02d}",
@@ -523,6 +655,112 @@ class WorkflowRuntimeMixin:
                 "outputs": outputs,
             }
         )
+
+    def workflow_output_preview(self, node_id, language="zh", *, workflow_id=None):
+        from .workflow_render import render_output
+        from .workflow_summary import SummarySnapshot, snapshot_from_connection
+
+        with self._control_lock:
+            if workflow_id is not None and workflow_id != (
+                self._workflow_binding or {}
+            ).get("workflow_id"):
+                raise ValueError("This camera is running a different workflow.")
+            connection, context = self._video_connection, self._workflow_result_context
+            operation = self._workflow_operation
+            generation = self._generation
+            running = (
+                self._workflow_raw_session_id is not None
+                or (self._session is not None and self._session.running)
+                or (
+                    self._workflow_summaries is not None
+                    and self._workflow_summaries.state == "running"
+                )
+            )
+            if not running or not self._workflow_context_valid(context):
+                raise ValueError("Start the applied workflow to preview its output.")
+            snapshot = snapshot_from_connection(connection)
+            if snapshot is None:
+                raise ValueError("No video frame is available.")
+            outputs = self.workflow_results()["outputs"]
+            selected = next(
+                (item for item in outputs if item["node_id"] == node_id), None
+            )
+            if selected is None:
+                raise ValueError("Output is not active in this workflow.")
+            for item in selected["inputs"]:
+                if item["port"] == "tracks":
+                    if item.get("value"):
+                        item["value"] = item["value"].get("metadata")
+                elif item["port"] == "summary" and item.get("value"):
+                    spec = next(
+                        (
+                            s
+                            for s in self._workflow_plan["summaries"]
+                            if s["id"] == item["node_id"]
+                        ),
+                        {},
+                    )
+                    item["value"]["display_max_age"] = 2 * spec.get(
+                        "interval_seconds", 60
+                    )
+            # Use the tracked source frame, never draw old geometry on a new person.
+            for item in selected["inputs"]:
+                if item["port"] != "tracks" or not item.get("value"):
+                    continue
+                value = item["value"]
+                anchors = value.get("anchors", [])
+                tracked_time = (
+                    anchors[-1].get("media_timestamp")
+                    if anchors
+                    else value.get("timestamp_seconds")
+                )
+                tracked_sequence = (
+                    anchors[-1].get("source_sequence")
+                    if anchors
+                    else value.get("frame_sequence")
+                )
+                # The history cursor excludes sequence zero. Include the current
+                # snapshot explicitly so a stream's first frame can carry tracks.
+                frames = (
+                    *connection.display_frames(after=0, max_age_seconds=2, limit=120),
+                    (
+                        snapshot.source_frame_sequence,
+                        snapshot.timestamp_seconds,
+                        None,
+                        None,
+                        snapshot.jpeg_bytes,
+                    ),
+                )
+                matched = next(
+                    (
+                        f
+                        for f in reversed(frames)
+                        if f[0] == tracked_sequence
+                        and tracked_time is not None
+                        and abs(f[1] - tracked_time) < 0.001
+                    ),
+                    None,
+                )
+                if matched and selected.get("display", {}).get("tracks", {}).get(
+                    "visible", True
+                ):
+                    sequence, timestamp, _, _, jpeg = matched
+                    snapshot = SummarySnapshot(
+                        jpeg, sequence, timestamp, connection.connection_id
+                    )
+                else:
+                    item["value"] = None
+        rendered = render_output(
+            snapshot.jpeg_bytes, selected, snapshot.timestamp_seconds, language=language
+        )
+        with self._control_lock:
+            if (
+                operation != self._workflow_operation
+                or not self._workflow_context_valid(context)
+                or generation != self._generation
+            ):
+                raise ValueError("The workflow changed; retry the preview.")
+        return rendered
 
     @staticmethod
     def _workflow_test_response(response, *, node_id, identity, context):
@@ -591,7 +829,8 @@ class WorkflowRuntimeMixin:
         from .workflows import compile_graph
 
         plan = compile_graph(
-            graph, camera_id=f"camera{self._fleet_camera_index:02d}",
+            graph,
+            camera_id=f"camera{self._fleet_camera_index:02d}",
             vocabulary=self._event_vocabulary(),
         )
         with self._control_lock:
@@ -644,7 +883,12 @@ class WorkflowRuntimeMixin:
             )
             results = []
             if plan["tracking_enabled"]:
-                capability = self.workflow_tracking_capability()
+                bbox = plan.get("tracking_engine") == "bbox"
+                capability = (
+                    {"configured": True, "reason": None}
+                    if bbox
+                    else self.workflow_tracking_capability()
+                )
                 error = capability["reason"]
                 if capability["configured"]:
                     probe = None
@@ -655,15 +899,18 @@ class WorkflowRuntimeMixin:
                             if baseline
                             else (self.config.rich_labeling)
                         )
-                        probe = self._create_tracking_client(
-                            replace(
-                                rich,
-                                enabled=False,
-                                tracking_enabled=True,
-                                processing_method="sam_live",
+                        if bbox:
+                            self._workflow_bbox_probe(plan.get("tracking_service_url"))
+                        else:
+                            probe = self._create_tracking_client(
+                                replace(
+                                    rich,
+                                    enabled=False,
+                                    tracking_enabled=True,
+                                    processing_method="sam_live",
+                                )
                             )
-                        )
-                        if not probe.ready_for_new_session():
+                        if probe is not None and not probe.ready_for_new_session():
                             error = (
                                 "The configured person tracking service is unavailable."
                             )
@@ -682,7 +929,7 @@ class WorkflowRuntimeMixin:
                         "node_id": plan["tracking_node_id"],
                         "type": "tracking",
                         "state": "unavailable" if error else "live_analysis_required",
-                        "processing_method": "sam_live",
+                        "processing_method": "bbox" if bbox else "sam_live",
                         "error": error,
                     }
                 )
@@ -693,6 +940,25 @@ class WorkflowRuntimeMixin:
                 if not node_id:
                     continue
                 check_active()
+                if not identity and plan.get("events_engine") in {"system1", "neural"}:
+                    error = None
+                    try:
+                        self._workflow_event_probe(plan)
+                    except ValueError as exc:
+                        error = str(exc)
+                    results.append(
+                        {
+                            **context,
+                            "node_id": node_id,
+                            "type": "events",
+                            "state": "unavailable"
+                            if error
+                            else "live_analysis_required",
+                            "error": error,
+                            "observations": [],
+                        }
+                    )
+                    continue
                 try:
                     if identity and not self.dry_run:
                         face = FaceRecognitionSession(self._ensure_face_runtime())
@@ -703,9 +969,10 @@ class WorkflowRuntimeMixin:
                             label for label in plan["features"] if label != "stranger"
                         )
                     )
+                    test_config = self._workflow_summary_configuration()
                     client = build_selected_features_grounding_client(
-                        self.config.inference,
-                        self.config.model_api,
+                        test_config.inference,
+                        test_config.model_api,
                         features=features,
                         stranger_client=face,
                         dry_run=self.dry_run,

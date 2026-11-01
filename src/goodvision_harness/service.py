@@ -956,6 +956,8 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         Only set when a non-SAM detector model is selected; the worker reads it
         per request and lazy-loads that model. Empty for SAM/VLM/unset.
         """
+        if self._workflow_tracking_engine == "bbox":
+            return {DETECTOR_MODEL_HEADER: "yolo26-s"}
         key = (
             self._deployment_settings.rich_label_model
             if self._deployment_settings is not None else None
@@ -1133,6 +1135,11 @@ class HarnessRuntime(WorkflowRuntimeMixin):
     ) -> None:
         """Activate validated routes only after persistence succeeds, while idle."""
         previous = self.config
+        if self._workflow_event_baseline is not None:
+            self._workflow_event_baseline = (
+                configuration.runtime.scene_vlm_output_mode,
+                configuration.runtime.scene_independent_vlm,
+            )
         self._temporal_clients.invalidate()
         if self._route_transport is not None:
             self._route_transport.close()
@@ -2188,7 +2195,8 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 self._workflow_plan is not None
                 and self._workflow_plan["tracking_enabled"]
             )
-            if tracking:
+            bbox = tracking and self._workflow_plan.get("tracking_engine") == "bbox"
+            if tracking and not bbox:
                 capability = self.workflow_tracking_capability()
                 if not capability["configured"]:
                     raise ValueError(capability["reason"])
@@ -2198,14 +2206,25 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             model_labels = registry_labels(
                 self._event_vocabulary().branch(SAFETY_BRANCH)
             )
+            summary_config = self._workflow_summary_configuration()
+            if (not self.dry_run and self._workflow_plan
+                    and self._workflow_plan["summaries"] and not self._aiclub_api_key
+                    and summary_config.model_api.provider != "local"):
+                raise MissingAPIKeyError(PUBLIC_MISSING_API_KEY_ERROR)
             if (not self.dry_run
                     and (any(item in model_labels for item in features)
                          or bool(self._workflow_plan
                                  and self._workflow_plan["summaries"]))
                     and not self._aiclub_api_key
-                    and self.config.model_api.provider != "local"):
+                    and self._workflow_event_configuration().model_api.provider
+                    != "local"):
                 raise MissingAPIKeyError(PUBLIC_MISSING_API_KEY_ERROR)
-        if tracking or (
+        if bbox:
+            self._workflow_bbox_probe(self._workflow_plan.get("tracking_service_url"))
+        if (self._workflow_plan and not self.dry_run
+                and self._workflow_plan.get("events_engine") in {"system1", "neural"}):
+            self._workflow_event_probe(self._workflow_plan)
+        if (tracking and not bbox) or (
             features and self._workflow_plan is None and not independent_events
         ):
             self._require_processing_ready()
@@ -2427,7 +2446,8 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 and any(feature in model_backed for feature in selected_features)
             )
             if (needs_model_key and not use_dry_run and not self._aiclub_api_key
-                    and self.config.model_api.provider != "local"):
+                    and self._workflow_event_configuration().model_api.provider
+                    != "local"):
                 raise MissingAPIKeyError(
                     "missing model API key; set " + self.config.model_api.api_key_env
                 )
@@ -2797,22 +2817,25 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 next_scene.display_metadata = self._camera_display_metadata
             next_worker = None
             if scene_active and not use_dry_run and scene_labels:
+                event_configuration = self._workflow_event_configuration(session_config)
                 model_settings = replace(
-                    session_config.model_api,
+                    event_configuration.model_api,
                     timeout_seconds=self.config.runtime.scene_timeout_seconds,
                     max_retries=0,
                     extra_headers=copy.deepcopy(dict(
-                        session_config.model_api.extra_headers
+                        event_configuration.model_api.extra_headers
                     )),
                 )
-                parameters = copy.deepcopy(session_config.inference.request_parameters)
+                parameters = copy.deepcopy(
+                    event_configuration.inference.request_parameters
+                )
                 # Freeze credentials and routing for this generation. Retired
                 # requests must never pick up a later run's replacement key.
                 api_key = self._aiclub_api_key or (
                     environment_api_key(model_settings)
                     if model_settings.provider == "local" else ""
                 )
-                model = session_config.inference.model
+                model = event_configuration.inference.model
                 options = {
                     "max_tokens": self.config.runtime.scene_max_tokens,
                     "max_image_side": self.config.runtime.scene_max_image_side,
@@ -3941,6 +3964,21 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             return False, "frame_stale"
         plan = self._workflow_plan
         if plan is not None and plan["tracking_enabled"] and not plan["features"]:
+            if plan.get("tracking_engine") == "bbox":
+                snapshot = (
+                    self._rich_labels.latest(session.stream_session_id)
+                    if self._rich_labels is not None else None
+                )
+                if (snapshot is None
+                        or snapshot.stream_session_id != session.stream_session_id):
+                    return False, "waiting_for_tracking"
+                timestamp = self._state.get("last_media_timestamp")
+                if timestamp is not None and not (
+                    -0.001 <= timestamp - snapshot.timestamp_seconds
+                    <= self.settings.ready_max_result_age_seconds
+                ):
+                    return False, "tracking_stale"
+                return True, "ready"
             metadata = self._camera_display_metadata.snapshot()
             if (metadata.get("stream_session_id") != session.stream_session_id
                     or not metadata.get("anchors")):
@@ -5417,6 +5455,21 @@ def create_app(
     def workflow_results(request: Request) -> JSONResponse:
         return JSONResponse(
             _runtime(request).workflow_results(), headers={"Cache-Control": "no-store"},
+        )
+
+    @application.get("/v1/workflow/output.jpg")
+    def workflow_output_image(
+        request: Request, node_id: str, language: str = "zh",
+        workflow_id: str | None = None,
+    ) -> Response:
+        try:
+            jpeg = _runtime(request).workflow_output_preview(
+                node_id, language, workflow_id=workflow_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        return Response(
+            jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"},
         )
 
     @application.get("/v1/video/source/latest.jpg")
