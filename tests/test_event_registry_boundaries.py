@@ -12,7 +12,7 @@ import pytest
 from PIL import Image
 from test_event_injection import _injected
 from test_scene_event_archive import RecordingEncoder, finish, frames
-from test_workflows import graph
+from test_workflows import command, graph, two_sources
 
 from goodvision_harness.contracts import NormalizedBBox
 from goodvision_harness.event_archive import EventArchive, EventArchiveSettings
@@ -375,6 +375,29 @@ def test_workflow_custom_selection_and_defaults_survive_store_reload(tmp_path):
         compile_graph(reloaded["workflows"][0]["graph"], vocabulary=vocabulary) == plan
     )
     assert compile_document(reloaded, vocabulary=vocabulary) == {}
+
+
+def test_custom_events_remain_scoped_to_their_video_source_after_apply(tmp_path):
+    vocabulary = _injected()
+    value = two_sources()
+    value["nodes"][2]["config"] = {"features": ["opens_door"]}
+    path = tmp_path / "sources.json"
+    store = WorkflowStore(path, vocabulary=vocabulary)
+    saved = command(
+        store, "create_workflow", {"name": "Custom sources", "graph": value}
+    )
+    saved = command(
+        store,
+        "apply",
+        {"workflow_id": saved["workflows"][0]["id"], "graph": value, "group_ids": []},
+    )
+    reloaded = WorkflowStore(path, vocabulary=vocabulary).load()
+    assert reloaded == saved
+    plans = compile_document(reloaded, vocabulary=vocabulary)
+    assert plans["camera01"]["features"] == ["stranger", "opens_door"]
+    assert not plans["camera01"]["summaries"]
+    assert not plans["camera02"]["features"]
+    assert plans["camera02"]["summaries"]
 
 
 @pytest.mark.parametrize("model", ["videojev", "decision3"])

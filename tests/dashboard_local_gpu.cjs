@@ -6,6 +6,84 @@ const {test}=require("node:test");
 const {createDocument,runDashboard}=require("./helpers/dashboard.cjs");
 const {payload:catalogPayload}=require("./helpers/event_catalog.cjs");
 
+test("persisted test mode can switch to real analysis without saving service drafts or starting analysis",async()=>{
+  const view=dashboard({dry_run:true});
+  view.element('inference-server-url').value='pending-analysis';
+  view.element('tracking-server-url').value='pending-tracking';
+  view.element('tracking-node-key').value='pending-node-key';
+  view.element('default-api-key').value='pending-cloud-key';
+  assert.equal(view.workflowUsesSimulation(),true);
+  assert.equal(await view.useRealWorkflowAnalysis(),true);
+  assert.deepEqual(view.requests.map(request=>request.payload),[{dry_run:false}]);
+  assert.equal(view.workflowUsesSimulation(),false);
+  assert.equal(view.element('default-dry-run').checked,false);
+  assert.equal(view.element('dry-run').checked,false);
+  for(const [id,value] of [['inference-server-url','pending-analysis'],['tracking-server-url','pending-tracking'],['tracking-node-key','pending-node-key'],['default-api-key','pending-cloud-key']])
+    assert.equal(view.element(id).value,value);
+  assert.deepEqual(view.messages,[]);
+  await view.useRealWorkflowAnalysis();assert.equal(view.requests.length,1);
+});
+
+test("test-mode recovery remains locked during analysis and preserves test mode if saving fails",async()=>{
+  const view=dashboard({dry_run:true});view.state.running=true;
+  assert.equal(await view.useRealWorkflowAnalysis(),false);
+  assert.equal(view.requests.length,0);assert.equal(view.workflowUsesSimulation(),true);
+  view.state.running=false;view.context.fail=true;
+  assert.equal(await view.useRealWorkflowAnalysis(),false);
+  assert.equal(view.workflowUsesSimulation(),true);
+  assert.equal(view.element('default-dry-run').checked,true);
+});
+
+test("analysis sidebar saves only analysis settings and preserves other pending fields",async()=>{
+  const view=dashboard({inference_mode:'cloud',tracking_mode:'legacy'});
+  view.element('tracking-mode').value='server';view.element('tracking-server-url').value='unfinished';
+  view.element('tracking-sample-fps').value='invalid';view.element('tracking-node-key').value='pending-node-key';
+  view.element('default-api-key').value='pending-cloud-key';
+  await view.saveDeploymentSettings('analysis');
+  assert.deepEqual(view.requests.at(-1).payload,{inference_mode:'cloud',local_inference_enabled:false});
+  assert.equal(view.element('tracking-server-url').value,'unfinished');
+  assert.equal(view.element('tracking-sample-fps').value,'invalid');
+  assert.equal(view.element('tracking-node-key').value,'pending-node-key');
+  assert.equal(view.element('default-api-key').value,'pending-cloud-key');
+});
+
+test("tracking sidebar never validates or submits an unrelated analysis draft",async()=>{
+  const view=dashboard({inference_mode:'cloud',tracking_mode:'legacy'});
+  view.element('inference-mode').value='server';view.element('inference-server-url').value='unfinished';
+  view.element('default-api-key').value='pending-cloud-key';view.element('tracking-sample-fps').value='3';
+  await view.saveDeploymentSettings('tracking');const payload=view.requests.at(-1).payload;
+  assert.equal(payload.tracking_sample_fps,3);assert.equal(payload.tracking_mode,'legacy');
+  for(const key of ['inference_mode','inference_server_url','api_key','dry_run','autostart','stream_url','camera_layout'])assert.equal(Object.hasOwn(payload,key),false,key);
+  assert.equal(view.element('inference-server-url').value,'unfinished');assert.equal(view.element('inference-mode').value,'server');
+  assert.equal(view.element('default-api-key').value,'pending-cloud-key');
+});
+
+for(const action of ['save','clear'])for(const failed of [false,true])
+test(`${action} API credentials preserves workflow service drafts when ${failed?'failing':'successful'}`,async()=>{
+  const view=dashboard({inference_mode:'cloud',tracking_mode:'legacy',api_key_persisted:true});
+  view.context.window.confirm=()=>true;view.context.fail=failed;
+  const drafts={
+    'inference-mode':'server','inference-server-protocol':'goodvision',
+    'inference-server-url':'unfinished-analysis','inference-server-model':'pending-model',
+    'tracking-mode':'server','tracking-server-protocol':'contour',
+    'tracking-server-url':'unfinished-tracking','tracking-server-capacity':'invalid',
+    'tracking-sample-fps':'invalid','tracking-node-key':'pending-node-key',
+    'default-stream-url':'pending-source'
+  };
+  for(const [id,value] of Object.entries(drafts))view.element(id).value=value;
+  view.element('clear-tracking-node-key').checked=true;
+  view.element('default-api-key').value='new-cloud-key';
+  await (action==='save'?view.saveApiKey():view.clearSavedApiKey());
+  assert.deepEqual(view.requests.map(request=>request.payload),[
+    action==='save'?{api_key:'new-cloud-key'}:{clear_api_key:true}
+  ]);
+  for(const [id,value] of Object.entries(drafts))assert.equal(view.element(id).value,value,id);
+  assert.equal(view.element('clear-tracking-node-key').checked,true);
+  assert.equal(view.state.deployment.inference_mode,'cloud');
+  assert.equal(view.state.deployment.tracking_mode,'legacy');
+  assert.deepEqual(view.messages,[]);
+});
+
 test("analysis protocol defaults to compatible API and persists GoodVision independently",async()=>{
   const view=dashboard({inference_mode:"server",tracking_mode:"legacy",
     inference_server_url:"http://analysis:8094",inference_server_model:"vision"});
@@ -83,7 +161,7 @@ function dashboard(settings={}){
     renderDeploymentSettings(true,true);
     globalThis.app={state,start,controls,renderDeploymentSettings,renderLocalGpuSettings,
       saveDeploymentSettings,loadDeploymentSettings,checkRoutes,selectRoute,loadRoutes,
-      localInferenceEnabled,savedExecutionMode,originalInfo,saveApiKey};
+      localInferenceEnabled,savedExecutionMode,originalInfo,saveApiKey,clearSavedApiKey,workflowUsesSimulation,useRealWorkflowAnalysis};
   `,context);
   return {html,element,requests,messages,context,...context.app}
 }

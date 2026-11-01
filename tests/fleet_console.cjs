@@ -52,6 +52,14 @@ function fixture({count=3,allowed=true,mode=allowed?"local":"legacy",usable=allo
   return {app,data,document,requests,statuses,prefs,errors,revoked,scheduled};
 }
 
+test("video connection errors are visible without an analysis session",async()=>{
+  const view=fixture({count:1});const reason='连接视频服务器超时，请检查视频地址和网络连通性。';
+  view.statuses.set('camera01',{pipeline_state:'idle',analysis_state:'idle',connection_state:'error',connection_error:reason,connection_error_code:'signaling_timeout'});
+  await view.app.refresh();const row=view.app.rows.get('camera01');
+  assert.equal(row.message.textContent,reason);assert.equal(row.placeholder.textContent,reason);
+  assert.match(row.state.className,/error/);assert.equal(row.start.disabled,false);view.app.close();
+});
+
 test("workflow management locks manual tasks and preserves literal group names",async()=>{
   const view=fixture({count:1});
   view.data.cameras[0].workflow={group_name:"吸烟",group_id:"group-1"};
@@ -127,17 +135,17 @@ test("channel views stay scoped and leaving one releases only its document",asyn
 
 test("legacy mode permits one camera while local tracking exposes arbitrary provisioned capacity",async()=>{
   const legacy=fixture({count:16,allowed:false});await legacy.app.refresh();
-  assert.equal(legacy.app.visible.size,1);assert.equal(legacy.app.ui.add.hidden,false);assert.equal(legacy.app.ui.add.disabled,true);
+  assert.equal(legacy.app.visible.size,1);assert.equal(legacy.app.ui.add.hidden,true);assert.equal(legacy.app.ui.add.disabled,true);
   assert.equal(legacy.app.ui.mode.textContent,"原部署追踪服务 · 单路模式");
-  assert.match(legacy.app.ui.capacity.textContent,/已部署 16 路通道，当前可用 1 路/);
+  assert.match(legacy.app.ui.capacity.textContent,/工作流页面配置/);
   legacy.app.add();assert.equal(legacy.app.visible.size,1);
   for(const count of [1,2,5,12,16,24,37]){
     const view=fixture({count});await view.app.refresh();
     for(let i=1;i<count;i++)view.app.add();
     assert.equal(view.app.visible.size,count);assert.equal(view.app.ui.add.disabled,true);
     assert.equal(view.app.ui.mode.textContent,"本机 GPU 人物追踪 · 多路模式");
-    assert.match(view.app.ui.capacity.textContent,new RegExp("已部署 "+count+" 路"));
-    assert.match(view.app.ui.capacity.textContent,new RegExp("当前可用 "+count+" 路"));
+    assert.equal(view.app.fleet.capacity,count);
+    assert.match(view.app.ui.capacity.textContent,/工作流页面配置/);
     assert.doesNotMatch(view.app.ui.capacity.textContent,/12 路为/);
   }
 });
@@ -156,7 +164,7 @@ test("independent tracking server supports multiple cameras without a local GPU 
   await view.app.refresh();for(let i=0;i<24;i++)view.app.add();
   assert.equal(view.app.ui.mode.textContent,"独立 GPU 追踪服务器 · 多路模式");
   assert.equal(view.app.visible.size,16);assert.equal(view.app.ui.add.disabled,true);
-  assert.match(view.app.ui.capacity.textContent,/已部署 24 路通道，当前可用 16 路/);
+  assert.match(view.app.ui.capacity.textContent,/工作流页面配置/);
   assert.doesNotMatch(view.app.ui.capacity.textContent,/启用本地|启用本机|仅可连接 1 路/);
   const row=view.app.rows.get("camera16");row.input.value="rtsp://camera16/live";
   assert.equal(await view.app.start(row),true);
@@ -167,7 +175,7 @@ test("backend camera flags are authoritative even for the primary camera and do 
   const view=fixture({count:3,mode:"local",usable:0,allowed:false});
   await view.app.refresh();
   assert.equal(view.app.visible.size,0);assert.equal(view.app.rows.get("camera01").start.disabled,true);
-  assert.match(view.app.ui.capacity.textContent,/当前可用 0 路/);
+  assert.match(view.app.ui.capacity.textContent,/工作流页面配置/);
   const normalized=normalizeFleet({tracking_mode:"server",capacity:3,usable_capacity:1,multi_camera_allowed:false,cameras:[
     {id:"primary",own:true,enabled:false},{id:"usable-peer",enabled:true},{id:"unspecified"}
   ]});
@@ -254,7 +262,7 @@ test("metadata failure disables starts, successful refresh restores controls, an
 test("server capability changes take effect only from saved backend state and unsafe endpoints are rejected",async()=>{
   const view=fixture();await view.app.refresh();view.app.add();assert.equal(view.app.visible.size,2);
   view.data.tracking_mode="legacy";view.data.multi_camera_allowed=false;view.data.usable_capacity=1;view.data.cameras[1].enabled=false;view.data.cameras[2].enabled=false;
-  await view.app.refresh();assert.equal(view.app.visible.size,1);assert.equal(view.app.ui.add.hidden,false);assert.equal(view.app.ui.add.disabled,true);
+  await view.app.refresh();assert.equal(view.app.visible.size,1);assert.equal(view.app.ui.add.hidden,true);assert.equal(view.app.ui.add.disabled,true);
   const normalized=normalizeFleet({multi_camera_allowed:true,cameras:[{id:"unsafe",preview_url:"//evil.example/video",connect_url:"https://evil.example/connect",status_url:"/\\evil.example/status"}]});
   assert.equal(normalized.cameras[0].preview_url,null);assert.equal(normalized.cameras[0].connect_url,null);assert.equal(normalized.cameras[0].status_url,null);
 });
@@ -542,26 +550,21 @@ test("playback changes use only the selected lane and remain available during an
 
 test("tabs support keyboard selection and keep one focusable tab per channel",async()=>{
   const view=fixture({count:1});await view.app.refresh();const row=view.app.rows.get("camera01");
-  let prevented=false;row.toolButtons.get("input").onkeydown({key:"ArrowRight",preventDefault:()=>{prevented=true;}});
-  assert.equal(prevented,true);assert.equal(row.tool,"tasks");assert.equal(row.detail.focused,true);
+  let prevented=false;row.toolButtons.get("playback").onkeydown({key:"ArrowRight",preventDefault:()=>{prevented=true;}});
+  assert.equal(prevented,true);assert.equal(row.tool,"results");assert.equal(row.toolButtons.get("results").focused,true);
   assert.equal([...row.toolButtons.values()].filter(button=>button.tabIndex===0).length,1);
-  row.detail.onkeydown({key:"Home",preventDefault(){}});assert.equal(row.tool,"input");
+  row.toolButtons.get("results").onkeydown({key:"Home",preventDefault(){}});assert.equal(row.tool,"playback");
 });
 
 
-test("opening video input exits compact monitoring so source fields and connect actions are reachable",async()=>{
-  const view=fixture({count:2});await view.app.refresh();view.app.add();const row=view.app.rows.get("camera02");
-  view.app.compact=true;view.app.update();await view.app.selectTool(row,"input");
-  assert.equal(view.app.compact,false);assert.equal(row.sourcePanel.hidden,false);assert.notEqual(row.start.hidden,true);
+test("monitoring cards contain no source editor, task setup or channel removal",async()=>{
+ const view=fixture({count:2});await view.app.refresh();const row=view.app.rows.get("camera01");
+ assert.equal(view.app.ui.add.hidden,true);assert.equal(row.remove.hidden,true);
+ assert(!row.card.children.includes(row.sourcePanel));assert.equal(row.detailPanel.hidden,true);
+ assert.deepEqual([...row.toolButtons.keys()],["playback","results","diagnostics"]);
+ assert.equal(await view.app.start(row),false);assert.match(row.error,/工作流/);
+ assert.notEqual(row.input.focused,true);view.app.close();
 });
-
-
-test("connecting without a source opens its input tab before focusing the error",async()=>{
-  const view=fixture({count:1});await view.app.refresh();const row=view.app.rows.get("camera01");
-  await view.app.selectTool(row,"tasks");assert.equal(await view.app.start(row),false);
-  assert.equal(row.tool,"input");assert.equal(row.sourcePanel.hidden,false);assert.equal(row.input.focused,true);
-});
-
 
 test("only visible monitoring channels own one results document and compact view releases it",async()=>{
   const view=fixture({count:24});await view.app.refresh();

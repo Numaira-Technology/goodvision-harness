@@ -7,6 +7,7 @@ lifecycles before committing that candidate under its control lock.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import os
@@ -147,8 +148,15 @@ def _config(kind: str, value: Any, vocabulary: EventVocabulary | None = None) ->
         allowed |= {"features", "event_sensitivities"}
     elif kind == "summary":
         allowed |= {"interval_seconds", "prompt"}
+    elif kind == "source":
+        allowed |= {"camera_id"}
     raw = _object(value, allowed, "component configuration")
     config = {"name": _name(raw.get("name", _NAMES[kind]))}
+    if kind == "source" and raw.get("camera_id") is not None:
+        camera_id = raw["camera_id"]
+        if not isinstance(camera_id, str) or not _CAMERA.fullmatch(camera_id):
+            _fail("invalid video source camera id")
+        config["camera_id"] = camera_id
     if kind == "events":
         catalog = _event_options(vocabulary=vocabulary)
         features = _list(
@@ -238,10 +246,16 @@ def validate_graph(
                 _fail("node coordinates must be finite and within 100000")
             node[axis] = number
         counts[kind] += 1
-        if kind in {"source", "face", "tracking", "events"} and counts[kind] > 1:
+        if kind in {"face", "tracking", "events"} and counts[kind] > 1:
             _fail(f"only one {kind} component is supported per workflow")
         by_id[nid] = node
         nodes.append(node)
+    sources = [node for node in nodes if node["type"] == "source"]
+    camera_ids = [node["config"].get("camera_id") for node in sources]
+    if len(sources) > 1 and (
+        None in camera_ids or len(set(camera_ids)) != len(camera_ids)
+    ):
+        _fail("each video source must use a different camera channel")
     edges, edge_ids, bindings, adjacency = [], set(), set(), {nid: [] for nid in by_id}
     incoming: dict[str, list[dict]] = {nid: [] for nid in by_id}
     for raw in _list(graph.get("edges", []), MAX_EDGES, "edges"):
@@ -269,8 +283,6 @@ def validate_graph(
         key = (source, out_port, target, in_port)
         if key in bindings:
             _fail("duplicate connection")
-        if by_id[target]["type"] != "output" and incoming[target]:
-            _fail("processing components accept only one source input")
         normalized = {
             "id": eid,
             "from_node": source,
@@ -353,6 +365,7 @@ def compile_graph(
     enabled: bool = True,
     block_enabled: dict | None = None,
     camera_override: dict | None = None,
+    camera_id: str | None = None,
     vocabulary: EventVocabulary | None = None,
 ) -> dict:
     """Compile only connected, effectively enabled branches with output consumers."""
@@ -373,7 +386,15 @@ def compile_graph(
         and gates.get(nid, True)
         and override["block_enabled"].get(nid) is not False
     }
-    sources = {nid for nid in active if nodes[nid]["type"] == "source"}
+    sources = {
+        nid
+        for nid in active
+        if nodes[nid]["type"] == "source"
+        and (
+            camera_id is None
+            or nodes[nid]["config"].get("camera_id") in {None, camera_id}
+        )
+    }
     reachable = set(sources)
     for _ in nodes:
         reachable.update(
@@ -602,6 +623,7 @@ def compile_group(
     return {
         cid: compile_graph(
             group["applied_graph"],
+            camera_id=cid,
             enabled=group["enabled"],
             block_enabled=group["block_enabled"],
             camera_override=group["camera_overrides"].get(cid),
@@ -621,6 +643,7 @@ def compile_document(
             for cid in group["camera_ids"]:
                 result[cid] = compile_graph(
                     group["applied_graph"],
+                    camera_id=cid,
                     enabled=group["enabled"],
                     block_enabled=group["block_enabled"],
                     camera_override=group["camera_overrides"].get(cid),
@@ -879,6 +902,46 @@ class WorkflowStore:
                     if group["id"] in selected_ids
                     or group["workflow_id"] == workflow["id"]
                 ]
+            source_cameras = [
+                node["config"]["camera_id"]
+                for node in graph["nodes"]
+                if node["type"] == "source" and "camera_id" in node["config"]
+            ]
+            if source_cameras:
+                source_id = (
+                    "inputs-" + hashlib.sha256(workflow["id"].encode()).hexdigest()[:24]
+                )
+                source_group = next((g for g in groups if g["id"] == source_id), None)
+                owned = set()
+                for group in groups:
+                    overlap = set(source_cameras) & set(group["camera_ids"])
+                    if not overlap:
+                        continue
+                    if group["workflow_id"] == workflow["id"]:
+                        owned.update(overlap)
+                        continue
+                    if group["workflow_id"] not in {None, workflow["id"]}:
+                        _fail("video source is assigned to another workflow")
+                    # Reuse existing unassigned groups so their stop switches
+                    # and per-camera gates survive automatic source assignment.
+                    owned.update(overlap)
+                    if group not in selected:
+                        selected.append(group)
+                unassigned = [cid for cid in source_cameras if cid not in owned]
+                if source_group is None and unassigned:
+                    source_group = _group(
+                        {"id": source_id, "name": workflow["name"], "camera_ids": []},
+                        vocabulary=vocabulary,
+                    )
+                    groups.append(source_group)
+                # Keep former inputs bound to a disabled plan rather than falling
+                # back to manual analysis when a video source is removed.
+                if source_group is not None:
+                    source_group["camera_ids"] = list(
+                        dict.fromkeys(source_group["camera_ids"] + unassigned)
+                    )
+                    if source_group not in selected:
+                        selected.append(source_group)
             _apply_graph(workflow, graph, selected)
         elif action == "delete_group":
             _object(payload, {"id"}, "delete source group")

@@ -190,6 +190,10 @@ def install_workflow_routes(application):
                 for group in candidate["groups"]:
                     for camera_id in group["camera_ids"]:
                         fleet.resolve_camera(camera_id)
+                for workflow in candidate["workflows"]:
+                    for node in workflow["graph"]["nodes"]:
+                        if node["type"] == "source" and node["config"].get("camera_id"):
+                            fleet.resolve_camera(node["config"]["camera_id"])
                 affected = set(changed_cameras(
                     previous, candidate, vocabulary=control.vocabulary,
                 ))
@@ -235,7 +239,10 @@ def install_workflow_routes(application):
         index = fleet.resolve_camera(payload["camera_id"])
         fleet.require_enabled(index)
         try:
-            compile_graph(payload["graph"], vocabulary=control.vocabulary)
+            compile_graph(
+                payload["graph"], camera_id=payload["camera_id"],
+                vocabulary=control.vocabulary,
+            )
         except (ValueError, TypeError) as exc:
             raise HTTPException(400, str(exc)) from None
         operation = None

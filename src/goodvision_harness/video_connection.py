@@ -141,6 +141,7 @@ class VideoConnection:
             }
             if state == "error" and self._error is not None:
                 result["connection_error"] = self._error.public_message
+                result["connection_error_code"] = self._error.code
             return result
 
     def latest_jpeg(self) -> bytes | None:

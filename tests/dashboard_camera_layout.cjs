@@ -39,13 +39,13 @@ test("network starts send the chosen camera type; browser camera starts omit it"
   assert.equal(Object.hasOwn(view.messages.at(-1),"camera_layout"),false)
 });
 
-test("saving the default restores it while a non-resetting refresh preserves a one-run choice",async()=>{
+test("saving service settings never overwrites the per-camera layout",async()=>{
   const view=dashboard();
   assert.equal(view.element("camera-layout").value,"mono");
   view.element("default-camera-layout").value="stereo";
   await view.saveDeploymentSettings();
-  assert.equal(view.requests[0].payload.camera_layout,"stereo");
-  assert.equal(view.element("camera-layout").value,"stereo");
+  assert.equal(Object.hasOwn(view.requests[0].payload,"camera_layout"),false);
+  view.state.deployment.camera_layout="stereo";
   view.element("camera-layout").value="mono";view.state.runOverridesDirty=true;
   view.renderDeploymentSettings(true,false);
   assert.equal(view.element("camera-layout").value,"mono");
