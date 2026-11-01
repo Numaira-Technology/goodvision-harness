@@ -1,31 +1,30 @@
-# Repo 整理 · production（交付）vs demo（运行模式）清单
+# 本地运行与客户交付清单
 
-> 目的：厘清"生产环境"和"demo 环境"在本仓库里**到底是什么、由哪些文件/入口承载**，
-> 为日后的部署文档与运维脚本提供一张对照表。**本次不移动任何代码、不改目录结构。**
+> 本地源码运行与客户交付共用正式控制台，差异在部署文件、依赖和配置。
+> 原模拟分析模式及独立演示入口已移除。本页保留原链接以兼容已有文档。
 >
 > 权威依据：[`README.md`](../../README.md)（"Start here" 表 + Quick start + Repository layout）
 > 与 [`CONTRIBUTING.md`](../../CONTRIBUTING.md)（"What belongs in Git" / "Organization and stable paths"）。
 
 ## 先厘清一个关键认知
 
-**demo 和 production 不是两套平行文件，也不该用两条分支区分。** README / CONTRIBUTING 明确：
+**本地运行和客户交付使用同一套代码。** README / CONTRIBUTING 明确：
 
-- `goodvision-harness-demo` 与 `goodvision-harness` **是同一套代码、同一个控制台**，默认端口不同（启动参数也各自独立）
-  （demo `7900` / 生产 `8080`）。demo 是一个**运行模式/入口 + dry-run 标志**，不是独立代码。
+- `goodvision-harness` 是统一的正式控制台入口，默认端口 `8080`。
+  启动控制台不会自动开始分析，缺少服务或凭据时会报错，不生成模拟识别结果。
 - 根目录的 Compose / Dockerfile / env 示例 / 客户交付文档是 **"脚本、测试、运维共用的稳定入口"**，
   移动前须审查其消费者（CONTRIBUTING "Organization and stable paths"）。
 - `config.yaml` 与 `src/goodvision_harness/config.yaml` **必须逐字节一致**，有回归测试强制。
 
-> 结论：**切换环境靠"入口 + 运行标志 + delivery overlay/config"，不是靠切分支。**
+> 选择部署方式使用相应的启动器、Compose 文件和配置。
 > 按环境长期维护分支会增加共用代码的同步负担。分支本身不会破坏配置一致性；
 > 无论在哪个分支，目录整理都应保留稳定入口，并同步修改两份 `config.yaml`。
 
-## 怎么"切换"这两个环境（现成做法）
+## 启动方式
 
 ```bash
-# demo / dry-run（合成结果、不调模型、不要人脸权重）
-HARNESS_AUTOSTART=false HARNESS_DRY_RUN=true \
-  goodvision-harness-demo --host 127.0.0.1 --port 7900
+# 本地正式控制台（先配置服务，再手动开始分析）
+HARNESS_AUTOSTART=false HARNESS_HOST=127.0.0.1 goodvision-harness
 
 # production / 客户交付
 python tools/start_delivery.py            # 见 DEPLOY.md / RELEASE.md
@@ -50,11 +49,11 @@ README "Install a customer delivery" 路径所指的一套：
 | `tools/export_full_delivery.py` · `tools/package_customer_delivery.py` · `tools/package_customer_update.py` · `tools/package_customer_docker_update.py` | 交付/客户更新打包 |
 | `tools/audit_customer_bundle.py` · `tools/customer_check.py` · `tools/customer_discovery.py` · `tools/customer_runtime.py` · `tools/customer_update.py` · `tools/customer_update_gui.py` | 客户侧审计/运行/更新 |
 
-## B. Demo / dev（同一 app 的运行模式 + 开发用）
+## B. 本地源码运行
 
 | 文件 / 入口 | 角色 |
 |---|---|
-| `goodvision-harness-demo`（控制台入口，端口 7900）+ `HARNESS_DRY_RUN=true` | **demo 运行模式**（非独立文件/分支） |
+| `goodvision-harness`（控制台入口，默认端口 8080） | 正式控制台；默认在 `.goodvision/` 持久保存设置 |
 | `compose.yaml` | 基础栈，默认网络名 `goodvision-demo` |
 | `config.yaml` · `config.vlm-rich.yaml` | 开发/富标注配置（`config.yaml` 与包内副本须一致） |
 | `.env.example` | 开发环境变量示例 |
@@ -63,7 +62,7 @@ README "Install a customer delivery" 路径所指的一套：
 
 ## C. Shared / 两个环境共用核心（不归任一环境）
 
-README "Repository layout" 列的主体，demo 与 production 跑的都是它：
+README "Repository layout" 列的主体，本地运行与客户交付共用：
 
 | 路径 | 角色 |
 |---|---|
@@ -78,7 +77,7 @@ README "Repository layout" 列的主体，demo 与 production 跑的都是它：
 
 ### B/C 之间的模块化 overlay（按需叠加，非环境专属）
 
-这些 Compose 文件按部署拓扑选择，不等于 demo 或 production 的归属，也并非全部都要与
+这些 Compose 文件按部署拓扑选择，也并非全部都要与
 `compose.yaml` 叠加。`compose.gpu.yaml`、`compose.face-gpu.yaml` 等提供 overlay；
 `compose.main-server.yaml` 通过 `extends` 引用基础服务；`compose.vlm-server.yaml`、
 `compose.analysis-gateway.yaml` 和 `compose.full-gpu.delivery.yaml` 是各自的部署入口。
@@ -95,9 +94,7 @@ README "Repository layout" 列的主体，demo 与 production 跑的都是它：
 
 ## 结论与建议
 
-1. **不要用分支分 demo/product。** 该项目本就以"同一代码 + 不同入口/标志/overlay"区分二者；
-   分支切换会与设计相悖并带来维护负担。
-2. 真正有价值的"整理"是**把上面这张对照表沉淀进部署文档**（或 `README` 的一个小节），
-   让人一眼知道生产环境=交付那套、demo=运行模式。
+1. **本地运行与交付共用代码。** 按实际硬件选择启动器、依赖和配置。
+2. 本地控制台与交付控制台均使用真实分析服务，缺少配置时明确报错。
 3. **根部署文件（Compose / Dockerfile / env / 交付文档）不要擅自移动**；若日后仍想做物理归组，
    须先审查脚本/测试/运维消费者，并保留 `config.yaml` 一致性不变量。

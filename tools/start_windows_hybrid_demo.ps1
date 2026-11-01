@@ -49,6 +49,7 @@ foreach ($name in $experimentEnvironmentNames) {
         "Process"
     )
 }
+$experimentSettingsDirectory = $null
 
 try {
     $richReady = $false
@@ -76,9 +77,18 @@ try {
     New-Item -ItemType Directory -Force -Path $modelRoot | Out-Null
     New-Item -ItemType Directory -Force -Path (Split-Path $galleryPath) | Out-Null
 
+    # The production console persists by default, including when the settings
+    # path is empty. Keep this experiment independent of saved console routes
+    # and autostart choices; retain its settings only for this invocation.
+    $settingsDirectory = Join-Path ([IO.Path]::GetTempPath()) (
+        'goodvision-hybrid-' + [Guid]::NewGuid().ToString('N')
+    )
+    New-Item -ItemType Directory -Path $settingsDirectory -ErrorAction Stop | Out-Null
+    $experimentSettingsDirectory = $settingsDirectory
+
     # Process-level overrides win over .env and make this experiment deterministic.
     $env:HARNESS_CONFIG = Join-Path $repoRoot "config.yaml"
-    $env:HARNESS_DEPLOYMENT_SETTINGS_PATH = ""
+    $env:HARNESS_DEPLOYMENT_SETTINGS_PATH = Join-Path $experimentSettingsDirectory 'deployment-settings.json'
     $env:HARNESS_AUTOSTART = "false"
     $env:HARNESS_DRY_RUN = "false"
     $env:HARNESS_HOST = "127.0.0.1"
@@ -122,5 +132,8 @@ finally {
             $originalEnvironment[$name],
             "Process"
         )
+    }
+    if ($null -ne $experimentSettingsDirectory) {
+        Remove-Item -LiteralPath $experimentSettingsDirectory -Recurse -Force
     }
 }
