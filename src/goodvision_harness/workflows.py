@@ -17,6 +17,7 @@ from typing import Any
 from uuid import uuid4
 
 from .event_catalog import event_catalog
+from .event_registry import EventVocabulary
 
 SCHEMA_VERSION = 1
 MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
@@ -129,16 +130,18 @@ def _bytes(value: Any) -> bytes:
     return body
 
 
-def _event_options() -> dict[str, dict]:
+def _event_options(vocabulary: EventVocabulary | None = None) -> dict[str, dict]:
     # Detector membership and sensitivity options remain owned by the live catalog.
     return {
         item["id"]: item
-        for item in event_catalog()["events"]
+        for item in (
+            event_catalog(vocabulary) if vocabulary is not None else event_catalog()
+        )["events"]
         if item.get("kind") != "identity"
     }
 
 
-def _config(kind: str, value: Any) -> dict:
+def _config(kind: str, value: Any, vocabulary: EventVocabulary | None = None) -> dict:
     allowed = {"name"}
     if kind == "events":
         allowed |= {"features", "event_sensitivities"}
@@ -147,8 +150,19 @@ def _config(kind: str, value: Any) -> dict:
     raw = _object(value, allowed, "component configuration")
     config = {"name": _name(raw.get("name", _NAMES[kind]))}
     if kind == "events":
-        catalog = _event_options()
-        features = _list(raw.get("features", list(catalog)), 64, "event features")
+        catalog = _event_options(vocabulary=vocabulary)
+        features = _list(
+            raw.get(
+                "features",
+                [
+                    key
+                    for key, item in catalog.items()
+                    if item.get("default_enabled", True)
+                ],
+            ),
+            64,
+            "event features",
+        )
         if (
             not features
             or any(not isinstance(f, str) or f not in catalog for f in features)
@@ -195,7 +209,9 @@ def _config(kind: str, value: Any) -> dict:
     return config
 
 
-def validate_graph(graph: Any, *, for_apply: bool = False) -> dict:
+def validate_graph(
+    graph: Any, *, for_apply: bool = False, vocabulary: EventVocabulary | None = None
+) -> dict:
     """Normalize a draft; Apply additionally requires usable source-to-output paths."""
     graph = _object(graph, {"nodes", "edges"}, "graph")
     nodes, by_id = [], {}
@@ -210,7 +226,7 @@ def validate_graph(graph: Any, *, for_apply: bool = False) -> dict:
             "id": nid,
             "type": kind,
             "enabled": _boolean(raw.get("enabled", True), "node enabled"),
-            "config": _config(kind, raw.get("config", {})),
+            "config": _config(kind, raw.get("config", {}), vocabulary=vocabulary),
         }
         for axis in ("x", "y"):
             number = raw.get(axis, 0)
@@ -337,9 +353,10 @@ def compile_graph(
     enabled: bool = True,
     block_enabled: dict | None = None,
     camera_override: dict | None = None,
+    vocabulary: EventVocabulary | None = None,
 ) -> dict:
     """Compile only connected, effectively enabled branches with output consumers."""
-    graph = validate_graph(graph, for_apply=True)
+    graph = validate_graph(graph, for_apply=True, vocabulary=vocabulary)
     nodes = {n["id"]: n for n in graph["nodes"]}
     gates = _gates({} if block_enabled is None else block_enabled, set(nodes))
     override = _camera_override(
@@ -401,7 +418,11 @@ def compile_graph(
                 }
             )
     ordered_features = [
-        item["id"] for item in event_catalog()["events"] if item["id"] in features
+        item["id"]
+        for item in (
+            event_catalog(vocabulary) if vocabulary is not None else event_catalog()
+        )["events"]
+        if item["id"] in features
     ]
     return {
         "features": ordered_features,
@@ -416,16 +437,16 @@ def compile_graph(
     }
 
 
-def _workflow(value: Any) -> dict:
+def _workflow(value: Any, vocabulary: EventVocabulary | None = None) -> dict:
     value = _object(value, {"id", "name", "graph"}, "workflow")
     return {
         "id": _identifier(value.get("id")),
         "name": _name(value.get("name")),
-        "graph": validate_graph(value.get("graph", {})),
+        "graph": validate_graph(value.get("graph", {}), vocabulary=vocabulary),
     }
 
 
-def _group(value: Any) -> dict:
+def _group(value: Any, vocabulary: EventVocabulary | None = None) -> dict:
     fields = {
         "id",
         "name",
@@ -444,7 +465,11 @@ def _group(value: Any) -> dict:
     ) or len(set(cameras)) != len(cameras):
         _fail("group camera ids must be unique provisioned camera identifiers")
     graph = value.get("applied_graph")
-    graph = validate_graph(graph, for_apply=True) if graph is not None else None
+    graph = (
+        validate_graph(graph, for_apply=True, vocabulary=vocabulary)
+        if graph is not None
+        else None
+    )
     ids = {node["id"] for node in graph["nodes"]} if graph is not None else set()
     overrides = value.get("camera_overrides", {})
     if not isinstance(overrides, dict) or set(overrides) - set(cameras):
@@ -479,7 +504,7 @@ def require_exclusive_groups(groups: list[dict]) -> None:
         assigned.update(group["camera_ids"])
 
 
-def validate_document(value: Any) -> dict:
+def validate_document(value: Any, vocabulary: EventVocabulary | None = None) -> dict:
     _bytes(value)
     value = _object(
         value,
@@ -492,9 +517,13 @@ def validate_document(value: Any) -> dict:
     ):
         _fail("unsupported workflow document schema_version")
     workflows = [
-        _workflow(w) for w in _list(value.get("workflows"), MAX_WORKFLOWS, "workflows")
+        _workflow(w, vocabulary=vocabulary)
+        for w in _list(value.get("workflows"), MAX_WORKFLOWS, "workflows")
     ]
-    groups = [_group(g) for g in _list(value.get("groups"), MAX_GROUPS, "groups")]
+    groups = [
+        _group(g, vocabulary=vocabulary)
+        for g in _list(value.get("groups"), MAX_GROUPS, "groups")
+    ]
     workflow_ids = {w["id"] for w in workflows}
     if len(workflow_ids) != len(workflows) or len({g["id"] for g in groups}) != len(
         groups
@@ -514,9 +543,9 @@ def validate_document(value: Any) -> dict:
         if tid in trash_ids or kind not in {"workflow", "group"}:
             _fail("invalid trash id or kind")
         asset = (
-            _workflow(item.get("asset"))
+            _workflow(item.get("asset"), vocabulary=vocabulary)
             if kind == "workflow"
-            else _group(item.get("asset"))
+            else _group(item.get("asset"), vocabulary=vocabulary)
         )
         assignments = []
         for assignment in _list(
@@ -527,7 +556,7 @@ def validate_document(value: Any) -> dict:
                 {"group_id", "generation_after", "replacement_id", "previous"},
                 "saved assignment",
             )
-            previous = _group(assignment.get("previous"))
+            previous = _group(assignment.get("previous"), vocabulary=vocabulary)
             replacement = assignment.get("replacement_id")
             if replacement is not None:
                 _identifier(replacement, "replacement workflow id")
@@ -563,8 +592,10 @@ def validate_document(value: Any) -> dict:
     return result
 
 
-def compile_group(document: dict, group_id: str) -> dict[str, dict]:
-    document = validate_document(document)
+def compile_group(
+    document: dict, group_id: str, vocabulary: EventVocabulary | None = None
+) -> dict[str, dict]:
+    document = validate_document(document, vocabulary=vocabulary)
     group = _find(document["groups"], group_id, "source group")
     if group["applied_graph"] is None:
         return {}
@@ -574,13 +605,16 @@ def compile_group(document: dict, group_id: str) -> dict[str, dict]:
             enabled=group["enabled"],
             block_enabled=group["block_enabled"],
             camera_override=group["camera_overrides"].get(cid),
+            vocabulary=vocabulary,
         )
         for cid in group["camera_ids"]
     }
 
 
-def compile_document(document: dict) -> dict[str, dict]:
-    document = validate_document(document)
+def compile_document(
+    document: dict, vocabulary: EventVocabulary | None = None
+) -> dict[str, dict]:
+    document = validate_document(document, vocabulary=vocabulary)
     result = {}
     for group in document["groups"]:
         if group["applied_graph"] is not None:
@@ -590,13 +624,19 @@ def compile_document(document: dict) -> dict[str, dict]:
                     enabled=group["enabled"],
                     block_enabled=group["block_enabled"],
                     camera_override=group["camera_overrides"].get(cid),
+                    vocabulary=vocabulary,
                 )
     return result
 
 
-def changed_cameras(previous: dict, candidate: dict) -> list[str]:
+def changed_cameras(
+    previous: dict, candidate: dict, vocabulary: EventVocabulary | None = None
+) -> list[str]:
     """Include applied assignment intent, even when its compiled plan is identical."""
-    before, after = compile_document(previous), compile_document(candidate)
+    before, after = (
+        compile_document(previous, vocabulary=vocabulary),
+        compile_document(candidate, vocabulary=vocabulary),
+    )
 
     def assignments(document: dict) -> dict:
         return {
@@ -652,7 +692,13 @@ def _apply_graph(workflow: dict, graph: dict, groups: list[dict]) -> None:
 class WorkflowStore:
     """Private atomic control document; None explicitly selects an in-memory store."""
 
-    def __init__(self, path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        *,
+        vocabulary: EventVocabulary | None = None,
+    ) -> None:
+        self.vocabulary = vocabulary
         self.path = Path(path).expanduser().absolute() if path is not None else None
         self._lock = RLock()
         self._memory = empty_document()
@@ -675,7 +721,7 @@ class WorkflowStore:
                     raise WorkflowStorageError(
                         "workflow storage exceeds its size limit"
                     )
-                return validate_document(json.loads(body))
+                return validate_document(json.loads(body), vocabulary=self.vocabulary)
             except WorkflowStorageError:
                 raise
             except (OSError, ValueError, TypeError, RecursionError) as exc:
@@ -693,9 +739,9 @@ class WorkflowStore:
             if not isinstance(payload, dict):
                 _fail("workflow command must be an object")
             document = copy.deepcopy(document)
-            self._command(document, action, payload)
+            self._command(document, action, payload, vocabulary=self.vocabulary)
             document["revision"] += 1
-            return validate_document(document)
+            return validate_document(document, vocabulary=self.vocabulary)
 
     def commit(self, candidate: dict, expected_revision: int) -> dict:
         with self._lock:
@@ -704,7 +750,7 @@ class WorkflowStore:
                 raise WorkflowConflictError(
                     "workflow assets changed; reload before saving"
                 )
-            document = validate_document(candidate)
+            document = validate_document(candidate, vocabulary=self.vocabulary)
             if document["revision"] != expected_revision + 1:
                 raise WorkflowConflictError(
                     "candidate revision is not the next stored revision"
@@ -737,7 +783,12 @@ class WorkflowStore:
             return copy.deepcopy(document)
 
     @staticmethod
-    def _command(document: dict, action: str, payload: dict) -> None:
+    def _command(
+        document: dict,
+        action: str,
+        payload: dict,
+        vocabulary: EventVocabulary | None = None,
+    ) -> None:
         workflows, groups, trash = (
             document["workflows"],
             document["groups"],
@@ -751,17 +802,20 @@ class WorkflowStore:
                         "id": f"workflow-{uuid4().hex}",
                         "name": payload.get("name"),
                         "graph": payload.get("graph", {"nodes": [], "edges": []}),
-                    }
+                    },
+                    vocabulary=vocabulary,
                 )
             )
         elif action == "save_workflow":
-            value = _workflow(payload)
+            value = _workflow(payload, vocabulary=vocabulary)
             workflow = _find(workflows, value["id"], "workflow")
             assigned = [
                 group for group in groups if group["workflow_id"] == value["id"]
             ]
             if assigned:
-                value["graph"] = validate_graph(value["graph"], for_apply=True)
+                value["graph"] = validate_graph(
+                    value["graph"], for_apply=True, vocabulary=vocabulary
+                )
             workflow.update(value)
             _apply_graph(workflow, value["graph"], assigned)
         elif action == "create_group":
@@ -772,7 +826,8 @@ class WorkflowStore:
                         "id": f"group-{uuid4().hex}",
                         "name": payload.get("name"),
                         "camera_ids": payload.get("camera_ids", []),
-                    }
+                    },
+                    vocabulary=vocabulary,
                 )
             )
         elif action == "update_group":
@@ -795,7 +850,7 @@ class WorkflowStore:
                     for cid, ov in group["camera_overrides"].items()
                     if cid in payload["camera_ids"]
                 }
-            updated = _group(updated)
+            updated = _group(updated, vocabulary=vocabulary)
             if any(updated[key] != group[key] for key in allowed - {"id", "name"}):
                 updated["assignment_generation"] += 1
             group.update(updated)
@@ -803,7 +858,9 @@ class WorkflowStore:
             _object(payload, {"workflow_id", "group_ids", "graph"}, "Apply")
             workflow = _find(workflows, payload.get("workflow_id"), "workflow")
             graph = validate_graph(
-                payload.get("graph", workflow["graph"]), for_apply=True
+                payload.get("graph", workflow["graph"]),
+                for_apply=True,
+                vocabulary=vocabulary,
             )
             ids = _list(payload.get("group_ids"), MAX_GROUPS, "Apply groups")
             if (
@@ -854,7 +911,9 @@ class WorkflowStore:
             ):
                 _fail("workflow is assigned; choose a replacement or explicit unassign")
             replacement_graph = (
-                validate_graph(replacement["graph"], for_apply=True)
+                validate_graph(
+                    replacement["graph"], for_apply=True, vocabulary=vocabulary
+                )
                 if assigned and replacement is not None
                 else None
             )

@@ -17,6 +17,7 @@ from typing import Any
 
 from PIL import ImageDraw, ImageFont
 
+from .event_registry import BUILTIN_VOCABULARY, EventVocabulary
 from .result_bus import FramePacket
 from .rich_labeling import validate_mask_contours
 from .runtime.scene import SceneRuntime
@@ -106,7 +107,10 @@ def _dashed_box(draw, bounds: tuple[int, ...], color: tuple[int, ...], width: in
         draw.line((x2, y, x2, bottom), fill=color, width=width)
 
 
-def _display_events(snapshot: Mapping[str, Any], timestamp: float) -> list[Mapping]:
+def _display_events(
+    snapshot: Mapping[str, Any], timestamp: float,
+    vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
+) -> list[Mapping]:
     """Use the current event clock only when explicitly supplied by the runtime."""
     clock = _scene(snapshot).get("event_state_timestamp_seconds", timestamp)
     if not _finite(clock) or clock < 0:
@@ -126,8 +130,9 @@ def _display_events(snapshot: Mapping[str, Any], timestamp: float) -> list[Mappi
             continue
         subjects = event.get("subject_ids")
         if (
-            event.get("event_label")
-            not in ("fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter", "stranger")
+            not isinstance(event.get("event_label"), str)
+            or event["event_label"] not in vocabulary
+            or _safe_text(event["event_label"]) != event["event_label"]
             or not isinstance(subjects, (list, tuple))
             or (not subjects and event.get("event_label") != "ground_litter")
             or len(subjects) > _MAX_PEOPLE
@@ -142,9 +147,10 @@ def _event_lines(
     snapshot: Mapping[str, Any],
     timestamp: float,
     visible_ids: set[str],
+    vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
 ) -> list[tuple[str, tuple[int, ...]]]:
     candidates = []
-    for event in _display_events(snapshot, timestamp):
+    for event in _display_events(snapshot, timestamp, vocabulary):
         phase = event["phase"]
         at = event["last_evidence_timestamp_seconds"]
         candidates.append(
@@ -162,8 +168,6 @@ def _event_lines(
         phase = event["phase"]
         at = event["last_evidence_timestamp_seconds"]
         label = event.get("event_label")
-        if label not in ("fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter", "stranger"):
-            continue
         subjects = event.get("subject_ids")
         if not isinstance(subjects, (list, tuple)) or not all(
             isinstance(subject, str) for subject in subjects[:8]
@@ -214,6 +218,7 @@ def render_scene_jpeg(
     media_timestamp: float,
     quality: int = 85,
     breakdown: dict[str, float] | None = None,
+    vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
 ) -> bytes:
     """Render presentation state only; held geometry is never event evidence.
 
@@ -245,7 +250,7 @@ def render_scene_jpeg(
         stroke = max(1, min(4, round(min(width, height) / 300)))
         people = _people(snapshot, media_timestamp)
         subject_phases: dict[str, str] = {}
-        for event in _display_events(snapshot, media_timestamp):
+        for event in _display_events(snapshot, media_timestamp, vocabulary):
             phase = event["phase"]
             if phase not in {"suspected", "confirmed"}:
                 continue
@@ -299,7 +304,7 @@ def render_scene_jpeg(
             )
             draw.text((x + 2, y), label, font=font, fill=color)
         for index, (text, color) in enumerate(
-            _event_lines(snapshot, media_timestamp, visible_ids)
+            _event_lines(snapshot, media_timestamp, visible_ids, vocabulary)
         ):
             y = 5 + index * 16
             if y + 14 >= height or width < 16:
@@ -417,7 +422,9 @@ class SceneDisplayWorker:
                         self._stats["discarded_frames"] += 1
                     continue
                 rendered = render_scene_jpeg(
-                    packet.jpeg, snapshot, packet.media_timestamp, quality=self._quality
+                    packet.jpeg, snapshot, packet.media_timestamp,
+                    quality=self._quality,
+                    vocabulary=getattr(self.scene, "vocabulary", BUILTIN_VOCABULARY),
                 )
                 output = replace(
                     packet,
@@ -733,6 +740,7 @@ class TrackedSceneDisplayWorker(SceneDisplayWorker):
                     source.timestamp_seconds,
                     quality=self._quality,
                     breakdown=render_breakdown,
+                    vocabulary=getattr(self.scene, "vocabulary", BUILTIN_VOCABULARY),
                 )
                 render_seconds = time.monotonic() - render_started
                 with self._condition:
