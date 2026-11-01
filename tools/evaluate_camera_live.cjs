@@ -93,12 +93,11 @@ async function status(){try{const response=await fetch(base+"/v1/status",{signal
   }
   await page.locator("#camera-mode").click();await page.locator("#camera-button").click();
   await page.waitForFunction(()=>document.querySelector("#camera-preview").videoWidth>0,{},{timeout:30000});
-  await page.locator("#dry-run").uncheck();
   // Keep all configured event features and Face enabled; no stored defaults are changed.
   await page.locator("#feature-select input[type=checkbox]").evaluateAll(inputs=>inputs.forEach(input=>{input.checked=true;input.dispatchEvent(new Event("change",{bubbles:true}));}));
   await page.locator("#start-button").click();active=true;
   await page.waitForFunction(()=>typeof localCameraDisplay!=="undefined"&&localCameraDisplay.controller,{},{timeout:60000});
-  report.config=await page.evaluate(()=>({config:localCameraDisplay.controller.config,settings:localCameraDisplay.controller.settings,features:selectedFeatures(),dry_run:state.dryRun,source:{width:ui.cameraPreview.videoWidth,height:ui.cameraPreview.videoHeight},assets:[...document.scripts].map(s=>s.src).filter(Boolean)}));
+  report.config=await page.evaluate(()=>({config:localCameraDisplay.controller.config,settings:localCameraDisplay.controller.settings,features:selectedFeatures(),dry_run:state.info.dry_run,source:{width:ui.cameraPreview.videoWidth,height:ui.cameraPreview.videoHeight},assets:[...document.scripts].map(s=>s.src).filter(Boolean)}));
   const started=Date.now();report.capture_started_at=new Date(started).toISOString();let lastStatus=-10000,lastShot=-15000,lastContourShot=-15000;
   while(Date.now()-started<duration*1000){
     await new Promise(resolve=>setTimeout(resolve,1000));

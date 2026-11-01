@@ -17,6 +17,7 @@ function Invoke-UpdateDocker {
 }
 
 function Get-ContainerLabel($Container, [string]$Name) {
+    if ($null -eq $Container.Config.Labels) { return '' }
     $property = $Container.Config.Labels.PSObject.Properties[$Name]
     if ($property) { return [string]$property.Value }
     return ''
@@ -31,23 +32,43 @@ function Find-InstalledHarness($Manifest, [string]$StateDir) {
         if ($Containers -and (-not $saved.PSObject.Properties['containers'] -or $Containers -ne $saved.containers)) { throw 'Containers differ from the recorded update.' }
         return $saved
     }
-    $ids = @(((Invoke-UpdateDocker -Arguments @('ps', '-a', '-q', '--filter', 'label=com.docker.compose.project') -Capture) -split '\s+') | Where-Object { $_ })
-    if (-not $ids.Count) { throw 'No installed GoodVision main application containers found.' }
-    $installedContainers = Invoke-UpdateDocker -Arguments (@('inspect') + $ids) -Capture | ConvertFrom-Json
     $requestedNames = @()
     if ($Containers) {
         $requestedNames = @($Containers -split ',' | ForEach-Object { $_.Trim().TrimStart('/') })
         if (@($requestedNames | Where-Object { $_ -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]*$' }).Count -or @($requestedNames | Select-Object -Unique).Count -ne $requestedNames.Count) { throw 'Invalid or duplicate container names.' }
     }
-    $lanes = @($installedContainers | Where-Object {
-        (Get-ContainerLabel $_ 'com.docker.compose.service') -match '^harness(-\d+)?$' -and
-        (Get-ContainerLabel $_ 'goodvision.update.helper') -ne 'true' -and
-        $_.Name -notmatch '-before-' -and
-        (-not $requestedNames.Count -or $_.Name.TrimStart('/') -in $requestedNames) -and
-        (-not $Project -or (Get-ContainerLabel $_ 'com.docker.compose.project') -eq $Project)
-    })
+    Write-Host 'GoodVision discovery patch 20261001-1'
+    Write-Host ('Docker context: ' + (Invoke-UpdateDocker -Arguments @('context', 'show') -Capture).Trim())
+    Write-Host ('Selection filters: project="{0}" containers="{1}"' -f $Project, $Containers)
+    Write-Host ('Docker endpoint overrides: DOCKER_HOST={0}; DOCKER_CONTEXT={1}' -f [bool]$env:DOCKER_HOST, [bool]$env:DOCKER_CONTEXT)
+    # Inspect one object at a time, without relying on server label filtering or
+    # PowerShell pipeline enumeration of a multi-object JSON response.
+    $ids = @(((Invoke-UpdateDocker -Arguments @('container', 'ls', '--all', '--quiet') -Capture) -split '\s+') | Where-Object { $_ })
+    Write-Host ('Visible containers: ' + $ids.Count)
+    if (-not $ids.Count) { throw 'Docker returned no containers. Check the context and Windows account used by this updater. No application containers were changed.' }
+    $laneList = New-Object System.Collections.Generic.List[object]
+    foreach ($id in $ids) {
+        $candidate = Invoke-UpdateDocker -Arguments @('container', 'inspect', '--format', '{{json .}}', $id) -Capture | ConvertFrom-Json
+        if ($candidate -is [array] -or -not $candidate.PSObject.Properties['Name'] -or -not $candidate.PSObject.Properties['Config']) {
+            throw ('Unexpected inspect response for container ' + $id + '. No application containers were changed.')
+        }
+        $name = $candidate.Name.TrimStart('/')
+        $candidateProject = Get-ContainerLabel $candidate 'com.docker.compose.project'
+        $service = Get-ContainerLabel $candidate 'com.docker.compose.service'
+        $reason = 'selected'
+        if (-not $candidateProject) { $reason = 'missing Compose project label' }
+        elseif ($service -notmatch '^harness(-\d+)?$') { $reason = 'not a main application service' }
+        elseif ((Get-ContainerLabel $candidate 'goodvision.update.helper') -eq 'true') { $reason = 'update helper' }
+        elseif ($name -match '-before-') { $reason = 'retained backup' }
+        elseif ($requestedNames.Count -and $name -notin $requestedNames) { $reason = 'container name filter differs' }
+        elseif ($Project -and $candidateProject -ne $Project) { $reason = 'project filter differs' }
+        Write-Host ('Container {0} | project="{1}" | service="{2}" | {3}' -f $name, $candidateProject, $service, $reason)
+        if ($reason -eq 'selected') { $laneList.Add($candidate) }
+    }
+    $lanes = @($laneList.ToArray())
     if ($requestedNames.Count -and $lanes.Count -ne $requestedNames.Count) { throw 'One or more selected application containers were not found.' }
-    if (-not $lanes.Count) { throw 'No GoodVision main application containers found. Contour-only machines do not need this package.' }
+    if (-not $lanes.Count) { throw 'No GoodVision main application matched. See the container details and selection filters above. No application containers were changed.' }
+    Write-Host ('Main application matches: ' + $lanes.Count)
     $projects = @($lanes | ForEach-Object { Get-ContainerLabel $_ 'com.docker.compose.project' } | Select-Object -Unique)
     if ($projects.Count -ne 1) { throw ('Multiple installations found. Run with -Project and one of: ' + ($projects -join ', ')) }
     $selected = @($lanes | Where-Object { (Get-ContainerLabel $_ 'com.docker.compose.project') -eq $projects[0] })

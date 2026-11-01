@@ -1102,11 +1102,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="seek to this video timestamp before streaming",
     )
     parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="exercise streaming and windowing without calling the model",
-    )
-    parser.add_argument(
         "--no-realtime",
         action="store_true",
         help="process as fast as possible instead of matching the wall clock",
@@ -1184,7 +1179,7 @@ def _main(argv: list[str] | None = None) -> int:
         config.inference,
         config.model_api,
         memory_context=config.memory,
-        dry_run=args.dry_run,
+        dry_run=False,
     )
     callbacks = SessionCallbacks(
         on_event=emit,

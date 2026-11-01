@@ -14,6 +14,82 @@ from goodvision_harness.service import HarnessRuntime, create_app
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_production_console_persists_by_default_and_rejects_synthetic_requests(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **_: "")
+    monkeypatch.setenv("HARNESS_CONFIG", str(ROOT / "config.delivery.yaml"))
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    monkeypatch.setenv("HARNESS_DRY_RUN", "true")
+    monkeypatch.delenv("HARNESS_DEPLOYMENT_SETTINGS_PATH", raising=False)
+    runtime = HarnessRuntime.from_environment()
+    with TestClient(create_app(lambda: runtime)) as client:
+        info = client.get("/v1/ui/info").json()
+        assert info["dry_run"] is False
+        assert info["deployment"]["persistence_available"] is True
+        html = client.get("/").text
+        assert 'id="default-dry-run"' not in html
+        assert 'id="dry-run"' not in html
+        assert "Test mode" not in html
+        assert client.put(
+            "/v1/deployment/settings", json={"buffer_delay_seconds": 3.25},
+        ).status_code == 200
+        for endpoint, method in (
+            ("/v1/deployment/settings", client.put),
+            ("/v1/sessions/start", client.post),
+        ):
+            response = method(endpoint, json={"dry_run": True})
+            assert response.status_code == 400
+            assert response.json() == {
+                "detail": "Synthetic analysis is no longer supported.",
+            }
+        with client.websocket_connect("/ws") as socket:
+            socket.receive_json()
+            socket.send_json({"type": "start", "mode": "camera", "dry_run": True})
+            assert socket.receive_json() == {
+                "type": "error", "message": "Synthetic analysis is no longer supported.",
+            }
+        assert runtime._session is None
+    restored = HarnessRuntime.from_environment()
+    assert restored.deployment_settings()["buffer_delay_seconds"] == 3.25
+    assert restored.dry_run is False
+    assert (tmp_path / ".goodvision" / "deployment-settings.json").is_file()
+
+
+def test_production_reads_dotenv_storage_and_ignores_saved_synthetic_mode(
+    tmp_path, monkeypatch,
+):
+    import json
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HARNESS_CONFIG", str(ROOT / "config.delivery.yaml"))
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    # Track the key before dotenv inserts it so monkeypatch restores the
+    # original environment after this test.
+    monkeypatch.setenv("HARNESS_DEPLOYMENT_SETTINGS_PATH", "")
+    monkeypatch.delenv("HARNESS_DEPLOYMENT_SETTINGS_PATH", raising=False)
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "HARNESS_DEPLOYMENT_SETTINGS_PATH=data/settings.json\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "goodvision_harness.config.find_dotenv", lambda **_: str(dotenv),
+    )
+    data = tmp_path / "data"
+    data.mkdir()
+    path = data / "settings.json"
+    path.write_text(json.dumps({
+        "schema_version": 1, "stream_url": "", "dry_run": True, "autostart": False,
+    }), encoding="utf-8")
+    runtime = HarnessRuntime.from_environment()
+    assert runtime.dry_run is False
+    assert runtime.deployment_settings()["settings_saved"] is True
+    runtime.update_deployment_settings({"buffer_delay_seconds": 1.75})
+    assert json.loads(path.read_text(encoding="utf-8"))["dry_run"] is False
+    assert not (tmp_path / ".goodvision" / "deployment-settings.json").exists()
+
+
 def test_no_env_console_key_save_and_restart(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     for name in ("INFERENCE_API_KEY", "OPENROUTER_API_KEY", "AICLUB_API_KEY", "MODEL_API_KEY",

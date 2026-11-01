@@ -25,20 +25,21 @@ the offline tests do not need service credentials or model downloads.
 
 ## Local development
 
-After activating the environment above, start a console without model calls:
+After activating the environment above, start the production console with analysis stopped:
 
 ```bash
-HARNESS_AUTOSTART=false HARNESS_DRY_RUN=true goodvision-harness-demo --host 127.0.0.1 --port 7900
+HARNESS_AUTOSTART=false HARNESS_HOST=127.0.0.1 goodvision-harness
 ```
 
 In PowerShell, set `$env:HARNESS_AUTOSTART = 'false'` and
-`$env:HARNESS_DRY_RUN = 'true'` before running the same launcher. Open
-`http://127.0.0.1:7900`, choose Camera, enable it, then press Start. For a network
-source, choose Network stream and enter a URL or use `HARNESS_STREAM_URL`.
+`$env:HARNESS_HOST = '127.0.0.1'` before running the same launcher. Open
+`http://127.0.0.1:8080`. The console persists settings under `.goodvision/` by
+default; override `HARNESS_DEPLOYMENT_SETTINGS_PATH` to select another writable
+data directory. Configure credentials and model services, connect video, then
+start analysis. Missing dependencies produce an error rather than synthetic
+results. Offline tests inject their own runtimes and fake clients.
 
-`goodvision-harness-demo` and `goodvision-harness` serve the same console, with
-different default ports; the latter defaults to 8080. `goodvision-harness-cli`
-retains the window lifecycle, `vision_result` and final-state JSONL output.
+`goodvision-harness-cli` retains the window lifecycle, `vision_result` and final-state JSONL output.
 For source containers, use the [deployment guide](docs/guides/deployment.md).
 
 ### Known-person gallery
@@ -46,8 +47,7 @@ For source containers, use the [deployment guide](docs/guides/deployment.md).
 For real local face recognition, install `python -m pip install -e '.[face]'`
 and provision authorized detection/recognition weights under
 `FACE_MODEL_ROOT/models/<configured-profile>/` (or use the configured first-use
-download). Configure the [inference route](docs/guides/configuration.md) and
-set `HARNESS_DRY_RUN=false` when ready for real inference.
+download). Configure the [inference route](docs/guides/configuration.md).
 
 Enroll a stable person ID, name and clear single-face image in the console's
 known-person gallery; it persists at `FACE_GALLERY_PATH`. The face-only API mode

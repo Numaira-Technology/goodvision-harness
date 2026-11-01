@@ -16,8 +16,8 @@ test("persisted test mode can switch to real analysis without saving service dra
   assert.equal(await view.useRealWorkflowAnalysis(),true);
   assert.deepEqual(view.requests.map(request=>request.payload),[{dry_run:false}]);
   assert.equal(view.workflowUsesSimulation(),false);
-  assert.equal(view.element('default-dry-run').checked,false);
-  assert.equal(view.element('dry-run').checked,false);
+  assert.equal(view.state.deployment.dry_run,false);
+  assert.doesNotMatch(view.html,/id="(?:default-)?dry-run"/);
   for(const [id,value] of [['inference-server-url','pending-analysis'],['tracking-server-url','pending-tracking'],['tracking-node-key','pending-node-key'],['default-api-key','pending-cloud-key']])
     assert.equal(view.element(id).value,value);
   assert.deepEqual(view.messages,[]);
@@ -31,7 +31,8 @@ test("test-mode recovery remains locked during analysis and preserves test mode 
   view.state.running=false;view.context.fail=true;
   assert.equal(await view.useRealWorkflowAnalysis(),false);
   assert.equal(view.workflowUsesSimulation(),true);
-  assert.equal(view.element('default-dry-run').checked,true);
+  assert.equal(view.state.deployment.dry_run,true);
+  assert.doesNotMatch(view.html,/id="(?:default-)?dry-run"/);
 });
 
 test("analysis sidebar saves only analysis settings and preserves other pending fields",async()=>{
@@ -303,7 +304,7 @@ test("GPU changes are locked while sessions and settings operations are busy",()
 
 test("saved local inference starts without a cloud key and hides or prevents cloud route actions",async()=>{
   const view=dashboard({local_inference_enabled:true});
-  assert.equal(view.element("dry-run").checked,false);
+  assert.doesNotMatch(view.html,/id="(?:default-)?dry-run"/);
   assert.equal(view.element("cloud-model-settings").hidden,true);
   assert.equal(view.element("cloud-route-panel").hidden,true);
   assert.equal(view.element("route-check-button").disabled,true);
@@ -341,11 +342,11 @@ test("switching back from local inference restores cloud credentials and route c
   assert.match(view.element("status-line").textContent,/API key/)
 });
 
-test("initial info does not force Test mode on when the saved local model needs no cloud key",async()=>{
+test("initial info supports the saved local model without a cloud key",async()=>{
   const view=dashboard({local_inference_enabled:true});
   view.state.deployment=null;
   await view.originalInfo();
-  assert.equal(view.element("dry-run").checked,false);
+  assert.doesNotMatch(view.html,/id="(?:default-)?dry-run"/);
   assert.equal(view.element("cloud-model-settings").hidden,true);
   view.state.info.local_inference_enabled=true;
   view.state.deployment={local_inference_enabled:false};
@@ -412,7 +413,7 @@ test("server credentials and routing use the saved mode even though legacy local
   assert.equal(view.element("cloud-model-settings").hidden,true);
   assert.equal(view.element("cloud-route-panel").hidden,true);
   assert.equal(view.element("clear-api-key-button").hidden,true);
-  assert.equal(view.element("dry-run").checked,false);
+  assert.doesNotMatch(view.html,/id="(?:default-)?dry-run"/);
   await view.checkRoutes();await view.selectRoute("A");await view.loadRoutes();
   view.element("default-api-key").value="must-not-save";await view.saveApiKey();
   assert.equal(view.requests.length,0);
@@ -521,9 +522,10 @@ test("no GPU blocks only local selection and hidden legacy values never override
   assert.equal(view.requests[0].payload.local_tracking_enabled,false)
 });
 
-test("initial info with server mode does not force test mode or require a cloud key",async()=>{
+test("initial info with server mode does not require a cloud key",async()=>{
   const view=dashboard({inference_mode:"server",local_inference_enabled:false});view.state.deployment=null;
-  await view.originalInfo();assert.equal(view.localInferenceEnabled(),true);assert.equal(view.element("dry-run").checked,false);
+  await view.originalInfo();assert.equal(view.localInferenceEnabled(),true);
+  assert.doesNotMatch(view.html,/id="(?:default-)?dry-run"/);
   view.state.deployment={inference_mode:"cloud",local_inference_enabled:false};
   assert.equal(view.localInferenceEnabled(),false)
 });

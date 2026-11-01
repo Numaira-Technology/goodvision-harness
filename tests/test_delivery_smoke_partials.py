@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import re
 import runpy
 from pathlib import Path
 
@@ -15,6 +16,41 @@ import pytest
 @pytest.fixture(scope="module")
 def smoke():
     return runpy.run_path(str(Path(__file__).parents[1] / "tools/delivery_smoke.py"))
+
+
+def test_container_smoke_injects_offline_runtime_without_production_mode(
+    tmp_path, monkeypatch,
+):
+    import uvicorn
+    from fastapi.testclient import TestClient
+
+    from goodvision_harness.pipeline import StreamingSession
+
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "tools/run_full_delivery_smoke.ps1").read_text("utf-8-sig")
+    server = re.search(r"\$harnessSmokeServer = @'\n(.*?)\n'@", source, re.S)
+    assert server is not None
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **_: "")
+    monkeypatch.setenv("HARNESS_CONFIG", str(root / "config.delivery.yaml"))
+    monkeypatch.setenv("HARNESS_AUTOSTART", "false")
+    monkeypatch.setenv("HARNESS_DRY_RUN", "true")
+    monkeypatch.setenv("RICH_LABEL_ENABLED", "false")
+    monkeypatch.setenv("FACE_ALLOW_MODEL_DOWNLOAD", "false")
+    monkeypatch.setattr(StreamingSession, "start", lambda self: None)
+    captured = {}
+    monkeypatch.setattr(
+        uvicorn, "run", lambda app, **kwargs: captured.update(app=app, **kwargs),
+    )
+    exec(compile(server[1], "<isolated-smoke-server>", "exec"), {})
+    assert captured["server_header"] is False
+    with TestClient(captured["app"]) as client:
+        assert client.get("/v1/status").json()["dry_run"] is True
+        started = client.post(
+            "/v1/sessions/start", json={"features": ["smoking"], "dry_run": True},
+        )
+        assert started.status_code == 200
+        assert started.json()["dry_run"] is True
 
 
 def payload(labels, *, message="safety", timestamp=2.0):

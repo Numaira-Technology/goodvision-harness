@@ -360,8 +360,6 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
             <option value="stereo">双目 · 使用左半幅</option>
           </select>
         </label>
-        <label class="switch"><input id="default-dry-run" type="checkbox"> Test mode · no model calls</label>
-        <div class="secret-status">Unchecked means formal mode with model calls enabled.</div>
         <label class="switch"><input id="default-autostart" type="checkbox"> 启动时自动连接视频（分析需手动统一开始）</label>
         <div id="deployment-source-status" class="secret-status">Loading effective settings source...</div>
       </div>
@@ -526,7 +524,6 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
             <div id="feature-select" class="feature-select">正在读取检测项目…
             </div>
           </div>
-          <label class="switch"><input id="dry-run" type="checkbox"> this run only · dry run · no model calls</label>
         </div>
         <div class="field" id="event-sensitivity-controls">
           <span>事件敏感度 · 启动前调整</span>
@@ -674,7 +671,7 @@ function consoleJson(value){
 const ui={
   deploymentStorage:$("deployment-storage"),defaultStreamUrl:$("default-stream-url"),
   defaultStreamStatus:$("default-stream-status"),defaultApiKey:$("default-api-key"),
-  defaultApiKeyStatus:$("default-api-key-status"),defaultDryRun:$("default-dry-run"),
+  defaultApiKeyStatus:$("default-api-key-status"),
   localInference:$("local-inference-enabled"),localTracking:$("local-tracking-enabled"),
   inferenceMode:$("inference-mode"),trackingMode:$("tracking-mode"),
   inferenceLocalOption:$("inference-mode-local"),trackingLocalOption:$("tracking-mode-local"),
@@ -705,7 +702,7 @@ const ui={
   warning:$("secure-warning"),cameraMode:$("camera-mode"),streamMode:$("stream-mode"),
   cameraControls:$("camera-controls"),streamControls:$("stream-controls"),cameraButton:$("camera-button"),
   cameraNote:$("camera-note"),sourceNote:$("source-note"),streamUrl:$("stream-url"),
-  dryRun:$("dry-run"),featureSelect:$("feature-select"),start:$("start-button"),stop:$("stop-button"),
+  featureSelect:$("feature-select"),start:$("start-button"),stop:$("stop-button"),
   gallerySummary:$("gallery-summary"),personId:$("person-id"),personName:$("person-name"),
   personFile:$("person-file"),enroll:$("enroll-button"),galleryNote:$("gallery-note"),
   galleryBody:$("gallery-body"),refreshGallery:$("refresh-gallery-button"),eyebrow:$("decision-eyebrow"),
@@ -1118,7 +1115,7 @@ function controls(){
   for(const button of $("route-results").querySelectorAll("button"))
     button.disabled=localInference||sharedBusy||routeBusy||state.deploymentSaving||!state.routes||!state.routes.can_select||
       button.dataset.routeId===state.routes.selected_id;
-  for(const item of [ui.cameraMode,ui.streamMode,ui.streamUrl,ui.dryRun,ui.cameraLayout])item.disabled=busy;
+  for(const item of [ui.cameraMode,ui.streamMode,ui.streamUrl,ui.cameraLayout])item.disabled=busy;
   for(const item of featureInputs)item.disabled=busy;
   for(const [key,item] of sensitivityInputs)item.disabled=busy||!selectedFeatures().includes(key);
   ui.cameraButton.disabled=busy||!cameraAllowed||!cameraConfig();
@@ -1134,7 +1131,7 @@ function controls(){
     item.disabled=!persistenceReady||deploymentBusy||sharedBusy;
   ui.inferenceLocalOption.disabled=localGpuUnavailable("inference");
   ui.trackingLocalOption.disabled=localGpuUnavailable("tracking");
-  for(const item of [ui.defaultStreamUrl,ui.defaultApiKey,ui.defaultDryRun,ui.defaultAutostart,ui.defaultCameraLayout])
+  for(const item of [ui.defaultStreamUrl,ui.defaultApiKey,ui.defaultAutostart,ui.defaultCameraLayout])
     item.disabled=!persistenceReady||deploymentBusy;
   ui.saveDeployment.disabled=!persistenceReady||deploymentBusy||sharedBusy;
   saveApiKeyButton.disabled=localInference||!persistenceReady||deploymentBusy||sharedBusy||!ui.defaultApiKey.value.trim();
@@ -1556,7 +1553,6 @@ function renderDeploymentSettings(clearSecrets=true,syncRun=false){
   const data=state.deployment;if(!data)return;
   if(clearSecrets){ui.defaultStreamUrl.value="";ui.defaultApiKey.value="";
     ui.trackingNodeKey.value="";ui.clearTrackingNodeKey.checked=false}
-  ui.defaultDryRun.checked=data.dry_run===true;
   ui.defaultAutostart.checked=data.autostart===true;
   ui.inferenceMode.value=savedExecutionMode("inference");ui.trackingMode.value=savedExecutionMode("tracking");
   ui.inferenceServerUrl.value=data.inference_server_url||"";
@@ -1585,14 +1581,14 @@ function renderDeploymentSettings(clearSecrets=true,syncRun=false){
     ?"Saved API key present · value hidden · blank keeps it"
     :data.api_key_present===true
       ?"API key available from runtime/environment · value hidden"
-      :"No API key configured · formal mode cannot call the model";
+      :"No API key configured · save a key before starting analysis";
   ui.defaultApiKey.placeholder=data.api_key_present===true
     ?"Leave blank to keep the current key"
-    :"Enter an API key for formal mode";
+    :"Enter an API key for analysis";
   ui.deploymentSourceStatus.textContent="Effective source: "+settingsSourceLabel(data.settings_source)+
     (data.settings_saved===true?" · persistent settings saved":" · no persistent override saved");
   if(syncRun&&!state.running&&!state.pending){
-    ui.streamUrl.value="";ui.dryRun.checked=data.dry_run===true;
+    ui.streamUrl.value="";
     ui.cameraLayout.value=ui.defaultCameraLayout.value;state.runOverridesDirty=false
   }
   updateSourceNote();controls()
@@ -1608,7 +1604,7 @@ async function loadDeploymentSettings(discarded=false){
     if(state.deployment.storage_error){
       deploymentSay("Persistent storage error: "+state.deployment.storage_error,true)
     }else if(state.deployment.persistence_available!==true){
-      deploymentSay("Persistent storage is unavailable. The container needs a writable deployment data volume.",true)
+      deploymentSay("设置存储不可用。请为服务配置可写的数据目录。",true)
     }else{
       deploymentSay(discarded
         ?"Unsaved deployment edits discarded. Saved/default values reloaded; secret fields remain hidden."
@@ -1664,7 +1660,7 @@ async function saveDeploymentSettings(section=null){
   if(!["analysis","tracking"].includes(section))section=null;
   const saveAnalysis=section!=="tracking",saveTracking=section!=="analysis";
   const inference=draftExecutionMode("inference"),tracking=draftExecutionMode("tracking");
-  const payload=section?{}:{dry_run:ui.defaultDryRun.checked,autostart:ui.defaultAutostart.checked};
+  const payload=section?{}:{autostart:ui.defaultAutostart.checked};
   if(saveAnalysis)Object.assign(payload,{inference_mode:inference,local_inference_enabled:inference==="local"});
   if(saveTracking)Object.assign(payload,{tracking_mode:tracking,local_tracking_enabled:tracking==="local"});
   if(saveTracking&&ui.richlabelModel.value)payload.rich_label_model=ui.richlabelModel.value;
@@ -1769,7 +1765,7 @@ async function saveBufferDelay(){
 }
 async function clearSavedApiKey(){
   if(!state.deployment||state.deployment.api_key_persisted!==true)return;
-  const prompt="Clear the saved API key? Formal mode will require another available key.";
+  const prompt="Clear the saved API key? Analysis will require another available key.";
   if(!window.confirm(globalThis.GoodvisionI18n?.text(prompt)||prompt))return;
   await updateDeploymentSettings({clear_api_key:true},
     "Saved API key cleared. A runtime/environment key, if configured, remains available.",
@@ -1803,7 +1799,6 @@ async function info(){
     renderProcessingSettings();
     updateAnnotatedOutput(data.annotated_output);
     if(!state.runOverridesDirty&&!state.deployment){
-      ui.dryRun.checked=Boolean(data.dry_run||!data.api_key_present&&!localInferenceEnabled());
       ui.cameraLayout.value=data.camera_layout==="stereo"?"stereo":"mono"
     }
     updateSourceNote();
@@ -2204,7 +2199,7 @@ function message(data){
     if(state.sessionMode==="camera")startSampler();
     say("Live | "+(state.sessionMode==="camera"?"browser camera":"network stream")+
       " | "+(state.sessionAnalysisMode==="face"?"face diagnostics":state.sessionFeatures.join(" + "))+
-      " | 人员追踪模块 连续描边"+(state.sessionAnalysisMode!=="face"&&data.dry_run?" | DRY RUN":""));
+      " | 人员追踪模块 连续描边");
     controls()
   }else if(data.type==="error"){
     state.pending=false;const detail=data.message||data.error||"Session error";
@@ -2233,7 +2228,7 @@ async function start(){
     say("人员追踪模块 连续分析暂不可用："+(processing.reason||"服务尚未就绪"),true);return
   }
   const needsKey=selectedFeatures().some(feature=>feature!=="stranger");
-  if(needsKey&&!ui.dryRun.checked&&!localInferenceEnabled()&&!state.info.api_key_present){
+  if(needsKey&&!localInferenceEnabled()&&!state.info.api_key_present){
     const message="请先在控制台填写并保存 API key，再启动正式检测；无需创建 .env。";
     say(message,true);deploymentSay(message,true);
     ui.defaultApiKey.scrollIntoView({behavior:"smooth",block:"center"});ui.defaultApiKey.focus();return
@@ -2246,7 +2241,7 @@ async function start(){
       type:"start",mode:state.mode,analysis_mode:"multi",features:selectedFeatures(),
       event_sensitivities:selectedSensitivities()
     };
-    data.dry_run=ui.dryRun.checked;
+    data.dry_run=false;
     if(state.mode==="stream"){
       data.stream_url=ui.streamUrl.value.trim();data.camera_layout=ui.cameraLayout.value
     }
@@ -2380,8 +2375,7 @@ async function status(){
       openFeed();
       if(state.stopping){stopSampler();say("检测已停止；"+sceneDrainMessage(data.scene_drain||{})+"。")}
       else say("Server session "+data.pipeline_state+" | "+
-        (data.ready?"ready":data.readiness_reason||"warming")+" | 人员追踪模块 连续描边"+
-        (state.sessionAnalysisMode!=="face"&&data.dry_run?" | DRY RUN":""))
+        (data.ready?"ready":data.readiness_reason||"warming")+" | 人员追踪模块 连续描边")
     }else if(state.running&&!state.pending){
       resetOverallDescription();
       $("vlm-current-observation").textContent="任务已停止";
@@ -2818,7 +2812,7 @@ $("refresh-events").onclick=()=>loadEventArchive();
 $("archive-more").onclick=()=>loadEventArchive(true);
 $("archive-feature").onchange=()=>loadEventArchive();
 $("archive-subject").onchange=()=>loadEventArchive();
-ui.defaultDryRun.onchange=deploymentEdited;ui.defaultAutostart.onchange=deploymentEdited;
+ui.defaultAutostart.onchange=deploymentEdited;
 ui.inferenceMode.onchange=ui.trackingMode.onchange=()=>{renderLocalGpuSettings();deploymentEdited()};
 for(const field of [ui.inferenceServerUrl,ui.inferenceServerModel,ui.inferenceServerProtocol,ui.trackingServerUrl,ui.trackingServerCapacity,
   ui.trackingServerProtocol,ui.trackingSampleFps])
@@ -2841,7 +2835,6 @@ ui.cameraMode.onclick=()=>mode("camera");ui.streamMode.onclick=()=>mode("stream"
 ui.cameraButton.onclick=camera;
 ui.streamUrl.oninput=()=>{state.runOverridesDirty=true;controls()};
 ui.cameraLayout.onchange=()=>{state.runOverridesDirty=true;controls()};
-ui.dryRun.onchange=()=>{state.runOverridesDirty=true;controls()};
 ui.enroll.onclick=enrollPerson;ui.refreshGallery.onclick=refreshGallery;
 ui.start.onclick=start;ui.stop.onclick=stop;
 ui.fullscreenButton.onclick=toggleAnnotationFullscreen;
@@ -3160,7 +3153,7 @@ setInterval(()=>{
     {key:"tracking",title:"人物追踪",description:"配置追踪服务、视频容量与采样帧率。"},
     {key:"video",title:"视频默认值",description:"设置默认视频源与摄像头画面类型。"},
     {key:"credentials",title:"凭据",description:"云端 API 的密钥在此单独保存。"},
-    {key:"startup",title:"启动与测试",description:"设置启动行为与分析测试模式。"}
+    {key:"startup",title:"启动设置",description:"设置服务启动时的视频连接行为。"}
   ];
 
   function organizeSettings(doc,{diagnostic=root.GoodvisionDiagnostic===true}={}){
@@ -3224,10 +3217,6 @@ setInterval(()=>{
       (actions||cloud).append(clear,...help);
     }
 
-    const dryRun=byId("default-dry-run")?.closest("label");
-    const dryRunHelp=dryRun?.nextElementSibling;
-    move("default-dry-run","startup",{label:true});
-    if(dryRunHelp?.classList.contains("secret-status"))group.get("startup").append(dryRunHelp);
     move("default-autostart","startup",{label:true});
     move("deployment-source-status","startup");
 
