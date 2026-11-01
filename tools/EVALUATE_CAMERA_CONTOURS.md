@@ -183,6 +183,52 @@ grayscale image: below 4, 4–8, 8–12, and at least 12 pixels. It excludes no-
 warmup and the exact-source control, keeps missing predictions in the denominator,
 and does not rerun Chrome. A wide box can still contain thin or untextured regions.
 
+## Live recording and exact motion replay
+
+`evaluate_camera_live.cjs` exercises a running dashboard and its real configured
+models, replacing only `getUserMedia` with a supplied video. Use an isolated
+service and authorized media/model access: it disables dry-run and selects all
+event features. Playwright and Chrome are required; `--chrome` overrides the
+Windows default executable. This is a separate workflow from the offline
+fixture evaluator above.
+
+```powershell
+node tools/evaluate_camera_live.cjs --video <authorized.mp4> `
+  --output .goodvision/diagnostics/<private-live-run> `
+  --url http://127.0.0.1:8080 --seconds 50 --trace-motion true
+
+node tools/replay_camera_motion.cjs `
+  --trace .goodvision/diagnostics/<private-live-run> `
+  --output .goodvision/diagnostics/<private-live-run>/replay.json `
+  --validate-only true
+```
+
+Motion tracing is opt-in, bounded by `--trace-motion-seconds` (at most 120) and
+`--trace-motion-max-mib` (at most 128). It saves ordered Worker inputs, exact
+preprocessed grayscale pixels, responses and deployed asset hashes. Wait for
+the live run to finish and write `motion-trace-summary.json` before replaying.
+Omit `--validate-only true` to run the CPU replay without browser, network or
+model calls. Keep the entire trace private. Recording overhead is included in
+live timing; replay agreement does not establish real-person contour accuracy.
+
+## Render a saved quality case
+
+`render_camera_contour_case.cjs` reads `quality.rows` from an existing evaluator
+report and the matching JPEGs from its manifest. It renders the chosen row
+without rerunning tracking or contacting a model:
+
+```powershell
+node tools/render_camera_contour_case.cjs --report <quality.json> `
+  --manifest <manifest.json> --set <set-name> --sequence <source-sequence> `
+  --scenario <scenario-name> --output .goodvision/diagnostics/<private-case>.png
+```
+
+This renderer requires Playwright and Chrome at its hard-coded Windows path.
+Use the exact set, sequence and scenario recorded in the report. Green contours
+are the saved SAM reference; magenta contours/open segments are the saved
+prediction. The synthetic failure renderer below instead consumes
+`synthetic.dense_failure_cases`; it cannot render an ordinary quality row.
+
 ## Synthetic scheduling check
 
 The optional 10–120 second test generates a moving textured silhouette into a
