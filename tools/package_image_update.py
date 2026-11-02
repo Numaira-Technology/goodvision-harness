@@ -195,7 +195,10 @@ def package(module, version, names, output, baseline=None, assets=()):
     updates.read_bundle(output / "update.json")
     tools = Path(__file__).resolve().parent
     helper_hashes = {}
-    for filename in ("deploy_modules.py", "docker_modules.py", "module_updates.py"):
+    for filename in (
+        "deploy_modules.py", "docker_modules.py", "module_updates.py",
+        "docker_target.py",
+    ):
         target_name = "install.py" if filename == "deploy_modules.py" else filename
         shutil.copyfile(tools / filename, output / target_name)
         helper_hashes[target_name] = updates.digest(output / target_name)
@@ -205,7 +208,9 @@ def package(module, version, names, output, baseline=None, assets=()):
                 "module": module,
                 "version": version,
                 "delivery": "image-update",
-                "bbox_device": "cuda" if names[0].endswith("-cuda") else "cpu",
+                "bbox_device": (
+                    "cuda" if names[0].endswith(("-cuda", "-cuda-amd64")) else "cpu"
+                ),
                 "files": helper_hashes,
             },
             indent=2,

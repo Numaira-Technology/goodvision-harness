@@ -8,5 +8,6 @@ COPY workers/__init__.py /app/workers/__init__.py
 COPY workers/detector_rich_label /app/workers/detector_rich_label
 ENV DETECTOR_MODEL=yolo26-s DETECTOR_DEVICE=cuda DETECTOR_WEIGHTS_DIR=/models \
     YOLO_CONFIG_DIR=/data/ultralytics
+LABEL io.goodvision.module="bbox" io.goodvision.device="cuda"
 EXPOSE 8096
 CMD ["python", "-m", "uvicorn", "workers.detector_rich_label.app:app", "--host", "0.0.0.0", "--port", "8096", "--workers", "1"]

@@ -365,7 +365,8 @@ def test_group_start_waits_for_workers_and_stop_preserves_other_projects(
     )
     monkeypatch.setattr(deploy, "run", lambda command, **kwargs: calls.append(command))
     state = tmp_path / "state"
-    arguments = ["--state-dir", str(state), "--modules", "main", "bbox"]
+    arguments = ["--state-dir", str(state), "--modules", "main", "bbox",
+                 "--bbox-device", "cpu"]
     assert deploy.main(["up", *arguments]) == 0
     startups = [command for command in calls if "up" in command]
     assert len(startups) == 2

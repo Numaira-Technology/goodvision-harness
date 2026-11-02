@@ -81,8 +81,14 @@ def validate(settings):
             ):
                 raise ValueError("Invalid module image reference")
     ipaddress.ip_address(settings["bind"])
-    if settings["bbox_device"] not in ("cpu", "cuda"):
-        raise ValueError("bbox_device must be cpu or cuda")
+    if settings["bbox_device"] not in ("auto", "cpu", "cuda"):
+        raise ValueError("bbox_device must be auto, cpu or cuda")
+    if settings.get("bbox_runtime_device", "cpu") not in ("cpu", "cuda"):
+        raise ValueError("Invalid resolved Bbox device")
+    if settings.get("bbox_platform", "linux/amd64") not in (
+        "linux/amd64", "linux/arm64",
+    ):
+        raise ValueError("Invalid Bbox platform")
     if not re.fullmatch(r"[0-9]+|GPU-[a-fA-F0-9-]+", settings["gpu_id"]):
         raise ValueError("Invalid NVIDIA GPU identifier")
     if (
@@ -104,6 +110,23 @@ def validate(settings):
     return settings
 
 
+def bbox_device(settings):
+    policy = settings["bbox_device"]
+    return settings.get("bbox_runtime_device", "cpu") if policy == "auto" else policy
+
+
+def bbox_image(settings):
+    pinned = settings.get("module_images", {}).get("bbox", {}).get("bbox")
+    if pinned:
+        return pinned
+    version = settings.get("module_versions", {}).get("bbox", settings["version"])
+    suffix = (
+        "-" + settings["bbox_platform"].split("/")[1]
+        if "bbox_platform" in settings else ""
+    )
+    return f"goodvision-bbox:{version}-{bbox_device(settings)}{suffix}"
+
+
 def runtime_image(settings, torch):
     runtimes = settings.get("module_images", {}).get("gpu-runtime", {})
     pinned = runtimes.get("torch" + torch)
@@ -117,7 +140,7 @@ def runtime_image(settings, torch):
 def runtime_versions(modules, settings):
     versions = set()
     if "contour" in modules or (
-        "bbox" in modules and settings["bbox_device"] == "cuda"
+        "bbox" in modules and bbox_device(settings) == "cuda"
     ):
         versions.add("2.10")
     if "system1" in modules:
@@ -132,6 +155,8 @@ def runtime_build(source, settings, torch):
     return [
         "docker",
         "build",
+        "--platform",
+        "linux/amd64",
         "-f",
         str(source / "workers/gpu_runtime/Dockerfile"),
         "--build-arg",
@@ -225,9 +250,9 @@ def compose(module, settings, source: Path, state: Path):
             "'http://127.0.0.1:8080/health/live',timeout=3).read()"
         )
     elif module == "bbox":
-        device = settings["bbox_device"]
+        device = bbox_device(settings)
         service.update(
-            image=f"goodvision-bbox:{version}-{device}",
+            image=bbox_image(settings),
             build={
                 "context": str(source),
                 "dockerfile": "workers/bbox/Dockerfile.cpu"
@@ -236,6 +261,8 @@ def compose(module, settings, source: Path, state: Path):
                 "args": {"GPU_RUNTIME_IMAGE": runtime_image(settings, "2.10")},
             },
         )
+        if "bbox_platform" in settings:
+            service["platform"] = settings["bbox_platform"]
         service["environment"] = {
             "DETECTOR_DEVICE": device,
             "DETECTOR_MODEL": "yolo26-s",

@@ -15,7 +15,7 @@ CPU/CUDA、PyTorch 版本和内部角色通过标签区分，不另设镜像仓�
 | 单元 | 运行内容 | 安装依赖 |
 | --- | --- | --- |
 | `main` | 主程序、视频接入、调度、结果；默认保持空闲 | Docker，无需 NVIDIA |
-| `bbox` | 独立 YOLO26-S 服务 | 默认 CPU；`--bbox-device cuda` 使用共享 PyTorch 2.10 |
+| `bbox` | 独立 YOLO26-S 服务 | 自动选择原生 CPU 或 NVIDIA CUDA；CUDA 使用共享 PyTorch 2.10 |
 | `contour` | 对外接口与内部推理两个容器，作为一套服务管理 | NVIDIA、共享 PyTorch 2.10、Contour 权重 |
 | `system1` | VideoJev 独立推理服务 | NVIDIA、共享 PyTorch 2.8、固定版本权重和原生扩展 |
 | `gpu-runtime` | CUDA/Python 和两个兼容的 PyTorch 基础镜像 | 只构建，不运行常驻容器 |
@@ -26,6 +26,20 @@ CLIP 和自备 VLM 继续使用现有独立服务入口，本轮没有为它们�
 需要 Python 3.10+、Docker Compose v2，以及运行 Linux 容器的 Docker。
 GPU 主机另需 NVIDIA 驱动和容器 GPU 支持。共享依赖减少相同镜像层的重复存储，
 不共享模型内存或推理状态；各模块的 GPU 编号通过 `--gpu-id` 指定。
+
+新装 Bbox 默认 `--bbox-device auto`，按 Docker **引擎**的 Linux CPU 架构选择，
+不按运行安装器的 macOS/Windows 系统猜测。提供 `linux/arm64`、`linux/amd64`
+CPU 版本及 `linux/amd64` CUDA 版本，全部位于 `goodvision-bbox` 仓库下；
+例如 `<version>-cpu-arm64`、`<version>-cpu-amd64`、`<version>-cuda-amd64`。
+amd64 自动模式在容器内检查 GPU 是否可用；失败则使用 CPU。已有显式 CPU/CUDA
+选择保留，也可用 `--bbox-device auto` 启用自动选择。显式 CUDA 不静默回退。
+`plan` 和 `configure` 保持离线；自动探测在 `build`、`up` 和更新时执行。
+
+Bbox 源码包首次安装可使用 `python install.py up --build`；安装器构建匹配镜像、
+复用持久权重并等待模型预热。缺失的默认 YOLO 权重仍按既有行为首次下载。
+交叉构建可显式指定 `build --modules bbox --bbox-device cuda --platform linux/amd64`，
+不要求构建电脑具有 NVIDIA GPU。Contour、System 1 和 GPU 底座仍要求其支持的
+NVIDIA 运行环境，不会因 Bbox 的 CPU 回退而改变运行设备。
 
 ## 在源码目录查看计划
 
@@ -92,6 +106,11 @@ python tools/deploy_modules.py update --bundle goodvision-main-v2.zip --namespac
 会自动恢复此前的模块。重复执行同一个更新包保留当前容器和原回滚点。
 Contour 的接口与引擎镜像可以分别复用未变化的角色；其他模块不会被重新构建或重启。
 GPU 底座更新只载入镜像，不启动容器或重启使用它的现有模块。
+
+Bbox 统一更新 ZIP 可同时包含三个平台/设备变体。使用同一条 `update --bundle`
+命令，安装器只校验、解包、载入当前环境选中的变体，不启动其他架构或设备的容器。
+回滚同时恢复该模块的镜像、运行设备和平台，其他模块版本不变。更新不隐式拉取
+探测镜像；初次源码构建在需要时获取 Dockerfile 同用的轻量 Python 基础镜像。
 
 也可解压 ZIP，使用包内 `python install.py update --bundle update.json`；Windows 可直接
 运行 `update.cmd`。这些入口沿用首次安装所需的 Python 3.10+ 与 Docker。

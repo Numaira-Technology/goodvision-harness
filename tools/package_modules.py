@@ -23,7 +23,9 @@ else:
 
 ROOT = Path(__file__).resolve().parents[1]
 COMMON = (".dockerignore", "pyproject.toml", "README.md")
-INSTALLER_FILES = ("deploy_modules.py", "docker_modules.py", "module_updates.py")
+INSTALLER_FILES = (
+    "deploy_modules.py", "docker_modules.py", "module_updates.py", "docker_target.py",
+)
 SOURCES = {
     "main": (
         *COMMON,
@@ -152,6 +154,8 @@ def instructions(module, version, device):
         )
         + "python install.py up\n"
     )
+    if module == "bbox" and device == "auto":
+        steps = "python install.py up --build\n"
     return f"""# GoodVision {module} · {version}
 
 这是可独立使用的源码安装包，包含本模块构建所需源码，无需克隆 Git 仓库。
@@ -216,7 +220,7 @@ def inventory(root, module):
 
 def package(root, module, version, device, output):
     spec.name(version)
-    if module not in SOURCES or device not in ("cpu", "cuda"):
+    if module not in SOURCES or device not in ("auto", "cpu", "cuda"):
         raise ValueError("Unknown module or Bbox device")
     content = {
         name: path.read_bytes() for name, path in inventory(root, module).items()
@@ -260,7 +264,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("module", choices=spec.MODULES)
     parser.add_argument("--version", required=True)
-    parser.add_argument("--bbox-device", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--bbox-device", choices=("auto", "cpu", "cuda"),
+                        default="auto")
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--check", action="store_true", help="Check inputs only; write no package"

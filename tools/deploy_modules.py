@@ -70,6 +70,8 @@ def configuration(args, package, modules=None):
     settings_path = state / "settings.json"
     incoming_version = package["version"] if package else args.version
     settings = spec.defaults(namespace, incoming_version or "dev")
+    if "bbox" in (modules or []) and not settings_path.is_file():
+        settings["bbox_device"] = "auto"
     if settings_path.is_file():
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         if settings["namespace"] != namespace:
@@ -77,9 +79,13 @@ def configuration(args, package, modules=None):
     versions = {module: settings["version"] for module in spec.MODULES}
     versions.update(settings.get("module_versions", {}))
     fixed = {"version": package["version"]} if package else {}
-    if package and package["module"] == "bbox":
+    if (package and package["module"] == "bbox"
+            and package["bbox_device"] != "auto"):
         fixed["bbox_device"] = package["bbox_device"]
     settings.update(fixed)
+    if args.bbox_device is not None and args.bbox_device != settings["bbox_device"]:
+        settings.get("module_images", {}).pop("bbox", None)
+        settings.pop("bbox_runtime_device", None)
     for key in ("version", "bbox_device", "bind", "gpu_id", "contour_capacity"):
         value = getattr(args, key)
         if value is not None:
@@ -279,7 +285,9 @@ def parser():
     value.add_argument("--state-dir", type=Path)
     value.add_argument("--version")
     value.add_argument("--bundle", type=Path, help="Prebuilt module update manifest")
-    value.add_argument("--bbox-device", choices=("cpu", "cuda"))
+    value.add_argument("--bbox-device", choices=("auto", "cpu", "cuda"))
+    value.add_argument("--platform", choices=("linux/amd64", "linux/arm64"),
+                       help="Bbox cross-build target; default is the Docker engine")
     value.add_argument("--bind")
     value.add_argument("--gpu-id")
     value.add_argument("--contour-capacity", type=int)
@@ -320,6 +328,8 @@ def main(argv=None):
             raise ValueError("This installer contains only its named module")
         if args.wait_timeout < 1:
             raise ValueError("Wait timeout must be positive")
+        if args.platform and "bbox" not in modules:
+            raise ValueError("--platform currently selects the Bbox build target")
         updating = args.action in ("update", "rollback")
         if updating and args.version is not None:
             raise ValueError("Update and rollback use their recorded versions")
@@ -345,6 +355,33 @@ def main(argv=None):
                 module_updates.rollback(state, modules[0], settings,
                                         args.wait_timeout, run, write_json)
             return 0
+        if args.action == "up" and not args.dry_run:
+            if ("contour" in modules
+                    and not (state / "models/contour/contour.pt").is_file()):
+                raise ValueError(
+                    "Run prepare-models for Contour before starting its module"
+                )
+            if "system1" in modules and not any(
+                (state / "models/system1/huggingface").glob(
+                    "models--ZhuYuhan--VideoJev-4B/snapshots/*/config.json"
+                )
+            ):
+                raise ValueError(
+                    "Run prepare-models for System 1 before starting its module"
+                )
+        if ("bbox" in modules and args.action in ("build", "prepare-models", "up")
+                and not args.dry_run
+                and (settings["bbox_device"] == "auto" or args.platform
+                     or "bbox_platform" in settings)):
+            if __package__:
+                from .docker_target import resolve_bbox
+            else:
+                from docker_target import resolve_bbox
+            settings, selection = resolve_bbox(
+                settings, run, platform=args.platform,
+                building=args.action == "build" or args.build,
+            )
+            print("Bbox target: " + json.dumps(selection))
         documents = {
             module: spec.compose(module, settings, source, state)
             for module in modules
@@ -362,6 +399,10 @@ def main(argv=None):
                         "settings": settings,
                         "base_builds": bases,
                         "compose_projects": documents,
+                        "bbox_auto_detection_pending": (
+                            "bbox" in modules and settings["bbox_device"] == "auto"
+                            and args.action == "plan"
+                        ),
                     },
                     indent=2,
                     ensure_ascii=False,
@@ -405,6 +446,21 @@ def main(argv=None):
                 run(command)
             for module in documents:
                 run(compose_command(state, module, "build"))
+            if (args.action == "up" and "bbox" in modules
+                    and settings["bbox_device"] == "auto"
+                    and spec.bbox_device(settings) == "cuda"):
+                # A first source build can only probe the driver beforehand.
+                # Check the new PyTorch image's actual GPU kernel support too.
+                checked, selection = resolve_bbox(settings, run)
+                if spec.bbox_device(checked) == "cpu":
+                    settings = checked
+                    documents["bbox"] = spec.compose("bbox", settings, source, state)
+                    write_json(state / "settings.json", settings)
+                    write_json(state / "compose.bbox.json", documents["bbox"])
+                    run(compose_command(state, "bbox", "config", "--quiet"))
+                    run(compose_command(state, "bbox", "build"))
+                    print("Bbox target after GPU kernel probe: "
+                          + json.dumps(selection))
         if args.action == "prepare-models":
             for module, document in documents.items():
                 if module in ("bbox", "system1", "contour"):
