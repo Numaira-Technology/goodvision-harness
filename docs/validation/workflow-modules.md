@@ -1,4 +1,40 @@
-# 独立模块部署与真实视频验证：2026-11-02
+# 独立模块部署与真实视频验证
+
+## 2026-11-03：Docker 模块更新与实时人物框验收
+
+当前验收覆盖独立 Docker 安装/更新、真实 Bbox CPU 推理和页面视频画框。
+下文保留 2026-11-02 各阶段记录；其中“未构建镜像”和“不启动 Docker”描述的是
+当时的操作范围。当前已在本机构建镜像、生成独立更新包并完成以下容器验证。
+
+- 镜像仓库固定为 `goodvision-main`、`goodvision-bbox`、`goodvision-contour`、
+  `goodvision-system1`、`goodvision-gpu-runtime`。Contour 的接口/引擎使用
+  `-api` / `-engine` 标签；共享底座保留 PyTorch 2.10 和 2.8 两个兼容版本。
+- Bbox 已构建 `linux/arm64` CPU、`linux/amd64` CPU 和 `linux/amd64` CUDA
+  三个变体。自动选择依据 Docker 引擎架构及容器内 GPU 探测；统一更新包只载入
+  当前选择的变体。Apple Silicon 上实际选择原生 CPU，Main 检查模块就绪。
+- 真实 YOLO26-S 对公开视频的三个采样帧分别检出 3、4、5 人。amd64 CPU 变体也
+  通过实际推理检查；该变体在本机通过架构仿真运行，未测量原生 amd64 性能。
+- 隔离安装完成 Bbox 统一包更新、重复更新、手动回滚和设备策略恢复检查，持久
+  数据保留，Main 与已有安装的容器 ID、镜像和启动时间未变。
+- Main 的浏览器摄像头 WHEP 接入已修复容器内外端口映射问题：浏览器公开地址
+  对应本服务拥有的发布资源时，内部接收端使用实际 HTTP 监听端口。
+- 使用公开人物视频完成真实 WebRTC 发布 → WHEP 接收 → Main → Bbox CPU →
+  页面 GVD1 帧及连续视频流检查。修复前，YOLO 已检出 3 人且服务端标注图有框，
+  页面接口却发送原图；提交 `2717ed5` 改为发送匹配源序号和时间的 Bbox 标注帧。
+  修复后两个显示接口均返回带 3 个人物框的画面，停止分析后恢复原始预览。
+- 上述画框修复只更新 Main 镜像，Bbox 容器及已有独立安装未重启。浏览器摄像头
+  已重新发布并接回运行中的工作流，用户人工测试确认修复有效。
+
+提交 `2717ed5` 的 88 项显示、场景交付、视频连接及传输回归通过，Ruff 和仓库
+文件检查通过。同一提交的 [GitHub CI](https://github.com/Numaira-Technology/goodvision-harness/actions/runs/41488017754)
+中，Linux 完整回归为 **6985 通过、93 跳过**；Chromium 预览、Linux WHEP 网关和
+SAM3 ONNX 契约检查通过。Windows 完整回归未在此记录为通过，结果以 PR 检查页为准。
+
+本轮容器验证使用 CPU。CUDA 镜像的构建、依赖检查及 CPU 推理检查不构成 NVIDIA
+GPU 验收；服务器尚待恢复连接，Contour、System 1 和 CLIP 的真实 GPU 推理仍未
+验收。本轮提交不包含构建产物、模型权重、摄像头原始画面、凭据或本机状态。
+
+## 2026-11-02：Windows 原生 CPU 首轮部署
 
 本次已更新当前 Windows 主程序（127.0.0.1:8080），并安装独立 Bbox 环境
 `.venv-module-bbox`，模型缓存为 `.models/modules/yolo/yolo26s.pt`。
