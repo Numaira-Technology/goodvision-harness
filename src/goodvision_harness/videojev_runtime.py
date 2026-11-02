@@ -26,6 +26,7 @@ class _PreparedVideo:
     question_runtime: object = None
     frame_times: tuple | None = None
     prefix_cache: bool | None = None
+    source_payloads: tuple = ()
 
 
 class VideoJevRuntime(NativeVideoJevModel):
@@ -41,6 +42,7 @@ class VideoJevRuntime(NativeVideoJevModel):
         native = vars(sys.modules[type(self.model).__module__])
         self._format_predictions = native["format_predictions"]
         self.decoder = dict(self.model.config.decoder)
+        self._ppe = None
         if not 0 < self.decoder["threshold"] < 1:
             raise ValueError("threshold must be between 0 and 1")
         self.metadata.update(
@@ -51,6 +53,11 @@ class VideoJevRuntime(NativeVideoJevModel):
 
     def compile_questions(self, rows):
         return CompiledQuestions(self.processor, self.torch, rows)
+
+    def validate_response(self, raw, rows):
+        from .ppe import parse_ppe_choices
+
+        parse_ppe_choices(raw, rows)
 
     def _bind(self, prepared, template, frame_times):
         times = tuple(frame_times)
@@ -154,8 +161,38 @@ class VideoJevRuntime(NativeVideoJevModel):
         })
         if question_template is not None and frame_times is not None:
             prepared = self._bind(prepared, question_template, frame_times)
+            from .ppe import has_ppe
+
+            if has_ppe(question_template):
+                prepared = replace(prepared, source_payloads=tuple(payloads))
         prepared.timings["preprocess_seconds"] = time.perf_counter() - start
         return prepared
+
+    def _append_ppe(self, raw, timings, prepared):
+        from .ppe import (
+            PPEFailure, VideoJevPPE, attach_observation, failed_observation, has_ppe,
+            shared_failure,
+        )
+
+        if not has_ppe(prepared.question_template):
+            return raw, timings
+        started = time.perf_counter()
+        try:
+            if not prepared.source_payloads:
+                raise ValueError("PPE source JPEGs were not retained during preparation")
+            if self._ppe is None:
+                self._ppe = VideoJevPPE(self)
+            observation = self._ppe.assess(prepared.source_payloads, prepared.frame_times)
+        except Exception as error:
+            observation = getattr(error, "ppe_observation", failed_observation(error))
+            if shared_failure(error):
+                attach_observation(raw, observation)
+                raise PPEFailure(error, raw, {
+                    **timings, "ppe_seconds": time.perf_counter() - started,
+                }) from error
+        timings = {**timings, "ppe_seconds": time.perf_counter() - started}
+        attach_observation(raw, observation)
+        return raw, timings
 
     def _prefix_inputs(self, batch, features, prefix):
         """Embed only the suffix while retaining full-window absolute positions."""
@@ -317,7 +354,7 @@ class VideoJevRuntime(NativeVideoJevModel):
                 raw.extend(self._format_predictions(cpu, rows, prepared.record, self.decoder))
             torch.cuda.synchronize()
             done = time.perf_counter()
-        return raw, {
+        timings = {
             **prepared.timings,
             "visual_encode_seconds": encoded - start,
             "decision_seconds": done - encoded,
@@ -329,6 +366,10 @@ class VideoJevRuntime(NativeVideoJevModel):
             "prefix_cache_hits": hits,
             "prefix_cache_misses": misses,
         }
+        # Native scores are already on CPU. Avoid retaining their GPU outputs
+        # while the same worker performs the additional per-person forwards.
+        del features, output
+        return self._append_ppe(raw, timings, prepared)
 
     def predict_prepared_batch(self, windows):
         """Yield individual outcomes; None keeps the original sequential route."""
@@ -389,7 +430,9 @@ class VideoJevRuntime(NativeVideoJevModel):
                 )
                 torch.cuda.synchronize()
                 done = time.perf_counter()
+            del output, pixels, grids, visual, features
             row_offset = 0
+            outcomes = []
             for position, (index, window, group) in enumerate(encoded_windows):
                 batch, rows, _prefix = group
                 per_window = SimpleNamespace(**{
@@ -403,7 +446,7 @@ class VideoJevRuntime(NativeVideoJevModel):
                     )
                     prepared = window["prepared"]
                     cached = hit or position > 0
-                    yield index, (raw, {
+                    outcomes.append((index, (raw, {
                         **prepared.timings,
                         "gpu_batch_size": len(encoded_windows),
                         "visual_batch_size": len(encoded_windows),
@@ -416,9 +459,30 @@ class VideoJevRuntime(NativeVideoJevModel):
                         "prefix_tokens": prefix.length,
                         "prefix_cache_hits": int(cached),
                         "prefix_cache_misses": int(not cached),
-                    })
+                    }), prepared))
                 except Exception as exc:
-                    yield index, exc
+                    outcomes.append((index, exc, None))
         except Exception as exc:
             for index, _window, _group in encoded_windows:
                 yield index, exc
+            return
+        # Preserve the original native batch before running any extra PPE work.
+        # A shared CUDA failure can stop inference, but cannot erase CPU scores
+        # for other windows whose native batch has already completed.
+        for position, (index, result, prepared) in enumerate(outcomes):
+            if isinstance(result, Exception):
+                yield index, result
+                continue
+            try:
+                yield index, self._append_ppe(*result, prepared)
+            except Exception as exc:
+                from .ppe import attach_observation, failed_observation, has_ppe
+
+                for other_index, other_result, other_prepared in outcomes[position + 1:]:
+                    if not isinstance(other_result, Exception) and has_ppe(other_prepared.question_template):
+                        attach_observation(other_result[0], failed_observation(
+                            exc, reason="ppe_not_run_after_shared_cuda_failure",
+                        ))
+                    yield other_index, other_result
+                yield index, exc
+                return

@@ -7,8 +7,10 @@ import io
 import json
 import math
 import threading
+import time
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from PIL import Image
 
 MODEL = "openai/clip-vit-large-patch14"
@@ -82,10 +84,11 @@ class Encoder:
 
 def create_app(encoder):
     app, lock = FastAPI(), threading.Lock()
+    ppe, shared_error = None, None
 
     @app.get("/health")
     def health():
-        return {"ready": True, "model": MODEL}
+        return {"ready": shared_error is None, "model": MODEL}
 
     @app.post("/predict")
     async def predict(request: Request):
@@ -139,20 +142,37 @@ def create_app(encoder):
             raise HTTPException(400, "invalid recognition request") from None
 
         def infer():
+            nonlocal ppe, shared_error
+
             # Own the lock in the worker: disconnect/cancellation must not admit
             # another GPU operation while this one is still running.
             if not lock.acquire(blocking=False):
                 raise HTTPException(429, "recognition service busy")
             try:
+                if shared_error is not None:
+                    raise HTTPException(503, "recognition service CUDA unavailable")
                 pairs = encoder.scores(image, labels)
                 rows = []
                 for question, pair in zip(questions, pairs, strict=True):
-                    if (
-                        len(pair) != 2
-                        or any(not math.isfinite(p) or not 0 <= p <= 1 for p in pair)
-                        or abs(sum(pair) - 1) > 1e-5
-                    ):
-                        raise ValueError("invalid model scores")
+                    try:
+                        if (
+                            len(pair) != 2
+                            or any(not math.isfinite(p) or not 0 <= p <= 1 for p in pair)
+                            or abs(sum(pair) - 1) > 1e-5
+                        ):
+                            raise ValueError("invalid model scores")
+                    except (TypeError, ValueError) as error:
+                        if question["id"] != "scene/ppe_violation":
+                            raise
+                        from .videojev_service import _json_safe
+
+                        rows.append({
+                            "id": question["id"], "task": "choice",
+                            "pair_scores": _json_safe(pair),
+                            "prompts": list(PROMPTS["ppe_violation"]),
+                            "error": {"type": type(error).__name__, "detail": str(error)},
+                        })
+                        continue
                     index = 0 if pair[0] > pair[1] else 1
                     rows.append(
                         {
@@ -163,12 +183,38 @@ def create_app(encoder):
                             "probabilities": [*pair, 0.0],
                         }
                     )
-                return {
+                response = {
                     "request_id": payload["request_id"],
                     "model": MODEL,
                     "raw": rows,
                     "timings": {},
                 }
+                if "ppe_violation" in labels:
+                    from .ppe import (
+                        ClipPPE, attach_observation, failed_observation, shared_failure,
+                    )
+
+                    started = time.perf_counter()
+                    try:
+                        if ppe is None:
+                            ppe = ClipPPE(encoder)
+                        sources = []
+                        for encoded in images:
+                            try:
+                                sources.append(base64.b64decode(encoded, validate=True))
+                            except (ValueError, TypeError, binascii.Error) as error:
+                                sources.append(error)
+                        observation = ppe.assess(sources, payload.get("frame_times"))
+                    except Exception as error:
+                        observation = getattr(error, "ppe_observation", failed_observation(error))
+                        if shared_failure(error):
+                            shared_error = observation.get("error") or failed_observation(error)["error"]
+                    attach_observation(rows, observation)
+                    response["timings"]["ppe_seconds"] = time.perf_counter() - started
+                    if shared_error is not None:
+                        response.update(error="cuda_shared_failure", detail=shared_error["detail"])
+                        return JSONResponse(status_code=503, content=response)
+                return response
             except (TypeError, ValueError):
                 raise HTTPException(503, "recognition could not complete") from None
             finally:
