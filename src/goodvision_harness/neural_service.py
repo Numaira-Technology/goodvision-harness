@@ -58,6 +58,14 @@ class Encoder:
             .to("cuda")
         )
 
+    def warmup(self):
+        # Loading weights alone does not prove compatible CUDA kernels or the
+        # processor/model interface. Do not publish ready until inference works.
+        labels = list(PROMPTS)
+        pairs = self.scores(Image.new("RGB", (224, 224)), labels)
+        if len(pairs) != len(labels) or not all(_valid_pair(pair) for pair in pairs):
+            raise ValueError("invalid model scores during warmup")
+
     def scores(self, image, labels):
         torch = self.torch
         inputs = self.processor(
@@ -78,6 +86,14 @@ class Encoder:
             .cpu()
             .tolist()
         )
+
+
+def _valid_pair(pair):
+    return (
+        len(pair) == 2
+        and all(math.isfinite(p) and 0 <= p <= 1 for p in pair)
+        and abs(sum(pair) - 1) <= 1e-5
+    )
 
 
 def create_app(encoder):
@@ -147,11 +163,7 @@ def create_app(encoder):
                 pairs = encoder.scores(image, labels)
                 rows = []
                 for question, pair in zip(questions, pairs, strict=True):
-                    if (
-                        len(pair) != 2
-                        or any(not math.isfinite(p) or not 0 <= p <= 1 for p in pair)
-                        or abs(sum(pair) - 1) > 1e-5
-                    ):
+                    if not _valid_pair(pair):
                         raise ValueError("invalid model scores")
                     index = 0 if pair[0] > pair[1] else 1
                     rows.append(
@@ -189,7 +201,9 @@ def main():
     args = parser.parse_args()
     import uvicorn
 
-    uvicorn.run(create_app(Encoder(args.cache_dir)), host=args.host, port=args.port)
+    encoder = Encoder(args.cache_dir)
+    encoder.warmup()
+    uvicorn.run(create_app(encoder), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

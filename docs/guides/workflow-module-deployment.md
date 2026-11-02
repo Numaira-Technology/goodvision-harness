@@ -34,6 +34,9 @@ python tools/setup_bbox.py --device cpu
 # NVIDIA 主机可改用 --device cu128。
 ```
 
+Apple Silicon Mac 使用 Python 3.12 和同一 `--device cpu` 命令；安装器选择
+macOS PyPI wheel 与兼容的 NumPy/OpenCV 版本，不接受 macOS CUDA 安装。
+
 安装后主程序自动发现 `.venv-module-bbox`。它不会向主程序环境安装 PyTorch。
 本机默认优先可用 CUDA，否则 CPU；显式设置 `DETECTOR_DEVICE` 后不会自动切换设备。
 如需完全独立于主程序生命周期运行：
@@ -81,6 +84,10 @@ GPU 服务仍要求 `gpu_ready=true`。同主机摄像头进程
 用操作系统锁避免重复加载模型。服务保持预热，直到创建它的主程序退出；关闭时
 只结束自己创建的服务。失败日志为 `.goodvision/modules/bbox.log`、
 `system1.log` 或 `neural.log`。
+
+端口已有服务但健康响应失败、模型不匹配或响应超时时，不会另起模型进程争抢
+该端口。先修复或停止原服务再重试。CLIP 启动入口完成一次真实推理预热后才
+开放健康接口，权重加载成功本身不算推理就绪。
 
 ## 独立服务器或云服务器
 

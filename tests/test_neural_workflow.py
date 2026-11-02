@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import sys
 from dataclasses import replace
 
 import httpx
@@ -14,6 +15,47 @@ from goodvision_harness.model_api import ModelAPISettings
 from goodvision_harness.neural_model import NeuralInspector
 from goodvision_harness.neural_service import MODEL, create_app
 from goodvision_harness.vlm_independent import _inspector
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_entrypoint_requires_inference_warmup_before_listening(monkeypatch, failure):
+    import uvicorn
+    from PIL import Image
+
+    from goodvision_harness import neural_service
+
+    events = []
+    encoder = object.__new__(neural_service.Encoder)
+
+    def scores(image, labels):
+        assert isinstance(image, Image.Image)
+        assert labels == list(neural_service.PROMPTS)
+        events.append("inference")
+        if failure:
+            raise RuntimeError("CUDA kernel unavailable")
+        return [[0.5, 0.5] for _ in labels]
+
+    monkeypatch.setattr(encoder, "scores", scores)
+    monkeypatch.setattr(neural_service, "Encoder", lambda cache: encoder)
+    monkeypatch.setattr(sys, "argv", ["neural_service", "--cache-dir", "unused"])
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: events.append("listen"))
+    if failure:
+        with pytest.raises(RuntimeError, match="CUDA kernel"):
+            neural_service.main()
+        assert events == ["inference"]
+    else:
+        neural_service.main()
+        assert events == ["inference", "listen"]
+
+
+@pytest.mark.parametrize("pairs", [[], [[float("nan"), 0]] * 6, [[0.8, 0.8]] * 6])
+def test_warmup_rejects_invalid_model_output(monkeypatch, pairs):
+    from goodvision_harness.neural_service import Encoder as ModelEncoder
+
+    encoder = object.__new__(ModelEncoder)
+    monkeypatch.setattr(encoder, "scores", lambda *a: pairs)
+    with pytest.raises(ValueError, match="invalid model scores"):
+        encoder.warmup()
 
 
 def client_and_request():

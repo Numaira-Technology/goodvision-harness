@@ -9,11 +9,17 @@ from PIL import Image
 from test_workflow_runtime import configure, graph
 from test_workflow_runtime import rig as rig
 from test_workflow_tracking import tracking_graph
+from test_workflows import command
 
 from goodvision_harness.model_api import MissingAPIKeyError
 from goodvision_harness.workflow_modules import MODELS
 from goodvision_harness.workflow_render import render_output
-from goodvision_harness.workflows import compile_graph, validate_graph
+from goodvision_harness.workflows import (
+    WorkflowStore,
+    compile_document,
+    compile_graph,
+    validate_graph,
+)
 
 
 def event_graph(engine):
@@ -107,6 +113,35 @@ def test_locations_compile_independent_addresses_and_preserve_legacy_workers(eng
     assert "127.0.0.1" in local[role + "_service_url"]
     assert local["features"] == legacy["features"]
     assert local["outputs"] == legacy["outputs"]
+
+
+@pytest.mark.parametrize("engine", ["bbox", "system1", "neural"])
+def test_location_and_both_addresses_survive_apply_and_store_reload(
+    tmp_path, monkeypatch, engine
+):
+    monkeypatch.delenv(f"GOODVISION_{engine.upper()}_LOCAL_URL", raising=False)
+    value = tracking_graph() if engine == "bbox" else event_graph(engine)
+    value["nodes"][0]["config"] = {"camera_id": "camera01"}
+    config = value["nodes"][-1].setdefault("config", {})
+    config.update(engine=engine, service_url="http://server.test",
+                  cloud_service_url="https://cloud.test")
+    store = WorkflowStore(tmp_path / "workflow-assets.json")
+    doc = command(store, "create_workflow", {"name": engine, "graph": value})
+    wid = doc["workflows"][0]["id"]
+    role = "tracking" if engine == "bbox" else "events"
+    for mode, host in (("server", "server.test"), ("cloud", "cloud.test"),
+                       ("local", "127.0.0.1")):
+        config["execution_mode"] = mode
+        command(store, "apply", {"workflow_id": wid, "graph": value, "group_ids": []})
+        store = WorkflowStore(store.path)
+        loaded = store.load()
+        saved = loaded["workflows"][0]["graph"]["nodes"][-1]["config"]
+        assert saved["execution_mode"] == mode
+        assert saved["service_url"] == "http://server.test"
+        assert saved["cloud_service_url"] == "https://cloud.test"
+        plan = compile_document(loaded)["camera01"]
+        assert plan[role + "_execution_mode"] == mode
+        assert host in plan[role + "_service_url"]
 
 
 def test_local_preparation_starts_selected_workers_and_remote_never_launches(

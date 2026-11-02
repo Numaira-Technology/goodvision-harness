@@ -1,5 +1,6 @@
 """Local worker ownership, model readiness, and deployment entry points."""
 
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -142,6 +143,107 @@ def test_busy_existing_worker_does_not_spawn_a_duplicate(services, monkeypatch):
         module_services.subprocess, "Popen", lambda *a, **k: pytest.fail("duplicate")
     )
     assert services.start("bbox")["state"] == "starting"
+
+
+@pytest.mark.parametrize("response", [
+    httpx.Response(200, json={"ready": False, "model": "wrong-model"}),
+    httpx.Response(503, json={"error": "warming up"}),
+    httpx.Response(200, text="another service"),
+])
+def test_unhealthy_external_listener_never_launches_another_model(
+    services, monkeypatch, response
+):
+    client_class = httpx.Client
+    monkeypatch.setattr(
+        module_services.httpx, "Client",
+        lambda **kwargs: client_class(
+            transport=httpx.MockTransport(lambda request: response), **kwargs
+        ),
+    )
+    monkeypatch.setattr(
+        module_services.subprocess, "Popen", lambda *a, **k: pytest.fail("duplicate")
+    )
+    assert services.start("bbox")["state"] == "error"
+
+
+def test_slow_external_listener_is_not_treated_as_an_unused_port(services, monkeypatch):
+    client_class = httpx.Client
+
+    def timeout(request):
+        raise httpx.ReadTimeout("inference is busy", request=request)
+
+    monkeypatch.setattr(
+        module_services.httpx, "Client",
+        lambda **kwargs: client_class(transport=httpx.MockTransport(timeout), **kwargs),
+    )
+    monkeypatch.setattr(
+        module_services.subprocess, "Popen", lambda *a, **k: pytest.fail("duplicate")
+    )
+    assert services.start("neural")["state"] == "starting"
+
+
+def test_failed_owned_process_can_be_restarted_after_listener_disappears(
+    services, monkeypatch
+):
+    failed = Process()
+    failed.returncode = 1
+    services._processes["bbox"] = failed
+    replacement = Process()
+    monkeypatch.setattr(services, "_health", lambda *args: "unavailable")
+    monkeypatch.setattr(
+        module_services.subprocess, "Popen", lambda *a, **k: replacement
+    )
+    assert services.start("bbox")["state"] == "starting"
+    assert services._processes["bbox"] is replacement
+    services.close()
+
+
+def test_worker_lock_is_held_across_processes_and_released_on_exit(tmp_path):
+    lock = tmp_path / "bbox.lock"
+    script = (
+        "import sys; from pathlib import Path; "
+        "from goodvision_harness.module_services import worker_lock; "
+        "guard = worker_lock(Path(sys.argv[1])); "
+        "print(guard.__enter__(), flush=True); sys.stdin.readline()"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(lock)], stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert process.stdout.readline().strip() == "True"
+        with worker_lock(lock) as acquired:
+            assert not acquired
+    finally:
+        process.communicate("exit\n", timeout=10)
+    assert process.returncode == 0
+    with worker_lock(lock) as acquired:
+        assert acquired
+
+
+def test_module_entrypoint_rejects_zero_port_before_launch(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["module_service", "bbox", "--port", "0"])
+    monkeypatch.setattr(module_service, "serve", lambda *a: pytest.fail("invalid port"))
+    with pytest.raises(SystemExit) as exc:
+        module_service.main()
+    assert exc.value.code == 2
+
+
+def test_close_reaps_owned_child_and_preserves_external_process(services):
+    owned, external = (
+        subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        for _ in range(2)
+    )
+    try:
+        services._processes["bbox"] = owned
+        services.close()
+        assert owned.poll() is not None
+        assert external.poll() is None
+    finally:
+        for process in (owned, external):
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=10)
 
 
 @pytest.mark.parametrize(

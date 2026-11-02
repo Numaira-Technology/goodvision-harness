@@ -76,7 +76,7 @@ def main():
     parser.add_argument("--data-dir", type=Path, default=module_directory())
     parser.add_argument("--singleton", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    port = args.port or LOCAL_PORTS[args.engine]
+    port = LOCAL_PORTS[args.engine] if args.port is None else args.port
     if not 1 <= port <= 65535:
         parser.error("port must be within 1..65535")
     lock = (

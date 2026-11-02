@@ -119,7 +119,14 @@ class LocalModuleServices:
             ):
                 return "error"
             return "starting"
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPStatusError, ValueError):
+            # A listener answered, but it is unhealthy or not this module's API.
+            # Loading another model cannot repair or replace its occupied port.
+            return "error"
+        except httpx.ReadTimeout:
+            # The connection was accepted. A slow/busy worker still owns it.
+            return "starting"
+        except httpx.HTTPError:
             return "unavailable"
 
     def status(self, engine):
@@ -127,34 +134,32 @@ class LocalModuleServices:
         endpoint = module_endpoint(engine, {"execution_mode": "local"})
         with self._lock:
             health = self._health(engine, endpoint)
-            if health == "ready":
-                return {"engine": engine, "state": "ready", "ready": True}
-            if health == "error":
-                return {"engine": engine, "state": "error", "ready": False}
-            if health == "starting":
-                return {"engine": engine, "state": "starting", "ready": False}
-            process = self._processes.get(engine)
-            if process is not None and process.poll() is None:
-                state = "starting"
-            else:
-                with worker_lock(module_directory() / f"{engine}.lock") as available:
-                    state = "starting" if not available else "stopped"
-                if state == "stopped" and process is not None:
-                    state = "error"
-            return {"engine": engine, "state": state, "ready": False}
+            return self._status(engine, health)
+
+    def _status(self, engine, health):
+        if health != "unavailable":
+            return {"engine": engine, "state": health, "ready": health == "ready"}
+        process = self._processes.get(engine)
+        if process is not None and process.poll() is None:
+            state = "starting"
+        else:
+            with worker_lock(module_directory() / f"{engine}.lock") as available:
+                state = "starting" if not available else "stopped"
+            if state == "stopped" and process is not None:
+                state = "error"
+        return {"engine": engine, "state": state, "ready": False}
 
     def start(self, engine):
         self._check_engine(engine)
         with self._lock:
-            status = self.status(engine)
-            if status["state"] in {"ready", "starting"}:
-                return status
-            previous = self._processes.get(engine)
-            if previous is not None and previous.poll() is None:
-                # A live worker reported a model failure. Do not launch a second
-                # copy over its port; the host needs its model setup repaired.
-                return status
             endpoint = module_endpoint(engine, {"execution_mode": "local"})
+            health = self._health(engine, endpoint)
+            status = self._status(engine, health)
+            if health != "unavailable" or status["state"] == "starting":
+                # Never launch over an existing listener, including an unhealthy
+                # externally owned service. A failed child may be retried only
+                # once its endpoint and process are both gone.
+                return status
             parsed = urlsplit(endpoint)
             # A provisioned Docker/host worker can supply the local service URL.
             # Never try to start a process for a different machine or API path.

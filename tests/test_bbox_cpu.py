@@ -59,10 +59,14 @@ def test_shared_runtime_builds_each_compatible_torch_layer_once():
 
 
 @pytest.mark.parametrize("device", ["cpu", "cu128"])
-def test_setup_replaces_a_different_existing_torch_build(tmp_path, monkeypatch, device):
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_setup_replaces_a_different_existing_torch_build(
+    tmp_path, monkeypatch, device, platform
+):
     from tools import setup_bbox
 
     calls = []
+    monkeypatch.setattr(setup_bbox.sys, "platform", platform)
     monkeypatch.setattr(setup_bbox, "ROOT", tmp_path)
     monkeypatch.setattr(setup_bbox.sys, "argv", ["setup_bbox.py", "--device", device])
     environment = tmp_path / ".venv-module-bbox"
@@ -84,3 +88,33 @@ def test_setup_replaces_a_different_existing_torch_build(tmp_path, monkeypatch, 
     assert command[-1] == f"https://download.pytorch.org/whl/{device}"
     assert all(command[0] == str(python) for command, options in calls)
     assert all(options["check"] for command, options in calls)
+
+
+def test_macos_cpu_setup_uses_the_published_wheels(tmp_path, monkeypatch):
+    from tools import setup_bbox
+
+    calls = []
+    monkeypatch.setattr(setup_bbox, "ROOT", tmp_path)
+    monkeypatch.setattr(setup_bbox.sys, "platform", "darwin")
+    monkeypatch.setattr(setup_bbox.sys, "argv", ["setup_bbox.py", "--device", "cpu"])
+    monkeypatch.setattr(
+        setup_bbox.subprocess, "run", lambda cmd, **kwargs: calls.append(cmd)
+    )
+    setup_bbox.main()
+    command = calls[1]  # First creates the isolated environment.
+    assert command[4:] == ["torch==2.10.0", "torchvision==0.25.0"]
+
+
+def test_macos_rejects_cuda_before_creating_an_environment(tmp_path, monkeypatch):
+    from tools import setup_bbox
+
+    monkeypatch.setattr(setup_bbox, "ROOT", tmp_path)
+    monkeypatch.setattr(setup_bbox.sys, "platform", "darwin")
+    monkeypatch.setattr(setup_bbox.sys, "argv", ["setup_bbox.py", "--device", "cu128"])
+    monkeypatch.setattr(
+        setup_bbox.subprocess, "run", lambda *a, **k: pytest.fail("invalid install")
+    )
+    with pytest.raises(SystemExit) as exc:
+        setup_bbox.main()
+    assert exc.value.code == 2
+    assert not (tmp_path / ".venv-module-bbox").exists()

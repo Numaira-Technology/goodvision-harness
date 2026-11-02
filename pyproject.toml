@@ -32,8 +32,9 @@ dependencies = [
 
 [project.optional-dependencies]
 bbox = [
-  "ultralytics>=8.3,<9",
-  "torch>=2.1",
+  "ultralytics==8.4.181",
+  "torch==2.10.0",
+  "torchvision==0.25.0",
 ]
 # Install only one extra in an isolated environment: the ORT builds conflict.
 sam3-onnx = ["osam[cpu]==0.9.4"]

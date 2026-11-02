@@ -3,6 +3,9 @@ ultralytics==8.4.181
 fastapi==0.142.1
 uvicorn==0.54.0
 httpx==0.28.1
-numpy==2.2.6
+# Ultralytics excludes NumPy 2.2 on macOS; OpenCV 4.12 requires that series.
+numpy==2.2.6; platform_system != "Darwin"
+numpy==1.26.4; platform_system == "Darwin"
 pillow==11.3.0
-opencv-python==4.12.0.88
+opencv-python==4.12.0.88; platform_system != "Darwin"
+opencv-python==4.11.0.86; platform_system == "Darwin"
