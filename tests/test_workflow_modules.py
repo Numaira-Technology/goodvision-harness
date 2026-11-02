@@ -67,15 +67,77 @@ def test_module_rejects_unsafe_or_malformed_endpoints(url):
         validate_graph(value)
 
 
-def test_draft_service_is_optional_but_apply_requires_it():
+def test_local_apply_needs_no_url_but_remote_apply_requires_its_selected_url():
     value = event_graph("neural")
     value["nodes"][-1]["config"]["service_url"] = ""
     validate_graph(value)
+    plan = compile_graph(value, camera_id="camera01")
+    assert plan["events_execution_mode"] == "local"
+    assert plan["events_service_url"] == "http://127.0.0.1:8098"
+    value["nodes"][-1]["config"]["execution_mode"] = "server"
     with pytest.raises(ValueError, match="service URL"):
         compile_graph(value, camera_id="camera01")
     value["nodes"][-1]["config"]["event_sensitivities"] = {"smoking": "high"}
     with pytest.raises(ValueError, match="fixed visual prompts"):
         validate_graph(value)
+
+
+@pytest.mark.parametrize("engine", ["bbox", "system1", "neural"])
+def test_locations_compile_independent_addresses_and_preserve_legacy_workers(engine):
+    value = tracking_graph() if engine == "bbox" else event_graph(engine)
+    config = value["nodes"][-1].setdefault("config", {})
+    config.update(
+        engine=engine,
+        service_url="http://server.test",
+        cloud_service_url="https://cloud.test",
+    )
+    role = "tracking" if engine == "bbox" else "events"
+    suffix = "/v1/labels" if engine == "bbox" else ""
+    legacy = compile_graph(value, camera_id="camera01")
+    assert legacy[role + "_execution_mode"] == "server"
+    assert legacy[role + "_service_url"] == "http://server.test" + suffix
+    config["execution_mode"] = "cloud"
+    cloud = compile_graph(value, camera_id="camera01")
+    assert cloud[role + "_service_url"] == "https://cloud.test" + suffix
+    config["cloud_service_url"] = ""
+    with pytest.raises(ValueError, match="service URL"):
+        compile_graph(value, camera_id="camera01")
+    config["execution_mode"] = "local"
+    local = compile_graph(value, camera_id="camera01")
+    assert "127.0.0.1" in local[role + "_service_url"]
+    assert local["features"] == legacy["features"]
+    assert local["outputs"] == legacy["outputs"]
+
+
+def test_local_preparation_starts_selected_workers_and_remote_never_launches(
+    rig, monkeypatch
+):
+    from goodvision_harness.module_services import local_modules
+
+    runtime, _, _, _ = rig
+    seen = []
+    monkeypatch.setattr(
+        local_modules, "start", lambda engine: seen.append(engine) or {"ready": False}
+    )
+    value = event_graph("system1")
+    value["nodes"][-1]["config"]["execution_mode"] = "local"
+    configure(runtime, value)
+    runtime.dry_run = False
+    with pytest.raises(ValueError, match="Local modules are starting"):
+        runtime.prepare_analysis()
+    assert seen == ["system1"]
+    assert runtime._session is None
+    assert (
+        runtime._workflow_event_configuration().model_api.endpoint
+        == "http://127.0.0.1:8097/predict"
+    )
+    value["nodes"][-1]["config"].update(
+        execution_mode="cloud", cloud_service_url="http://cloud.test"
+    )
+    configure(runtime, value)
+    monkeypatch.setattr(runtime, "_workflow_event_probe", lambda plan: None)
+    assert runtime.prepare_analysis()["prepared"]
+    assert seen == ["system1"]
 
 
 @pytest.mark.parametrize("engine", ["system1", "neural"])

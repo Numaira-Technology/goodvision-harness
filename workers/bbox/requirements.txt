@@ -1,0 +1,8 @@
+# Model-specific layer; torch/torchvision come from the selected CPU/GPU base.
+ultralytics==8.4.181
+fastapi==0.142.1
+uvicorn==0.54.0
+httpx==0.28.1
+numpy==2.2.6
+pillow==11.3.0
+opencv-python==4.12.0.88

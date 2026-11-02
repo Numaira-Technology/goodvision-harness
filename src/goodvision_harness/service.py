@@ -2219,7 +2219,11 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     and self._workflow_event_configuration().model_api.provider
                     != "local"):
                 raise MissingAPIKeyError(PUBLIC_MISSING_API_KEY_ERROR)
-        if bbox:
+        self._workflow_prepare_modules(self._workflow_plan)
+        if bbox and not (
+            self.dry_run
+            and self._workflow_plan.get("tracking_execution_mode") == "local"
+        ):
             self._workflow_bbox_probe(self._workflow_plan.get("tracking_service_url"))
         if (self._workflow_plan and not self.dry_run
                 and self._workflow_plan.get("events_engine") in {"system1", "neural"}):
@@ -4928,6 +4932,9 @@ def create_app(
             await application.state.local_cameras.aclose()
             runtime.stop()
             await application.state.fleet.aclose()
+            from .module_services import local_modules
+
+            await asyncio.to_thread(local_modules.close)
 
     application = FastAPI(
         title="Goodvision Streaming Harness",

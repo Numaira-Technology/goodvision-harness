@@ -125,18 +125,24 @@ class YoloDetector:
         self._conf = conf
         self._model = None
         self._gpu_ready = False
+        self._ready = False
 
     def _ensure(self) -> None:
         if self._model is not None:
             return
         from ultralytics import YOLO  # lazy: only inside the worker image
 
-        # ultralytics auto-downloads a known model NAME (e.g. "yolov8m.pt"); a
-        # non-existent full path would just fail, so fall back to the bare
-        # filename when the staged weights path is absent.
+        # Stage a known official asset in the configured model cache before
+        # loading it; a missing weight must not write into application source.
         weights = self._weights
         if not os.path.exists(weights):
-            weights = os.path.basename(weights)
+            from ultralytics.utils.downloads import attempt_download_asset
+
+            # Keep downloaded weights in the module cache, never in application
+            # source or a read-only image working directory.
+            directory = os.path.dirname(os.path.abspath(weights))
+            os.makedirs(directory, exist_ok=True)
+            weights = attempt_download_asset(weights)
         self._model = YOLO(weights)
 
     def detect(self, image_bgr: np.ndarray) -> tuple[Detection, ...]:
@@ -166,12 +172,17 @@ class YoloDetector:
             return 640
 
     def warmup(self) -> None:
-        try:
-            self.detect(np.zeros((self._infer_size(), self._infer_size(), 3),
-                                 dtype=np.uint8))
-            self._gpu_ready = "cuda" in self._device
-        except Exception:
-            self._gpu_ready = False
+        self._ready = False
+        self._gpu_ready = False
+        self.detect(np.zeros((self._infer_size(), self._infer_size(), 3),
+                             dtype=np.uint8))
+        self._ready = True
+        self._gpu_ready = "cuda" in self._device
+
+    def health(self) -> dict:
+        return {"ready": self._ready, "gpu_ready": self._gpu_ready,
+                "provider_ready": self._ready, "device": self._device,
+                "model": self.name, "runtime": "ultralytics"}
 
     @property
     def gpu_ready(self) -> bool:

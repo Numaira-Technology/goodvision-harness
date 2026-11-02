@@ -159,7 +159,12 @@ event confidence. It does not reason over a video window or apply VLM instructio
 policies. The existing event confirmation pipeline still consumes its observations.
 GPU accuracy, throughput and capacity require validation on the target deployment.
 
-Bbox and native event service addresses are required before Apply. Test checks
+Each Bbox, System 1 and neural block selects its own execution location: local,
+independent server or cloud server. Local mode reuses the repository's existing
+workers and requires no URL. Server and cloud modes keep separate service URLs;
+the selected remote address is required before Apply. Existing workflows with a
+service URL retain their server route. See [module deployment](workflow-module-deployment.md)
+for local dependencies, on-demand startup and shared Docker workers. Test checks
 the chosen service's readiness and reports that live analysis is required; it
 does not claim that a health check proves detection accuracy. Start repeats the
 readiness check. Summaries always retain the shared VLM route and credentials,
@@ -212,6 +217,8 @@ writes rather than overwriting another editor.
 | `GET /v1/workflows` | `{document, cameras, event_catalog, tracking}`; no-store. |
 | `POST /v1/workflows/command` | `{revision, action, ...fields}`; returns refreshed state. |
 | `POST /v1/workflows/test` | `{graph, camera_id}`; one-frame test with source-qualified results. |
+| `GET /v1/workflow-modules/{engine}/local` | Local worker state and model readiness; `engine` is `bbox`, `system1` or `neural`. |
+| `POST /v1/workflow-modules/{engine}/local` | Empty object; start or check the fixed local worker while the fleet is stopped. |
 | `GET /v1/fleet/cameras/{id}/workflow/results` | Applied output bindings with current-run values. |
 | `GET /v1/fleet/cameras/{id}/workflow/summaries?limit=100` | `{camera_id, status, items}`; optional `node_id`; limit 1–100. |
 | `GET /v1/fleet/cameras/{id}/workflow/output.jpg?node_id={output-id}&language=zh` | JPEG composed with this applied output's connected results and appearance. `language=en` selects English summary text. Returns 404 when no active output/frame is available. |

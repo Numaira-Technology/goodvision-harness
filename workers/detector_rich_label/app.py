@@ -103,7 +103,7 @@ class DetectorEngine:
                     "provider_ready": False, "error": "inference busy"}
         try:
             detector = self._warm_model(key)
-            if key == "sam3-onnx":
+            if key in {"sam3-onnx", "yolo26-s", "yolov8-m"}:
                 return {**detector.health(), "available": sorted(MODEL_REGISTRY)}
             return {"ready": detector.gpu_ready, "gpu_ready": detector.gpu_ready,
                     "model": key, "available": sorted(MODEL_REGISTRY)}

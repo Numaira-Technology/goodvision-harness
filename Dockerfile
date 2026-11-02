@@ -107,6 +107,8 @@ RUN python -m pip uninstall -y opencv-python opencv-python-headless \
     && python -c "import cv2; assert cv2.__version__.startswith('4.14.')"
 
 COPY config.yaml ./config.yaml
+COPY workers/__init__.py ./workers/__init__.py
+COPY workers/detector_rich_label ./workers/detector_rich_label
 
 RUN groupadd --system --gid 10001 harness \
     && useradd --system --uid 10001 --gid harness --home-dir /nonexistent harness \

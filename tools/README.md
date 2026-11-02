@@ -19,6 +19,8 @@ for installation and offline checks. Generated outputs belong in `output/`,
 | `start_windows_hybrid_demo.ps1` | Start the native Windows / Docker worker demo. |
 | `start_local_gpu.py` | Detect NVIDIA GPUs and start SAM on this host using the Contour runtime; `--streams N` provisions camera lanes, `--with-local-inference` also starts the local VLM and CPU processing companion. |
 | `start_modular.py` | Deploy application, SAM or VLM separately; `main --inference-server ... --inference-protocol goodvision` delegates VLM image preparation to the model host. See [modular services](../docs/guides/modular-services.md). |
+| `setup_bbox.py` | Install pinned YOLO dependencies and weights in an independent CPU/CUDA environment; never modifies the main service environment. |
+| `build_gpu_runtime.py` | Build the shared CUDA/Python base and compatible PyTorch layers for Contour, Bbox and System 1; `--plan` prints commands without building. |
 | `export_full_delivery.py` | Export the recorded full.4 image pair, metadata and checksums. |
 | `run_full_delivery_smoke.ps1` | Run isolated image protocol checks; accepts candidate image tags. |
 | `delivery_smoke.py` | Exercise a disposable main container using synthetic frames. |

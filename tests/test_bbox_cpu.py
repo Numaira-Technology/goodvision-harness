@@ -1,0 +1,57 @@
+"""CPU readiness must attest a successful YOLO warmup, never pretend CUDA."""
+
+import httpx
+
+from goodvision_harness.rich_labeling import RichLabelHTTPClient
+from tools.build_gpu_runtime import build_commands
+from workers.detector_rich_label.app import DetectorEngine
+from workers.detector_rich_label.detectors import YoloDetector
+
+
+def test_cpu_warmup_and_failure_are_reported_truthfully(monkeypatch):
+    detector = YoloDetector("yolo26-s", "unused.pt", "cpu", 0.35)
+    monkeypatch.setattr(detector, "detect", lambda image: ())
+    detector.warmup()
+    assert detector.health() == {
+        "ready": True, "gpu_ready": False, "provider_ready": True,
+        "device": "cpu", "model": "yolo26-s", "runtime": "ultralytics",
+    }
+    engine = DetectorEngine()
+    monkeypatch.setattr(engine, "_get_detector", lambda key: detector)
+    assert engine.health("yolo26-s")["ready"]
+
+    def fail(image):
+        raise RuntimeError("weights unavailable")
+
+    monkeypatch.setattr(detector, "detect", fail)
+    engine._warmed_models.clear()
+    assert engine.health("yolo26-s")["ready"] is False
+    assert detector.health()["ready"] is False
+
+
+def test_client_accepts_explicit_cpu_yolo_but_rejects_false_or_mismatched_health():
+    payload = {"ready": True, "gpu_ready": False, "provider_ready": True,
+               "model": "yolo26-s", "device": "cpu", "runtime": "ultralytics"}
+    with RichLabelHTTPClient(
+        "http://worker/v1/labels", mode="tracks",
+        headers={"X-GoodVision-Detector-Model": "yolo26-s"},
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=payload)
+        ),
+    ) as client:
+        assert client.gpu_ready()  # Legacy method means inference capability.
+        for key, invalid in (("ready", False), ("device", "cuda"),
+                             ("model", "yolov8-m"), ("runtime", "dummy"),
+                             ("model", []), ("model", "dummy"),
+                             ("provider_ready", False)):
+            original = payload[key]
+            payload[key] = invalid
+            assert not client.tracking_ready()
+            payload[key] = original
+
+
+def test_shared_runtime_builds_each_compatible_torch_layer_once():
+    commands = build_commands(["contour", "bbox", "system1"])
+    assert len(commands) == 2
+    assert "goodvision-gpu-runtime:torch2.10-cu128" in commands[0]
+    assert "goodvision-gpu-runtime:torch2.8-cu128" in commands[1]
