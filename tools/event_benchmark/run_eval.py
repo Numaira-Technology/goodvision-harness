@@ -22,6 +22,7 @@ from pathlib import Path
 
 # ---------------------------------------------------------------- frozen rules
 SCORED_EVENTS = ["fight", "smoking", "fall", "weapon"]  # §2
+BAG_EVENTS = ["bag_knife", "bag_alcohol_bottle"]  # 3-value bag Qs; GT already collapsed to yes/no (unknown->no)
 FRAME_MAX = 14            # §4  n = max(3, min(14, int(dur)))
 FRAME_MIN = 3
 FRAME_WIDTH = 720         # §4  scale=720:-2
@@ -29,7 +30,7 @@ GATE = 0.5               # §5  uniform, never tuned on the set
 TEMPERATURE = 0           # §6
 CHAT_MAX_TOKENS = 30      # §6
 TIMEOUT = 90              # §6
-RETRIES = 3               # §6
+RETRIES = 8               # §6 (raised from 3 for transient 429 backoff on shared provider pools)
 CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 LUNA_URL = "https://openrouter.ai/api/alpha/decisions"
 # model ID + backend class for each named candidate (§3, §6). Three classes:
@@ -41,6 +42,8 @@ CANDIDATES = {
     "qwen":   ("qwen/qwen3-vl-8b-instruct", "language"),
     "gemini": ("google/gemini-2.5-flash",   "language"),
     "luna":   ("openai/gpt-6-luna-decisions", "decision"),
+    "qwen-235b": ("qwen/qwen3-vl-235b-a22b-instruct", "language"),
+    "maverick":  ("meta-llama/llama-4-maverick", "language"),
 }
 
 REPO = Path(__file__).resolve().parents[2]
@@ -60,7 +63,7 @@ def load_key(env_file):
 
 def question_core(question):
     """§1: the exam question minus the trailing 'Answer yes or no.'"""
-    return re.sub(r"\s*answer yes or no\.?\s*$", "", question, flags=re.I).strip()
+    return re.sub(r"\s*answer\s+(yes or no|yes, no, or unknown)\.?\s*$", "", question, flags=re.I).strip()
 
 
 # ---------------------------------------------------------------- frame sampling (§4)
@@ -129,7 +132,7 @@ def frame_score(backend, model, qcore, uri, key):
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": uri}}]}],
             "max_tokens": CHAT_MAX_TOKENS, "temperature": TEMPERATURE}
-        for _ in range(RETRIES):
+        for attempt in range(RETRIES):
             try:
                 choice = _post(CHAT_URL, body, key)["choices"][0]
                 if choice.get("finish_reason") != "stop":
@@ -142,7 +145,7 @@ def frame_score(backend, model, qcore, uri, key):
                     raise ValueError("language answer must be a JSON boolean")
                 return float(answer["answer"])
             except Exception:
-                time.sleep(1)
+                time.sleep(min(2 ** attempt, 20))
         return None
     if backend == "decision":
         body = {"model": model,
@@ -150,7 +153,7 @@ def frame_score(backend, model, qcore, uri, key):
                           {"type": "image_url", "image_url": {"url": uri}}],
                 "questions": {"answer": {"type": "noul", "instructions": qcore,
                     "criteria": {"true": "Yes — " + qcore, "false": "No — " + qcore}}}}
-        for _ in range(RETRIES):
+        for attempt in range(RETRIES):
             try:
                 answer = _post(LUNA_URL, body, key)["answers"]["answer"]
                 score = answer.get("noul")
@@ -160,7 +163,7 @@ def frame_score(backend, model, qcore, uri, key):
                     raise ValueError("decision answer must be a probability in [0, 1]")
                 return score
             except Exception:
-                time.sleep(1)
+                time.sleep(min(2 ** attempt, 20))
         return None
     raise ValueError("unknown backend " + backend)
 
@@ -210,7 +213,7 @@ def sha256(path):
     return h.hexdigest()
 
 
-def frozen_inputs(samples_path, manifest_path, media_dirs):
+def frozen_inputs(samples_path, manifest_path, media_dirs, scored_events=SCORED_EVENTS):
     """Verify the reviewed answers and exact media before any paid request."""
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("status") != "human_reviewed":
@@ -218,10 +221,10 @@ def frozen_inputs(samples_path, manifest_path, media_dirs):
     if sha256(samples_path) != manifest.get("samples_json_sha256"):
         raise ValueError("samples.json does not match the frozen manifest")
     samples = [s for s in json.loads(samples_path.read_text(encoding="utf-8"))["samples"]
-               if s["event"] in SCORED_EVENTS]
+               if s["event"] in scored_events]
     if not samples or len({s["number"] for s in samples}) != len(samples):
         raise ValueError("samples must contain unique scored question numbers")
-    frozen = {row["number"]: row for row in manifest["files"] if row["event"] in SCORED_EVENTS}
+    frozen = {row["number"]: row for row in manifest["files"] if row["event"] in scored_events}
     if set(frozen) != {s["number"] for s in samples}:
         raise ValueError("scored questions do not match the manifest")
     wanted = {s["filename"] for s in samples}
@@ -251,6 +254,37 @@ def frozen_inputs(samples_path, manifest_path, media_dirs):
     return samples, media_index, hashes
 
 
+def provisional_inputs(samples_path, media_dirs, scored_events):
+    """Draft/unfrozen loader: no manifest, no checksum match. Still requires binary
+    (yes/no) answers and that every referenced clip exists. Used for provisional runs
+    such as the 120 set while its GT is under review (`--provisional`)."""
+    data = json.loads(samples_path.read_text(encoding="utf-8"))
+    samples = [s for s in data["samples"] if s["event"] in scored_events]
+    if not samples or len({s["number"] for s in samples}) != len(samples):
+        raise ValueError("samples must contain unique scored question numbers")
+    wanted = {s["filename"] for s in samples}
+    media_index = {}
+    for directory in media_dirs:
+        for path in directory.iterdir():
+            if not path.is_file() or path.name not in wanted:
+                continue
+            if path.name in media_index and path.resolve() != media_index[path.name].resolve():
+                raise ValueError("ambiguous media filename: " + path.name)
+            media_index[path.name] = path
+    hashes = {}
+    for sample in samples:
+        if sample["proposed_answer"] not in {"yes", "no"}:
+            raise ValueError("answer must be yes/no (collapse unknown first): #%s" % sample["number"])
+        if not question_core(sample["question"]):
+            raise ValueError("empty question core: #%s" % sample["number"])
+        fn = sample["filename"]
+        if fn not in media_index:
+            raise ValueError("missing media file: " + fn)
+        if fn not in hashes:
+            hashes[fn] = sha256(media_index[fn])
+    return samples, media_index, hashes
+
+
 def main():
     ap = argparse.ArgumentParser(description="Frozen clip-level event benchmark (see SPEC.md)")
     ap.add_argument("--candidate", choices=CANDIDATES, help="named model+backend preset")
@@ -273,6 +307,11 @@ def main():
                          "(max 14 uniform frames) instead of 1 fps")
     ap.add_argument("--checksums", action="store_true", help="compatibility flag; checksums are always verified")
     ap.add_argument("--out", type=Path, help="write full result JSON here")
+    ap.add_argument("--events", nargs="+", choices=SCORED_EVENTS + BAG_EVENTS,
+                    help="scored event set; default = frozen base-4. Pass bag events for the 120 set.")
+    ap.add_argument("--provisional", action="store_true",
+                    help="draft/unfrozen run: skip the manifest+checksum freeze (GT under review). "
+                         "Records frozen=false in the output.")
     a = ap.parse_args()
     if a.workers < 1 or not math.isfinite(a.interval) or a.interval <= 0:
         ap.error("workers and interval must be positive; interval must be finite")
@@ -287,8 +326,12 @@ def main():
         ap.error("give --candidate, or both --model and --backend")
 
     interval = None if a.dense else a.interval  # None -> dense rule
+    scored = list(a.events) if a.events else list(SCORED_EVENTS)
     try:
-        samples, media_index, hashes = frozen_inputs(a.samples, a.manifest, a.media)
+        if a.provisional:
+            samples, media_index, hashes = provisional_inputs(a.samples, a.media, scored)
+        else:
+            samples, media_index, hashes = frozen_inputs(a.samples, a.manifest, a.media, scored)
     except (OSError, ValueError, KeyError, TypeError) as error:
         ap.error(str(error))
     key = load_key(a.env_file)
@@ -315,7 +358,7 @@ def main():
     samp = "dense(≤14)" if interval is None else f"{interval}s (~{1/interval:.3g}fps)"
     print(f"\n=== {a.candidate or model}  (backend={backend}, gate={GATE}, sampling={samp}) ===")
     print(f"{'event':8s} {'acc':>7s} {'TP':>4s} {'FN':>4s} {'TN':>4s} {'FP':>4s} {'err':>4s}  specificity")
-    for ev in SCORED_EVENTS:
+    for ev in scored:
         c = cnt[ev]; n = c["TP"] + c["FN"] + c["TN"] + c["FP"]
         acc = f"{c['TP']+c['TN']}/{n}" if n else "0/0"
         spec = f"{c['TN']}/{c['TN']+c['FP']}" if (c["TN"] + c["FP"]) else "—(无负例)"
@@ -325,8 +368,10 @@ def main():
     out = {
         "spec_version": SPEC_VERSION,
         "score_precision": "lossless",
+        "frozen": not a.provisional,
+        "scored_events": scored,
         "samples_json_sha256": sha256(a.samples),
-        "manifest_sha256": sha256(a.manifest),
+        "manifest_sha256": None if a.provisional else sha256(a.manifest),
         "runner_sha256": sha256(Path(__file__)),
         "spec_sha256": sha256(Path(__file__).with_name("SPEC.md")),
         "run_at": datetime.now(timezone.utc).isoformat(),
@@ -338,7 +383,7 @@ def main():
                    "frame_width": FRAME_WIDTH, "temperature": TEMPERATURE,
                    "retries": RETRIES, "timeout": TIMEOUT, "decision": "max-frame-score >= gate"},
         "overall": {"correct": oc, "total": ot, "attempted": len(samples), "errors": len(samples) - ot},
-        "per_event": {ev: dict(cnt[ev]) for ev in SCORED_EVENTS},
+        "per_event": {ev: dict(cnt[ev]) for ev in scored},
         "per_video": [{"number": s["number"], "filename": s["filename"], "event": s["event"],
                        "gt": s["proposed_answer"],
                        "sha256": hashes[s["filename"]],
