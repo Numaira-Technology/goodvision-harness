@@ -31,8 +31,8 @@ PROMPTS = {
         "A person is holding a phone or ordinary object.",
     ),
     "ppe_violation": (
-        "A worker in a hazardous work area is missing required protective equipment.",
-        "Workers are wearing required protective equipment.",
+        "A visible person is missing a safety helmet or a reflective safety vest, or both.",
+        "All visible people are wearing both safety helmets and reflective safety vests.",
     ),
     "ground_litter": (
         "Discarded rubbish is lying on the ground.",
