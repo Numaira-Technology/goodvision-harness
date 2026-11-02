@@ -1,31 +1,30 @@
-# Repo 整理 · production（交付）vs demo（运行模式）清单
+# 本地运行与客户交付清单
 
-> 目的：厘清"生产环境"和"demo 环境"在本仓库里**到底是什么、由哪些文件/入口承载**，
-> 为日后的部署文档与运维脚本提供一张对照表。**本次不移动任何代码、不改目录结构。**
+> 本地源码运行与客户交付共用正式控制台，差异在部署文件、依赖和配置。
+> 原模拟分析模式及独立演示入口已移除。本页保留原链接以兼容已有文档。
 >
 > 权威依据：[`README.md`](../../README.md)（"Start here" 表 + Quick start + Repository layout）
 > 与 [`CONTRIBUTING.md`](../../CONTRIBUTING.md)（"What belongs in Git" / "Organization and stable paths"）。
 
 ## 先厘清一个关键认知
 
-**demo 和 production 不是两套平行文件，也不该用两条分支区分。** README / CONTRIBUTING 明确：
+**本地运行和客户交付使用同一套代码。** README / CONTRIBUTING 明确：
 
-- `goodvision-harness-demo` 与 `goodvision-harness` **是同一套代码、同一个控制台**，默认端口不同（启动参数也各自独立）
-  （demo `7900` / 生产 `8080`）。demo 是一个**运行模式/入口 + dry-run 标志**，不是独立代码。
+- `goodvision-harness` 是统一的正式控制台入口，默认端口 `8080`。
+  启动控制台不会自动开始分析，缺少服务或凭据时会报错，不生成模拟识别结果。
 - 根目录的 Compose / Dockerfile / env 示例 / 客户交付文档是 **"脚本、测试、运维共用的稳定入口"**，
   移动前须审查其消费者（CONTRIBUTING "Organization and stable paths"）。
 - `config.yaml` 与 `src/goodvision_harness/config.yaml` **必须逐字节一致**，有回归测试强制。
 
-> 结论：**切换环境靠"入口 + 运行标志 + delivery overlay/config"，不是靠切分支。**
+> 选择部署方式使用相应的启动器、Compose 文件和配置。
 > 按环境长期维护分支会增加共用代码的同步负担。分支本身不会破坏配置一致性；
 > 无论在哪个分支，目录整理都应保留稳定入口，并同步修改两份 `config.yaml`。
 
-## 怎么"切换"这两个环境（现成做法）
+## 启动方式
 
 ```bash
-# demo / dry-run（合成结果、不调模型、不要人脸权重）
-HARNESS_AUTOSTART=false HARNESS_DRY_RUN=true \
-  goodvision-harness-demo --host 127.0.0.1 --port 7900
+# 本地正式控制台（先配置服务，再手动开始分析）
+HARNESS_AUTOSTART=false HARNESS_HOST=127.0.0.1 goodvision-harness
 
 # production / 客户交付
 python tools/start_delivery.py            # 见 DEPLOY.md / RELEASE.md
@@ -50,11 +49,11 @@ README "Install a customer delivery" 路径所指的一套：
 | `tools/export_full_delivery.py` · `tools/package_customer_delivery.py` · `tools/package_customer_update.py` · `tools/package_customer_docker_update.py` | 交付/客户更新打包 |
 | `tools/audit_customer_bundle.py` · `tools/customer_check.py` · `tools/customer_discovery.py` · `tools/customer_runtime.py` · `tools/customer_update.py` · `tools/customer_update_gui.py` | 客户侧审计/运行/更新 |
 
-## B. Demo / dev（同一 app 的运行模式 + 开发用）
+## B. 本地源码运行
 
 | 文件 / 入口 | 角色 |
 |---|---|
-| `goodvision-harness-demo`（控制台入口，端口 7900）+ `HARNESS_DRY_RUN=true` | **demo 运行模式**（非独立文件/分支） |
+| `goodvision-harness`（控制台入口，默认端口 8080） | 正式控制台；默认在 `.goodvision/` 持久保存设置 |
 | `compose.yaml` | 基础栈，默认网络名 `goodvision-demo` |
 | `config.yaml` · `config.vlm-rich.yaml` | 开发/富标注配置（`config.yaml` 与包内副本须一致） |
 | `.env.example` | 开发环境变量示例 |
@@ -63,7 +62,7 @@ README "Install a customer delivery" 路径所指的一套：
 
 ## C. Shared / 两个环境共用核心（不归任一环境）
 
-README "Repository layout" 列的主体，demo 与 production 跑的都是它：
+README "Repository layout" 列的主体，本地运行与客户交付共用：
 
 | 路径 | 角色 |
 |---|---|
@@ -78,11 +77,46 @@ README "Repository layout" 列的主体，demo 与 production 跑的都是它：
 
 ### B/C 之间的模块化 overlay（按需叠加，非环境专属）
 
-这些 Compose 文件按部署拓扑选择，不等于 demo 或 production 的归属，也并非全部都要与
+这些 Compose 文件按部署拓扑选择，也并非全部都要与
 `compose.yaml` 叠加。`compose.gpu.yaml`、`compose.face-gpu.yaml` 等提供 overlay；
 `compose.main-server.yaml` 通过 `extends` 引用基础服务；`compose.vlm-server.yaml`、
 `compose.analysis-gateway.yaml` 和 `compose.full-gpu.delivery.yaml` 是各自的部署入口。
 使用对应启动器或指南给出的 Compose 文件组合，见[源码部署](deployment.md)与[分机部署](modular-services.md)。
+
+## Compose 文件分组索引
+
+根目录的 `compose*.yaml` 是**扁平的稳定入口**，被脚本、测试和运维按原路径使用，
+见 [CONTRIBUTING "Organization and stable paths"](../../CONTRIBUTING.md#organization-and-stable-paths)。
+这里只按用途分组，保留原路径。下表区分独立入口与 overlay；“叠加”表示在所列文件之后再加本行文件，
+按顺序传入 `-f`。独立入口无需额外传入 `compose.yaml`，但仍可能通过 `extends` 引用其他文件。
+具体环境变量、权重与启动参数以对应指南、启动器和文件内说明为准。
+
+| 组 | 文件 | 用途 | 组合 / 启动入口 |
+|---|---|---|---|
+| 基础 | [`compose.yaml`](../../compose.yaml) | 源码基础栈，默认网络 `goodvision-demo` | 独立入口；见[源码部署](deployment.md) |
+| 应用主机 (CPU) | [`compose.main-server.yaml`](../../compose.main-server.yaml) | CPU 应用主机，SAM / VLM 可在独立服务器 | 独立入口，通过 `extends` 继承基础服务；`python tools/start_modular.py main`，见[分机部署](modular-services.md) |
+| | [`compose.analysis-gateway.yaml`](../../compose.analysis-gateway.yaml) | 仅接入 / 转发控制台、视频和输出流量 | 独立网关入口，需配置远端分析地址；见[分机部署](modular-services.md) |
+| 本地 GPU | [`compose.local-tracking.yaml`](../../compose.local-tracking.yaml) | 主程序 + 本机 Contour/SAM 追踪；人脸仍用 CPU，大模型使用已配置的外部服务 | 独立入口；`python tools/start_local_gpu.py`，见[本机追踪](local-gpu.md) |
+| | [`compose.local-gpu.yaml`](../../compose.local-gpu.yaml) | 本地 VLM、CPU 处理服务、SAM 与 GPU 人脸；Paddle 可选 | 叠加在 `compose.yaml` 上，不与其他 GPU / remote overlay 混用；`python tools/start_local_gpu.py --with-local-inference`，见[完整本地部署](local-gpu-full.md) |
+| 源码 GPU 加速 | [`compose.gpu.yaml`](../../compose.gpu.yaml) | Paddle rich-label worker GPU overlay | 叠加在 `compose.yaml` 上，启用 `--profile rich`；见[运行指南](runtime.md) |
+| | [`compose.face-gpu.yaml`](../../compose.face-gpu.yaml) | 使用 `Dockerfile.face-gpu` 启用 GPU 人脸识别 | 叠加在 `compose.yaml` 上；见[运行指南](runtime.md#optional-gpu-face-recognition) |
+| 云 / 远端 GPU | [`compose.cloud-gpu.yaml`](../../compose.cloud-gpu.yaml) | 本地网关 + UI 控制的云 GPU 租用，分析在租用主机运行 | 独立入口；`python tools/start_cloud_gpu.py`，见[云 GPU 部署](cloud-gpu.md) |
+| | [`compose.sam31-remote.yaml`](../../compose.sam31-remote.yaml) | 网关 + 云 GPU 租用控制器，UI 明确启动租用后运行远端分析 | 叠加在 `compose.yaml` 上，替代本地 SAM overlay；见[云 GPU 部署](cloud-gpu.md) |
+| | [`compose.detector-remote.yaml`](../../compose.detector-remote.yaml) | 租 GPU 跑 YOLO / RF-DETR 检测器 | 按文件内示例与 `compose.yaml` 组合，只启动 `detector-remote`；启动该服务即租用付费实例 |
+| SAM 服务 / 验证 | [`compose.sam-server.yaml`](../../compose.sam-server.yaml) | 独立 SAM 服务，权重位于该 NVIDIA GPU 主机 | 独立入口；`python tools/start_modular.py sam`，见[分机部署](modular-services.md) |
+| | [`compose.sam31.yaml`](../../compose.sam31.yaml) | 原生 SAM 3.1 视频验证，每个有界批次独立模型记忆 | 叠加在 `compose.yaml` 上；需本地 SAM3.1 权重 |
+| | [`compose.sam31-stream.yaml`](../../compose.sam31-stream.yaml) | 实验性持久原生记忆 | 叠加在 `compose.yaml` + `compose.sam31.yaml` 后 |
+| 场景 / 感知 | [`compose.scene.yaml`](../../compose.scene.yaml) | 连续人物 / 事件引擎 | 叠加在 `compose.yaml` 上；需本地 SAM3 权重 |
+| | [`compose.perception.yaml`](../../compose.perception.yaml) | SAM 连续分析 | 叠加在 `compose.yaml` + `compose.sam31.yaml` 后 |
+| 大模型服务 | [`compose.vlm-server.yaml`](../../compose.vlm-server.yaml) | NVIDIA GPU 模型服务 + CPU 处理服务 | 独立入口；`python tools/start_modular.py vlm`，见[分机部署](modular-services.md) |
+| **交付 / production** | [`compose.full-gpu.delivery.yaml`](../../compose.full-gpu.delivery.yaml) | 客户交付镜像入口，默认 CPU 人脸、关闭 rich-label | 独立入口；`python tools/start_delivery.py`，见 [DEPLOY.md](../../DEPLOY.md) / [RELEASE.md](../../RELEASE.md) |
+| | [`compose.full-gpu.accelerated.yaml`](../../compose.full-gpu.accelerated.yaml) | 交付镜像的 GPU 人脸 + rich-label 加速 | 叠加在 `compose.full-gpu.delivery.yaml` 上，启用 `--profile gpu`；由交付启动器探测 GPU 后选用 |
+| 诊断（在 `diag/`） | [`diag/compose.sam-tunnel.yaml`](../../diag/compose.sam-tunnel.yaml) | 向本机开放远端 SAM 隧道端口 | 叠加在 `compose.yaml` + `compose.sam31-remote.yaml` 后 |
+| | [`diag/compose.sam-multistream.yaml`](../../diag/compose.sam-multistream.yaml) | 多路 GPU 竞争诊断，设置共享模型的摄像头路数 | 再叠加在上述诊断隧道组合之后 |
+
+> 配套配置：[`config.yaml`](../../config.yaml)（源码默认，须与
+> [`src/goodvision_harness/config.yaml`](../../src/goodvision_harness/config.yaml) 逐字节一致）、
+> [`config.vlm-rich.yaml`](../../config.vlm-rich.yaml)（富标注）、[`config.delivery.yaml`](../../config.delivery.yaml)（交付）。
 
 ## D. 本地运行数据与已审阅夹具
 
@@ -95,9 +129,7 @@ README "Repository layout" 列的主体，demo 与 production 跑的都是它：
 
 ## 结论与建议
 
-1. **不要用分支分 demo/product。** 该项目本就以"同一代码 + 不同入口/标志/overlay"区分二者；
-   分支切换会与设计相悖并带来维护负担。
-2. 真正有价值的"整理"是**把上面这张对照表沉淀进部署文档**（或 `README` 的一个小节），
-   让人一眼知道生产环境=交付那套、demo=运行模式。
+1. **本地运行与交付共用代码。** 按实际硬件选择启动器、依赖和配置。
+2. 本地控制台与交付控制台均使用真实分析服务，缺少配置时明确报错。
 3. **根部署文件（Compose / Dockerfile / env / 交付文档）不要擅自移动**；若日后仍想做物理归组，
    须先审查脚本/测试/运维消费者，并保留 `config.yaml` 一致性不变量。

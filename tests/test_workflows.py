@@ -71,6 +71,113 @@ def graph() -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+def two_sources() -> dict:
+    value = graph()
+    value["nodes"][0]["config"]["camera_id"] = "camera01"
+    value["nodes"].append(
+        {"id": "second", "type": "source", "config": {"camera_id": "camera02"}}
+    )
+    for edge in value["edges"]:
+        if edge["to_node"] == "summary":
+            edge["from_node"] = "second"
+    return value
+
+
+def test_multiple_video_sources_compile_only_their_own_branches():
+    value = two_sources()
+    first = compile_graph(value, camera_id="camera01")
+    second = compile_graph(value, camera_id="camera02")
+    assert first["features"] and not first["summaries"]
+    assert not second["features"] and len(second["summaries"]) == 1
+    value["edges"].append(
+        {
+            "id": "shared",
+            "from_node": "second",
+            "from_port": "frames",
+            "to_node": "events",
+            "to_port": "frames",
+        }
+    )
+    assert compile_graph(value, camera_id="camera02")["features"]
+
+
+def test_source_apply_assigns_channels_and_removed_input_stays_disabled(tmp_path):
+    store = WorkflowStore(tmp_path / "sources.json")
+    doc = command(store, "create_workflow", {"name": "Sources", "graph": two_sources()})
+    wid = doc["workflows"][0]["id"]
+    doc = command(
+        store, "apply", {"workflow_id": wid, "graph": two_sources(), "group_ids": []}
+    )
+    assert set(compile_document(doc)) == {"camera01", "camera02"}
+    assert compile_document(doc)["camera02"]["summaries"]
+    value = two_sources()
+    value["nodes"] = [n for n in value["nodes"] if n["id"] not in {"second", "summary"}]
+    value["edges"] = [
+        e for e in value["edges"] if e["from_node"] not in {"second", "summary"}
+    ]
+    doc = command(store, "apply", {"workflow_id": wid, "graph": value, "group_ids": []})
+    assert not compile_document(doc)["camera02"]["enabled"]
+    assert WorkflowStore(store.path).load() == doc
+
+
+def test_video_sources_reject_duplicate_channels_and_urls_in_graph():
+    value = two_sources()
+    value["nodes"][-1]["config"]["camera_id"] = "camera01"
+    with pytest.raises(WorkflowValidationError, match="different camera"):
+        validate_graph(value)
+    value = two_sources()
+    value["nodes"][0]["config"]["stream_url"] = "rtsp://user:secret@camera/live"
+    with pytest.raises(WorkflowValidationError, match="configuration"):
+        validate_graph(value)
+
+
+def test_binding_sources_preserves_existing_group_gates():
+    store = WorkflowStore()
+    wid, first, second = setup_assets(store)
+    command(store, "apply", {"workflow_id": wid, "group_ids": [first, second]})
+    command(store, "update_group", {"id": first, "enabled": False})
+    doc = command(
+        store, "apply", {"workflow_id": wid, "graph": two_sources(), "group_ids": []}
+    )
+    assert len(doc["groups"]) == 2
+    assert doc["groups"][0]["camera_ids"] == ["camera01"]
+    assert not compile_document(doc)["camera01"]["enabled"]
+    assert compile_document(doc)["camera02"]["summaries"]
+
+
+@pytest.mark.parametrize("explicit_selection", [False, True])
+@pytest.mark.parametrize("stop_switch", ["group", "camera"])
+def test_source_apply_keeps_unassigned_group_membership_and_stop_switches(
+    explicit_selection, stop_switch
+):
+    store = WorkflowStore()
+    wid, first, second = setup_assets(store)
+    gate = (
+        {"enabled": False}
+        if stop_switch == "group"
+        else {"camera_overrides": {"camera01": {"enabled": False}}}
+    )
+    before = command(store, "update_group", {"id": first, **gate})
+    doc = command(
+        store,
+        "apply",
+        {
+            "workflow_id": wid,
+            "graph": two_sources(),
+            "group_ids": [first] if explicit_selection else [],
+        },
+    )
+    assert [group["id"] for group in doc["groups"]] == [first, second]
+    for old, new in zip(before["groups"], doc["groups"], strict=True):
+        for key in ("name", "camera_ids", "enabled", "camera_overrides"):
+            assert new[key] == old[key]
+        assert new["workflow_id"] == wid
+        assert new["assignment_generation"] == old["assignment_generation"] + 1
+    plans = compile_document(doc)
+    assert not plans["camera01"]["enabled"]
+    assert plans["camera02"]["enabled"] and plans["camera02"]["summaries"]
+
+
 def tracking_graph() -> dict:
     value = graph()
     value["nodes"].append({"id": "tracking", "type": "tracking"})

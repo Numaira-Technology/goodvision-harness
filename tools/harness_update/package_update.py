@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import re
+import shlex
 import subprocess
 import zipfile
 from pathlib import Path
@@ -28,6 +29,22 @@ WINDOWS_BASE_IDS = (
     # produce a new image ID; the launcher metadata must still be validated.
     "sha256:8bcb5a4c5330106878785d00784043d5d6c7aadbace113b4f0f736b71d8e9f20",
 )
+
+
+def retire_demo_dockerfile():
+    """Remove retired entrypoints retained by COPY overlays on older images."""
+    paths = (
+        "/app/src/goodvision_harness/demo",
+        "/usr/local/lib/python3.11/site-packages/goodvision_harness/demo",
+        "/usr/local/bin/goodvision-harness-demo",
+    )
+    cleanup = (
+        "from pathlib import Path; import shutil; "
+        f"paths = {paths!r}; "
+        "[(shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()) "
+        "for p in map(Path, paths) if p.exists() or p.is_symlink()]"
+    )
+    return "RUN python -c " + shlex.quote(cleanup) + "\n"
 
 
 # Use the committed application inventory, never a recursive working-directory
@@ -81,12 +98,15 @@ def package(output, release, *, record_release=False):
     files["Dockerfile"] = (
         f"ARG BASE_IMAGE=goodvision-harness-update-base:{release}\n"
         "FROM ${BASE_IMAGE}\n"
+        "USER root\n"
         "COPY --chown=10001:10001 . "
         "/usr/local/lib/python3.11/site-packages/goodvision_harness/\n"
         "COPY --chown=10001:10001 . /app/src/goodvision_harness/\n"
+        f"{retire_demo_dockerfile()}"
         "ENV LOCAL_CAMERA_TARGET_FPS=15 SCENE_ENGINE_MODE=active "
         "SCENE_INDEPENDENT_VLM=true\n"
         f'LABEL goodvision.ui.release="{release}"\n'
+        "USER 10001:10001\n"
     ).encode()
     for name, option in (
         ("UPDATE.cmd", ""),

@@ -22,7 +22,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import cv2
 
-from .privacy import PUBLIC_STREAM_ERROR, PUBLIC_STREAM_SUPPORT_ERROR
+from .privacy import STREAM_ERROR_MESSAGES, stream_error_code
 from .stream_decode import DecodeSupportError, FFmpegReceiver
 from .stream_diagnostics import StreamDiagnostics
 from .stream_timing import SourceCadence
@@ -36,16 +36,11 @@ class StreamAdapterError(RuntimeError):
 
     def __init__(self, message: str, *, code: str = "connection_failed") -> None:
         super().__init__(message)
-        self.code = (
-            "missing_support" if code == "missing_support" else "connection_failed"
-        )
+        self.code = stream_error_code(code)
 
     @property
     def public_message(self) -> str:
-        return (
-            PUBLIC_STREAM_SUPPORT_ERROR
-            if self.code == "missing_support" else PUBLIC_STREAM_ERROR
-        )
+        return STREAM_ERROR_MESSAGES[self.code]
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,43 +357,16 @@ class NetworkStreamAdapter:
                 if local is None:
                     raise StreamAdapterError("WebRTC offer did not produce local SDP")
 
-                async with http.post(
-                    self.source.transport_url,
-                    data=local.sdp,
-                    headers={
-                        "Accept": "application/sdp",
-                        "Content-Type": "application/sdp",
-                    },
-                    allow_redirects=True,
-                ) as response:
-                    answer_sdp = await response.text()
-                    if response.status == 406:
-                        raise StreamAdapterError(
-                            "WHEP server counter-offers are not supported"
-                        )
-                    if response.status != 201:
-                        raise StreamAdapterError(
-                            f"WHEP endpoint returned HTTP {response.status}"
-                        )
-                    if (
-                        not response.headers.get("Content-Type", "")
-                        .lower()
-                        .startswith("application/sdp")
-                    ):
-                        raise StreamAdapterError(
-                            "WHEP endpoint did not return an SDP answer"
-                        )
-                    location = response.headers.get("Location")
-                    if not location:
-                        raise StreamAdapterError(
-                            "WHEP endpoint did not return a session Location"
-                        )
-                    session_url = urljoin(str(response.url), location)
+                answer_sdp, session_url = await self._open_whep_session(
+                    http, local.sdp,
+                )
 
                 try:
                     from .webrtc_jitter import protect_receiver
 
-                    protect_receiver(transceiver.receiver, answer_sdp, self._diagnostics)
+                    protect_receiver(
+                        transceiver.receiver, answer_sdp, self._diagnostics,
+                    )
                     await pc.setRemoteDescription(
                         RTCSessionDescription(sdp=answer_sdp, type="answer")
                     )
@@ -408,7 +376,8 @@ class NetworkStreamAdapter:
                         track = await asyncio.wait_for(track_ready, timeout=15.0)
                     except asyncio.TimeoutError as exc:
                         raise StreamAdapterError(
-                            "WHEP session did not deliver a video track"
+                            "WHEP session did not deliver a video track",
+                            code="media_timeout",
                         ) from exc
 
                     await self._pump_track(track, pc, MediaStreamError)
@@ -417,7 +386,7 @@ class NetworkStreamAdapter:
                         try:
                             async with http.delete(session_url):
                                 pass
-                        except aiohttp.ClientError:
+                        except (aiohttp.ClientError, asyncio.TimeoutError):
                             pass
         finally:
             if stats_task is not None:
@@ -425,6 +394,43 @@ class NetworkStreamAdapter:
                 await asyncio.gather(stats_task, return_exceptions=True)
                 await self._sample_receive_diagnostics(pc, 0.0)
             await pc.close()
+
+    async def _open_whep_session(self, http: Any, offer_sdp: str) -> tuple[str, str]:
+        import aiohttp
+
+        try:
+            async with http.post(
+                self.source.transport_url,
+                data=offer_sdp,
+                headers={
+                    "Accept": "application/sdp", "Content-Type": "application/sdp",
+                },
+                allow_redirects=True,
+            ) as response:
+                if response.status != 201:
+                    raise StreamAdapterError(
+                        "WHEP endpoint rejected the offer", code="source_rejected",
+                    )
+                if not response.headers.get("Content-Type", "").lower().startswith(
+                    "application/sdp"
+                ):
+                    raise StreamAdapterError(
+                        "WHEP endpoint did not return SDP", code="invalid_response",
+                    )
+                location = response.headers.get("Location")
+                if not location:
+                    raise StreamAdapterError(
+                        "WHEP session Location is missing", code="invalid_response",
+                    )
+                return await response.text(), urljoin(str(response.url), location)
+        except asyncio.TimeoutError:
+            raise StreamAdapterError(
+                "WHEP signaling timed out", code="signaling_timeout",
+            ) from None
+        except aiohttp.ClientError:
+            raise StreamAdapterError(
+                "WHEP signaling is unreachable", code="signaling_unreachable",
+            ) from None
 
     async def _sample_receive_diagnostics(self, pc: Any, loop_lag: float) -> None:
         try:
@@ -456,7 +462,9 @@ class NetworkStreamAdapter:
                     if pc.connectionState in {"closed", "failed"}:
                         raise StreamAdapterError("WebRTC connection closed")
                     if time.monotonic() - receive_started >= 15.0:
-                        raise StreamAdapterError("WebRTC video receive timed out")
+                        raise StreamAdapterError(
+                            "WebRTC video receive timed out", code="media_timeout",
+                        )
                     continue
                 try:
                     frame = receive_task.result()

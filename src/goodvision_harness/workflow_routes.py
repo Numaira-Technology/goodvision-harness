@@ -59,8 +59,13 @@ class WorkflowCoordinator:
                     else Path(".goodvision/workflow-assets.json")
                 )
             )
-            self._store = WorkflowStore(path)
+            self._store = WorkflowStore(path, vocabulary=self.vocabulary)
         return self._store
+
+    @property
+    def vocabulary(self):
+        config = getattr(self.application.state.runtime, "config", None)
+        return config.event_vocabulary if config is not None else None
 
     def bindings(self):
         document = self.store.load()
@@ -77,7 +82,9 @@ class WorkflowCoordinator:
                     "block_enabled": group["block_enabled"],
                     "camera_override": group["camera_overrides"].get(camera_id, {}),
                 }
-        return document, bindings, compile_document(document)
+        return document, bindings, compile_document(
+            document, vocabulary=self.vocabulary,
+        )
 
     def managed_cameras(self):
         document = self.store.load()
@@ -101,7 +108,7 @@ class WorkflowCoordinator:
         return {
             "document": self.store.load(),
             "cameras": cameras,
-            "event_catalog": event_catalog(),
+            "event_catalog": event_catalog(self.vocabulary),
             "tracking": (
                 self.application.state.runtime.workflow_tracking_capability()
                 if callable(
@@ -183,7 +190,13 @@ def install_workflow_routes(application):
                 for group in candidate["groups"]:
                     for camera_id in group["camera_ids"]:
                         fleet.resolve_camera(camera_id)
-                affected = set(changed_cameras(previous, candidate))
+                for workflow in candidate["workflows"]:
+                    for node in workflow["graph"]["nodes"]:
+                        if node["type"] == "source" and node["config"].get("camera_id"):
+                            fleet.resolve_camera(node["config"]["camera_id"])
+                affected = set(changed_cameras(
+                    previous, candidate, vocabulary=control.vocabulary,
+                ))
                 if action == "apply":
                     affected.update(
                         cid
@@ -226,7 +239,10 @@ def install_workflow_routes(application):
         index = fleet.resolve_camera(payload["camera_id"])
         fleet.require_enabled(index)
         try:
-            compile_graph(payload["graph"])
+            compile_graph(
+                payload["graph"], camera_id=payload["camera_id"],
+                vocabulary=control.vocabulary,
+            )
         except (ValueError, TypeError) as exc:
             raise HTTPException(400, str(exc)) from None
         operation = None

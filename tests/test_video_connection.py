@@ -198,6 +198,10 @@ def test_stopping_subscriber_wakes_waiting_reader_without_disconnect(connections
             StreamAdapterError("private-dependency", code="missing_support"),
             PUBLIC_STREAM_SUPPORT_ERROR,
         ),
+        (
+            StreamAdapterError("private-source?token=secret", code="signaling_timeout"),
+            "连接视频服务器超时，请检查视频地址和网络连通性。",  # noqa: RUF001
+        ),
         (_END, PUBLIC_STREAM_ERROR),
     ],
 )
@@ -212,6 +216,9 @@ def test_failed_source_wakes_subscribers_and_exposes_only_safe_error(
     wait_for(lambda: not connection.running)
     assert connection.status()["connection_state"] == "error"
     assert connection.status()["connection_error"] == message
+    assert connection.status()["connection_error_code"] == (
+        error.code if isinstance(error, StreamAdapterError) else "connection_failed"
+    )
     assert not connection.status()["connected"]
     with pytest.raises(StreamAdapterError, match=message):
         next(subscription.frames())

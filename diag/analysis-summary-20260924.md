@@ -1,5 +1,11 @@
 # 卡顿/雪花排查总结 — 2026-09-24
 
+> 历史诊断记录：下文为 2026-09-24 至 2026-10-03 的环境、测量和当时推断，
+> 不是当前版本的容量或故障归因结论。原始日志未随仓库提交，无法仅凭此文复算。
+> 保留其中独有的多路与 latest-only A/B 记录；当前接收机制和验收边界见
+> [网络与显示验证](../docs/validation/network-and-display.md)，
+> 当前追踪容量见 [追踪性能](../docs/validation/tracking-performance.md)。
+
 目标:手机发 WebRTC → 电脑 Harness 接收,排查 **full annotation** 下为什么卡顿 + 出雪花。
 
 ## 测试设置
@@ -140,4 +146,6 @@ STREAMS=4 VIDEO=<file> SAM=on SECS=90 GPU_CSV=diag/logs/gpu-*.csv diag/run_multi
 
 **结论**:这个**免费的客户端侧修复把多路延迟降了 ~4×、吞吐提了 ~3×**,顺带把 GPU 利用率从 39% 拉到 69%——因为积压本身就在饿着 GPU。剩下的 **2.65s p95(4路)+ 23.4/24GB 显存** 是**结构性的 GPU 串行(`max_gpu_operations:1`)+ 显存硬上限**,要再进一步只能靠多卡/更大显存(硬件/钱),不是代码能修的。
 
-**怎么用**:直播/多路部署给 harness 设 `RICH_LABEL_LATEST_ONLY=true`;离线基准保持默认(关)以保证全量。
+**当前配置**:默认队列策略为 `latest_only`；`RICH_LABEL_LATEST_ONLY=true` 复用此路径。
+离线基准需要全量有序处理时，显式设置 `SAM31_QUEUE_POLICY=durable_ordered`，
+并取消或关闭 `RICH_LABEL_LATEST_ONLY` 覆盖；仅关闭该覆盖不会改变默认队列策略。

@@ -10,12 +10,52 @@ function appFixture(){
  Object.assign(app,{data:{document:{revision:4,workflows:[{id:'workflow-1',name:'Entrance',graph:clone(saved)},{id:'workflow-2',name:'Yard',graph:clone(saved)}],groups:[{id:'group-1',name:'Entrance',camera_ids:['camera01'],workflow_id:'workflow-1',applied_graph:clone(saved),enabled:true,block_enabled:{},camera_overrides:{}}],trash:[]},cameras:[{id:'camera01',enabled:true,status:{analysis_state:'idle'}}],event_catalog:{version:1,events:[]}},drafts:new Map(),undo:new Map(),workflowId:'workflow-1',groupId:'group-1',scope:'all',mode:'edit',selected:'face',view:{x:0,y:0,scale:1},busy:false,testBusy:false,library:true,inspector:true,pending:null,testResult:null,notice:'',error:false,testCamera:'camera01',render(){},feedback(){},t:value=>value,el:{ownerDocument:{activeElement:null}}});
  return app;
 }
+test('dragging video sources assigns distinct deployed channels and preserves branch wiring',()=>{
+ const app=appFixture();app.graph.nodes[0].config.camera_id='camera01';
+ app.data.cameras.push({id:'camera02',enabled:true,status:{analysis_state:'idle'}});
+ app.add('source',{x:50,y:400});const source=app.graph.nodes.at(-1);
+ assert.equal(source.config.camera_id,'camera02');assert.equal(source.x,50);assert.equal(source.config.name,app.cameraName('camera02'));
+ assert.equal(app.connect(source.id,'frames','face','frames'),true);
+ assert.deepEqual(validateGraph(app.graph,{complete:true}),[]);
+ app.add('source');assert.equal(app.graph.nodes.filter(n=>n.type==='source').length,2);
+ assert.match(app.notice,/capacity/);
+ const group={enabled:true,block_enabled:{},camera_overrides:{}};
+ assert.equal(nodeReadiness(app.graph,group,source,'camera01'),'off');
+ assert.equal(nodeReadiness(app.graph,group,source,'camera02'),'on');
+});
+test('source layout edits require saving and removed source drafts do not block Apply',()=>{
+ const app=appFixture(),source=app.graph.nodes[0];source.config.camera_id='camera01';
+ const draft=app.sourceDraft(source);assert.equal(app.sourceSettingsDirty(),false);
+ draft.layout='stereo';assert.equal(app.sourceSettingsDirty(),true);
+ app.graph.nodes=app.graph.nodes.filter(n=>n!==source);assert.equal(app.sourceSettingsDirty(),false);
+});
+
+test('video URL saves through the scoped channel API and never enters a workflow graph',async()=>{
+ const app=appFixture();app.selected='input';app.graph.nodes[0].config.camera_id='camera01';
+ const camera=app.data.cameras[0];camera.settings_url='/v1/fleet/cameras/camera01/settings';
+ app.sourceDraft(app.graph.nodes[0]).url='rtsp://user:secret@camera/live';
+ const requests=[];app.request=async(url,options)=>{requests.push({url,options});return options?{}:{cameras:[{...camera,status:{analysis_state:'idle',configured_stream:true}}]};};
+ assert.equal(await app.sourceAction('save'),true);
+ assert.equal(requests[0].url,camera.settings_url);
+ assert.equal(JSON.parse(requests[0].options.body).stream_url,'rtsp://user:secret@camera/live');
+ assert(!JSON.stringify(app.graph).includes('secret'));assert.equal(app.sourceDraft(app.graph.nodes[0]).url,'');
+ camera.status.analysis_state='running';app.data.cameras=[camera];const count=requests.length;
+ assert.equal(await app.sourceAction('save'),false);assert.equal(requests.length,count);
+});
 test('typed ports reject mismatches, occupied inputs and self connections',()=>{
  const g=graph();assert.equal(connectionError(g,'face','faces','out','faces'),'This input already has a connection. Disconnect it first.');
  assert.match(connectionError(g,'face','faces','summary','frames'),/types do not match/);
  assert.match(connectionError(g,'face','faces','face','frames'),/itself/);
  assert.equal(connectionError({...g,edges:g.edges.filter(e=>e.id!=='c')},'face','faces','out','faces'),null);
  assert.deepEqual(validateGraph(g,{complete:true}),[]);
+});
+test('reselecting connected ports disconnects the edge, exits linking and supports undo',()=>{
+ const app=appFixture(),before=clone(app.graph);
+ app.choosePort({dataset:{node:'input',wcPort:'frames',dir:'out',type:'frames'}});
+ app.choosePort({dataset:{node:'face',wcPort:'frames',dir:'in',type:'frames'}});
+ assert(!app.graph.edges.some(e=>e.id==='a'));assert.equal(app.pending,null);
+ assert.equal(app.notice,'Connection removed.');
+ app.handleAction('undo',{});assert.deepEqual(app.graph,before);
 });
 test('incomplete local edits remain available while Apply requires usable input wiring',()=>{
  assert.deepEqual(validateGraph({nodes:[],edges:[]}),[]);
@@ -32,7 +72,7 @@ test('adding independent summaries preserves originals; singleton native lanes s
  const app=appFixture(),before=clone(app.graph);app.add('summary',{x:400,y:600});assert.equal(app.graph.nodes.length,before.nodes.length+1);assert.deepEqual(app.graph.nodes.slice(0,before.nodes.length),before.nodes);assert.deepEqual(app.graph.edges,before.edges);
  const summaries=app.graph.nodes.filter(n=>n.type==='summary');assert.equal(new Set(summaries.map(n=>n.id)).size,2);summaries[1].config.prompt='Different instruction';assert.equal(summaries[0].config.prompt,'Describe this scene.');
  app.add('face');assert.equal(app.graph.nodes.filter(n=>n.type==='face').length,1);
- assert.equal(definitions.source.single,true);assert.equal(newNode('summary',app.graph).config.interval_seconds,60);
+ assert.notEqual(definitions.source.single,true);assert.equal(newNode('summary',app.graph).config.interval_seconds,60);
 });
 test('group gates always win over camera On, null inherits and camera Off remains local',()=>{
  const n=node('summary','summary'),g={enabled:true,block_enabled:{},camera_overrides:{camera01:{enabled:null,block_enabled:{summary:null}},camera02:{enabled:true,block_enabled:{summary:false}}}};
@@ -284,10 +324,10 @@ function summaryOutputFixture(){
  app.graph.edges.push(edge('input-summary-2','input','frames','summary-2','frames'),edge('input-summary-3','input','frames','summary-3','frames'),edge('summary-2-out','summary-2','summary','out','summary'));
  return app;
 }
-test('one output aggregates independent summary lanes while rejecting duplicate connections',()=>{
+test('one output aggregates independent summary lanes and repeated wiring toggles only that edge',()=>{
  const app=summaryOutputFixture();assert.equal(connectionError(app.graph,'summary-3','summary','out','summary'),null);assert.match(connectionError(app.graph,'summary','summary','out','summary'),/already has a connection/);
  assert.equal(app.connect('summary-3','summary','out','summary'),true);assert.equal(app.graph.edges.filter(e=>e.to_node==='out'&&e.to_port==='summary').length,3);assert.deepEqual(validateGraph(app.graph,{complete:true}),[]);
- assert.equal(app.connect('summary-3','summary','out','summary'),false);assert.equal(app.graph.edges.filter(e=>e.to_node==='out'&&e.to_port==='summary').length,3);
+ assert.equal(app.connect('summary-3','summary','out','summary'),true);assert.equal(app.graph.edges.filter(e=>e.to_node==='out'&&e.to_port==='summary').length,2);
  const html=app.renderInspector();assert(html.includes('data-wc-edge-id="d"'));assert(html.includes('data-wc-edge-id="summary-2-out"'));
 });
 test('editing or removing one output binding preserves sibling summary connections and undo',async()=>{
@@ -332,13 +372,13 @@ async function connectedTrackingFixture(configured=true){
 }
 test('person tracking is visible in the library and authoring enforces its singleton rule',()=>{
  const app=trackingEditorFixture(false);assert.equal(definitions.tracking.single,true);assert.deepEqual(definitions.tracking.inputs,[['frames','frames']]);assert.deepEqual(definitions.tracking.outputs,[['tracks','tracks']]);assert(definitions.output.inputs.some(port=>port[0]==='tracks'&&port[1]==='tracks'));
- assert(app.renderLibrary().includes('data-wc-add="tracking"'));app.add('tracking');const tracker=app.graph.nodes.find(n=>n.type==='tracking');assert(tracker);assert.deepEqual(Object.keys(tracker.config),['name']);const history=app.history().length;
+ assert(app.renderLibrary().includes('data-wc-add="tracking"'));app.add('tracking');const tracker=app.graph.nodes.find(n=>n.type==='tracking');assert(tracker);assert.deepEqual(Object.keys(tracker.config),['name','engine']);const history=app.history().length;
  app.add('tracking');assert.equal(app.graph.nodes.filter(n=>n.type==='tracking').length,1);assert.equal(app.history().length,history);assert.match(app.renderLibrary(),/data-wc-add="tracking"[^>]*disabled/);
 });
 test('tracking bindings apply a frames to tracks route beside independent events and summaries',async()=>{
  const {app,tracker}=await connectedTrackingFixture();assert.deepEqual(app.validation(true),[]);assert.equal(connectionError(app.graph,tracker.id,'tracks','out','events'),'These port types do not match.');
  let body;app.request=async(url,options)=>{assert.equal(url,'/v1/workflows/command');body=JSON.parse(options.body);const response=clone(app.data);response.document.revision++;response.document.workflows[0].graph=clone(body.graph);return response;};
- await app.handleAction('apply',{});assert.equal(body.action,'apply');const saved=body.graph.nodes.find(n=>n.type==='tracking');assert.deepEqual(saved.config,{name:tracker.config.name});
+ await app.handleAction('apply',{});assert.equal(body.action,'apply');const saved=body.graph.nodes.find(n=>n.type==='tracking');assert.deepEqual(saved.config,{name:tracker.config.name,engine:'contour'});
  assert(body.graph.edges.some(e=>e.from_node==='input'&&e.to_node===tracker.id&&e.to_port==='frames'));assert(body.graph.edges.some(e=>e.from_node===tracker.id&&e.from_port==='tracks'&&e.to_node==='out'&&e.to_port==='tracks'));
  assert(body.graph.edges.some(e=>e.from_node==='events'&&e.to_port==='events'));assert(body.graph.edges.some(e=>e.from_node==='summary'&&e.to_port==='summary'));assert.equal(app.dirty(),false);
 });
@@ -377,12 +417,16 @@ test('metadata refresh updates tracking availability without replacing the draft
 });
 
 function canvasHtml(app){
- app.el.contains=()=>false;app.el.querySelector=()=>null;app.el.querySelectorAll=()=>[];app.layout=()=>{};app.size=()=>{};app.scheduleLive=()=>{};app.updateRuntimeLocks=()=>{};
+ app.el.contains=()=>false;app.el.querySelector=()=>null;app.el.querySelectorAll=()=>[];app.layout=()=>{};app.size=()=>{};app.scheduleLive=()=>{};app.updateRuntimeLocks=()=>{};app.updateSourcePreviews=()=>{};
  WorkflowCanvas.prototype.render.call(app);return app.el.innerHTML;
 }
 test('Canvas exposes direct Apply with no Save button or visible draft stage',()=>{
  const app=eventEditorFixture();const html=canvasHtml(app);assert(!html.includes('data-wc-action="save"'));assert(html.includes('data-wc-action="apply"'));assert.doesNotMatch(html,/Save draft|Draft saved|Draft only|Enabled in draft|Save the draft before applying|Edit the shared draft/);
  assert(!app.renderInspector().includes('Enabled in draft'));assert(!app.renderNode(currentEvents(app)).includes('Draft only'));
+ assert(!html.includes('data-wc-action="services"'));
+ assert(html.includes('id="workflow-test-mode"'));assert(html.includes('data-wc-action="real-analysis"'));
+ assert(app.renderInspector().includes('data-wc-service="analysis"'));
+ assert(!app.renderInspector().includes('data-wc-action="analysis-settings"'));
 });
 async function withImmediateAnimation(work){
  const previous=globalThis.requestAnimationFrame;globalThis.requestAnimationFrame=callback=>{callback();return 0;};
@@ -499,4 +543,86 @@ test('Fit includes the supported 64-block graph and zooming in continues from it
   for(const n of nodes){assert(n.x*app.view.scale+app.view.x>=0);assert(n.y*app.view.scale+app.view.y>=0);assert((n.x+176)*app.view.scale+app.view.x<=width);assert((n.y+190)*app.view.scale+app.view.y<=height);}
   const board={getBoundingClientRect:()=>({left:0,top:0,width,height})};app.el.querySelector=()=>board;app.layout=()=>{};const scale=app.view.scale;app.zoom(1.2);assert.equal(app.view.scale,scale*1.2);
  }
+});
+
+
+test('real-analysis recovery invokes the shared settings action without applying or starting a workflow',async()=>{
+ const app=appFixture(),before=clone(app.graph),previous=globalThis.GoodvisionWorkflowServices;let calls=0;
+ globalThis.GoodvisionWorkflowServices={useRealAnalysis:async()=>{calls++;return true;}};
+ app.request=async()=>assert.fail('recovery must not issue a workflow command');
+ try{await app.handleAction('real-analysis',{});assert.equal(calls,1);assert.deepEqual(app.graph,before);assert.equal(app.notice,'Real analysis enabled.');}
+ finally{if(previous)globalThis.GoodvisionWorkflowServices=previous;else delete globalThis.GoodvisionWorkflowServices;}
+});
+
+test('source preview reads the shared input endpoint and clears the image after external disconnect',async()=>{
+ const app=appFixture(),camera=app.data.cameras[0];
+ camera.status={analysis_state:'idle',connection_state:'connected',stream_session_id:'live-1'};
+ camera.source_preview_url='/v1/fleet/cameras/camera01/video/source/latest.jpg';
+ const img={dataset:{wcSourcePreview:'camera01'},hidden:true,removeAttribute(){delete this.src;}},note={dataset:{wcPreviewNote:'camera01'},hidden:false};
+ app.el={ownerDocument:{hidden:false},closest:()=>null,querySelectorAll:selector=>selector==='[data-wc-source-preview]'?[img]:[note]};
+ const requests=[];app.fetch=async(url,options)=>{requests.push({url,options});return{ok:true,blob:async()=>new Blob(['frame'],{type:'image/jpeg'})};};
+ await app.updateSourcePreviews();clearTimeout(app.sourcePreviewTimer);
+ assert.equal(requests.length,1);assert(requests[0].url.startsWith(camera.source_preview_url+'?t='));assert.equal(requests[0].options.method,undefined);
+ assert.equal(img.hidden,false);assert(img.src.startsWith('blob:'));assert.equal(note.hidden,true);
+ camera.status.connection_state='disconnected';await app.updateSourcePreviews();clearTimeout(app.sourcePreviewTimer);
+ assert.equal(requests.length,1);assert.equal(img.hidden,true);assert.equal(app.sourceImages.size,0);
+ camera.status.connection_state='error';camera.status.connection_error='连接视频服务器超时，请检查视频地址和网络连通性。';
+ await app.updateSourcePreviews();clearTimeout(app.sourcePreviewTimer);
+ assert.equal(note.textContent,camera.status.connection_error);assert.equal(note.hidden,false);assert.equal(img.hidden,true);
+});
+
+
+test('model palette groups five independent modules and retains inactive alternatives',async()=>{
+ const app=trackingEditorFixture();const library=app.renderLibrary();
+ for(const key of ['tracking','bbox','events','system1','neural'])assert(library.includes('data-wc-add="'+key+'"'));
+ assert(library.includes('Person tracking'));assert(library.includes('Event recognition'));
+ assert.doesNotMatch(library,/YOLO|VideoJev|CLIP|SAM/);
+ app.add('tracking');app.add('bbox');app.add('system1');app.add('neural');
+ assert.equal(app.graph.nodes.filter(n=>n.type==='tracking').length,2);
+ assert.equal(app.graph.nodes.filter(n=>n.type==='events').length,3);
+ const bbox=app.graph.nodes.find(n=>n.config?.engine==='bbox');
+ assert.equal(bbox.enabled,false);app.selected=bbox.id;
+ await app.fieldInput({wcField:'service_url'},{value:'http://localhost:8092/v1/labels'});
+ await app.fieldChange({wcNodeEnabled:''},{checked:true});
+ assert.equal(bbox.enabled,true);assert.equal(app.graph.nodes.find(n=>n.config?.engine==='contour').enabled,false);
+ assert.equal(app.graph.nodes.filter(n=>n.type==='events'&&n.enabled!==false).length,1);
+ const neural=app.graph.nodes.find(n=>n.config?.engine==='neural');app.selected=neural.id;
+ await app.fieldChange({wcNodeEnabled:''},{checked:true});
+ assert.equal(app.graph.nodes.filter(n=>n.type==='events'&&n.enabled!==false).length,1);
+ assert.deepEqual(neural.config.event_sensitivities,{});
+ assert(!app.renderInspector().includes('data-wc-sensitivity'));
+ assert(app.renderInspector().includes('Service URL'));
+});
+
+test('Output appearance persists separately from result connections and participates in Undo',async()=>{
+ const app=summaryOutputFixture();app.selected='out';const before=clone(app.graph.edges);
+ assert(app.renderInspector().includes('data-wc-display="summary:position"'));
+ await app.fieldChange({wcDisplay:'summary:position'},{value:'bottom-left'});
+ assert.equal(app.graph.nodes.find(n=>n.id==='out').config.display.summary.position,'bottom-left');
+ await app.fieldChange({wcDisplay:'summary:visible'},{checked:false});
+ assert.equal(app.graph.nodes.find(n=>n.id==='out').config.display.summary.visible,false);
+ assert.deepEqual(app.graph.edges,before);await app.handleAction('undo',{});
+ assert.notEqual(app.graph.nodes.find(n=>n.id==='out').config.display.summary.visible,false);
+ assert.equal(app.graph.nodes.find(n=>n.id==='out').config.display.summary.position,'bottom-left');
+});
+
+test('Output appearance cannot be changed while assigned cameras are running',async()=>{
+ const app=summaryOutputFixture();app.selected='out';app.data.cameras[0].status={analysis_state:'running'};
+ const before=clone(app.graph);await app.fieldChange({wcDisplay:'events:visible'},{checked:false});
+ assert.deepEqual(app.graph,before);
+});
+
+
+test('group Output preview uses the applied group workflow, independently of editor selection',async()=>{
+ const app=appFixture();app.mode='groups';app.selected='out';app.group.workflow_id='workflow-2';app.testCamera='camera01';app.data.cameras[0].status={analysis_state:'running'};
+ const img={dataset:{wcOutputPreview:'out'},hidden:true,isConnected:true};app.el.querySelector=selector=>selector==='[data-wc-output-preview]'?img:null;
+ let requested;app.fetch=async url=>{requested=url;return{ok:true,blob:async()=>new Blob(['jpeg'],{type:'image/jpeg'})};};
+ try{await app.updateOutputPreview();assert(requested.includes('workflow_id=workflow-2'));assert.equal(img.hidden,false);assert.equal(app.workflowId,'workflow-1');}
+ finally{app.closed=true;clearTimeout(app.outputPreviewTimer);if(app.outputPreviewUrl)URL.revokeObjectURL(app.outputPreviewUrl);}
+});
+
+test('hidden workspaces stop requesting output frames',async()=>{
+ const app=appFixture();app.testCamera='camera01';app.selected='out';app.data.cameras[0].status={analysis_state:'running'};
+ const img={dataset:{wcOutputPreview:'out'},hidden:false};app.el.querySelector=()=>img;app.el.ownerDocument.hidden=true;
+ app.fetch=async()=>assert.fail('hidden preview must not fetch');await app.updateOutputPreview();assert.equal(img.hidden,true);
 });

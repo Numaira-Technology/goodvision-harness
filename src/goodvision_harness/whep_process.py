@@ -18,6 +18,7 @@ from collections.abc import Iterator
 import numpy as np
 
 from .latency_trace import log_timing
+from .privacy import stream_error_code
 from .video_to_stream import LiveFrame
 
 DEFAULT_FRAME_CAPACITY = 32 * 1024 * 1024
@@ -181,14 +182,11 @@ def _worker(options, slot, stop, result):
             outcome = ("error", "connection_failed")
     except BaseException as exc:
         # Never transport/log the exception message: it may contain credentials.
-        code = getattr(exc, "code", "connection_failed")
-        outcome = (
-            "error",
-            "missing_support" if code == "missing_support" else "connection_failed",
-        )
+        outcome = ("error", stream_error_code(getattr(exc, "code", None)))
         log_timing(
             "network_receive_process_error",
             pid=os.getpid(),
+            connection_id=options.get("connection_id"),
             error_type=type(exc).__name__,
             code=outcome[1],
         )
