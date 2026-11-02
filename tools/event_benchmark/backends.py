@@ -18,6 +18,7 @@ CANDIDATES = {
     "videojev": ("ZhuYuhan/VideoJev-4B", "videojev"),
     "decision3": ("vllm-sr/d3-nano", "decision3"),
     "clip": ("openai/clip-vit-large-patch14", "contrastive"),
+    "clip-neural": ("openai/clip-vit-large-patch14", "neural"),
     "siglip2": ("google/siglip2-base-patch16-224", "contrastive"),
 }
 REVISIONS = {
@@ -114,18 +115,48 @@ class RemoteBackend:
             if backend == "language"
             else "https://openrouter.ai/api/alpha/decisions"
         )
-        if backend in ("videojev", "decision3") and not endpoint:
+        if backend in ("videojev", "decision3", "neural") and not endpoint:
             raise ValueError(
                 "native candidates require --endpoint http://host:port/predict"
             )
+        self.options = OPTIONS
+        if backend == "neural":
+            from goodvision_harness.videojev_core import OPTIONS as CORE_OPTIONS
+            from goodvision_harness.neural_service import PROMPTS
+
+            self.options = list(CORE_OPTIONS)
+            self.scene_prompts = PROMPTS
         self.metadata = {
             "model": model,
             "backend": backend,
             "expected_revision": REVISIONS.get(model),
             "question_envelope": WINDOW_RULE,
-            "options": OPTIONS,
+            "options": self.options,
             "max_transmissions_per_window": 1,
         }
+        if backend == "neural":
+            self.metadata.update(
+                question_envelope=(
+                    "Base labels use fixed server-side "
+                    "goodvision_harness.neural_service.PROMPTS; "
+                    "supplied question text is not executed."
+                ),
+                base_frame_usage="last supplied frame only",
+                ppe_frame_usage=(
+                    "per-person equipment states from each supplied source frame "
+                    "(two by default), combined by window_presence"
+                ),
+                scene_prompts={
+                    label: self.scene_prompts[label.removeprefix("scene/")]
+                    for label in questions
+                    if label.removeprefix("scene/") in self.scene_prompts
+                },
+                unsupported_events=[
+                    label
+                    for label in questions
+                    if label.removeprefix("scene/") not in self.scene_prompts
+                ],
+            )
         if backend == "decision":
             self.metadata.update(
                 native_task="noul",
@@ -147,6 +178,13 @@ class RemoteBackend:
                     return False
                 self._cooldown.wait(min(0.25, self._cooldown_until - time.monotonic()))
             return not self._provider_error and (stop is None or not stop.is_set())
+
+    def _wire_id(self, label):
+        if self.backend == "neural":
+            return label if label.startswith("scene/") else "scene/" + label
+        if self.backend == "videojev" and label == "ppe_violation":
+            return "scene/ppe_violation"
+        return label
 
     def _body(self, window):
         uris = [
@@ -206,21 +244,27 @@ class RemoteBackend:
             )
         times = window["source_times"]
         fps = (len(times) - 1) / (times[-1] - times[0])
+        template = {}
+        for label, question in questions.items():
+            wire_id = self._wire_id(label)
+            if (
+                self.backend == "neural"
+                and wire_id.removeprefix("scene/") not in self.scene_prompts
+            ):
+                continue
+            row = {"id": wire_id, "task": "choice", "options": self.options}
+            if self.backend != "neural":
+                row["query_parts"] = [WINDOW_RULE + "Source times: ", "\n" + question]
+            template.setdefault(wire_id, row)
+        if not template:
+            raise ValueError("no requested event is supported by the product scene service")
         return {
             "session": window["source_id"],
             "request_id": window["request_id"],
             "fps": fps,
             "frame_times": times,
             "images": [uri.split(",", 1)[1] for uri in uris],
-            "question_template": [
-                {
-                    "id": label,
-                    "task": "choice",
-                    "options": OPTIONS,
-                    "query_parts": [WINDOW_RULE + "Source times: ", "\n" + question],
-                }
-                for label, question in questions.items()
-            ],
+            "question_template": list(template.values()),
         }
 
     def _decode(self, response):
@@ -268,11 +312,11 @@ class RemoteBackend:
                 except (ValueError, KeyError, TypeError, IndexError) as error:
                     values[label] = _result(format_state="invalid", error=str(error))
             return values
-        if self.backend in ("videojev", "decision3"):
+        if self.backend in ("videojev", "decision3", "neural"):
             raw = response["raw"]
         else:
             raw = response
-        if self.backend == "videojev":
+        if self.backend in ("videojev", "neural"):
             from goodvision_harness.videojev_core import choice_indices
 
             if not isinstance(raw, list):
@@ -284,15 +328,40 @@ class RemoteBackend:
             ]
             values = {}
             for label in self.questions:
+                wire_id = self._wire_id(label)
+                if (
+                    self.backend == "neural"
+                    and wire_id.removeprefix("scene/") not in self.scene_prompts
+                ):
+                    values[label] = _result(
+                        request_state="not_sent",
+                        format_state="unavailable",
+                        error="event is not supported by the product scene service",
+                    )
+                    continue
                 rows = [
                     row
                     for row in flat
-                    if isinstance(row, dict) and row.get("id") == label
+                    if isinstance(row, dict) and row.get("id") == wire_id
                 ]
+                if wire_id == "scene/ppe_violation":
+                    derived = rows[0].get("derived") if len(rows) == 1 else None
+                    if (
+                        isinstance(derived, dict)
+                        and "detected" in derived
+                        and type(derived["detected"]) in (bool, type(None))
+                    ):
+                        values[label] = _result(derived["detected"])
+                    else:
+                        values[label] = _result(
+                            format_state="invalid",
+                            error="missing or invalid derived PPE state",
+                        )
+                    continue
                 try:
-                    index = choice_indices(rows, [{"id": label, "options": OPTIONS}])[
-                        label
-                    ]
+                    index = choice_indices(
+                        rows, [{"id": wire_id, "options": self.options}]
+                    )[wire_id]
                     values[label] = _result(
                         (True, False, None)[index],
                         probabilities=rows[0]["probabilities"],
@@ -330,9 +399,13 @@ class RemoteBackend:
         return values
 
     def _window_response(self, response, window, *, error_response=False):
-        if self.backend in ("videojev", "decision3") and isinstance(response, dict):
+        if (
+            self.backend in ("videojev", "decision3", "neural")
+            and isinstance(response, dict)
+        ):
             expected = {"request_id": window["request_id"], "model": self.model}
-            if self.model in REVISIONS:
+            # The neural service returns request_id and model, but no revision.
+            if self.backend != "neural" and self.model in REVISIONS:
                 expected["revision"] = REVISIONS[self.model]
             # Native error envelopes omit model metadata, but still echo request_id.
             mismatched = [
@@ -476,7 +549,7 @@ class RemoteBackend:
                     value["error"] += "; response body: " + str(read_error)
             finally:
                 error.close()
-            if self.backend in ("videojev", "decision3"):
+            if self.backend in ("videojev", "decision3", "neural"):
                 try:
                     response = json.loads(
                         raw, object_pairs_hook=_unique, parse_constant=_invalid_constant
@@ -531,6 +604,13 @@ class RemoteBackend:
                 label: _result(format_state="invalid", error=str(error))
                 for label in self.questions
             }
+        if self.backend == "neural":
+            for label in self.metadata["unsupported_events"]:
+                values[label] = _result(
+                    request_state="not_sent",
+                    format_state="unavailable",
+                    error="event is not supported by the product scene service",
+                )
         return {
             "predictions": values,
             "raw": raw,
@@ -538,9 +618,12 @@ class RemoteBackend:
             "request_seconds": time.monotonic() - started,
             "shared_error": shared_error,
             "cooldown": cooldown,
-            "timings": raw.get("timings")
-            if isinstance(raw, dict) and self.backend in ("videojev", "decision3")
-            else None,
+            "timings": (
+                raw.get("timings")
+                if isinstance(raw, dict)
+                and self.backend in ("videojev", "decision3", "neural")
+                else None
+            ),
         }
 
 

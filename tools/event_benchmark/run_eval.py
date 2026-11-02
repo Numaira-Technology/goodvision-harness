@@ -308,7 +308,7 @@ def streaming_run(args, parser, model, backend):
         parser.error("slots must be 1..12 and window-frames must be 1..4")
     if not math.isfinite(args.queue_age) or args.queue_age <= 0:
         parser.error("queue-age must be positive and finite")
-    if backend in ("videojev", "decision3") and args.window_frames < 2:
+    if backend in ("videojev", "decision3", "neural") and args.window_frames < 2:
         parser.error("native services require at least two distinct original frames")
     if backend == "decision3" and args.window_frames != 2:
         parser.error("the current Decision 3 runtime accepts exactly two original frames")
@@ -417,8 +417,8 @@ def main():
                     help="preserve historical commands; select streaming-v3 for common real-time windows")
     ap.add_argument("--candidate", choices=STREAM_CANDIDATES, help="named model+backend preset")
     ap.add_argument("--model", help="explicit model id (with --backend)")
-    ap.add_argument("--backend", choices=["language", "decision", "videojev", "decision3", "contrastive"],
-                    help="explicit backend class")
+    ap.add_argument("--backend", choices=["language", "decision", "videojev", "decision3", "contrastive", "neural"],
+                    help="explicit backend class; neural uses the product CLIP service's fixed prompts")
     ap.add_argument("--samples", type=Path, required=True)
     ap.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     ap.add_argument("--media", type=Path, nargs="+", required=True,
@@ -433,10 +433,10 @@ def main():
     ap.add_argument("--queue-age", type=float, default=2.0,
                     help="drop an unsent window after this many queued seconds")
     ap.add_argument("--events", nargs="+", default=["six"],
-                    help="base4, six, or explicit event labels; common across every model")
+                    help="base4, six, or explicit labels; unsupported neural events stay not_sent; PPE/litter use ppe_violation ground_litter")
     ap.add_argument("--questions", type=Path,
-                    help="event-keyed JSON: question strings or {question, positive, contrast} specs")
-    ap.add_argument("--endpoint", help="API endpoint; native services use http://host:port/predict")
+                    help="event-keyed JSON: question strings or {question, positive, contrast} specs; neural uses fixed server text")
+    ap.add_argument("--endpoint", help="API endpoint; videojev, decision3 and neural use http://host:port/predict")
     ap.add_argument("--cache-dir", type=Path, default=Path.home() / ".cache/huggingface/hub")
     ap.add_argument("--thresholds", type=Path,
                     help="pre-frozen cosine margins; omitted means explicit untuned zero baseline")
