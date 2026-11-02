@@ -66,13 +66,17 @@ def run_streams(
     frame_width=720,
     jpeg_quality=90,
     queue_age=2.0,
+    load_seconds=None,
 ):
     """Replace input at EOF immediately; previous-source requests drain independently.
 
     Every source has at most one outstanding window. Global outstanding work is
     bounded by workers + slots. Busy/late/expired windows stay missing evidence;
-    they neither stop a source nor become negative answers. Filler sources keep
-    slots occupied until every primary input reaches EOF, and never enter scoring.
+    they neither stop a source nor become negative answers. Without a horizon,
+    filler sources keep slots occupied until every primary input reaches EOF.
+    Filler sources never enter scoring.
+    An optional horizon keeps filler input available from the first paced ingress
+    until that duration elapses, without truncating any primary video.
     """
     import cv2
 
@@ -94,6 +98,7 @@ def run_streams(
     started = time.monotonic()
     session_prefix = f"eval-{time.time_ns():x}"
     last_primary_input = [None]
+    first_input_monotonic = None
     interrupted = False
 
     def record(row):
@@ -107,12 +112,29 @@ def run_streams(
             stop.set()
             raise
 
+    def filler_allowed():
+        # Call while holding the input-state lock.
+        if load_seconds is None or first_input_monotonic is None:
+            return bool(primary_remaining)
+        return time.monotonic() < first_input_monotonic + load_seconds
+
+    def filler_finished(state):
+        if state["quality_reference"]:
+            return False
+        with lock:
+            finished = not filler_allowed()
+            if finished and load_seconds is not None:
+                state["input_end_reason"] = "load_duration_reached"
+            return finished
+
     def choose(slot):
         nonlocal serial
         with available:
             while not todo and not reusable and primary_remaining and not stop.is_set():
+                if not filler_allowed():
+                    return None
                 available.wait(0.02)
-            if stop.is_set() or not primary_remaining:
+            if stop.is_set() or (not todo and (not reusable or not filler_allowed())):
                 return None
             primary = bool(todo)
             serial += 1
@@ -274,13 +296,14 @@ def run_streams(
             admission.release()
 
     def reader(slot, pool):
-        nonlocal primary_remaining
+        nonlocal primary_remaining, first_input_monotonic
         while not stop.is_set():
             state = choose(slot)
             if state is None:
                 return
             capture = None
             last_timestamp = None
+            last_ingress_timestamp = None
             sample_interval = interval
             try:
                 path = media_index.get(state["filename"])
@@ -301,9 +324,8 @@ def run_streams(
                 pts_origin, last_timestamp = None, None
                 window = deque(maxlen=window_frames)
                 while not stop.is_set():
-                    with lock:
-                        if not state["quality_reference"] and not primary_remaining:
-                            break
+                    if filler_finished(state):
+                        break
                     ok, bgr = capture.read()
                     if not ok:
                         state["eof_seen"] = raw_index >= info.frame_count
@@ -313,6 +335,8 @@ def run_streams(
                             # loop and every source ends one frame period early.
                             end_target = origin + last_timestamp + 1 / info.source_fps
                             while not stop.is_set() and time.monotonic() < end_target:
+                                if load_seconds is not None and filler_finished(state):
+                                    break
                                 stop.wait(
                                     min(0.02, max(0, end_target - time.monotonic()))
                                 )
@@ -343,10 +367,21 @@ def run_streams(
                     last_timestamp = timestamp
                     target = origin + timestamp
                     while not stop.is_set() and time.monotonic() < target:
+                        if load_seconds is not None and filler_finished(state):
+                            break
                         stop.wait(min(0.02, max(0, target - time.monotonic())))
-                    if stop.is_set():
+                    if stop.is_set() or (
+                        load_seconds is not None and filler_finished(state)
+                    ):
                         break
-                    ingress = time.monotonic()
+                    if load_seconds is None:
+                        ingress = time.monotonic()
+                    else:
+                        with lock:
+                            ingress = time.monotonic()
+                            if first_input_monotonic is None:
+                                first_input_monotonic = ingress
+                    last_ingress_timestamp = timestamp
                     decoder_msec = decoder_msec if valid_pts else None
                     if state["input_start_monotonic"] is None:
                         state["input_start_monotonic"] = ingress
@@ -478,10 +513,15 @@ def run_streams(
                         )
                     except Exception:
                         pass  # record() already stops unsafe shared storage.
-                if last_timestamp is not None:
+                planning_timestamp = (
+                    last_ingress_timestamp
+                    if state.get("input_end_reason") == "load_duration_reached"
+                    else last_timestamp
+                )
+                if planning_timestamp is not None:
                     state["planned_windows"] = max(
                         0,
-                        math.floor(last_timestamp / sample_interval + 1e-8)
+                        math.floor(planning_timestamp / sample_interval + 1e-8)
                         - window_frames
                         + 2,
                     )
@@ -663,6 +703,32 @@ def run_streams(
             "remote clocks are not subtracted"
         ),
     }
+    if load_seconds is None:
+        coverage = _coverage(
+            states, slots, started,
+            last_primary_input[0] or max(
+                (state["input_end_monotonic"] for state in primary.values()),
+                default=started,
+            ),
+        )
+    else:
+        actual_inputs = [
+            state for state in states
+            if state["input_start_monotonic"] is not None
+            and state["input_end_monotonic"] is not None
+        ]
+        input_start = min(
+            (state["input_start_monotonic"] for state in actual_inputs), default=started
+        )
+        input_end = max(
+            (state["input_end_monotonic"] for state in actual_inputs), default=input_start
+        )
+        coverage = _coverage(states, slots, input_start, input_end)
+        coverage.update(
+            input_start_monotonic=input_start, input_end_monotonic=input_end,
+            load_deadline_monotonic=(first_input_monotonic + load_seconds)
+            if first_input_monotonic is not None else None,
+        )
     return {
         "spec_version": PROTOCOL,
         "model": backend.metadata,
@@ -685,6 +751,7 @@ def run_streams(
             "frame_width": frame_width,
             "jpeg_quality": jpeg_quality,
             "queue_age_seconds": queue_age,
+            "load_seconds": load_seconds,
             "outstanding_limit": workers + slots,
             "per_source_outstanding_limit": 1,
             "replacement": (
@@ -716,16 +783,7 @@ def run_streams(
         "started_monotonic": started,
         "finished_monotonic": finished,
         "wall_seconds": finished - started,
-        "input_coverage": _coverage(
-            states,
-            slots,
-            started,
-            last_primary_input[0]
-            or max(
-                (state["input_end_monotonic"] for state in primary.values()),
-                default=started,
-            ),
-        ),
+        "input_coverage": coverage,
         "latency": {
             "primary_input_to_result_seconds": _distribution(primary_latencies),
             "all_input_to_result_seconds": _distribution(latencies),

@@ -308,6 +308,10 @@ def streaming_run(args, parser, model, backend):
         parser.error("slots must be 1..12 and window-frames must be 1..4")
     if not math.isfinite(args.queue_age) or args.queue_age <= 0:
         parser.error("queue-age must be positive and finite")
+    if args.load_seconds is not None and (
+        not math.isfinite(args.load_seconds) or args.load_seconds <= 0
+    ):
+        parser.error("load-seconds must be positive and finite")
     if backend in ("videojev", "decision3", "neural") and args.window_frames < 2:
         parser.error("native services require at least two distinct original frames")
     if backend == "decision3" and args.window_frames != 2:
@@ -382,7 +386,7 @@ def streaming_run(args, parser, model, backend):
         out = run_streams(samples, media_index, questions, runtime, args.out,
                           slots=args.slots, workers=args.workers, interval=args.interval,
                           window_frames=args.window_frames, frame_width=FRAME_WIDTH,
-                          queue_age=args.queue_age)
+                          queue_age=args.queue_age, load_seconds=args.load_seconds)
     finally:
         try:
             runtime.close()
@@ -432,6 +436,8 @@ def main():
                     help="distinct sampled original frames in each sliding window; default 2")
     ap.add_argument("--queue-age", type=float, default=2.0,
                     help="drop an unsent window after this many queued seconds")
+    ap.add_argument("--load-seconds", type=float,
+                    help="streaming-v3 filler horizon from first paced input; primary videos always finish")
     ap.add_argument("--events", nargs="+", default=["six"],
                     help="base4, six, or explicit labels; unsupported neural events stay not_sent; PPE/litter use ppe_violation ground_litter")
     ap.add_argument("--questions", type=Path,
