@@ -65,6 +65,8 @@ def test_separate_projects_share_only_network_and_use_service_addresses(tmp_path
     main = spec.compose("main", settings, tmp_path, tmp_path)
     bbox = spec.compose("bbox", settings, tmp_path, tmp_path)
     assert main["name"] != bbox["name"]
+    assert main["services"]["main"]["container_name"] == "goodvision-main-site1"
+    assert bbox["services"]["bbox"]["container_name"] == "goodvision-bbox-site1"
     assert main["networks"]["modules"] == bbox["networks"]["modules"]
     assert main["networks"]["modules"]["external"] is True
     environment = main["services"]["main"]["environment"]
@@ -88,9 +90,14 @@ def test_gpu_layers_are_reused_without_sharing_contour_engine_port(tmp_path):
     bbox = spec.compose("bbox", settings, tmp_path, tmp_path)["services"]["bbox"]
     contour = spec.compose("contour", settings, tmp_path, tmp_path)
     engine = contour["services"]["engine"]
+    assert contour["services"]["contour"]["container_name"] == (
+        "goodvision-contour-default"
+    )
+    assert engine["container_name"] == "goodvision-contour-default-engine"
     system1 = spec.compose("system1", settings, tmp_path, tmp_path)["services"][
         "system1"
     ]
+    assert system1["container_name"] == "goodvision-system1-default"
     assert (
         bbox["build"]["args"]["GPU_RUNTIME_IMAGE"]
         == engine["build"]["args"]["GPU_RUNTIME_IMAGE"]

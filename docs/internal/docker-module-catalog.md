@@ -43,6 +43,7 @@ Contour 与 CUDA Bbox 共用 PyTorch 2.10 底座，System 1 使用 2.8 底座；
 | 对象 | 固定规则 | `office` 安装示例 |
 | --- | --- | --- |
 | Compose project | `goodvision-<namespace>-<module>`，`<module>` 使用安装器短 ID | `goodvision-office-bbox` |
+| 容器实例 | 固定模块名后追加 `-<namespace>`；Contour 推理角色再追加 `-engine` | `goodvision-main-office`、`goodvision-contour-office-engine` |
 | 同机共享网络 | `goodvision-<namespace>` | `goodvision-office` |
 | 网络别名 | `gv-<module>`，只在所在网络内使用 | `gv-bbox` |
 | 默认状态根目录 | `~/.goodvision/docker/<namespace>`；可用 `--state-dir` 指定 | `~/.goodvision/docker/office` |

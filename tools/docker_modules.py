@@ -149,6 +149,7 @@ def compose(module, settings, source: Path, state: Path):
     if ":" in bind:
         bind = f"[{bind}]"
     service = {
+        "container_name": f"goodvision-{module}-{ns}",
         "init": True,
         "restart": "unless-stopped",
         "ports": [f"{bind}:{settings['ports'][module]}:{PORTS[module]}"],
@@ -278,6 +279,7 @@ def compose(module, settings, source: Path, state: Path):
         )
         document["networks"]["engine"] = {"internal": True}
         document["services"]["engine"] = {
+            "container_name": f"goodvision-contour-{ns}-engine",
             "image": f"goodvision-contour:{version}-engine",
             "build": {
                 "context": str(source / "workers"),

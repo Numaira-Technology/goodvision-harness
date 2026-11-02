@@ -84,6 +84,9 @@ python tools/deploy_modules.py up --modules contour bbox system1 --namespace off
 默认网络名 `goodvision-<namespace>`；每个模块项目名为
 `goodvision-<namespace>-<module>`。安装器创建并标识共享网络，遇到同名但不属于
 本安装器的网络时拒绝接管。各项目单独拥有自己的数据卷。
+容器实例使用固定模块名并追加安装名称，例如 `goodvision-main-office`、
+`goodvision-bbox-office`、`goodvision-system1-office`；Contour 的两种角色为
+`goodvision-contour-office` 和 `goodvision-contour-office-engine`。
 
 | 服务 | 主程序容器使用的同机地址 | 默认宿主机端口 |
 | --- | --- | --- |
