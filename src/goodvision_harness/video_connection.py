@@ -148,22 +148,23 @@ class VideoConnection:
         with self._condition:
             return self._jpeg
 
-    def display_frames(self, after: int = -1, *, max_age_seconds: float = 0.5,
+    def display_frames(self, after: int | None = -1, *, max_age_seconds: float = 0.5,
                        limit: int = 8) -> tuple:
         """Bounded presentation history; never used to queue analysis work.
 
         The caller's playback budget determines which frames are still useful.
         History remains bounded by the encoder's byte/frame limits. Skipped
-        source sequences remain visible to the contour validator.
+        source sequences remain visible to the contour validator. None reads
+        bounded history including sequence zero; negative integers read only latest.
         """
         with self._condition:
             if not self._display_frames:
                 return ()
             latest = self._display_frames[-1]
-            if after < 0:
+            if after is not None and after < 0:
                 return (latest,)
             return tuple(item for item in self._display_frames
-                         if item[0] > after
+                         if (after is None or item[0] > after)
                          and item[1] >= latest[1] - max_age_seconds)[:limit]
 
     def subscribe(self) -> VideoSubscription:
