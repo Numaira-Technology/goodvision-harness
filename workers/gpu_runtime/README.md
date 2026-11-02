@@ -1,5 +1,9 @@
 # 共享 GPU 运行环境
 
+统一 Docker 安装器及独立源码安装包入口见
+[独立 Docker 安装单元](../../docs/guides/docker-modules.md)。该入口为底座和模块增加
+发布版本标签，并统一管理网络与持久数据；下面的命令仍是原有手动构建入口。
+
 NVIDIA 驱动由宿主机统一提供；Docker 的 NVIDIA Container Toolkit 也只配置一次。
 `Dockerfile` 把 CUDA 12.8 开发运行库、Python 3.12、基础系统库做成公共镜像层，
 再叠加固定版本的 PyTorch。模块镜像只安装自己的额外依赖和源码。

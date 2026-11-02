@@ -626,6 +626,18 @@ test('local service start uses the selected fixed module and never changes the w
  await app.handleAction('start-module',{dataset:{engine:'system1'}});assert.equal(calls.length,1);
 });
 
+test('container-managed modules show installer controls and keep ownership after an error',async()=>{
+ const app=trackingEditorFixture();app.add('bbox');app.selected=app.graph.nodes.find(n=>n.config?.engine==='bbox').id;
+ app.request=async()=>({state:'stopped',ready:false,manager:'compose'});
+ await app.localModuleStatus('bbox',true);
+ assert.match(app.renderInspector(),/Check module service/);
+ assert.match(app.renderInspector(),/managed by the installation launcher/);
+ app.request=async()=>{throw new Error('Unavailable');};
+ await app.localModuleStatus('bbox',true);
+ assert.equal(app.moduleStates.bbox.manager,'compose');
+ assert.match(app.renderInspector(),/Check module service/);
+});
+
 test('Output appearance persists separately from result connections and participates in Undo',async()=>{
  const app=summaryOutputFixture();app.selected='out';const before=clone(app.graph.edges);
  assert(app.renderInspector().includes('data-wc-display="summary:position"'));

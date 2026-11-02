@@ -63,6 +63,8 @@
     'Connect to this module running on your cloud GPU server.':'连接部署在云服务器上的此模块服务。',
     'Connect to this module running on an independent server.':'连接部署在独立服务器上的此模块服务。',
     'Start / check local service':'启动 / 检查本机服务','Local service ready':'本机服务已就绪','Local service starting…':'本机服务正在启动…',
+    'Check module service':'检查模块服务',
+    'This module is managed by the installation launcher. Start or stop it there.':'此模块由安装工具管理，请通过安装工具启动或停止。',
     'Local service stopped':'本机服务未启动','Check or start the local service before analysis.':'开始分析前可先启动或检查本机服务。',
     'Local service failed. Check model dependencies, weights and GPU.':'本机服务启动失败，请检查模型依赖、权重和显卡。',
     'Choose a supported execution location.':'请选择有效的运行位置。','Enter a valid service URL without credentials.':'请填写有效的服务地址，不包含用户名或密码。'
@@ -316,8 +318,10 @@
       let html=`<label class="wc-field"><span>${esc(this.t('Execution location'))}</span><select data-wc-execution-mode aria-label="${esc(this.t('Execution location'))}" ${disabled?'disabled':''}>${[['local','This computer'],['server','Independent server'],['cloud','Cloud GPU server']].map(([value,label])=>`<option value="${value}" ${mode===value?'selected':''}>${esc(this.t(label))}</option>`).join('')}</select></label>`;
       if(mode==='local'){
         const status=this.moduleStates?.[selected]?.state||'unchecked';
+        const managed=this.moduleStates?.[selected]?.manager==='compose';
           html+=`<p class="wc-note">${esc(this.t(selected==='bbox'?'Bbox runs in its own environment. It uses NVIDIA CUDA when available, or CPU on this computer.':'Run the existing module code on the analysis host. Model dependencies, weights and a supported GPU must be installed.'))}</p><p class="wc-note" role="status">${esc(this.t({ready:'Local service ready',starting:'Local service starting…',error:'Local service failed. Check model dependencies, weights and GPU.',stopped:'Local service stopped',unchecked:'Check or start the local service before analysis.'}[status]))}</p>`;
-        html+=this.button('start-module','Start / check local service','',`data-engine="${selected}" ${disabled||this.cameras.some(camera=>cameraBusy(camera))?'disabled':''}`);
+        if(managed)html+=`<p class="wc-note">${esc(this.t('This module is managed by the installation launcher. Start or stop it there.'))}</p>`;
+        html+=this.button('start-module',managed?'Check module service':'Start / check local service','',`data-engine="${selected}" ${disabled||this.cameras.some(camera=>cameraBusy(camera))?'disabled':''}`);
       }else{
         const key=mode==='cloud'?'cloud_service_url':'service_url';
         html+=this.field(mode==='cloud'?'Cloud service URL':'Service URL',key,config[key]||'','url','placeholder="http://gpu-host:'+({bbox:8096,system1:8097,neural:8098}[selected])+'"',disabled);
@@ -332,7 +336,7 @@
         const value=await this.request('/v1/workflow-modules/'+selected+'/local',start?{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}:undefined);
         this.moduleStates[selected]=value;if(start)this.say('');this.render();
         if(value.state==='starting'&&!this.closed)this.moduleTimer=root.setTimeout?.(()=>this.localModuleStatus(selected),2000);
-      }catch(error){this.moduleStates[selected]={state:'error'};this.say(error.message,true);this.render();}
+      }catch(error){this.moduleStates[selected]={...this.moduleStates[selected],state:'error'};this.say(error.message,true);this.render();}
     }
     affectedBusy(group=this.group){return Boolean(group?.camera_ids?.some(id=>cameraBusy(this.cameras.find(c=>c.id===id))));}
     renderGroupControls(node){const group=this.group;if(!group)return '';const all=this.scope==='all',locked=this.busy||(all?this.affectedBusy():cameraBusy(this.cameras.find(c=>c.id===this.scope))),override=group.camera_overrides?.[this.scope]||{};const policy=(key,value,label)=>`<label class="wc-policy"><span>${esc(label)}</span><select data-wc-policy="${key}" data-node="${esc(node.id)}" ${locked?'disabled':''}><option value="inherit" ${value==null?'selected':''}>${esc(this.t('Inherit'))}</option><option value="on" ${value===true?'selected':''}>${esc(this.t('On'))}</option><option value="off" ${value===false?'selected':''}>${esc(this.t('Off'))}</option></select></label>`;

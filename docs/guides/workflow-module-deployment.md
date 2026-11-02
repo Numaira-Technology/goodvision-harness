@@ -1,5 +1,9 @@
 # Bbox、System 1 和神经网络模块部署
 
+需要统一 Docker 网络、启动管理或分别生成客户安装包时，使用
+[独立 Docker 安装单元](docker-modules.md)。该入口支持主程序、Contour、Bbox、System 1
+和共享 GPU 底座；本页保留原生进程部署及旧 Compose 入口。
+
 画布中三个模块都有独立的“运行位置”，设置随工作流应用并持久保存。
 
 | 运行位置 | 调用方式 |

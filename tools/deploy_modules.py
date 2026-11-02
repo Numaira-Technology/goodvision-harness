@@ -1,0 +1,370 @@
+"""Unified, standard-library Docker installer. Plan/config never start Docker.
+
+Each module owns a Compose project and volumes. Only an explicitly named network
+is shared. No Docker socket is mounted in the application, and stop never deletes
+data, models, or the shared network.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import secrets
+import subprocess
+import sys
+from pathlib import Path
+
+if __package__:
+    from . import docker_modules as spec
+else:
+    import docker_modules as spec
+
+
+def location():
+    directory = Path(__file__).resolve().parent
+    if (directory / "module-package.json").is_file():
+        return directory, directory / "source"
+    return directory.parent, directory.parent
+
+
+def read_package(root):
+    path = root / "module-package.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def verify_package(root, package):
+    if package is None:
+        return
+    for relative, expected in package["files"].items():
+        original = root / relative
+        path = original.resolve()
+        if (
+            not path.is_relative_to(root.resolve())
+            or not path.is_file()
+            or original.is_symlink()
+        ):
+            raise ValueError("Package is incomplete or contains an invalid path")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise ValueError(f"Package file has changed: {relative}")
+
+
+def run(command, **options):
+    # A list, never a shell expression. Secrets are read from files/environment.
+    return subprocess.run(command, check=True, **options)
+
+
+def write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    temporary.replace(path)
+
+
+def configuration(args, package):
+    namespace = spec.name(args.namespace)
+    state = (args.state_dir or Path.home() / ".goodvision/docker" / namespace).resolve()
+    settings_path = state / "settings.json"
+    settings = spec.defaults(namespace)
+    if settings_path.is_file():
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        if settings["namespace"] != namespace:
+            raise ValueError("This data directory belongs to a different deployment")
+    if package:
+        settings["version"] = package["version"]
+        settings["bbox_device"] = package["bbox_device"]
+    for key in ("version", "bbox_device", "bind", "gpu_id", "contour_capacity"):
+        value = getattr(args, key)
+        if value is not None:
+            if package and key in ("version", "bbox_device") and value != package[key]:
+                raise ValueError("Package version and Bbox device cannot be changed")
+            settings[key] = value
+    for module in spec.PORTS:
+        value = getattr(args, module + "_port")
+        if value is not None:
+            settings["ports"][module] = value
+    for module in settings["urls"]:
+        value = getattr(args, module + "_url")
+        if value is not None:
+            settings["urls"][module] = spec.endpoint(value)
+    return state, spec.validate(settings)
+
+
+def compose_command(state, module, *arguments):
+    return [
+        "docker",
+        "compose",
+        "--project-directory",
+        str(state),
+        "-f",
+        str(state / f"compose.{module}.json"),
+        *arguments,
+    ]
+
+
+def initialize(state, modules):
+    state.mkdir(parents=True, exist_ok=True)
+    for module in set(modules) & {"bbox", "system1", "contour"}:
+        (state / "models" / module).mkdir(parents=True, exist_ok=True)
+    if "contour" in modules:
+        directory = state / "secrets"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        path = directory / "contour-key"
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            return
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(secrets.token_urlsafe(36) + "\n")
+        if os.name != "nt":
+            # The parent directory is owner-only; the mounted file must be
+            # readable by the non-root Contour container even with umask 077.
+            path.chmod(0o644)
+
+
+def ensure_network(settings):
+    network = f"goodvision-{settings['namespace']}"
+    result = subprocess.run(
+        ["docker", "network", "inspect", network], capture_output=True, text=True
+    )
+    if result.returncode:
+        # A daemon outage must not be mistaken for a missing network.
+        run(["docker", "info"], stdout=subprocess.DEVNULL)
+        result = subprocess.run(
+            [
+                "docker",
+                "network",
+                "create",
+                "--label",
+                "io.goodvision.modules=true",
+                network,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode:  # Another module installer may have created it.
+            existing = run(
+                ["docker", "network", "inspect", network],
+                capture_output=True,
+                text=True,
+            )
+            if (
+                json.loads(existing.stdout)[0]
+                .get("Labels", {})
+                .get("io.goodvision.modules")
+                != "true"
+            ):
+                raise ValueError(f"Network {network} is owned by another application")
+    else:
+        value = json.loads(result.stdout)[0]
+        if value.get("Labels", {}).get("io.goodvision.modules") != "true":
+            raise ValueError(
+                f"Network {network} exists but is not a GoodVision module network"
+            )
+
+
+def prepare_command(module, document, state, source):
+    service = "engine" if module == "contour" else module
+    image = document["services"][service]["image"]
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--user",
+        "0:0",
+        "--entrypoint",
+        "python",
+        "--mount",
+        f"type=bind,source={state / 'models' / module},target=/models",
+        "--env",
+        "HF_HUB_OFFLINE=0",
+        "--env",
+        "HF_TOKEN",
+    ]
+    if module == "contour":
+        command += [
+            "--mount",
+            "type=bind,source="
+            + str(source / "workers/contour/download_model.py")
+            + ",target=/tmp/download_model.py,readonly",
+            image,
+            "/tmp/download_model.py",
+            "--destination",
+            "/models",
+        ]
+    elif module == "bbox":
+        command += [
+            "--workdir",
+            "/models",
+            image,
+            "-c",
+            "from ultralytics import YOLO; YOLO('yolo26s.pt')",
+        ]
+    else:
+        command += [
+            image,
+            "-c",
+            "from huggingface_hub import snapshot_download; "
+            "from goodvision_harness.videojev_core import MODEL,REVISION; "
+            "snapshot_download(MODEL,revision=REVISION,cache_dir='/models/huggingface')",
+        ]
+    return command
+
+
+def parser():
+    value = argparse.ArgumentParser(description=__doc__)
+    value.add_argument(
+        "action",
+        choices=(
+            "plan",
+            "configure",
+            "build",
+            "prepare-models",
+            "up",
+            "status",
+            "stop",
+            "logs",
+        ),
+    )
+    value.add_argument("--modules", nargs="+", choices=spec.MODULES)
+    value.add_argument("--namespace", default="default")
+    value.add_argument("--state-dir", type=Path)
+    value.add_argument("--version")
+    value.add_argument("--bbox-device", choices=("cpu", "cuda"))
+    value.add_argument("--bind")
+    value.add_argument("--gpu-id")
+    value.add_argument("--contour-capacity", type=int)
+    for module in spec.PORTS:
+        value.add_argument(f"--{module}-port", type=int)
+    for module in ("bbox", "system1", "neural", "contour"):
+        value.add_argument(f"--{module}-url")
+    value.add_argument("--build", action="store_true", help="Build before up")
+    value.add_argument("--wait-timeout", type=int, default=900)
+    value.add_argument(
+        "--dry-run", action="store_true", help="Print only; no Docker or writes"
+    )
+    return value
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    root, source = location()
+    try:
+        package = read_package(root)
+        verify_package(root, package)
+        modules = list(
+            dict.fromkeys(
+                args.modules or ([package["module"]] if package else ["main", "bbox"])
+            )
+        )
+        if package and modules != [package["module"]]:
+            raise ValueError("This installer contains only its named module")
+        if args.wait_timeout < 1:
+            raise ValueError("Wait timeout must be positive")
+        state, settings = configuration(args, package)
+        documents = {
+            module: spec.compose(module, settings, source, state)
+            for module in modules
+            if module != "gpu-runtime"
+        }
+        bases = [
+            spec.runtime_build(source, settings, version)
+            for version in spec.runtime_versions(modules, settings)
+        ]
+        if args.action == "plan" or args.dry_run:
+            print(
+                json.dumps(
+                    {
+                        "state_directory": str(state),
+                        "settings": settings,
+                        "base_builds": bases,
+                        "compose_projects": documents,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+        if args.action in ("status", "stop", "logs"):
+            # These actions use the last applied files, never silently reconfigure.
+            for module in documents:
+                if not (state / f"compose.{module}.json").is_file():
+                    raise ValueError("Run configure or up for this module first")
+                operation = {
+                    "status": ["ps", "--all"],
+                    "stop": ["stop"],
+                    "logs": ["logs", "--tail", "100"],
+                }[args.action]
+                run(compose_command(state, module, *operation))
+            return 0
+        initialize(state, modules)
+        write_json(state / "settings.json", settings)
+        for module, document in documents.items():
+            write_json(state / f"compose.{module}.json", document)
+        if args.action == "configure":
+            print(f"Configuration saved: {state}")
+            return 0
+        # Compose validation is offline; it precedes every build or startup.
+        for module in documents:
+            run(compose_command(state, module, "config", "--quiet"))
+        if args.action == "build" or (args.action == "up" and args.build):
+            for command in bases:
+                run(command)
+            for module in documents:
+                run(compose_command(state, module, "build"))
+        if args.action == "prepare-models":
+            for module, document in documents.items():
+                if module in ("bbox", "system1", "contour"):
+                    run(prepare_command(module, document, state, source))
+        if args.action == "up":
+            if not documents:
+                raise ValueError(
+                    "The shared GPU package uses build; it has no running container"
+                )
+            if (
+                "contour" in documents
+                and not (state / "models/contour/contour.pt").is_file()
+            ):
+                raise ValueError(
+                    "Run prepare-models for Contour before starting its module"
+                )
+            if "system1" in documents and not any(
+                (state / "models/system1/huggingface").glob(
+                    "models--ZhuYuhan--VideoJev-4B/snapshots/*/config.json"
+                )
+            ):
+                raise ValueError(
+                    "Run prepare-models for System 1 before starting its module"
+                )
+            ensure_network(settings)
+            # Start workers first when installing a group. Main remains idle.
+            for module in sorted(documents, key=lambda item: item == "main"):
+                run(
+                    compose_command(
+                        state,
+                        module,
+                        "up",
+                        "-d",
+                        "--no-build",
+                        "--pull",
+                        "never",
+                        "--wait",
+                        "--wait-timeout",
+                        str(args.wait_timeout),
+                    )
+                )
+            print(
+                "Selected modules are healthy. "
+                "Open the main console to configure and start analysis."
+            )
+        return 0
+    except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
+        print(f"Deployment not completed: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

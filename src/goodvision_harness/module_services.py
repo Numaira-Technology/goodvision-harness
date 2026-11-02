@@ -140,6 +140,14 @@ class LocalModuleServices:
             return self._status(engine, health)
 
     def _status(self, engine, health):
+        if os.environ.get("GOODVISION_MODULE_MANAGER") == "compose":
+            # Containers are owned by the host installer, including when their
+            # URL happens to be loopback. Never create model processes or locks.
+            return {
+                "engine": engine,
+                "state": "stopped" if health == "unavailable" else health,
+                "ready": health == "ready", "manager": "compose",
+            }
         if health != "unavailable":
             return {"engine": engine, "state": health, "ready": health == "ready"}
         process = self._processes.get(engine)
@@ -158,6 +166,8 @@ class LocalModuleServices:
             endpoint = module_endpoint(engine, {"execution_mode": "local"})
             health = self._health(engine, endpoint)
             status = self._status(engine, health)
+            if status.get("manager") == "compose":
+                return status
             if health != "unavailable" or status["state"] == "starting":
                 # Never launch over an existing listener, including an unhealthy
                 # externally owned service. A failed child may be retried only

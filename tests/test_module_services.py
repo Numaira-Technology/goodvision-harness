@@ -97,6 +97,25 @@ def test_provisioned_local_service_never_spawns_on_a_remote_host(services, monke
         services.start("bbox")
 
 
+@pytest.mark.parametrize("state", ["unavailable", "ready", "error", "starting"])
+def test_compose_managed_services_never_spawn_or_create_local_locks(
+    services, monkeypatch, state,
+):
+    monkeypatch.setenv("GOODVISION_MODULE_MANAGER", "compose")
+    monkeypatch.setattr(services, "_health", lambda *args: state)
+    monkeypatch.setattr(
+        module_services, "worker_lock", lambda *a: pytest.fail("process lock")
+    )
+    monkeypatch.setattr(
+        module_services.subprocess, "Popen", lambda *a, **k: pytest.fail("spawn")
+    )
+    result = services.start("bbox")
+    assert result["manager"] == "compose"
+    assert result["ready"] is (state == "ready")
+    assert result["state"] == ("stopped" if state == "unavailable" else state)
+    assert services.status("bbox") == result
+
+
 def test_worker_os_lock_prevents_duplicate_model_loading(tmp_path):
     with worker_lock(tmp_path / "bbox.lock") as first:
         assert first
