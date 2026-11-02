@@ -240,7 +240,9 @@ def prepare_command(module, document, state, source):
             "-c",
             "from huggingface_hub import snapshot_download; "
             "from goodvision_harness.videojev_core import MODEL,REVISION; "
-            "snapshot_download(MODEL,revision=REVISION,cache_dir='/models/huggingface')",
+            "snapshot_download(MODEL,revision=REVISION,"
+            "cache_dir='/models/huggingface'); "
+            "from ultralytics import YOLO; YOLO('/models/yolo26s.pt')",
         ]
     return command
 

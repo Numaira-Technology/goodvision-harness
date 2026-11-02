@@ -423,6 +423,27 @@ def test_model_download_is_explicit_and_tokens_are_not_in_command(tmp_path):
     assert "revision=REVISION" in command[-1]
 
 
+def test_system1_model_preparation_stages_videojev_and_ppe_weights(
+    tmp_path, monkeypatch
+):
+    from goodvision_harness.videojev_core import MODEL, REVISION
+
+    staged = []
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(
+        snapshot_download=lambda model, **kw: staged.append((model, kw)),
+    ))
+    monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(
+        YOLO=lambda weights: staged.append((weights, {})),
+    ))
+    document = spec.compose("system1", spec.defaults(), tmp_path, tmp_path)
+    command = deploy.prepare_command("system1", document, tmp_path, tmp_path)
+    exec(command[-1], {})
+    assert staged == [
+        (MODEL, {"revision": REVISION, "cache_dir": "/models/huggingface"}),
+        ("/models/yolo26s.pt", {}),
+    ]
+
+
 def test_contour_key_is_created_once_without_changing_existing_credentials(tmp_path):
     deploy.initialize(tmp_path, ["contour"])
     path = tmp_path / "secrets/contour-key"

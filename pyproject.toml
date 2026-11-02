@@ -43,6 +43,7 @@ vlm = [
   "httpx[http2]>=0.27,<1",
 ]
 videojev = [
+  "ultralytics==8.4.198",
   "torch==2.8.0",
   "torchvision==0.23.0",
   "transformers==5.14.1",
@@ -68,6 +69,7 @@ video = [
   "av==17.1.0",
 ]
 neural = [
+  "ultralytics==8.4.198",
   "torch==2.8.0",
   "torchvision==0.23.0",
   "transformers==5.14.1",

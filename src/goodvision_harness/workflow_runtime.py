@@ -848,8 +848,144 @@ class WorkflowRuntimeMixin:
             ]
         return result
 
+    def _workflow_native_event_test(
+        self, plan, connection, snapshot, context, preview_frames,
+    ):
+        """Run the native inspector on distinct captured preview frames."""
+        from .model_api import ModelAPISettings
+        from .neural_model import NeuralInspector
+        from .runtime.scene import TemporalInspection
+        from .runtime.scheduling import EvidenceFrame, InspectionRequest
+        from .videojev_model import VideoJevInspector
+        from .vlm_independent import VLMProcessConfig
+        from .workflow_modules import MODELS, native_endpoints
+
+        result = {
+            **context,
+            "node_id": plan["events_node_id"],
+            "type": "events",
+            "state": "live_analysis_required",
+            "error": None,
+            "observations": [],
+        }
+        inspector = None
+        try:
+            status = connection.status()
+            if (not status.get("connected")
+                    or status.get("connection_id") != snapshot.connection_id):
+                raise RuntimeError(
+                    "The preview connection changed; retry the workflow test."
+                )
+            candidates = {
+                sequence: (sequence, timestamp, jpeg)
+                for sequence, timestamp, _width, _height, jpeg in preview_frames
+                if sequence < snapshot.source_frame_sequence
+                and 0 <= timestamp < snapshot.timestamp_seconds
+            }
+            result["input"] = {
+                "kind": "distinct_source_preview_frames",
+                "source_frame_sequences": [snapshot.source_frame_sequence],
+                "source_timestamps_seconds": [snapshot.timestamp_seconds],
+            }
+            if not candidates:
+                result["note"] = (
+                    "Only one distinct preview frame is available. Start live analysis "
+                    "or wait for another source frame, then retry. "
+                    "No model request was sent."
+                )
+                return result
+            # Match the native live route's half-second context when available;
+            # retain the actual times even when the preview history is shorter.
+            earlier = min(candidates.values(), key=lambda item: (
+                abs(item[1] - (snapshot.timestamp_seconds - 0.5)), -item[0],
+            ))
+            selected = (earlier, (
+                snapshot.source_frame_sequence,
+                snapshot.timestamp_seconds, snapshot.jpeg_bytes,
+            ))
+            result["input"].update(
+                source_frame_sequences=[item[0] for item in selected],
+                source_timestamps_seconds=[item[1] for item in selected],
+                model_frame_usage=(
+                    "base labels: last preview frame; "
+                    "PPE derived: both supplied source frames"
+                    if plan["events_engine"] == "neural"
+                    else "last preview frame with the earlier frame as context"
+                ),
+            )
+            if self.dry_run:
+                result["note"] = (
+                    "Synthetic test mode does not run the native recognition model. "
+                    "Use real analysis mode to test the configured service."
+                )
+                return result
+            self._workflow_prepare_modules(plan)
+            endpoint = plan.get("events_service_url")
+            if not endpoint:
+                raise ValueError(
+                    "Configure the recognition service URL before testing."
+                )
+            labels = tuple(label for label in plan["features"] if label != "stranger")
+            delta = selected[-1][1] - selected[0][1]
+            settings = ModelAPISettings(
+                provider="local", endpoint=native_endpoints(endpoint)[0],
+                timeout_seconds=self.config.runtime.scene_timeout_seconds,
+                max_retries=0,
+            )
+            config = VLMProcessConfig(
+                context["stream_session_id"], self.source_id, self._generation,
+                labels, settings, MODELS[plan["events_engine"]],
+                sensitivities=tuple(plan["event_sensitivities"].items()),
+                output_mode="events", observation_window_frames=2,
+                observation_frame_delta_seconds=delta,
+                vocabulary=self._event_vocabulary(),
+            )
+            frames = tuple(EvidenceFrame(
+                context["stream_session_id"], sequence, timestamp, jpeg,
+            ) for sequence, timestamp, jpeg in selected)
+            job = TemporalInspection(
+                context["stream_session_id"], self.source_id,
+                InspectionRequest(
+                    f"preview-{self._workflow_operation}", (),
+                    "workflow_preview", labels,
+                    frames[0].timestamp_seconds, frames[-1].timestamp_seconds,
+                ),
+                frames, event_sensitivities=config.sensitivities,
+                vocabulary=config.vocabulary,
+            )
+            cls = (NeuralInspector if plan["events_engine"] == "neural"
+                   else VideoJevInspector)
+            inspector = cls(config)
+            verdicts = inspector.inspect(job)
+            result.update(
+                state="completed",
+                observations=[{
+                    "event_label": verdict.event_label,
+                    "detected": verdict.detected,
+                    "confidence": verdict.confidence,
+                } for verdict in verdicts],
+                note=(
+                    "Actual native recognition on the listed preview evidence. "
+                    "This does not exercise tracking, "
+                    "temporal confirmation or delivery."
+                ),
+            )
+        except Exception as error:
+            result.update(
+                state="unavailable", error=PUBLIC_ANALYSIS_ERROR,
+                error_detail=inference_error_detail(error),
+            )
+        finally:
+            if inspector is not None:
+                result["transport"] = dict(inspector.last_http_timing)
+                try:
+                    inspector.close()
+                except Exception as error:
+                    result["cleanup_error"] = inference_error_detail(error)
+        return result
+
     def test_workflow(self, graph):
-        """Real one-frame observations; never write live result/history stores."""
+        """Use real preview observations; never write live result/history stores."""
         from .face_recognition import FaceRecognitionSession
         from .grounding import build_selected_features_grounding_client
         from .sliding_window import FrameWindow, SampledFrame
@@ -872,6 +1008,12 @@ class WorkflowRuntimeMixin:
             snapshot = snapshot_from_connection(connection)
             if snapshot is None:
                 raise RuntimeError("wait for a camera frame before testing")
+            # Pin the native evidence before face or tracking work can age it
+            # out of the live connection's presentation history.
+            native_preview_frames = (
+                connection.display_frames(after=None, max_age_seconds=2, limit=120)
+                if plan.get("events_engine") in {"system1", "neural"} else ()
+            )
             self._workflow_operation += 1
             operation = self._workflow_operation
             self._workflow_testing = True
@@ -970,24 +1112,10 @@ class WorkflowRuntimeMixin:
                     continue
                 check_active()
                 if not identity and plan.get("events_engine") in {"system1", "neural"}:
-                    error = None
-                    try:
-                        self._workflow_prepare_modules(plan)
-                        self._workflow_event_probe(plan)
-                    except ValueError as exc:
-                        error = str(exc)
-                    results.append(
-                        {
-                            **context,
-                            "node_id": node_id,
-                            "type": "events",
-                            "state": "unavailable"
-                            if error
-                            else "live_analysis_required",
-                            "error": error,
-                            "observations": [],
-                        }
-                    )
+                    results.append(self._workflow_native_event_test(
+                        plan, connection, snapshot, context, native_preview_frames,
+                    ))
+                    check_active()
                     continue
                 try:
                     if identity and not self.dry_run:
@@ -1086,8 +1214,10 @@ class WorkflowRuntimeMixin:
                     "camera_id": f"camera{self._fleet_camera_index:02d}",
                     "results": results,
                     "note": (
-                        "Single-frame observations; tracking, temporal confirmation "
-                        "and delivery are exercised by live analysis."
+                        "API and face observations use the current frame; "
+                        "native recognition "
+                        "uses the listed distinct preview frames. Tracking, temporal "
+                        "confirmation and delivery are exercised by live analysis."
                     ),
                 }
             )
