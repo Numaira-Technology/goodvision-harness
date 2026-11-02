@@ -1,6 +1,7 @@
 """Real camera publish -> WHEP media, with synthetic frames and no models."""
 
 import asyncio
+import logging
 import socket
 
 import httpx
@@ -75,7 +76,9 @@ def receive_camera_on_loopback(options, slot, stop, result):
     _worker(options, slot, stop, result)
 
 
-def test_real_camera_frames_reach_spawned_receiver_with_mapped_http_port(monkeypatch):
+def test_real_camera_frames_reach_spawned_receiver_with_mapped_http_port(
+    monkeypatch, caplog,
+):
     import aioice.ice
     import uvicorn
 
@@ -101,7 +104,9 @@ def test_real_camera_frames_reach_spawned_receiver_with_mapped_http_port(monkeyp
         external = socket.socket()
         external.bind(("127.0.0.1", 0))
         public_port = external.getsockname()[1]
-        server = uvicorn.Server(uvicorn.Config(app, lifespan="off", log_level="error"))
+        server = uvicorn.Server(uvicorn.Config(
+            app, lifespan="off", log_config=None, log_level=None,
+        ))
         serving = asyncio.create_task(server.serve(sockets=[sock]))
         publisher = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         track = PatternTrack()
@@ -155,6 +160,12 @@ def test_real_camera_frames_reach_spawned_receiver_with_mapped_http_port(monkeyp
             external.close()
 
     asyncio.run(scenario())
+    # The in-process server must not replace pytest's capture handlers or
+    # disable propagation for the rest of the suite's timing/privacy checks.
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        logging.getLogger("uvicorn.error").info("Camera test logging remains captured")
+    assert any(record.message == "Camera test logging remains captured"
+               for record in caplog.records)
 
 
 def test_real_publish_whep_fanout_and_stop():
