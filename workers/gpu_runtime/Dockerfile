@@ -20,6 +20,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && printf 'torch==%s\ntorchvision==%s\n' "$TORCH_VERSION" "$TORCHVISION_VERSION" > /opt/gpu-constraints.txt \
     && python -m pip check
 # Module installs must not silently replace the shared binary ABI.
+# Keep pip on the BuildKit cache mount when runtime XDG caches move to /tmp.
 ENV PIP_CONSTRAINT=/opt/gpu-constraints.txt \
+    PIP_CACHE_DIR=/root/.cache/pip \
     XDG_CACHE_HOME=/tmp/cache TRITON_CACHE_DIR=/tmp/triton \
     TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor CUDA_CACHE_PATH=/tmp/cuda
