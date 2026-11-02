@@ -1,6 +1,7 @@
 """CPU readiness must attest a successful YOLO warmup, never pretend CUDA."""
 
 import httpx
+import pytest
 
 from goodvision_harness.rich_labeling import RichLabelHTTPClient
 from tools.build_gpu_runtime import build_commands
@@ -55,3 +56,31 @@ def test_shared_runtime_builds_each_compatible_torch_layer_once():
     assert len(commands) == 2
     assert "goodvision-gpu-runtime:torch2.10-cu128" in commands[0]
     assert "goodvision-gpu-runtime:torch2.8-cu128" in commands[1]
+
+
+@pytest.mark.parametrize("device", ["cpu", "cu128"])
+def test_setup_replaces_a_different_existing_torch_build(tmp_path, monkeypatch, device):
+    from tools import setup_bbox
+
+    calls = []
+    monkeypatch.setattr(setup_bbox, "ROOT", tmp_path)
+    monkeypatch.setattr(setup_bbox.sys, "argv", ["setup_bbox.py", "--device", device])
+    environment = tmp_path / ".venv-module-bbox"
+    python = environment / (
+        "Scripts/python.exe" if setup_bbox.os.name == "nt" else "bin/python"
+    )
+    python.parent.mkdir(parents=True)
+    python.touch()
+    monkeypatch.setattr(
+        setup_bbox.subprocess, "run",
+        lambda command, **options: calls.append((command, options)),
+    )
+    setup_bbox.main()
+    command = calls[0][0]
+    # A bare ==2.10.0 would accept an already-installed CPU wheel even when
+    # switching to CUDA. The local version must select the requested build.
+    assert f"torch==2.10.0+{device}" in command
+    assert f"torchvision==0.25.0+{device}" in command
+    assert command[-1] == f"https://download.pytorch.org/whl/{device}"
+    assert all(command[0] == str(python) for command, options in calls)
+    assert all(options["check"] for command, options in calls)

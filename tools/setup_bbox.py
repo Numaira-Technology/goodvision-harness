@@ -18,7 +18,8 @@ def main():
     if not python.exists():
         subprocess.run([sys.executable, "-m", "venv", str(environment)], check=True)
     subprocess.run([
-        str(python), "-m", "pip", "install", "torch==2.10.0", "torchvision==0.25.0",
+        str(python), "-m", "pip", "install",
+        f"torch==2.10.0+{args.device}", f"torchvision==0.25.0+{args.device}",
         "--index-url", "https://download.pytorch.org/whl/" + args.device,
     ], check=True)
     subprocess.run([
