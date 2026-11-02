@@ -67,6 +67,7 @@ def run_streams(
     jpeg_quality=90,
     queue_age=2.0,
     load_seconds=None,
+    frame_observer=None,
 ):
     """Replace input at EOF immediately; previous-source requests drain independently.
 
@@ -77,6 +78,8 @@ def run_streams(
     Filler sources never enter scoring.
     An optional horizon keeps filler input available from the first paced ingress
     until that duration elapses, without truncating any primary video.
+    An optional observer receives sampled JPEG bytes and source metadata. Its
+    first exception disables observation without changing inference or input.
     """
     import cv2
 
@@ -100,6 +103,8 @@ def run_streams(
     last_primary_input = [None]
     first_input_monotonic = None
     interrupted = False
+    observer_lock = threading.Lock()
+    observer_attached, observer_error = frame_observer is not None, None
 
     def record(row):
         try:
@@ -297,6 +302,7 @@ def run_streams(
 
     def reader(slot, pool):
         nonlocal primary_remaining, first_input_monotonic
+        nonlocal frame_observer, observer_error
         while not stop.is_set():
             state = choose(slot)
             if state is None:
@@ -433,6 +439,25 @@ def run_streams(
                         )
                         continue
                     state["sampled_frames"] += 1
+                    if frame_observer is not None:
+                        with observer_lock:
+                            if frame_observer is not None:
+                                try:
+                                    frame_observer({
+                                        "source_id": state["source_id"],
+                                        "filename": state["filename"],
+                                        "slot": slot,
+                                        "quality_reference": state["quality_reference"],
+                                        "source_time": timestamp,
+                                        "frame_index": index,
+                                        "frame_ingress_monotonic": ingress,
+                                        "source_time_basis": "decoder_pts" if use_pts else "frame_rate_fallback",
+                                        "width": _width,
+                                        "height": _height,
+                                    }, jpeg)
+                                except Exception as error:
+                                    observer_error = f"{type(error).__name__}: {error}"
+                                    frame_observer = None
                     window.append(
                         (
                             jpeg,
@@ -780,6 +805,7 @@ def run_streams(
         ),
         "interrupted": interrupted,
         "shared_errors": shared_errors,
+        **({"frame_observer_error": observer_error} if observer_attached else {}),
         "started_monotonic": started,
         "finished_monotonic": finished,
         "wall_seconds": finished - started,
