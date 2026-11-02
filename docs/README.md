@@ -68,7 +68,10 @@
 <a id="internal-reference"></a>
 ## 内部参考
 
-[推理路线目录](internal/route-catalog.md)记录内部映射与历史供应商比较，与客户文档分开维护。
+| 资料 | 用途 |
+| --- | --- |
+| [Docker 模块命名目录](internal/docker-module-catalog.md) | `goodvision-xxx` 统一模块名称、安装器短 ID、镜像与源码映射、持久化位置及更新兼容边界。 |
+| [推理路线目录](internal/route-catalog.md) | 内部映射与历史供应商比较，与客户文档分开维护。 |
 
 ## 新文档放哪里
 
