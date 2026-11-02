@@ -513,9 +513,11 @@ class RemoteBackend:
         except urllib.error.HTTPError as error:
             status = error.code
             if status in (401, 402, 403):
-                shared_error = (
-                    "provider authorization or balance rejected: HTTP " + str(status)
-                )
+                shared_error = {
+                    401: "provider authentication rejected: HTTP 401",
+                    402: "provider payment required: HTTP 402",
+                    403: "provider request forbidden: HTTP 403",
+                }[status]
                 with self._cooldown:
                     self._provider_error = shared_error
                     self._cooldown.notify_all()
