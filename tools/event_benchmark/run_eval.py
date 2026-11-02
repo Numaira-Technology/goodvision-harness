@@ -291,8 +291,12 @@ def streaming_inputs(samples_path, manifest_path, media_dirs, events):
 
 def streaming_run(args, parser, model, backend):
     """Use one input, window, clock and scoring implementation for every model."""
-    from backends import ContrastiveBackend, RemoteBackend
-    from realtime import BASE_EVENTS, SIX_EVENTS, run_streams
+    if __package__:
+        from .backends import ContrastiveBackend, RemoteBackend
+        from .realtime import BASE_EVENTS, SIX_EVENTS, run_streams
+    else:
+        from backends import ContrastiveBackend, RemoteBackend
+        from realtime import BASE_EVENTS, SIX_EVENTS, run_streams
 
     events = []
     for event in args.events:
@@ -403,7 +407,10 @@ def streaming_run(args, parser, model, backend):
 
 
 def main():
-    from backends import CANDIDATES as STREAM_CANDIDATES
+    if __package__:
+        from .backends import CANDIDATES as STREAM_CANDIDATES
+    else:
+        from backends import CANDIDATES as STREAM_CANDIDATES
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--protocol", choices=["streaming-v3", "legacy-v2"], default="legacy-v2",
