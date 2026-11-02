@@ -80,7 +80,16 @@ def run_streams(
     until that duration elapses, without truncating any primary video.
     An optional observer receives sampled JPEG bytes and source metadata. Its
     first exception disables observation without changing inference or input.
+    Observer calls are synchronous and must return promptly; their cost remains
+    in the measured input-to-result latency.
     """
+    if load_seconds is not None and (
+        type(load_seconds) not in (int, float)
+        or not math.isfinite(load_seconds)
+        or load_seconds <= 0
+    ):
+        raise ValueError("load_seconds must be positive and finite")
+
     import cv2
 
     from goodvision_harness.video_to_stream import encode_jpeg, probe_video
@@ -443,18 +452,25 @@ def run_streams(
                         with observer_lock:
                             if frame_observer is not None:
                                 try:
-                                    frame_observer({
-                                        "source_id": state["source_id"],
-                                        "filename": state["filename"],
-                                        "slot": slot,
-                                        "quality_reference": state["quality_reference"],
-                                        "source_time": timestamp,
-                                        "frame_index": index,
-                                        "frame_ingress_monotonic": ingress,
-                                        "source_time_basis": "decoder_pts" if use_pts else "frame_rate_fallback",
-                                        "width": _width,
-                                        "height": _height,
-                                    }, jpeg)
+                                    frame_observer(
+                                        {
+                                            "source_id": state["source_id"],
+                                            "filename": state["filename"],
+                                            "slot": slot,
+                                            "quality_reference": state[
+                                                "quality_reference"
+                                            ],
+                                            "source_time": timestamp,
+                                            "frame_index": index,
+                                            "frame_ingress_monotonic": ingress,
+                                            "source_time_basis": "decoder_pts"
+                                            if use_pts
+                                            else "frame_rate_fallback",
+                                            "width": _width,
+                                            "height": _height,
+                                        },
+                                        jpeg,
+                                    )
                                 except Exception as error:
                                     observer_error = f"{type(error).__name__}: {error}"
                                     frame_observer = None
@@ -730,15 +746,19 @@ def run_streams(
     }
     if load_seconds is None:
         coverage = _coverage(
-            states, slots, started,
-            last_primary_input[0] or max(
+            states,
+            slots,
+            started,
+            last_primary_input[0]
+            or max(
                 (state["input_end_monotonic"] for state in primary.values()),
                 default=started,
             ),
         )
     else:
         actual_inputs = [
-            state for state in states
+            state
+            for state in states
             if state["input_start_monotonic"] is not None
             and state["input_end_monotonic"] is not None
         ]
@@ -746,13 +766,16 @@ def run_streams(
             (state["input_start_monotonic"] for state in actual_inputs), default=started
         )
         input_end = max(
-            (state["input_end_monotonic"] for state in actual_inputs), default=input_start
+            (state["input_end_monotonic"] for state in actual_inputs),
+            default=input_start,
         )
         coverage = _coverage(states, slots, input_start, input_end)
         coverage.update(
-            input_start_monotonic=input_start, input_end_monotonic=input_end,
+            input_start_monotonic=input_start,
+            input_end_monotonic=input_end,
             load_deadline_monotonic=(first_input_monotonic + load_seconds)
-            if first_input_monotonic is not None else None,
+            if first_input_monotonic is not None
+            else None,
         )
     return {
         "spec_version": PROTOCOL,

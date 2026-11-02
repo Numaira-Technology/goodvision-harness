@@ -575,3 +575,184 @@ def test_streaming_inputs_preserve_missing_media_as_unavailable(tmp_path):
     )
     assert len(selected) == 1 and media == {}
     assert source["read_error"]
+
+
+@pytest.mark.parametrize("duration", [0, -1, float("nan"), float("inf"), True, "1"])
+def test_direct_runner_rejects_invalid_load_horizon_before_creating_output(
+    tmp_path, duration
+):
+    with pytest.raises(ValueError, match="load_seconds"):
+        realtime.run_streams(
+            [],
+            {},
+            {},
+            SimpleNamespace(metadata={}),
+            tmp_path / "run.json",
+            load_seconds=duration,
+        )
+    assert not (tmp_path / "run-windows.jsonl").exists()
+
+
+def test_load_horizon_preserves_primary_eof_even_after_deadline(tmp_path, monkeypatch):
+    fake_video(monkeypatch, fps=10, frames=3)
+    samples = [
+        {"number": i, "filename": name, "event": "fight", "proposed_answer": "no"}
+        for i, name in enumerate(["first.mp4", "second.mp4"])
+    ]
+    result = realtime.run_streams(
+        samples,
+        {row["filename"]: tmp_path / row["filename"] for row in samples},
+        {"fight": "Fight?"},
+        SimpleNamespace(
+            metadata={},
+            predict=lambda *a, **k: {"predictions": {"fight": backends._result(False)}},
+        ),
+        tmp_path / "run.json",
+        slots=1,
+        workers=1,
+        interval=0.1,
+        frame_width=4,
+        load_seconds=0.05,
+    )
+    assert result["execution_complete"]
+    assert result["overall"]["total"] == result["overall"]["correct"] == 2
+    assert len(result["streams"]) == 2
+    assert all(row["eof_seen"] and row["raw_frames"] == 3 for row in result["streams"])
+    coverage = result["input_coverage"]
+    assert coverage["input_end_monotonic"] > coverage["load_deadline_monotonic"]
+    assert coverage["measurement_seconds"] >= 0.59
+
+
+def test_sustained_filler_counts_actual_ingress_and_drains_after_horizon(
+    tmp_path, monkeypatch
+):
+    fake_video(monkeypatch, fps=10, frames=3)
+    calls = []
+
+    def predict(payload, **kwargs):
+        calls.append(payload)
+        if not payload["quality_reference"]:
+            time.sleep(0.2)  # Accepted work must drain beyond the input deadline.
+        return {
+            "predictions": {
+                "fight": backends._result(not payload["quality_reference"]),
+                "bag_knife": backends._result(
+                    request_state="not_sent",
+                    format_state="unavailable",
+                ),
+            }
+        }
+
+    questions = {"fight": "Fight?", "bag_knife": "Knife?"}
+    samples = [
+        {"number": i, "filename": "clip.mp4", "event": label, "proposed_answer": "no"}
+        for i, label in enumerate(questions)
+    ]
+    result = realtime.run_streams(
+        samples,
+        {"clip.mp4": tmp_path / "clip.mp4"},
+        questions,
+        SimpleNamespace(metadata={}, predict=predict),
+        tmp_path / "run.json",
+        slots=1,
+        workers=1,
+        interval=0.1,
+        frame_width=4,
+        load_seconds=0.45,
+    )
+    primary, *fillers = result["streams"]
+    assert primary["quality_reference"] and primary["eof_seen"]
+    assert fillers and all(not row["quality_reference"] for row in fillers)
+    assert result["execution_complete"]
+    assert result["overall"]["total"] == 2
+    assert result["overall"]["correct"] == result["overall"]["unknown"] == 1
+    assert result["primary_event_evidence"]["fight"]["yes"] == 0
+    assert result["per_video"][1]["evidence"]["not_sent"] > 0
+    assert all(row["submitted"] == row["completed"] for row in result["streams"])
+    assert any(row["drained_monotonic"] > row["input_end_monotonic"] for row in fillers)
+    cutoff = fillers[-1]
+    assert cutoff["input_end_reason"] == "load_duration_reached"
+    assert cutoff["planned_windows"] == max(0, cutoff["raw_frames"] - 1)
+    assert cutoff["unformed_windows"] == 0
+    coverage = result["input_coverage"]
+    assert coverage["load_deadline_monotonic"] - coverage[
+        "input_start_monotonic"
+    ] == pytest.approx(0.45)
+    assert coverage["measurement_seconds"] >= 0.44
+    assert sum(coverage["seconds_by_active_inputs"].values()) == pytest.approx(
+        coverage["measurement_seconds"]
+    )
+    assert result["finished_monotonic"] > coverage["input_end_monotonic"]
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "run-windows.jsonl").read_text().splitlines()
+    ]
+    assert any(not row["quality_reference"] for row in records)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_frame_observer_shares_encoded_evidence_and_isolates_first_exception(
+    tmp_path, monkeypatch, fail
+):
+    fake_video(monkeypatch, fps=10, frames=3)
+    observed, windows = [], []
+
+    def observer(metadata, jpeg):
+        observed.append((dict(metadata), jpeg))
+        metadata["source_id"] = "callback mutation must remain local"
+        if fail:
+            raise RuntimeError("recording failed")
+
+    def predict(payload, **kwargs):
+        windows.append(payload)
+        return {"predictions": {"fight": backends._result(False)}}
+
+    samples = [
+        {"number": i, "filename": name, "event": "fight", "proposed_answer": "no"}
+        for i, name in enumerate(["first.mp4", "second.mp4"])
+    ]
+    result = realtime.run_streams(
+        samples,
+        {row["filename"]: tmp_path / row["filename"] for row in samples},
+        {"fight": "Fight?"},
+        SimpleNamespace(metadata={}, predict=predict),
+        tmp_path / "run.json",
+        slots=2,
+        workers=2,
+        interval=0.1,
+        frame_width=4,
+        frame_observer=observer,
+    )
+    assert result["execution_complete"]
+    assert result["overall"]["total"] == result["overall"]["correct"] == 2
+    assert not result["shared_errors"]
+    assert all(row["source_error"] is None for row in result["streams"])
+    assert all(
+        row["source_id"] != "callback mutation must remain local" for row in windows
+    )
+    if fail:
+        assert len(observed) == 1
+        assert result["frame_observer_error"] == "RuntimeError: recording failed"
+    else:
+        assert result["frame_observer_error"] is None
+        assert len(observed) == sum(row["sampled_frames"] for row in result["streams"])
+        for payload in windows:
+            for index, jpeg in zip(
+                payload["frame_indices"], payload["images"], strict=True
+            ):
+                matches = [
+                    (metadata, data)
+                    for metadata, data in observed
+                    if metadata["source_id"] == payload["source_id"]
+                    and metadata["frame_index"] == index
+                ]
+                assert len(matches) == 1
+                metadata, data = matches[0]
+                assert data == jpeg
+                assert metadata["filename"] == payload["filename"]
+                assert metadata["source_time"] == pytest.approx(index / 10)
+                assert metadata["source_time_basis"] == "decoder_pts"
+                assert Image.open(io.BytesIO(data)).size == (
+                    metadata["width"],
+                    metadata["height"],
+                )
