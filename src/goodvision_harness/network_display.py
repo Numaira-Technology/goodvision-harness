@@ -140,7 +140,9 @@ def display_stream_response(runtime, **cursor):
 
     async def stream():
         body, connection_id, after = first
-        while True:
+        # Release HTTP/1.1 connection slots for other cameras and controls.
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
             yield struct.pack(">I", len(body)) + body
             # Also sends small control/heartbeat packets while no frame arrives,
             # so session/analysis changes are observed without model updates.
