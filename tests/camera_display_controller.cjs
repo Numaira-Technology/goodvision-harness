@@ -1334,6 +1334,41 @@ test("continuous fetch parses split chunks without waiting for metadata and canc
 });
 
 
+test("normal stream EOF reconnects with the consumed cursor and keeps buffered playback",async t=>{
+  const timers=new Map(),requests=[],failures=[];let nextTimer=0,cancelled=0;
+  const view=browser({globals:{
+    setTimeout:(callback,delay)=>{const id=++nextTimer;timers.set(id,{callback,delay});return id;},
+    clearTimeout:id=>timers.delete(id),
+    createImageBitmap:async()=>({width:640,height:480,close(){}}),
+    fetch:async(url,options)=>{
+      requests.push(new URLSearchParams(url.split("?")[1]));
+      assert.equal(options.signal.aborted,false);
+      const packet=streamPacket(requests.length,{enabled:false});
+      const chunks=[packet.subarray(0,2),packet.subarray(2,20),packet.subarray(20)];
+      return {ok:true,headers:{get:()=>"application/vnd.goodvision.display-stream"},body:{getReader:()=>({
+        read:async()=>chunks.length?{value:chunks.shift(),done:false}:{done:true},
+        cancel:async()=>{cancelled++;},
+      })}};
+    },
+  }});
+  const feed=new view.api.NetworkController({canvas:view.canvas,url:"/frames",onFailure:error=>failures.push(error)});
+  t.after(()=>{feed.stop();view.controller.stop();});
+  await feed.pull();await settle();
+  const playback=feed.controller,first=playback.frames.frames[0];
+  assert.equal(feed.after,1);assert.equal(cancelled,1);
+  assert.equal(requests[0].get("after"),"-1");
+  const retry=timers.get(feed.timer);assert.equal(retry.delay,100);
+  timers.delete(feed.timer);await retry.callback();await settle();
+  assert.equal(requests.length,2);assert.equal(requests[1].get("after"),"1");
+  assert.equal(requests[1].get("connection_id"),"connection");
+  assert.equal(feed.controller,playback);assert.equal(playback.frames.frames[0],first);
+  assert.equal(feed.after,2);assert.equal(playback.stats.network_frames_received,2);
+  assert.equal(playback.stats.network_requests,2);assert.equal(cancelled,2);
+  assert.deepEqual(failures,[]);
+  feed.stop();assert.equal(timers.has(feed.timer),false);
+});
+
+
 test("three minutes of stalled motion retain 15 FPS native video and a four-second playback buffer",t=>{
   const view=browser({config:{source_mode:"network",transport:"frames",delay_seconds:4}});
   t.after(()=>view.controller.stop());let grayDraws=0;
