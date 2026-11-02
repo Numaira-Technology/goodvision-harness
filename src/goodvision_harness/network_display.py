@@ -142,11 +142,18 @@ def display_stream_response(runtime, **cursor):
         body, connection_id, after = first
         # Release HTTP/1.1 connection slots for other cameras and controls.
         deadline = time.monotonic() + 0.5
-        while time.monotonic() < deadline:
+        while True:
             yield struct.pack(">I", len(body)) + body
+            # Sending a complete packet may outlast the generator budget under
+            # backpressure. Do not prepare another batch once it has expired.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
             # Also sends small control/heartbeat packets while no frame arrives,
             # so session/analysis changes are observed without model updates.
-            await asyncio.sleep(1 / 30)
+            await asyncio.sleep(min(1 / 30, remaining))
+            if time.monotonic() >= deadline:
+                return
             try:
                 body, connection_id, after = await asyncio.to_thread(
                     _display_batch,
