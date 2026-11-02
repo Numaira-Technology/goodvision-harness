@@ -1,7 +1,7 @@
 {
  "dataset": "120",
- "status": "draft_pending_user_review",
- "note": "原50对象原样保留；用户10月29日已确认104/106/108/110四条酒瓶答案为no，其余新增66题待审阅。小瓶用途和隐藏内容不作推断。若有参考unknown须单列，不自动当no。",
+ "status": "human_reviewed",
+ "note": "The user approved this 120-question version on 2026-11-01. Questions, reference answers and media are unchanged. Hidden contents are not inferred; unknown answers remain separate.",
  "n_questions": 120,
  "n_files_hashed": 120,
  "missing_files": [],
@@ -15,7 +15,7 @@
    "event": "bag_alcohol_bottle",
    "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 114,
@@ -24,7 +24,7 @@
    "event": "bag_alcohol_bottle",
    "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 116,
@@ -33,7 +33,7 @@
    "event": "bag_alcohol_bottle",
    "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 118,
@@ -42,7 +42,7 @@
    "event": "bag_alcohol_bottle",
    "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 120,
@@ -51,7 +51,7 @@
    "event": "bag_alcohol_bottle",
    "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 102,
@@ -60,7 +60,7 @@
    "event": "bag_alcohol_bottle",
    "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 104,
@@ -105,7 +105,7 @@
    "event": "bag_knife",
    "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 113,
@@ -114,7 +114,7 @@
    "event": "bag_knife",
    "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 115,
@@ -123,7 +123,7 @@
    "event": "bag_knife",
    "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 117,
@@ -132,7 +132,7 @@
    "event": "bag_knife",
    "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 119,
@@ -141,7 +141,7 @@
    "event": "bag_knife",
    "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 101,
@@ -150,7 +150,7 @@
    "event": "bag_knife",
    "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 103,
@@ -159,7 +159,7 @@
    "event": "bag_knife",
    "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 105,
@@ -168,7 +168,7 @@
    "event": "bag_knife",
    "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 107,
@@ -177,7 +177,7 @@
    "event": "bag_knife",
    "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 109,
@@ -186,7 +186,7 @@
    "event": "bag_knife",
    "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 37,
@@ -276,7 +276,7 @@
    "event": "fall",
    "question": "Does a person fall in this video? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 85,
@@ -285,7 +285,7 @@
    "event": "fall",
    "question": "Does a person fall in this video? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 83,
@@ -294,7 +294,7 @@
    "event": "fall",
    "question": "Does a person fall in this video? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 84,
@@ -303,7 +303,7 @@
    "event": "fall",
    "question": "Does a person fall in this video? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 25,
@@ -393,7 +393,7 @@
    "event": "fall",
    "question": "Does a person fall in this video? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 34,
@@ -438,7 +438,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 52,
@@ -447,7 +447,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 55,
@@ -456,7 +456,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 57,
@@ -465,7 +465,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 66,
@@ -474,7 +474,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 54,
@@ -483,7 +483,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 56,
@@ -492,7 +492,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 2,
@@ -510,7 +510,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 65,
@@ -519,7 +519,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 5,
@@ -555,7 +555,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 3,
@@ -573,7 +573,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 9,
@@ -618,7 +618,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 11,
@@ -636,7 +636,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 68,
@@ -645,7 +645,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 60,
@@ -654,7 +654,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 62,
@@ -663,7 +663,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 67,
@@ -672,7 +672,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 8,
@@ -690,7 +690,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 59,
@@ -699,7 +699,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 58,
@@ -708,7 +708,7 @@
    "event": "fight",
    "question": "Does any fighting occur in this video? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 19,
@@ -744,7 +744,7 @@
    "event": "smoking",
    "question": "Does this video show a person smoking? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 17,
@@ -834,7 +834,7 @@
    "event": "smoking",
    "question": "Does this video show a person smoking? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 77,
@@ -843,7 +843,7 @@
    "event": "smoking",
    "question": "Does this video show a person smoking? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 78,
@@ -852,7 +852,7 @@
    "event": "smoking",
    "question": "Does this video show a person smoking? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 79,
@@ -861,7 +861,7 @@
    "event": "smoking",
    "question": "Does this video show a person smoking? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 80,
@@ -870,7 +870,7 @@
    "event": "smoking",
    "question": "Does this video show a person smoking? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 75,
@@ -879,7 +879,7 @@
    "event": "smoking",
    "question": "Does this video show a person smoking? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 73,
@@ -888,7 +888,7 @@
    "event": "smoking",
    "question": "Does this video show a person smoking? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 74,
@@ -897,7 +897,7 @@
    "event": "smoking",
    "question": "Does this video show a person smoking? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 71,
@@ -906,7 +906,7 @@
    "event": "smoking",
    "question": "Does this video show a person smoking? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 100,
@@ -915,7 +915,7 @@
    "event": "weapon",
    "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 86,
@@ -924,7 +924,7 @@
    "event": "weapon",
    "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 46,
@@ -942,7 +942,7 @@
    "event": "weapon",
    "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 47,
@@ -969,7 +969,7 @@
    "event": "weapon",
    "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 49,
@@ -996,7 +996,7 @@
    "event": "weapon",
    "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
    "proposed_answer": "yes",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 98,
@@ -1005,7 +1005,7 @@
    "event": "weapon",
    "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 95,
@@ -1014,7 +1014,7 @@
    "event": "weapon",
    "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 90,
@@ -1023,7 +1023,7 @@
    "event": "weapon",
    "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 99,
@@ -1032,7 +1032,7 @@
    "event": "weapon",
    "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 92,
@@ -1041,7 +1041,7 @@
    "event": "weapon",
    "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 93,
@@ -1050,7 +1050,7 @@
    "event": "weapon",
    "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 91,
@@ -1059,7 +1059,7 @@
    "event": "weapon",
    "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 97,
@@ -1068,7 +1068,7 @@
    "event": "weapon",
    "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 96,
@@ -1077,7 +1077,7 @@
    "event": "weapon",
    "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   },
   {
    "number": 94,
@@ -1086,7 +1086,7 @@
    "event": "weapon",
    "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
    "proposed_answer": "no",
-   "human_review": "pending_user_review"
+   "human_review": "user_reviewed"
   }
  ]
 }
