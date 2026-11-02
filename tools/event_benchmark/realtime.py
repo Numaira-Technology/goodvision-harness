@@ -88,6 +88,7 @@ def run_streams(
     available = threading.Condition(lock)
     admission = threading.BoundedSemaphore(workers + slots)
     states, reusable, shared_errors = [], [], []
+    unusable = set()
     latencies, primary_latencies = [], []
     primary_remaining, serial = len(media), 0
     started = time.monotonic()
@@ -306,6 +307,15 @@ def run_streams(
                     ok, bgr = capture.read()
                     if not ok:
                         state["eof_seen"] = raw_index >= info.frame_count
+                        if state["eof_seen"] and last_timestamp is not None:
+                            # The final frame occupies one source frame period.
+                            # Without this, one-frame fillers restart in a tight
+                            # loop and every source ends one frame period early.
+                            end_target = origin + last_timestamp + 1 / info.source_fps
+                            while not stop.is_set() and time.monotonic() < end_target:
+                                stop.wait(
+                                    min(0.02, max(0, end_target - time.monotonic()))
+                                )
                         if not state["eof_seen"]:
                             state["source_error"] = (
                                 "decoder ended before reported original frame count"
@@ -341,7 +351,10 @@ def run_streams(
                     if state["input_start_monotonic"] is None:
                         state["input_start_monotonic"] = ingress
                         with available:
-                            if state["filename"] not in reusable:
+                            if (
+                                state["filename"] not in reusable
+                                and state["filename"] not in unusable
+                            ):
                                 reusable.append(state["filename"])
                             available.notify_all()
                     state["raw_frames"] += 1
@@ -446,6 +459,11 @@ def run_streams(
                 if capture is not None:
                     capture.release()
                 if state["source_error"] is not None:
+                    with available:
+                        unusable.add(state["filename"])
+                        if state["filename"] in reusable:
+                            reusable.remove(state["filename"])
+                        available.notify_all()
                     state["input_failures"] += 1
                     try:
                         record(
@@ -670,8 +688,7 @@ def run_streams(
             "outstanding_limit": workers + slots,
             "per_source_outstanding_limit": 1,
             "replacement": (
-                "input EOF replaces source immediately; "
-                "old requests drain by source_id"
+                "input EOF replaces source immediately; old requests drain by source_id"
             ),
             "clip_aggregation": (
                 "any valid yes; otherwise any valid no; otherwise unknown"

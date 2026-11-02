@@ -304,6 +304,85 @@ def test_oversampling_uses_distinct_frames_and_counts_only_possible_windows(
     assert result["overall"]["correct"] == 1
 
 
+def test_single_frame_source_keeps_its_original_display_duration(tmp_path, monkeypatch):
+    fake_video(monkeypatch, frames=1)
+    backend = SimpleNamespace(
+        metadata={},
+        predict=lambda *a, **k: pytest.fail("one frame cannot form a two-frame window"),
+    )
+    sample = {
+        "number": 1,
+        "filename": "clip.mp4",
+        "event": "fight",
+        "proposed_answer": "no",
+    }
+    result = realtime.run_streams(
+        [sample],
+        {"clip.mp4": tmp_path / "clip.mp4"},
+        {"fight": "Fight?"},
+        backend,
+        tmp_path / "run.json",
+        slots=1,
+        workers=1,
+        interval=0.1,
+        frame_width=4,
+    )
+    state = result["streams"][0]
+    assert state["input_end_monotonic"] - state["input_start_monotonic"] >= 0.09
+    assert result["execution_complete"]
+    assert result["per_video"][0]["pred"] == "unknown"
+
+
+def test_corrupt_source_is_retired_from_filler_rotation(tmp_path, monkeypatch):
+    fake_video(monkeypatch)
+    original_capture = cv2.VideoCapture
+
+    def capture(path):
+        instance = original_capture(path)
+        if path.endswith("corrupt.mp4"):
+            original_read = instance.read
+            instance.read = lambda: (
+                original_read() if instance.index == 0 else (False, None)
+            )
+        else:
+            original_read = instance.read
+
+            def read():
+                if instance.index == 0:
+                    time.sleep(0.05)
+                return original_read()
+
+            instance.read = read
+        return instance
+
+    monkeypatch.setattr(cv2, "VideoCapture", capture)
+    samples = [
+        {"number": i, "filename": name, "event": "fight", "proposed_answer": "no"}
+        for i, name in enumerate(["corrupt.mp4", "valid.mp4"])
+    ]
+    backend = SimpleNamespace(
+        metadata={},
+        predict=lambda *a, **k: {"predictions": {"fight": backends._result(False)}},
+    )
+    result = realtime.run_streams(
+        samples,
+        {s["filename"]: tmp_path / s["filename"] for s in samples},
+        {"fight": "Fight?"},
+        backend,
+        tmp_path / "run.json",
+        slots=2,
+        workers=2,
+        interval=0.1,
+        frame_width=4,
+    )
+    corrupt = [
+        state for state in result["streams"] if state["filename"] == "corrupt.mp4"
+    ]
+    assert len(corrupt) <= 2  # At most one already-started filler can race the primary.
+    assert all(state["source_error"] for state in corrupt)
+    assert not result["execution_complete"]
+
+
 def test_replacement_drains_prior_source_independently_and_uses_unique_ids(
     tmp_path, monkeypatch
 ):
