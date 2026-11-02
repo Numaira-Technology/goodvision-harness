@@ -121,8 +121,8 @@ class RemoteBackend:
             )
         self.options = OPTIONS
         if backend == "neural":
-            from goodvision_harness.videojev_core import OPTIONS as CORE_OPTIONS
             from goodvision_harness.neural_service import PROMPTS
+            from goodvision_harness.videojev_core import OPTIONS as CORE_OPTIONS
 
             self.options = list(CORE_OPTIONS)
             self.scene_prompts = PROMPTS
@@ -257,7 +257,9 @@ class RemoteBackend:
                 row["query_parts"] = [WINDOW_RULE + "Source times: ", "\n" + question]
             template.setdefault(wire_id, row)
         if not template:
-            raise ValueError("no requested event is supported by the product scene service")
+            raise ValueError(
+                "no requested event is supported by the product scene service"
+            )
         return {
             "session": window["source_id"],
             "request_id": window["request_id"],
