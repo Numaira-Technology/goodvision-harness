@@ -1,7 +1,9 @@
 """Local worker ownership, model readiness, and deployment entry points."""
 
+import os
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -61,7 +63,10 @@ def test_start_is_nonblocking_reuses_worker_and_only_closes_owned_processes(
     assert "--singleton" in command
     assert command[command.index("--port") + 1] == "8097"
     assert options.get("shell") is not True
-    assert "src" in options["env"]["PYTHONPATH"]
+    import_root = Path(options["env"]["PYTHONPATH"].split(os.pathsep)[0])
+    assert (import_root / "goodvision_harness/module_services.py").samefile(
+        module_services.__file__
+    )
     assert services.start("system1")["state"] == "starting"
     assert len(launched) == 1
     health["state"] = "ready"
