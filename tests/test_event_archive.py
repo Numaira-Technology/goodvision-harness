@@ -769,8 +769,11 @@ def test_idle_wait_includes_encoding_and_failed_first_clip_falls_back(
     )
     try:
         for index in range(71):
-            archive.submit_frame(jpeg(), index / 5, index, "session")
-        archive.submit_result(result(1, "first", label="stranger"))
+            assert archive.submit_frame(jpeg(), index / 5, index, "session")
+        # Drain fixture frames before timing the controlled encoder checkpoint.
+        # Durable frame processing is separate from the idle/encoding contract.
+        assert archive.flush()
+        assert archive.submit_result(result(1, "first", label="stranger"))
         assert entered.wait(3)
         archive.submit_result(result(11, "second", label="stranger"))
         archive.end_session("session")
