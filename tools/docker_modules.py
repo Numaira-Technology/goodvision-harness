@@ -164,7 +164,7 @@ def compose(module, settings, source: Path, state: Path):
     service["volumes"] = ["data:/data"]
     if module == "main":
         service.update(
-            image=f"goodvision-harness:{version}",
+            image=f"goodvision-main:{version}",
             build={"context": str(source), "dockerfile": "Dockerfile"},
         )
         service["environment"] = {
@@ -278,7 +278,7 @@ def compose(module, settings, source: Path, state: Path):
         )
         document["networks"]["engine"] = {"internal": True}
         document["services"]["engine"] = {
-            "image": f"goodvision-contour-runtime:{version}",
+            "image": f"goodvision-contour:{version}-engine",
             "build": {
                 "context": str(source / "workers"),
                 "dockerfile": "contour/Dockerfile.engine",

@@ -4,6 +4,12 @@
 GPU 基础镜像；每个服务单元使用独立 Compose 项目，按部署名称共用一张网络。
 与旧的源码 Compose、Contour 独立安装器并存，不自动接管旧容器或迁移旧数据。
 
+新构建与交付固定使用五个镜像仓库：`goodvision-main`、`goodvision-bbox`、
+`goodvision-contour`、`goodvision-system1`、`goodvision-gpu-runtime`。
+主程序镜像为 `goodvision-main:<version>`；Contour 接口和推理分别使用
+`goodvision-contour:<version>` 与 `goodvision-contour:<version>-engine`。
+CPU/CUDA、PyTorch 版本和内部角色通过标签区分，不另设镜像仓库名称。
+
 ## 安装单元与依赖
 
 | 单元 | 运行内容 | 安装依赖 |

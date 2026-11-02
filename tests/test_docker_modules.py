@@ -16,6 +16,50 @@ from tools import docker_modules as spec
 from tools import package_modules as export
 
 
+def test_delivery_uses_exactly_the_five_canonical_image_repositories(tmp_path):
+    settings = spec.defaults("site1", "release1")
+    settings["bbox_device"] = "cuda"
+    images = {
+        module: {
+            role: service["image"]
+            for role, service in spec.compose(
+                module, settings, tmp_path, tmp_path
+            )["services"].items()
+        }
+        for module in spec.PORTS
+    }
+    assert images == {
+        "main": {"main": "goodvision-main:release1"},
+        "bbox": {"bbox": "goodvision-bbox:release1-cuda"},
+        "contour": {
+            "contour": "goodvision-contour:release1",
+            "engine": "goodvision-contour:release1-engine",
+        },
+        "system1": {"system1": "goodvision-system1:release1"},
+    }
+    runtime = [
+        spec.runtime_image(settings, torch)
+        for torch in spec.runtime_versions(["gpu-runtime"], settings)
+    ]
+    assert runtime == [
+        "goodvision-gpu-runtime:release1-torch2.10-cu128",
+        "goodvision-gpu-runtime:release1-torch2.8-cu128",
+    ]
+    delivered = [*runtime]
+    delivered.extend(image for roles in images.values() for image in roles.values())
+    assert {image.split(":", 1)[0] for image in delivered} == {
+        "goodvision-main",
+        "goodvision-bbox",
+        "goodvision-contour",
+        "goodvision-system1",
+        "goodvision-gpu-runtime",
+    }
+    settings["bbox_device"] = "cpu"
+    assert spec.compose("bbox", settings, tmp_path, tmp_path)["services"]["bbox"][
+        "image"
+    ] == "goodvision-bbox:release1-cpu"
+
+
 def test_separate_projects_share_only_network_and_use_service_addresses(tmp_path):
     settings = spec.defaults("site1", "release1")
     main = spec.compose("main", settings, tmp_path, tmp_path)

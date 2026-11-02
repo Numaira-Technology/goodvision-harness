@@ -5,28 +5,31 @@
 或安装地点变化。显示名称、安装器短 ID、Compose service、镜像和容器实例名分别记录。
 本目录随 Git 持久保存，新增模块或调整映射时在同一提交中更新本目录。
 
-2026-11-02 核对源码：`736c753`，来自尚未合并的
+2026-11-02 按五个固定模块名称核对安装器与交付配置，来自尚未合并的
 [独立模块 PR #75](https://github.com/Numaira-Technology/goodvision-harness/pull/75)。
 这里记录源码定义与命名约定；实际安装版本以该主机保存的配置及 Docker inspect 为准。
 内部参考不代表任何镜像已构建、已部署或通过真实模型验收。
 
 ## 独立安装单元
 
-以下五个完整模块名称是内部文档与更新记录的统一名称。安装器短 ID 对应
+以下五个完整模块名称同时固定为新安装、构建与交付使用的镜像仓库名称：
+`goodvision-main`、`goodvision-bbox`、`goodvision-contour`、`goodvision-system1`、
+`goodvision-gpu-runtime`。版本、设备和容器角色写在标签中，不另设镜像仓库。
+安装器短 ID 对应
 [安装器定义](../../tools/docker_modules.py) 的 `MODULES`、`deploy_modules.py --modules`
 和源码包 `module-package.json.module`，继续按原值使用；完整名称不直接替代命令参数。
 `<version>` 是发布版本，`<namespace>` 是安装实例名；尖括号为占位符。
 
-| 固定模块名称 | 安装器短 ID | 职责 | Compose service | 现有镜像命名 | 源码 / 构建入口 |
+| 固定模块名称 | 安装器短 ID | 职责 | Compose service | 新安装镜像命名 | 源码 / 构建入口 |
 | --- | --- | --- | --- | --- | --- |
-| `goodvision-main` | `main` | 主程序：界面、视频接入、工作流、事件与结果 | 新安装为 `main`；旧安装为 `harness` / `harness-N` | `goodvision-harness:<version>` | [Dockerfile](../../Dockerfile)、[应用源码](../../src/goodvision_harness) |
+| `goodvision-main` | `main` | 主程序：界面、视频接入、工作流、事件与结果 | 新安装为 `main`；旧安装为 `harness` / `harness-N` | `goodvision-main:<version>` | [Dockerfile](../../Dockerfile)、[应用源码](../../src/goodvision_harness) |
 | `goodvision-bbox` | `bbox` | Bbox：YOLO26-S 检测和追踪 | `bbox` | `goodvision-bbox:<version>-cpu` / `goodvision-bbox:<version>-cuda` | [CPU Dockerfile](../../workers/bbox/Dockerfile.cpu)、[CUDA Dockerfile](../../workers/bbox/Dockerfile)、[服务源码](../../workers/detector_rich_label) |
-| `goodvision-contour` | `contour` | Contour：对外接口与内部推理，作为一个安装单元管理 | `contour`（接口）+ `engine`（推理） | `goodvision-contour:<version>` + `goodvision-contour-runtime:<version>` | [接口 Dockerfile](../../workers/contour/Dockerfile)、[推理 Dockerfile](../../workers/contour/Dockerfile.engine)、[接口源码](../../workers/contour)、[推理源码](../../workers/sam_scene) |
+| `goodvision-contour` | `contour` | Contour：对外接口与内部推理，作为一个安装单元管理 | `contour`（接口）+ `engine`（推理） | `goodvision-contour:<version>` + `goodvision-contour:<version>-engine` | [接口 Dockerfile](../../workers/contour/Dockerfile)、[推理 Dockerfile](../../workers/contour/Dockerfile.engine)、[接口源码](../../workers/contour)、[推理源码](../../workers/sam_scene) |
 | `goodvision-system1` | `system1` | System 1：VideoJev 视频推理 | `system1` | `goodvision-system1:<version>` | [Dockerfile](../../workers/system1/Dockerfile)、[服务源码](../../src/goodvision_harness/videojev_service.py) |
 | `goodvision-gpu-runtime` | `gpu-runtime` | 共享 GPU 依赖底座；只构建镜像，无常驻容器 | 无 | `goodvision-gpu-runtime:<version>-torch2.10-cu128` / `goodvision-gpu-runtime:<version>-torch2.8-cu128` | [Dockerfile](../../workers/gpu_runtime/Dockerfile)、[底座说明](../../workers/gpu_runtime/README.md) |
 
-主程序的完整模块名称为 `goodvision-main`；现有镜像仓库名 `goodvision-harness` 作为
-兼容映射保留，不把两个名称当成两个模块。
+新交付的主程序镜像必须使用 `goodvision-main`，不得继续输出 `goodvision-harness`。
+下文列出的旧镜像名称只用于识别历史部署，不是新构建或交付可使用的兼容别名。
 Contour 的容器角色固定写作 `goodvision-contour/contour` 和
 `goodvision-contour/engine`（完整模块名称 / service）。
 `engine` 不是第六个安装单元。CPU/CUDA Bbox 是同一模块的两种构建类型。
