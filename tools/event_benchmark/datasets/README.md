@@ -20,7 +20,9 @@
 `human_review`(审阅状态),外加顶层 `samples_json_sha256`(整份答案表的指纹)。
 
 - `manifest_50.json` — 旧 50 片(fight12 / smoking12 / fall21 / weapon5)。
-- `manifest_120.json` — 扩充 120 题 / 110 视频。注意 `status=draft_pending_user_review`:66 条 GT 还是草稿。
+- `manifest_120.json` — 扩充 120 题 / 110 视频。合并的 PR #73 将状态记录为
+  `human_reviewed`，全部 120 条记录为 `user_reviewed`；题干、答案及媒体/samples 指纹未变。
+  这些标记本身不独立证明 owner 审阅、来源组隔离或新的 v2 实测；当前仍无 `source_video_group`。
   含两类新题型 `bag_knife` / `bag_alcohol_bottle`(翻包,答案空间带 unknown),属 v1.1 单独任务,不进 base-4 二值主表。
 
 ## 冻结一个新版本怎么做
@@ -41,7 +43,10 @@
 
 `validation_split.json` 记录历史 24 片候选（每类 6，12 正 12 负），**不是已冻结的 v2 清单**。
 它没有 samples.json 或媒体 SHA-256，不能替代 runner 所要求的 human_reviewed manifest。
-历史分数中 2 片文件缺失，只有 22 个分数；存档阈值和测试集改善仅为历史 v1 算术结果。
+原始 `luna_val24.json` 中 2 片文件缺失，只有 22 个分数。新增
+`luna_val24_refilled.json` 保留这 22 行，另记录两行补分，共 24 行；它仍为 v1，
+没有 lossless/manifest/media/runner/spec provenance，不能用于 v2 调阈。
+存档阈值和测试集改善仅为历史 v1 算术结果；补分细节见 [结果说明](../RESULTS.md)。
 `disjoint_assert` 是当时记录的文件名检查声明，当前工具不会将它视为内容不重叠的证明。
 
 后续需要：审阅完整答案与媒体、生成哈希 manifest、完整验证集重跑，再在未参与选阈的测试集评估。

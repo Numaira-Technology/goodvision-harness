@@ -2,7 +2,7 @@
 
 📊 **团队汇总表**：<https://docs.google.com/spreadsheets/d/1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA/edit>。以各行的来源、版本与审阅状态为准；需要发布时使用 `bench-sheet-contribute` skill 核对实时表头、目标行与授权，用会话内 Google OAuth，不存密钥。本页的历史结果不代表已审阅的 v2 数据。
 
-本页的 **50 片、100 题 base-4 和 luna 阈值调参均为历史 v1 输出**，不是当前 v2 runner 的验收结果。新增历史输出中，Gemini/Luna/Qwen 分别有 1/6/50 行含失败帧；验证集 24 行只有 22 个分数，且均无 v2 provenance。冻结考卷规则见 [`SPEC.md`](SPEC.md)；历史 50 片沿用的原始规则见 [`SPEC_V1.md`](SPEC_V1.md)。**唯一变量是模型**。
+本页的 **50 片、100 题 base-4 和 luna 阈值调参均为历史 v1 输出**，不是当前 v2 runner 的验收结果。新增历史输出中，Gemini/Luna/Qwen 分别有 1/6/50 行含失败帧；原始验证集存档 24 行只有 22 个分数，后续补分存档记录 24 行，两者均无 v2 provenance。冻结考卷规则见 [`SPEC.md`](SPEC.md)；历史 50 片沿用的原始规则见 [`SPEC_V1.md`](SPEC_V1.md)。**唯一变量是模型**。
 
 ---
 
@@ -43,9 +43,9 @@
 
 ---
 
-## 100 题 base-4 扩展集（provisional，GT 部分待审）
+## 100 题 base-4 扩展集（历史 provisional 输出）
 
-`results/{gemini,qwen,luna}_100base.json`。取 `media_extra_50/samples.json` 里 base-4 的 100 题（fight 32 · smoking 22 · fall 26 · weapon 20；bag_knife/bag_alcohol 共 20 题属 v1.1，不计入 base-4，`run_eval` 自动过滤）。**66/120 GT 仍 `pending_user_review`，故本集标 provisional。**
+`results/{gemini,qwen,luna}_100base.json`。取 `media_extra_50/samples.json` 里 base-4 的 100 题（fight 32 · smoking 22 · fall 26 · weapon 20；bag_knife/bag_alcohol 共 20 题属 v1.1，不计入 base-4，`run_eval` 自动过滤）。这些输出收集时 66/120 条 GT 待审。合并的 PR #73 后来将全部 120 条记录为 `user_reviewed`；这不追溯改变旧输出的 provisional/v1 资格，也不独立证明 owner 审阅或来源组隔离。
 
 | 模型(类) | fight | smoking | fall | weapon | 总体 |
 |---|---|---|---|---|---|
@@ -88,7 +88,20 @@ validation/media/source-group 清单与新鲜兼容 lossless v2 证据的验收�
 | 100 片 | 85% | **92%** |
 
 提升几乎全来自 fall：luna 在 0.5 时 fall 误报多（50 片 FP4、100 片 FP7），fall 阈值抬到 0.58 后这些误报消失。细节见 `results/luna_threshold_tuning.json` 与表格 `threshold-tuning` tab。
-（注：adl-24、adl-28 在存档中仅有 missing file 错误，没有分数。不能推断它们低于阈值，也不能预言补齐后的阈值不变。）
+（注：adl-24、adl-28 在原始 `luna_val24.json` 中仅有 missing file 错误，没有分数。不能从该原始存档推断它们的分数；后续补分记录另见下节。）
+
+### 历史验证集补分（仍不具备 v2 资格）
+
+`luna_val24_refilled.json` 保留原始 22 个已评分行，另记录 adl-24=0.0、adl-28=0.47，
+标注补分日期 2026-11-02。按文件内数值，固定 0.5 得到 24/24；最长连续最优网格区间
+中点规则得到 fight 0.29、smoking 0.525、fall 0.575、weapon 0.455。
+`luna_val24_refilled_thresholds.json` 保存相同的候选计数和选择细节，并明确标为
+`historical-v1-val24-threshold-refill`。这些数值可离线复算，不代表独立核验了 provider 实测。
+
+补分文件仍为 `spec_version=v1`，无 lossless、samples/manifest/runner/spec 哈希，
+24 行均无媒体哈希，原有 22 行也没有 `frames_planned`。它没有补齐经审阅的来源组或
+验证/测试隔离证据，不能通过当前 `select`；其配套历史 artifact 也不能用于 `evaluate`。
+24/24 是该历史验证文件内的算术结果，不是新的 held-out 测试成绩，不能解除验收 hold。
 
 ---
 
@@ -107,7 +120,8 @@ validation/test 交集（文件名与媒体 SHA-256）、模型或采样不一�
 历史 v1 文件保留原样，不能输入当前工具来生成声称有效的 v2 校准报告。
 
 本仓库尚无留出集的已审阅 v2 manifest；`validation_split.json` 只是历史候选清单。
-120 题 manifest 仍为 draft。必须先完成答案审阅和媒体/答案哈希清单，再对所有候选重跑；
+120 题 manifest 现记录全部已审阅，但缺少来源组，也没有新鲜兼容的 lossless v2 验证/测试输出。
+必须核实审阅与来源分组，补齐留出集的媒体/答案哈希清单，再对所有候选重跑；
 不得把历史 JSON 改写为 v2，也不得据此发布 v2 比较。
 
 用于调阈的 manifest 还必须为每个 base-4 问题保存 `human_review=user_reviewed` 和

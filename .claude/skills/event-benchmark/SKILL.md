@@ -20,8 +20,11 @@ use the user's authorized scope and budget.
    manifest, media directories and output path. Verify manifest review status,
    samples hash, question/label identities and media hashes. The runner does this
    before requests. Do not change a draft status to bypass review.
-   `manifest_50.json` is reviewed; `manifest_120.json` is currently draft and
-   includes 100 base-event questions plus 20 separate bag-search questions.
+   `manifest_50.json` is reviewed; merged PR #73 records `manifest_120.json` as
+   `human_reviewed` with all 120 rows `user_reviewed`. It includes 100 base-event
+   questions plus 20 separate bag-search questions. These recorded flags do not
+   independently verify owner approval, source grouping or fresh run provenance;
+   no `source_video_group` values are present in that manifest.
    Question count is not unique-video count. Larger sets require their own reviewed
    manifest. Never assume a colleague's Desktop path exists.
 2. **Run accuracy from the repository root**, only after authorization for calls:
