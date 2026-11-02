@@ -85,34 +85,38 @@ README "Repository layout" 列的主体，本地运行与客户交付共用：
 
 ## Compose 文件分组索引
 
-根目录的 `compose*.yaml` 是**扁平的稳定入口**（被 150+ 处测试/脚本/文档/Dockerfile 按原路径引用，
-见 CONTRIBUTING "Organization and stable paths"），**不移动**；这里只按用途分组，便于查找。用法是
-`docker compose -f compose.yaml -f compose.<overlay>.yaml ...`，或用对应启动器（`tools/start_*.py`）。
+根目录的 `compose*.yaml` 是**扁平的稳定入口**，被脚本、测试和运维按原路径使用，
+见 [CONTRIBUTING "Organization and stable paths"](../../CONTRIBUTING.md#organization-and-stable-paths)。
+这里只按用途分组，保留原路径。下表区分独立入口与 overlay；“叠加”表示在所列文件之后再加本行文件，
+按顺序传入 `-f`。独立入口无需额外传入 `compose.yaml`，但仍可能通过 `extends` 引用其他文件。
+具体环境变量、权重与启动参数以对应指南、启动器和文件内说明为准。
 
-| 组 | 文件 | 用途 |
-|---|---|---|
-| 基础 | `compose.yaml` | 基础栈（网络 `goodvision-demo`），其余按需叠加其上 |
-| 应用主机 (CPU) | `compose.main-server.yaml` | CPU 应用主机（`start_modular main`，无需显卡） |
-| | `compose.analysis-gateway.yaml` | 仅转发 console / camera / output 流量 |
-| 本地 GPU 追踪 | `compose.local-gpu.yaml` | 本地 NVIDIA GPU overlay（`start_local_gpu` 填设备；只叠在 `compose.yaml` 上） |
-| | `compose.local-tracking.yaml` | 应用主机本地 GPU 上的 SAM 运行时 |
-| | `compose.gpu.yaml` | Paddle rich-label worker 的 GPU overlay |
-| 人脸 / 全功能加速 | `compose.face-gpu.yaml` | GPU 人脸识别（`Dockerfile.face-gpu`） |
-| | `compose.full-gpu.accelerated.yaml` | 全功能 GPU 加速（`FACE_ACCELERATOR=gpu` + rich-label） |
-| 云 / 远端 GPU | `compose.cloud-gpu.yaml` | 本地网关 + UI 控制的云 GPU 租用 |
-| | `compose.detector-remote.yaml` | 租 GPU 跑 YOLO / RF-DETR 检测器 |
-| SAM 服务 / 验证 | `compose.sam-server.yaml` | 独立 SAM 服务（权重属该 GPU 主机） |
-| | `compose.sam31.yaml` | 原生 SAM 3.1 视频验证（有界批次各自模型记忆） |
-| | `compose.sam31-remote.yaml` | 连远端 SAM（替代本地 SAM overlay） |
-| | `compose.sam31-stream.yaml` | 实验性持久原生记忆（叠在 `sam31` 上） |
-| 场景 / 感知 | `compose.scene.yaml` | 连续人物 / 事件引擎（需 `compose.yaml` + 本地 SAM3 权重） |
-| | `compose.perception.yaml` | SAM 连续分析（叠在 `compose.yaml` + `sam31` 后） |
-| 大模型服务 | `compose.vlm-server.yaml` | 独立模型 + CPU 处理服务 |
-| **交付 / production** | `compose.full-gpu.delivery.yaml` | 客户交付部署入口（见 [DEPLOY.md](../../DEPLOY.md) / [RELEASE.md](../../RELEASE.md)） |
-| 诊断（在 `diag/`） | `diag/compose.sam-multistream.yaml` · `diag/compose.sam-tunnel.yaml` | 诊断专用，已单独放在 `diag/` 子目录 |
+| 组 | 文件 | 用途 | 组合 / 启动入口 |
+|---|---|---|---|
+| 基础 | [`compose.yaml`](../../compose.yaml) | 源码基础栈，默认网络 `goodvision-demo` | 独立入口；见[源码部署](deployment.md) |
+| 应用主机 (CPU) | [`compose.main-server.yaml`](../../compose.main-server.yaml) | CPU 应用主机，SAM / VLM 可在独立服务器 | 独立入口，通过 `extends` 继承基础服务；`python tools/start_modular.py main`，见[分机部署](modular-services.md) |
+| | [`compose.analysis-gateway.yaml`](../../compose.analysis-gateway.yaml) | 仅接入 / 转发控制台、视频和输出流量 | 独立网关入口，需配置远端分析地址；见[分机部署](modular-services.md) |
+| 本地 GPU | [`compose.local-tracking.yaml`](../../compose.local-tracking.yaml) | 主程序 + 本机 Contour/SAM 追踪；人脸仍用 CPU，大模型使用已配置的外部服务 | 独立入口；`python tools/start_local_gpu.py`，见[本机追踪](local-gpu.md) |
+| | [`compose.local-gpu.yaml`](../../compose.local-gpu.yaml) | 本地 VLM、CPU 处理服务、SAM 与 GPU 人脸；Paddle 可选 | 叠加在 `compose.yaml` 上，不与其他 GPU / remote overlay 混用；`python tools/start_local_gpu.py --with-local-inference`，见[完整本地部署](local-gpu-full.md) |
+| 源码 GPU 加速 | [`compose.gpu.yaml`](../../compose.gpu.yaml) | Paddle rich-label worker GPU overlay | 叠加在 `compose.yaml` 上，启用 `--profile rich`；见[运行指南](runtime.md) |
+| | [`compose.face-gpu.yaml`](../../compose.face-gpu.yaml) | 使用 `Dockerfile.face-gpu` 启用 GPU 人脸识别 | 叠加在 `compose.yaml` 上；见[运行指南](runtime.md#optional-gpu-face-recognition) |
+| 云 / 远端 GPU | [`compose.cloud-gpu.yaml`](../../compose.cloud-gpu.yaml) | 本地网关 + UI 控制的云 GPU 租用，分析在租用主机运行 | 独立入口；`python tools/start_cloud_gpu.py`，见[云 GPU 部署](cloud-gpu.md) |
+| | [`compose.sam31-remote.yaml`](../../compose.sam31-remote.yaml) | 网关 + 云 GPU 租用控制器，UI 明确启动租用后运行远端分析 | 叠加在 `compose.yaml` 上，替代本地 SAM overlay；见[云 GPU 部署](cloud-gpu.md) |
+| | [`compose.detector-remote.yaml`](../../compose.detector-remote.yaml) | 租 GPU 跑 YOLO / RF-DETR 检测器 | 按文件内示例与 `compose.yaml` 组合，只启动 `detector-remote`；启动该服务即租用付费实例 |
+| SAM 服务 / 验证 | [`compose.sam-server.yaml`](../../compose.sam-server.yaml) | 独立 SAM 服务，权重位于该 NVIDIA GPU 主机 | 独立入口；`python tools/start_modular.py sam`，见[分机部署](modular-services.md) |
+| | [`compose.sam31.yaml`](../../compose.sam31.yaml) | 原生 SAM 3.1 视频验证，每个有界批次独立模型记忆 | 叠加在 `compose.yaml` 上；需本地 SAM3.1 权重 |
+| | [`compose.sam31-stream.yaml`](../../compose.sam31-stream.yaml) | 实验性持久原生记忆 | 叠加在 `compose.yaml` + `compose.sam31.yaml` 后 |
+| 场景 / 感知 | [`compose.scene.yaml`](../../compose.scene.yaml) | 连续人物 / 事件引擎 | 叠加在 `compose.yaml` 上；需本地 SAM3 权重 |
+| | [`compose.perception.yaml`](../../compose.perception.yaml) | SAM 连续分析 | 叠加在 `compose.yaml` + `compose.sam31.yaml` 后 |
+| 大模型服务 | [`compose.vlm-server.yaml`](../../compose.vlm-server.yaml) | NVIDIA GPU 模型服务 + CPU 处理服务 | 独立入口；`python tools/start_modular.py vlm`，见[分机部署](modular-services.md) |
+| **交付 / production** | [`compose.full-gpu.delivery.yaml`](../../compose.full-gpu.delivery.yaml) | 客户交付镜像入口，默认 CPU 人脸、关闭 rich-label | 独立入口；`python tools/start_delivery.py`，见 [DEPLOY.md](../../DEPLOY.md) / [RELEASE.md](../../RELEASE.md) |
+| | [`compose.full-gpu.accelerated.yaml`](../../compose.full-gpu.accelerated.yaml) | 交付镜像的 GPU 人脸 + rich-label 加速 | 叠加在 `compose.full-gpu.delivery.yaml` 上，启用 `--profile gpu`；由交付启动器探测 GPU 后选用 |
+| 诊断（在 `diag/`） | [`diag/compose.sam-tunnel.yaml`](../../diag/compose.sam-tunnel.yaml) | 向本机开放远端 SAM 隧道端口 | 叠加在 `compose.yaml` + `compose.sam31-remote.yaml` 后 |
+| | [`diag/compose.sam-multistream.yaml`](../../diag/compose.sam-multistream.yaml) | 多路 GPU 竞争诊断，设置共享模型的摄像头路数 | 再叠加在上述诊断隧道组合之后 |
 
-> 配套的 `config.*.yaml`：`config.yaml`（开发默认，须与 `src/goodvision_harness/config.yaml` 逐字节一致）、
-> `config.vlm-rich.yaml`（富标注）、`config.delivery.yaml`（交付）。
+> 配套配置：[`config.yaml`](../../config.yaml)（源码默认，须与
+> [`src/goodvision_harness/config.yaml`](../../src/goodvision_harness/config.yaml) 逐字节一致）、
+> [`config.vlm-rich.yaml`](../../config.vlm-rich.yaml)（富标注）、[`config.delivery.yaml`](../../config.delivery.yaml)（交付）。
 
 ## D. 本地运行数据与已审阅夹具
 
