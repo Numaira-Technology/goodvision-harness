@@ -48,6 +48,10 @@ checks describe that delivery, not subsequent source changes.
 | `summarize_sam_timing.py` | Join saved client, SAM worker and cloud pool timing logs offline, keeping stage durations and missing measurements separate. |
 | `low_resolution_evidence_eval.py` | Exercise synthetic event continuity and H.264 evidence offline. |
 | `benchmark_display_cadence.py` | Compare local synthetic display cadence, lag and frame drops. |
+| `evaluate_camera_live.cjs` | Replay authorized video through a running dashboard and real models; optionally record exact Worker motion traces for `replay_camera_motion.cjs`. [Scope and usage](EVALUATE_CAMERA_CONTOURS.md#live-recording-and-exact-motion-replay). |
+| `evaluate_camera_contours.cjs` | Evaluate saved contour fixtures and optional synthetic browser scheduling without model calls. [Guide](EVALUATE_CAMERA_CONTOURS.md). |
+| `render_camera_contour_case.cjs` | Render a selected saved quality row against its source-image manifest without rerunning tracking. [Usage](EVALUATE_CAMERA_CONTOURS.md#render-a-saved-quality-case). |
+| `render_camera_contour_failure.cjs` | Render captured synthetic dense Worker failures; consumes a different report section from saved quality cases. [Guide](EVALUATE_CAMERA_CONTOURS.md#synthetic-scheduling-check). |
 | `evaluate_pipeline_latency.cjs` | Play a complete original video through an isolated real pipeline and production Chrome renderer; record actual presented-frame contour coverage, SSE arrivals and delay. Requires Playwright, Chrome, and an authorized real-model service with a same-origin byte-range video URL; see the script header and [measurement record](../docs/validation/network-and-display.md). |
 | `rich_label_benchmark.py` | Benchmark the JPEG `/v1/labels` worker on local video. |
 | `vlm_speed_matrix.py` | Measure the native rich client with an explicit local `--cases` JSON file. |
@@ -62,6 +66,12 @@ checks describe that delivery, not subsequent source changes.
 Model/GPU/service runs need the corresponding environment and authorized inputs.
 Protocol success is not model accuracy. See the
 [validation reports](../docs/README.md#validation-records) for reviewed measurements.
+
+The retained `diag/run_multistream_diag.sh`, `diag/gpu_sampler.sh` and
+`diag/parse_pipeline_log.py` document their arguments in their headers. The
+[historical multi-stream diagnostic record](../diag/analysis-summary-20260924.md)
+contains the original lane-scaling and latest-only comparisons; its old measurements
+are not current capacity acceptance results.
 
 ## Simple Jev direct vision comparison
 

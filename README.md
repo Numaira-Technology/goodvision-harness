@@ -44,34 +44,31 @@ original `goodvision` repository.
 | Find detailed guides and past results | [Documentation index](docs/README.md) |
 | Run operational or evaluation tools | [Tool inventory](tools/README.md) |
 
-## Demo vs production
+## Runtime and customer delivery
 
-Demo 与客户交付是**同一套代码的不同入口/配置，不是两条分支**：
+本地与客户交付使用同一个正式控制台，只产生真实分析结果。启动控制台不会自动开始分析；
+缺少模型或凭据时会提示配置错误。原模拟分析模式和独立演示入口已移除。
 
-- **Demo / dry-run** — `HARNESS_DRY_RUN=true goodvision-harness-demo`（端口 7900，合成结果，
-  不调模型、不需人脸权重；见下方 Quick start）。
-- **Production / 客户交付** — `python tools/start_delivery.py`，配 `compose.full-gpu.delivery.yaml`
-  和 `config.delivery.yaml`，见 [DEPLOY.md](DEPLOY.md) / [RELEASE.md](RELEASE.md)。
-
-`goodvision-harness-demo` 与 `goodvision-harness` 共用同一个控制台，默认端口不同。切换环境靠
-**入口 + 运行标志 + delivery overlay/config**；按环境长期维护分支会增加共用代码的同步负担。
-目录整理须保留稳定根入口，并保持两份 `config.yaml` 一致。完整对照见
-[production vs demo 清单](docs/guides/demo-vs-delivery.md)。
+本地入口为 `goodvision-harness`，默认端口 8080。客户交付使用
+`python tools/start_delivery.py`，配 `compose.full-gpu.delivery.yaml` 和 `config.delivery.yaml`，
+见 [DEPLOY.md](DEPLOY.md) / [RELEASE.md](RELEASE.md)。部署文件清单见
+[本地运行与交付清单](docs/guides/demo-vs-delivery.md)。
 
 ## Quick start
 
-From the repository root, start a local dry-run console without model calls or
-face weights:
+From the repository root, start the production console with analysis stopped:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev,webrtc]'
-HARNESS_AUTOSTART=false HARNESS_DRY_RUN=true \
-  .venv/bin/goodvision-harness-demo --host 127.0.0.1 --port 7900
+HARNESS_AUTOSTART=false HARNESS_HOST=127.0.0.1 \
+  .venv/bin/goodvision-harness
 ```
 
-Open `http://127.0.0.1:7900`, choose Camera, enable it, and press Start. Dry-run
-results are synthetic. For real recognition, follow the
+Open `http://127.0.0.1:8080`. Settings persist in
+`.goodvision/deployment-settings.json` by default; set
+`HARNESS_DEPLOYMENT_SETTINGS_PATH` to use another writable data directory.
+Configure credentials and model services before starting analysis. Follow the
 [local development](CONTRIBUTING.md#local-development) to install face
 dependencies and provision authorized weights, and configure the selected
 [inference route](docs/guides/configuration.md). Windows setup is covered in the

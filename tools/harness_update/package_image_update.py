@@ -2,12 +2,18 @@
 
 import argparse
 import json
-from pathlib import Path
 import shutil
 import subprocess
 import zipfile
+from pathlib import Path
 
-from package_update import BASE_ID, LOCAL_BASE_IDS, WINDOWS_BASE_IDS, application_files
+from package_update import (
+    BASE_ID,
+    LOCAL_BASE_IDS,
+    WINDOWS_BASE_IDS,
+    application_files,
+    retire_demo_dockerfile,
+)
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent.parent
@@ -41,7 +47,7 @@ def prepare(context):
 USER root
 COPY --chown=10001:10001 application/ /app/src/goodvision_harness/
 COPY --chown=10001:10001 application/ /usr/local/lib/python3.11/site-packages/goodvision_harness/
-COPY updater/ /opt/goodvision/update/
+{retire_demo_dockerfile()}COPY updater/ /opt/goodvision/update/
 LABEL goodvision.ui.release="{RELEASE}"
 ENV LOCAL_CAMERA_TARGET_FPS=15 SCENE_ENGINE_MODE=active SCENE_INDEPENDENT_VLM=true
 USER 10001:10001

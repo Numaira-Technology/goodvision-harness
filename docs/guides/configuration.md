@@ -133,6 +133,60 @@ inference_service:
 配置文件。`inference.request_parameters` 保存各渠道通用参数（如温度和输出长度）；
 选中渠道的 `request_parameters` 覆盖同名通用参数，其余渠道的专用参数不会发送。
 
+## Injecting custom events
+
+内置事件为 `fight` / `smoking` / `fall` / `weapon` / `ppe_violation` /
+`ground_litter` / `stranger`。要检测日常语义事件
+（`opens_door`、`texts_on_phone`、`shop_enter` 之类），在 `events.definitions` 里声明：
+
+```yaml
+events:
+  definitions:
+    - label: texts_on_phone
+      zh_name: 玩手机
+      definition: >-
+        A person looks at a handheld phone and operates its screen with a
+        thumb or finger.
+      counter_examples: Holding a phone at the ear, or a phone lying on a table.
+      target: object
+      target_hint: the phone
+```
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `label` | 是 | 以小写字母开头，后续可用小写字母、数字、下划线，最长 48 字符。同时是事件状态、取证归档和模型响应契约的键，不能与内置事件及其别名重名。 |
+| `zh_name` | 是 | 中文名，用于 prompt 与界面。 |
+| `definition` | 是 | 判据，直接进 prompt。必须人工撰写：模型只按这句话判定，它和评分标准之间的任何偏差都会让分数不可解释。 |
+| `counter_examples` | 否 | 反例，渲染成 “Not this event: …”，用来压掉最常见的误报。 |
+| `target` | 否 | `person`（默认）/ `object` / `any`，决定出框对象。 |
+| `target_hint` | 否 | 名词短语（如 `the phone`），`target: object` 时指明框哪个东西。 |
+
+注入事件与内置事件走同一条生命周期：`suspected → confirmed → ended`，
+三个时间戳逐字段一致，所以 temporal 类问题能照常回答。
+
+> 当前限制：只支持有人物主体的事件。`vehicle turns`、`shop enter`
+> 这类无主体的场景级事件还没打通，见
+> [通用事件注入方案](../architecture/generic-event-injection-20260926.md)。
+
+**声明只是让它可选，不会自动开启。** 和内置七个事件一样，事件注册进去之后要在
+`features` 里显式勾中才检测。会话不传 `features` 时，默认仍然只有内置七个事件——
+所以往生产配置里加一份词表，不会改变现场摄像头的行为，也不会让 prompt 变长。
+能力接口 `supported_features` 列出全部可选项、`features` 是未指定选择时的默认项、
+`event_display_names` 给出各标签的中文名供界面渲染。
+
+注入的是部署级词表；每个会话再用 `POST /v1/sessions/start` 的 `features` 数组从中挑子集，
+词表外的标签一律 `unsupported feature`。上限 32 条，每段文本 600 字符，
+换行会被折叠成空格——定义文本进的是模型 prompt，不能自带指令行。
+
+注入事件没有灵敏度策略（内置六个视觉事件支持灵敏度，`stranger` 不支持），界面上不必为它显示
+灵敏度下拉；显式给注入事件传 `event_sensitivities` 会被拒绝。
+
+事件目录与工作流编辑器也使用此部署词表；新建事件组件默认只开启内置视觉事件，
+自定义事件须显式选择。选中的自定义事件沿用场景归档、视频取证和叠加显示路径。
+使用本地 VLM CPU companion 时，应用与 companion 都须运行支持此词表的版本；
+请求只携带已选自定义事件的有界定义，内置事件请求格式保持不变。
+配置文本的字符限制只限制格式和体积，不能替代对事件判据的人工审阅。
+
 ## Face and reference memory
 
 The ordered local face pool stores source images until successful identity commit

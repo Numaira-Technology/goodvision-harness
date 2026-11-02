@@ -38,12 +38,48 @@ def waiting_worker(options, slot, stop, result):
 
 
 def failed_worker(options, slot, stop, result):
-    result.send(("error", "missing_support"))
+    result.send(("error", options.get("failure_code", "missing_support")))
     result.close()
 
 
 def crashed_worker(options, slot, stop, result):
     os._exit(7)
+
+
+def test_signaling_error_survives_the_receiver_process_boundary():
+    receiver = WhepProcessReceiver(
+        {"failure_code": "signaling_timeout"}, capacity=1024, worker=failed_worker,
+    )
+    with pytest.raises(StreamAdapterError) as caught:
+        list(receiver.frames())
+    assert caught.value.code == "signaling_timeout"
+    assert "网络连通性" in caught.value.public_message
+
+
+def test_worker_passes_only_known_error_codes_without_private_messages(
+    monkeypatch, capsys,
+):
+    from goodvision_harness import whep_process
+
+    async def fail(*args):
+        raise StreamAdapterError(
+            "private-source?token=secret", code="signaling_timeout",
+        )
+
+    class Result:
+        def send(self, value):
+            self.value = value
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(whep_process, "_receive", fail)
+    result = Result()
+    whep_process._worker({}, None, None, result)
+    assert result.value == ("error", "signaling_timeout")
+    logged = capsys.readouterr().err
+    assert "signaling_timeout" in logged
+    assert "private-source" not in logged and "secret" not in logged
 
 
 def stuck_worker(options, slot, stop, result):

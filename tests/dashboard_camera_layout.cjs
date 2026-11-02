@@ -39,13 +39,13 @@ test("network starts send the chosen camera type; browser camera starts omit it"
   assert.equal(Object.hasOwn(view.messages.at(-1),"camera_layout"),false)
 });
 
-test("saving the default restores it while a non-resetting refresh preserves a one-run choice",async()=>{
+test("saving service settings never overwrites the per-camera layout",async()=>{
   const view=dashboard();
   assert.equal(view.element("camera-layout").value,"mono");
   view.element("default-camera-layout").value="stereo";
   await view.saveDeploymentSettings();
-  assert.equal(view.requests[0].payload.camera_layout,"stereo");
-  assert.equal(view.element("camera-layout").value,"stereo");
+  assert.equal(Object.hasOwn(view.requests[0].payload,"camera_layout"),false);
+  view.state.deployment.camera_layout="stereo";
   view.element("camera-layout").value="mono";view.state.runOverridesDirty=true;
   view.renderDeploymentSettings(true,false);
   assert.equal(view.element("camera-layout").value,"mono");
@@ -70,9 +70,10 @@ test("missing live credentials prompt for the console key without starting a ses
   assert.equal(view.state.pending,false);
   assert.equal(view.element("default-api-key").focused,true);
   assert.match(view.element("status-line").textContent,/API key/);
-  view.element("dry-run").checked=true;
+  view.state.info.api_key_present=true;
   await view.start();
-  assert.equal(view.messages.length,1)
+  assert.equal(view.messages.length,1);
+  assert.equal(view.messages[0].dry_run,false)
 });
 
 test("the dedicated key button saves only the credential and clears the secret input",async()=>{

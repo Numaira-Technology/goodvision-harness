@@ -6,6 +6,85 @@ const {test}=require("node:test");
 const {createDocument,runDashboard}=require("./helpers/dashboard.cjs");
 const {payload:catalogPayload}=require("./helpers/event_catalog.cjs");
 
+test("persisted test mode can switch to real analysis without saving service drafts or starting analysis",async()=>{
+  const view=dashboard({dry_run:true});
+  view.element('inference-server-url').value='pending-analysis';
+  view.element('tracking-server-url').value='pending-tracking';
+  view.element('tracking-node-key').value='pending-node-key';
+  view.element('default-api-key').value='pending-cloud-key';
+  assert.equal(view.workflowUsesSimulation(),true);
+  assert.equal(await view.useRealWorkflowAnalysis(),true);
+  assert.deepEqual(view.requests.map(request=>request.payload),[{dry_run:false}]);
+  assert.equal(view.workflowUsesSimulation(),false);
+  assert.equal(view.state.deployment.dry_run,false);
+  assert.doesNotMatch(view.html,/id="(?:default-)?dry-run"/);
+  for(const [id,value] of [['inference-server-url','pending-analysis'],['tracking-server-url','pending-tracking'],['tracking-node-key','pending-node-key'],['default-api-key','pending-cloud-key']])
+    assert.equal(view.element(id).value,value);
+  assert.deepEqual(view.messages,[]);
+  await view.useRealWorkflowAnalysis();assert.equal(view.requests.length,1);
+});
+
+test("test-mode recovery remains locked during analysis and preserves test mode if saving fails",async()=>{
+  const view=dashboard({dry_run:true});view.state.running=true;
+  assert.equal(await view.useRealWorkflowAnalysis(),false);
+  assert.equal(view.requests.length,0);assert.equal(view.workflowUsesSimulation(),true);
+  view.state.running=false;view.context.fail=true;
+  assert.equal(await view.useRealWorkflowAnalysis(),false);
+  assert.equal(view.workflowUsesSimulation(),true);
+  assert.equal(view.state.deployment.dry_run,true);
+  assert.doesNotMatch(view.html,/id="(?:default-)?dry-run"/);
+});
+
+test("analysis sidebar saves only analysis settings and preserves other pending fields",async()=>{
+  const view=dashboard({inference_mode:'cloud',tracking_mode:'legacy'});
+  view.element('tracking-mode').value='server';view.element('tracking-server-url').value='unfinished';
+  view.element('tracking-sample-fps').value='invalid';view.element('tracking-node-key').value='pending-node-key';
+  view.element('default-api-key').value='pending-cloud-key';
+  await view.saveDeploymentSettings('analysis');
+  assert.deepEqual(view.requests.at(-1).payload,{inference_mode:'cloud',local_inference_enabled:false});
+  assert.equal(view.element('tracking-server-url').value,'unfinished');
+  assert.equal(view.element('tracking-sample-fps').value,'invalid');
+  assert.equal(view.element('tracking-node-key').value,'pending-node-key');
+  assert.equal(view.element('default-api-key').value,'pending-cloud-key');
+});
+
+test("tracking sidebar never validates or submits an unrelated analysis draft",async()=>{
+  const view=dashboard({inference_mode:'cloud',tracking_mode:'legacy'});
+  view.element('inference-mode').value='server';view.element('inference-server-url').value='unfinished';
+  view.element('default-api-key').value='pending-cloud-key';view.element('tracking-sample-fps').value='3';
+  await view.saveDeploymentSettings('tracking');const payload=view.requests.at(-1).payload;
+  assert.equal(payload.tracking_sample_fps,3);assert.equal(payload.tracking_mode,'legacy');
+  for(const key of ['inference_mode','inference_server_url','api_key','dry_run','autostart','stream_url','camera_layout'])assert.equal(Object.hasOwn(payload,key),false,key);
+  assert.equal(view.element('inference-server-url').value,'unfinished');assert.equal(view.element('inference-mode').value,'server');
+  assert.equal(view.element('default-api-key').value,'pending-cloud-key');
+});
+
+for(const action of ['save','clear'])for(const failed of [false,true])
+test(`${action} API credentials preserves workflow service drafts when ${failed?'failing':'successful'}`,async()=>{
+  const view=dashboard({inference_mode:'cloud',tracking_mode:'legacy',api_key_persisted:true});
+  view.context.window.confirm=()=>true;view.context.fail=failed;
+  const drafts={
+    'inference-mode':'server','inference-server-protocol':'goodvision',
+    'inference-server-url':'unfinished-analysis','inference-server-model':'pending-model',
+    'tracking-mode':'server','tracking-server-protocol':'contour',
+    'tracking-server-url':'unfinished-tracking','tracking-server-capacity':'invalid',
+    'tracking-sample-fps':'invalid','tracking-node-key':'pending-node-key',
+    'default-stream-url':'pending-source'
+  };
+  for(const [id,value] of Object.entries(drafts))view.element(id).value=value;
+  view.element('clear-tracking-node-key').checked=true;
+  view.element('default-api-key').value='new-cloud-key';
+  await (action==='save'?view.saveApiKey():view.clearSavedApiKey());
+  assert.deepEqual(view.requests.map(request=>request.payload),[
+    action==='save'?{api_key:'new-cloud-key'}:{clear_api_key:true}
+  ]);
+  for(const [id,value] of Object.entries(drafts))assert.equal(view.element(id).value,value,id);
+  assert.equal(view.element('clear-tracking-node-key').checked,true);
+  assert.equal(view.state.deployment.inference_mode,'cloud');
+  assert.equal(view.state.deployment.tracking_mode,'legacy');
+  assert.deepEqual(view.messages,[]);
+});
+
 test("analysis protocol defaults to compatible API and persists GoodVision independently",async()=>{
   const view=dashboard({inference_mode:"server",tracking_mode:"legacy",
     inference_server_url:"http://analysis:8094",inference_server_model:"vision"});
@@ -83,7 +162,7 @@ function dashboard(settings={}){
     renderDeploymentSettings(true,true);
     globalThis.app={state,start,controls,renderDeploymentSettings,renderLocalGpuSettings,
       saveDeploymentSettings,loadDeploymentSettings,checkRoutes,selectRoute,loadRoutes,
-      localInferenceEnabled,savedExecutionMode,originalInfo,saveApiKey};
+      localInferenceEnabled,savedExecutionMode,originalInfo,saveApiKey,clearSavedApiKey,workflowUsesSimulation,useRealWorkflowAnalysis};
   `,context);
   return {html,element,requests,messages,context,...context.app}
 }
@@ -225,7 +304,7 @@ test("GPU changes are locked while sessions and settings operations are busy",()
 
 test("saved local inference starts without a cloud key and hides or prevents cloud route actions",async()=>{
   const view=dashboard({local_inference_enabled:true});
-  assert.equal(view.element("dry-run").checked,false);
+  assert.doesNotMatch(view.html,/id="(?:default-)?dry-run"/);
   assert.equal(view.element("cloud-model-settings").hidden,true);
   assert.equal(view.element("cloud-route-panel").hidden,true);
   assert.equal(view.element("route-check-button").disabled,true);
@@ -263,11 +342,11 @@ test("switching back from local inference restores cloud credentials and route c
   assert.match(view.element("status-line").textContent,/API key/)
 });
 
-test("initial info does not force Test mode on when the saved local model needs no cloud key",async()=>{
+test("initial info supports the saved local model without a cloud key",async()=>{
   const view=dashboard({local_inference_enabled:true});
   view.state.deployment=null;
   await view.originalInfo();
-  assert.equal(view.element("dry-run").checked,false);
+  assert.doesNotMatch(view.html,/id="(?:default-)?dry-run"/);
   assert.equal(view.element("cloud-model-settings").hidden,true);
   view.state.info.local_inference_enabled=true;
   view.state.deployment={local_inference_enabled:false};
@@ -334,7 +413,7 @@ test("server credentials and routing use the saved mode even though legacy local
   assert.equal(view.element("cloud-model-settings").hidden,true);
   assert.equal(view.element("cloud-route-panel").hidden,true);
   assert.equal(view.element("clear-api-key-button").hidden,true);
-  assert.equal(view.element("dry-run").checked,false);
+  assert.doesNotMatch(view.html,/id="(?:default-)?dry-run"/);
   await view.checkRoutes();await view.selectRoute("A");await view.loadRoutes();
   view.element("default-api-key").value="must-not-save";await view.saveApiKey();
   assert.equal(view.requests.length,0);
@@ -443,9 +522,10 @@ test("no GPU blocks only local selection and hidden legacy values never override
   assert.equal(view.requests[0].payload.local_tracking_enabled,false)
 });
 
-test("initial info with server mode does not force test mode or require a cloud key",async()=>{
+test("initial info with server mode does not require a cloud key",async()=>{
   const view=dashboard({inference_mode:"server",local_inference_enabled:false});view.state.deployment=null;
-  await view.originalInfo();assert.equal(view.localInferenceEnabled(),true);assert.equal(view.element("dry-run").checked,false);
+  await view.originalInfo();assert.equal(view.localInferenceEnabled(),true);
+  assert.doesNotMatch(view.html,/id="(?:default-)?dry-run"/);
   view.state.deployment={inference_mode:"cloud",local_inference_enabled:false};
   assert.equal(view.localInferenceEnabled(),false)
 });

@@ -3,7 +3,7 @@
 import multiprocessing as mp
 import sqlite3
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from itertools import pairwise
 from threading import Event, Thread, current_thread
@@ -110,13 +110,19 @@ def test_twelve_processes_share_concurrency_rate_and_all_make_progress(tmp_path)
 
 def test_shared_rate_and_release_on_error(tmp_path):
     gate = SharedAdmission(settings(tmp_path, requests_per_second=10))
-    starts = []
     for i in range(4):
         with pytest.raises(RuntimeError, match="model failed"):
             with gate.slot(str(i), stop=Event(), source_deadline=time.monotonic() + 3):
-                starts.append(time.monotonic())
                 raise RuntimeError("model failed")
-    assert starts[-1] - starts[0] >= 0.29
+    # The rate limit spaces committed grants. Thread startup or scheduling after
+    # a grant can delay entry to the body and compress the observed body interval.
+    with closing(sqlite3.connect(gate.settings.database)) as db:
+        grants = [
+            row[0]
+            for row in db.execute("SELECT last_grant FROM streams ORDER BY last_grant")
+        ]
+    assert len(grants) == 4
+    assert all(b >= a + 0.1 for a, b in pairwise(grants))
     assert gate.snapshot()["active"] == 0
 
 

@@ -27,8 +27,8 @@
 | 配置调度、人脸与视觉大模型 | [运行指南](guides/runtime.md) |
 | 编排流程、摄像头组与定时总结 | [工作流画布](guides/workflows.md) |
 | 了解设置优先级、推理路线与参考记忆 | [配置指南](guides/configuration.md) |
-| 从源码部署、使用 Compose 与 dry-run | [源码部署](guides/deployment.md) |
-| 区分 demo 运行模式与客户交付 | [Demo 与交付清单](guides/demo-vs-delivery.md) |
+| 从源码部署、使用 Compose | [源码部署](guides/deployment.md) |
+| 区分本地运行与客户交付配置 | [本地运行与交付清单](guides/demo-vs-delivery.md) |
 | 在本机 NVIDIA 显卡上运行多路视频 | [本地 GPU 部署](guides/local-gpu.md) |
 | 使用受管云 GPU 运行多路追踪 | [云 GPU 部署](guides/cloud-gpu.md) |
 | 将主程序、追踪与大模型部署到不同机器 | [分机部署](guides/modular-services.md) |

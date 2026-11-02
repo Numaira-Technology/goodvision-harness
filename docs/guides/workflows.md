@@ -7,10 +7,15 @@ deployment pages remain available without reconnecting cameras.
 
 ## Build, test and apply
 
-1. Create a workflow. Add blocks by clicking the library or dragging them onto the
-   canvas. Connect an output port to an input of the same type. Select a block to
-   configure it. Delete removes a block and its connections; Undo restores them.
-2. Connect **Workflow input → Face recognition → Output**. Add a parallel
+1. Create a workflow. Drag a **Video source** onto the canvas for each camera,
+   up to the available deployed channel capacity. Select each source to set its
+   URL and mono/stereo layout, then **Save video source** and **Connect video**.
+   The node and inspector display the shared live input; connection and
+   disconnection are synchronized with the live workspace.
+2. Add processing and output blocks by clicking the library or dragging them onto
+   the canvas. Connect an output port to an input of the same type. Clicking an
+   already-connected port pair again disconnects it; Undo restores the connection.
+   Connect **Video source → Face recognition → Output**. Add a parallel
    **Workflow input → Every-minute summary → Output** path. Each summary instance
    has its own interval and instruction; the default is 60 seconds.
 3. **Test** uses one current frame from a connected, stopped camera. It runs the
@@ -18,12 +23,18 @@ deployment pages remain available without reconnecting cameras.
    webhooks or changing the applied setup. Results identify their camera and
    source frame; synthetic results are marked. A single snapshot does not verify
    temporal confirmation, continuous tracking or event evidence.
-4. Create camera groups with **Add group**, choosing deployed camera slots.
-   Each camera belongs to at most one group. Adding a slot does not provision a
-   service or change its saved video address. Connect video in the live workspace.
+4. Select an **Event recognition**, **Summary** or **Person tracking** block to
+   configure its service directly in the node sidebar. Each service has its own
+   save button; switching nodes preserves pending service edits. API credentials
+   and route testing remain in **Deployment & settings**.
+   Each camera follows only paths reachable from its own source; several sources
+   may share processing blocks. Camera groups remain available for shared switches.
 5. **Apply** submits the current graph and updates every camera group already
    using this workflow in one atomic operation. There is no separate Save stage.
-   For an unassigned workflow, choose groups in the Apply dialog or leave the
+   Bound video sources are assigned automatically when applying. A camera already
+   owned by another workflow must be unassigned first. Removing a source disables
+   its applied pipeline without disconnecting its video. For a legacy workflow
+   with an unbound input, choose groups in the Apply dialog or leave the
    selection empty to apply the workflow configuration alone. Use **Camera group
    assignments…** to add groups later; existing assignments are always included.
    All affected cameras must be stopped and finished cleaning up. Invalid paths,
@@ -38,6 +49,20 @@ Edits stay local until Apply. Switching workflows preserves pending edits and
 Undo history; no request is sent for individual keystrokes. Apply and Test require
 complete source-to-output paths. A newly created workflow can be assembled locally
 before it has a runnable graph.
+
+Connecting video does not start analysis. Both views read the same camera
+connection and decoded frames. If connection fails, both show the reason:
+unreachable video server, signaling timeout, rejected request, invalid WHEP
+response or no incoming media after negotiation. For a private-network URL,
+the service host must be able to reach the video server; saving the URL alone
+does not establish network access. WHEP also requires the negotiated media
+address to be reachable after its HTTP signaling request succeeds.
+
+If a deployment still has test mode enabled, the workflow displays a persistent
+notice that analysis results are simulated. Stop analysis and select **Use real
+analysis** to persist `dry_run: false` without saving unrelated service drafts or
+starting a model. The next Start uses the configured real services; their usual
+readiness and credential checks still apply.
 
 ## Camera and group switches
 
@@ -63,23 +88,97 @@ memory for the current run, not an archive.
 
 | Block | Configuration and behavior |
 | --- | --- |
-| Workflow input | The connected camera's decoded frames, shared between branches. |
-| Person tracking | Continuous person contours and stable person IDs. Connect `frames` into the block and `tracks` into Output. One instance per workflow; the block and group/camera switches control it independently of events and summaries. |
+| Video source | One deployed camera per source; URL, mono/stereo layout, Connect/Disconnect and shared input preview. Multiple sources are supported. |
+| Person tracking → Contour | Existing continuous person contours and stable person IDs. Connect `frames` into the block and `tracks` into Output. |
+| Person tracking → Bbox | Bounding boxes and local track IDs from the detector service. Configure its full `/v1/labels` URL in this block. |
 | Face recognition | Existing face recognition, identity and stranger-confirmation component; uses the shared gallery and configured face engine. One instance per workflow. |
-| Event recognition | Existing event engine; supported events and sensitivity choices come from the server catalog. One instance per workflow. |
+| Event recognition → VLM semantic recognition | Existing event engine; events and sensitivity choices come from the server catalog. Uses the shared analysis service. |
+| Event recognition → System 1 recognition | Native scene classification through the configured System 1 service base URL. Uses the existing event definitions and sensitivity policies. |
+| Event recognition → Neural network recognition | Fixed image/text similarity classifier through its own service base URL. Supports the six built-in safety events; no sensitivity controls or custom-event prompts. |
 | Every-minute summary | Independent latest-snapshot model request; configurable 1–3600 second interval and an instruction of at most 4000 characters. Multiple independent instances are supported. |
-| Output | Publishes connected frames, tracks, faces, events or summaries through the workflow output API. An output can collect multiple independent summary branches. |
+| Output | Publishes connected results and composes a video preview. Toggle person geometry, event alerts and summary text; choose any corner for alerts and summaries. Multiple summaries stack in their chosen corner. |
 
-The tracking block shows its configuration separately from deployment capability.
+Each engine has its own draggable block and saved configuration. Keep alternatives
+on the canvas, including their connections, and enable one tracking engine and
+one event engine at a time. Enabling a block turns the other engines in its category
+off. Apply rejects graphs with two enabled engines in one category. Group and
+camera switches can disable the selected engine; they cannot enable an alternative
+that is disabled in the workflow. Legacy graphs use Contour and VLM by default.
+
+### Output appearance
+
+Connections determine which results are available to Output. Its appearance
+controls determine which of those results appear on the picture; hiding a layer
+does not stop its analysis or remove its JSON results. Unconnected layers have
+disabled controls. Person geometry is green; detected events such as **Smoking**
+appear in a red panel; summaries appear in a separate dark panel. Negative and
+failed event results do not produce an alert.
+
+Apply the workflow and start analysis, then select Output and choose a camera to
+see its applied picture. The camera selector remains usable while analysis locks
+editing. Changes to appearance follow the same Apply/Stop rules as other settings.
+The output JPEG API below supplies the same picture to other consumers; the
+existing raw video and evidence APIs retain their contracts.
+
+The preview is bounded to 1280 pixels on its longest side and refreshes at most
+about three times per second. Person geometry uses a matching frame from the
+source's bounded display history, at most two seconds old; if none remains, the
+preview shows the latest source frame without mismatched geometry. Event alerts
+expire 15 source seconds after their observation. Summaries expire after twice
+their interval. Text wraps, long panels truncate, and stale sessions cannot supply
+a preview after Stop, rebinding or a new run.
+
+### Model services and readiness
+
+The workbench and renderer use the normal Harness dependencies; they do not load
+GPU weights. Run each model service in a separate environment and enter an address
+reachable **from the camera's Harness service**. `127.0.0.1` means that service's
+machine/container. The new native services bind to loopback by default; use a
+private tunnel or authenticated proxy for another host. Addresses cannot contain
+credentials, query strings or fragments.
+
+| Module | Service / dependencies | Address example |
+| --- | --- | --- |
+| Contour | Existing configured tracking deployment; no migration required. | Shared tracking sidebar |
+| Bbox | `workers/detector_rich_label`, CUDA PyTorch, Ultralytics and its weights. Worker image uses `DETECTOR_MODEL=yolo26-s`, `DETECTOR_DEVICE=cuda`, weights under `/models`; port 8092. | `http://127.0.0.1:8092/v1/labels` |
+| VLM semantic recognition | Existing shared analysis service and its credentials. | Shared analysis sidebar |
+| System 1 recognition | Existing VideoJev service and native CUDA dependencies; see [environment setup](videojev-candidate.md). | `http://127.0.0.1:8093` |
+| Neural network recognition | New `goodvision-neural` service using CLIP ViT-L/14. Install `.[neural]` in a separate CUDA environment; requires model download/cache. | `http://127.0.0.1:8094` |
+
+For the neural service, after installing the CUDA build of PyTorch compatible with
+the GPU host and the pinned optional dependencies:
+
+```sh
+python -m pip install '.[neural]'
+goodvision-neural --cache-dir /path/to/persistent/model-cache --port 8094
+```
+
+This classifier compares fixed positive/negative visual prompts on the latest
+frame. Similarity scores are not calibrated confidence and are not returned as
+event confidence. It does not reason over a video window or apply VLM instruction
+policies. The existing event confirmation pipeline still consumes its observations.
+GPU accuracy, throughput and capacity require validation on the target deployment.
+
+Bbox and native event service addresses are required before Apply. Test checks
+the chosen service's readiness and reports that live analysis is required; it
+does not claim that a health check proves detection accuracy. Start repeats the
+readiness check. Summaries always retain the shared VLM route and credentials,
+even when a different event recognition engine is selected. Switching engines or
+unassigning the workflow restores the deployment settings without persisting model
+overrides into those settings.
+
+The Contour block shows its configuration separately from deployment capability.
 An unconfigured tracking service does not prevent authoring or applying a graph,
 but enabled tracking cannot be tested or started until its service is configured
-in **Deployment & settings**. A configured service is checked for readiness when
+in the tracking block's sidebar. A configured service is checked for readiness when
 analysis starts. A one-frame test cannot validate continuous contours; live
 analysis is required. Tracking can associate identities and located events with
 people when the corresponding face/event branches are also enabled.
 
-Model routes, credentials, hardware and sampling stay in the existing deployment
-controls. Identity association, evidence and delivery use the existing native
+Model routes and credentials remain in Deployment & settings. Service connections
+and sampling are configured in the corresponding workflow node sidebar.
+Camera URLs and layouts are configured per source. Identity
+association, evidence and delivery use the existing native
 components. The canvas does not introduce a separate model registry or
 nested workflow editor. Existing result/video/evidence endpoints remain usable;
 workflow output connections select the new workflow result envelopes.
@@ -115,6 +214,7 @@ writes rather than overwriting another editor.
 | `POST /v1/workflows/test` | `{graph, camera_id}`; one-frame test with source-qualified results. |
 | `GET /v1/fleet/cameras/{id}/workflow/results` | Applied output bindings with current-run values. |
 | `GET /v1/fleet/cameras/{id}/workflow/summaries?limit=100` | `{camera_id, status, items}`; optional `node_id`; limit 1–100. |
+| `GET /v1/fleet/cameras/{id}/workflow/output.jpg?node_id={output-id}&language=zh` | JPEG composed with this applied output's connected results and appearance. `language=en` selects English summary text. Returns 404 when no active output/frame is available. |
 | `GET /v1/fleet/cameras/{id}/video/source/latest.jpg` | Decoded source JPEG, including when only summaries are running. |
 
 Commands are `create_workflow {name,graph?}`,

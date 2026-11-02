@@ -2,7 +2,11 @@
 
 import hashlib
 import json
+import shlex
+import subprocess
+import sys
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -71,6 +75,77 @@ def test_failed_package_does_not_register_release(package_source, monkeypatch):
     with pytest.raises(OSError, match="archive write failure"):
         packager.package(output, "new-release", record_release=True)
     assert history.read_bytes() == before
+
+
+@pytest.mark.parametrize("kind", ["source", "image"])
+def test_update_recipes_retire_legacy_demo_without_removing_live_files(
+    package_source, tmp_path, monkeypatch, kind,
+):
+    source, history, output = package_source
+    if kind == "source":
+        packager.package(output, "new-release")
+        with zipfile.ZipFile(output) as archive:
+            dockerfile = archive.read(
+                "goodvision-harness-update-new-release/Dockerfile",
+            ).decode()
+    else:
+        monkeypatch.syspath_prepend(
+            str(Path(__file__).resolve().parents[1] / "tools/harness_update"),
+        )
+        from tools.harness_update import package_image_update as image_packager
+
+        history.write_text(json.dumps({
+            image_packager.RELEASE: {"service.py": "existing-release-hash"},
+        }), encoding="utf-8")
+        monkeypatch.setattr(image_packager, "ROOT", history.parent)
+        monkeypatch.setattr(image_packager, "REPO", tmp_path)
+        monkeypatch.setattr(
+            image_packager, "application_files", lambda: ("service.py",),
+        )
+        context = tmp_path / "image-context"
+        image_packager.prepare(context)
+        dockerfile = (context / "Dockerfile").read_text(encoding="utf-8")
+    # Execute the generated image-layer cleanup against an inherited filesystem.
+    # COPY alone would leave both old Python modules and the console script.
+    root = tmp_path / "inherited-image"
+    retired = [
+        "/app/src/goodvision_harness/demo",
+        "/usr/local/lib/python3.11/site-packages/goodvision_harness/demo",
+        "/usr/local/bin/goodvision-harness-demo",
+    ]
+    live_files = []
+    for name in retired[:2]:
+        directory = root / name.lstrip("/")
+        directory.mkdir(parents=True)
+        (directory / "server.py").write_text("legacy synthetic launcher")
+        (directory / "__init__.py").touch()
+        current = directory.parent / "service.py"
+        current.write_bytes(source.read_bytes())
+        live_files.append(current)
+    launcher = root / retired[2].lstrip("/")
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("legacy entrypoint")
+    data = root / "data/deployment-settings.json"
+    data.parent.mkdir()
+    data.write_text("preserved customer settings")
+    live_files.append(data)
+    before = {path: path.read_bytes() for path in live_files}
+    cleanup_lines = [
+        line for line in dockerfile.splitlines() if line.startswith("RUN ")
+    ]
+    assert len(cleanup_lines) == 1
+    instruction, python, flag, cleanup = shlex.split(cleanup_lines[0])
+    assert (instruction, python, flag) == ("RUN", "python", "-c")
+    for name in retired:
+        cleanup = cleanup.replace(repr(name), repr(str(root / name.lstrip("/"))))
+    assert dockerfile.index("USER root") < dockerfile.index(cleanup_lines[0])
+    assert dockerfile.rindex("COPY --chown") < dockerfile.index(cleanup_lines[0])
+    assert dockerfile.rstrip().endswith("USER 10001:10001")
+    # A second invocation also succeeds for already-upgraded installations.
+    for _ in range(2):
+        subprocess.run([sys.executable, "-c", cleanup], check=True, timeout=10)
+    assert all(not (root / name.lstrip("/")).exists() for name in retired)
+    assert {path: path.read_bytes() for path in live_files} == before
 
 
 @pytest.mark.parametrize("release", ["../release", "a/b", "", "bad tag"])

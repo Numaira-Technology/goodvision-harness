@@ -6,8 +6,8 @@ Run the full-image synthetic protocol smoke check in disposable containers.
 Uses existing local images only. Creates an internal network without published
 ports or production volumes. The Paddle image runs its actual app.py with the
 deterministic test fixture; no Paddle import, model download, or real GPU/model
-inference is performed. The Harness is explicitly dry-run with CPU face provider
-only for this check. Production image defaults and files are not modified.
+inference is performed. The Harness uses an injected offline runtime with CPU
+face provider only for this check. Production image defaults and files are not modified.
 
 Requires PowerShell 7 and Docker Desktop/Linux containers. The two Python smoke
 tools must be alongside this script. No image/container IDs or checksum files
@@ -300,6 +300,20 @@ try {
     $workerCreated = $true
     Wait-SmokeHealth -ContainerName $workerName -Port 8091 -Path '/health/ready'
 
+    # Inject the offline runtime explicitly: production entrypoints reject
+    # synthetic analysis even when a legacy HARNESS_DRY_RUN value is present.
+    $harnessSmokeServer = @'
+import os
+import uvicorn
+from goodvision_harness.config import load_config
+from goodvision_harness.service import HarnessRuntime, create_app
+
+def offline_runtime():
+    return HarnessRuntime(load_config(os.environ["HARNESS_CONFIG"]))
+
+uvicorn.run(create_app(offline_runtime), host="0.0.0.0", port=8080,
+            server_header=False, access_log=False, proxy_headers=False)
+'@
     $harnessArguments = @(
         'run', '--rm', '--detach', '--pull', 'never', '--init',
         '--name', $harnessName, '--label', "$ownerLabel=$runOwner",
@@ -322,7 +336,7 @@ try {
         '--env', 'FACE_GALLERY_PATH=/data/face-gallery.json',
         '--env', 'RICH_LABEL_ENABLED=true',
         '--env', 'RICH_LABEL_ENDPOINT=http://rich-label-worker:8091/v1/labels',
-        $HarnessImage
+        '--entrypoint', 'python', $HarnessImage, '-c', $harnessSmokeServer
     )
     $null = Invoke-SmokeDocker -Arguments $harnessArguments -Operation 'Start dry-run Harness'
     $harnessCreated = $true

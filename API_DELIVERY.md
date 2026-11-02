@@ -116,8 +116,9 @@ JSON/SSE 增加 `camera_id`，二进制响应带 `X-Camera-Id`，GVD1 数据包�
 接口路径在基础版和完整 GPU 版之间保持一致。基础版只有 CPU 主服务；完整
 GPU 版另包含人脸 GPU 支持和目标检测、跟踪、行人属性服务。具体镜像与
 模型文件范围以随包 `RELEASE.md` 为准，完整 GPU 的安装与验收见随包部署说明。
-接口存在不等于真实模型已经就绪。默认首次启动为 `dry_run` 演示模式，正式
-识别需配置视频源、相应模型及推理服务凭据，并切换为 `dry_run=false`。
+接口存在不等于真实模型已经就绪。识别需配置视频源、相应模型及推理服务凭据。
+控制台只运行真实分析，模拟分析模式已移除；旧配置中的模拟默认值不再生效，
+`dry_run=true` 请求会被拒绝。
 
 ## 通用 JSON 与五能力独立 JSON
 
@@ -342,7 +343,7 @@ data: <一条原始分析消息 JSON，可能仅包含一个分支>
 `2026.09.10-full.3` 无需 `.env` 即可启动，首次安装保持待机和测试模式。
 控制台“保存 API key”调用 `PUT /v1/deployment/settings`，请求仅包含
 `{"api_key":"<密钥>"}`，不修改视频源、测试模式、自动启动或摄像头类型。
-也可在同一请求提交 `dry_run`、`autostart`、`stream_url`、`camera_layout`。
+也可在同一请求提交 `autostart`、`stream_url`、`camera_layout`。
 密钥立即对下一次检测生效，并保存到现有部署数据卷，容器重建后仍有效。
 设置接口仅返回 `api_key_present` / `api_key_persisted`，不回显密钥。
 正式事件检测缺少密钥时，HTTP 启动接口返回 `400`，WebSocket 返回 `type=error`，
@@ -610,7 +611,7 @@ HARNESS_WEBHOOK_SECRET=replace-with-a-shared-secret
 
 只开陌生人检测时，将 `features` 改成 `["stranger"]`。`features` 仅适用于
 `analysis_mode="multi"`，必须为非空、无重复的受支持能力数组；省略时启用
-全部五个能力。改为 `dry_run=true` 可验证演示链路，可生成合成输入的视频证据，不代表真实模型效果。
+全部五个能力。分析需要真实模型服务，`dry_run=true` 请求不再支持。
 
 `POST /v1/sessions/stop` 无需请求体，返回 `{"stopped": true}` 或
 `{"stopped": false}`。同一实例同时只允许一个运行中的 Session；如已有会话，
