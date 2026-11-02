@@ -168,7 +168,10 @@ class RemoteBackend:
             self.metadata.pop("question_envelope")
 
     def close(self):
-        pass
+        """Finish the last rate-limit cooldown without sending another request."""
+        with self._cooldown:
+            while time.monotonic() < self._cooldown_until:
+                self._cooldown.wait(min(0.25, self._cooldown_until - time.monotonic()))
 
     def wait_cooldown(self, stop=None):
         """Share provider cooling across callers without holding the output lock."""
