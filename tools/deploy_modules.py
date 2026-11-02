@@ -64,15 +64,18 @@ def write_json(path, value):
     temporary.replace(path)
 
 
-def configuration(args, package):
+def configuration(args, package, modules=None):
     namespace = spec.name(args.namespace)
     state = (args.state_dir or Path.home() / ".goodvision/docker" / namespace).resolve()
     settings_path = state / "settings.json"
-    settings = spec.defaults(namespace)
+    incoming_version = package["version"] if package else args.version
+    settings = spec.defaults(namespace, incoming_version or "dev")
     if settings_path.is_file():
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         if settings["namespace"] != namespace:
             raise ValueError("This data directory belongs to a different deployment")
+    versions = {module: settings["version"] for module in spec.MODULES}
+    versions.update(settings.get("module_versions", {}))
     fixed = {"version": package["version"]} if package else {}
     if package and package["module"] == "bbox":
         fixed["bbox_device"] = package["bbox_device"]
@@ -83,6 +86,13 @@ def configuration(args, package):
             if key in fixed and value != fixed[key]:
                 raise ValueError("Package version and Bbox device cannot be changed")
             settings[key] = value
+    if incoming_version is not None:
+        selected = modules or args.modules or ([package["module"]] if package else [])
+        for module in selected:
+            if versions[module] != settings["version"]:
+                settings.get("module_images", {}).pop(module, None)
+            versions[module] = settings["version"]
+    settings["module_versions"] = versions
     for module in spec.PORTS:
         value = getattr(args, module + "_port")
         if value is not None:
@@ -260,12 +270,15 @@ def parser():
             "status",
             "stop",
             "logs",
+            "update",
+            "rollback",
         ),
     )
     value.add_argument("--modules", nargs="+", choices=spec.MODULES)
     value.add_argument("--namespace", default="default")
     value.add_argument("--state-dir", type=Path)
     value.add_argument("--version")
+    value.add_argument("--bundle", type=Path, help="Prebuilt module update manifest")
     value.add_argument("--bbox-device", choices=("cpu", "cuda"))
     value.add_argument("--bind")
     value.add_argument("--gpu-id")
@@ -288,16 +301,50 @@ def main(argv=None):
     try:
         package = read_package(root)
         verify_package(root, package)
+        bundle = None
+        if args.action == "update":
+            if args.bundle is None or args.version is not None:
+                raise ValueError("Use update --bundle; the package fixes its version")
+            if __package__:
+                from . import module_updates
+            else:
+                import module_updates
+            bundle = module_updates.read_bundle(args.bundle.resolve())
         modules = list(
             dict.fromkeys(
-                args.modules or ([package["module"]] if package else ["main", "bbox"])
+                args.modules or ([bundle["module"]] if bundle else
+                                 [package["module"]] if package else ["main", "bbox"])
             )
         )
         if package and modules != [package["module"]]:
             raise ValueError("This installer contains only its named module")
         if args.wait_timeout < 1:
             raise ValueError("Wait timeout must be positive")
-        state, settings = configuration(args, package)
+        updating = args.action in ("update", "rollback")
+        if updating and args.version is not None:
+            raise ValueError("Update and rollback use their recorded versions")
+        state, settings = configuration(args, None if updating else package, modules)
+        if updating:
+            if len(modules) != 1:
+                raise ValueError("Update or roll back exactly one module")
+            if args.dry_run:
+                print(json.dumps({"module": modules[0], "action": args.action,
+                                  "bundle": bundle, "state_directory": str(state)},
+                                 indent=2))
+                return 0
+            if args.action == "update":
+                if modules != [bundle["module"]]:
+                    raise ValueError("Update package belongs to another module")
+                module_updates.update(state, args.bundle.resolve(), settings,
+                                      args.wait_timeout, run, write_json)
+            else:
+                if __package__:
+                    from . import module_updates
+                else:
+                    import module_updates
+                module_updates.rollback(state, modules[0], settings,
+                                        args.wait_timeout, run, write_json)
+            return 0
         documents = {
             module: spec.compose(module, settings, source, state)
             for module in modules
@@ -345,6 +392,16 @@ def main(argv=None):
             run(compose_command(state, module, "config", "--quiet"))
         if args.action == "build" or (args.action == "up" and args.build):
             for command in bases:
+                if "gpu-runtime" not in modules:
+                    image = command[command.index("-t") + 1]
+                    present = subprocess.run(
+                        ["docker", "image", "inspect", image],
+                        capture_output=True, text=True,
+                    )
+                    if present.returncode == 0:
+                        print(f"Reusing shared GPU runtime: {image}")
+                        continue
+                    run(["docker", "info"], stdout=subprocess.DEVNULL)
                 run(command)
             for module in documents:
                 run(compose_command(state, module, "build"))

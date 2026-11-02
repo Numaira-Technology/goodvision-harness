@@ -83,7 +83,7 @@ def test_exported_contour_installers_keep_roles_distinct_after_reload(
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("fixture\n")
-    for filename in ("deploy_modules.py", "docker_modules.py"):
+    for filename in export.INSTALLER_FILES:
         destination = root / "tools" / filename
         destination.parent.mkdir(exist_ok=True)
         destination.write_bytes((Path(deploy.__file__).parent / filename).read_bytes())
@@ -444,6 +444,51 @@ def test_system1_model_preparation_stages_videojev_and_ppe_weights(
     ]
 
 
+def test_main_upgrade_keeps_other_module_and_runtime_versions(tmp_path, monkeypatch):
+    settings = spec.defaults("site", "release1")
+    state = tmp_path / "state"
+    deploy.write_json(state / "settings.json", settings)
+    other = spec.compose("bbox", settings, tmp_path, state)
+    deploy.write_json(state / "compose.bbox.json", other)
+    original = (state / "compose.bbox.json").read_bytes()
+    monkeypatch.setattr(deploy, "location", lambda: (tmp_path, tmp_path))
+    monkeypatch.setattr(
+        deploy, "run", lambda *a, **kw: pytest.fail("offline configure")
+    )
+    assert deploy.main(["configure", "--modules", "main", "--namespace", "site",
+                        "--state-dir", str(state), "--version", "release2"]) == 0
+    saved = json.loads((state / "settings.json").read_text())
+    assert saved["module_versions"] == {
+        **settings["module_versions"], "main": "release2",
+    }
+    assert spec.runtime_image(saved, "2.8").startswith(
+        "goodvision-gpu-runtime:release1-"
+    )
+    assert (state / "compose.bbox.json").read_bytes() == original
+    assert json.loads((state / "compose.main.json").read_text())["services"]["main"][
+        "image"
+    ] == "goodvision-main:release2"
+
+
+def test_selected_gpu_module_build_reuses_existing_base(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    deploy.write_json(state / "settings.json", spec.defaults("site", "base1"))
+    monkeypatch.setattr(deploy, "location", lambda: (tmp_path, tmp_path))
+    seen = []
+    monkeypatch.setattr(deploy, "run", lambda cmd, **kw: seen.append(cmd))
+    inspected = []
+    monkeypatch.setattr(deploy.subprocess, "run", lambda cmd, **kw: (
+        inspected.append(cmd) or SimpleNamespace(returncode=0, stdout="[]")
+    ))
+    assert deploy.main(["build", "--modules", "system1", "--namespace", "site",
+                        "--state-dir", str(state), "--version", "app2"]) == 0
+    assert inspected == [["docker", "image", "inspect",
+                          "goodvision-gpu-runtime:base1-torch2.8-cu128"]]
+    assert all(cmd[1] != "build" for cmd in seen)
+    assert len(seen) == 2 and seen[-1][-1] == "build"
+    assert not (state / "compose.bbox.json").exists()
+
+
 def test_contour_key_is_created_once_without_changing_existing_credentials(tmp_path):
     deploy.initialize(tmp_path, ["contour"])
     path = tmp_path / "secrets/contour-key"
@@ -465,7 +510,7 @@ def test_tiny_fixture_package_is_portable_and_detects_modified_files(
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("fixture\n")
-    for filename in ("deploy_modules.py", "docker_modules.py"):
+    for filename in export.INSTALLER_FILES:
         destination = root / "tools" / filename
         destination.parent.mkdir(exist_ok=True)
         destination.write_text(

@@ -68,6 +68,12 @@ COPY workers/detector_rich_label/app.py workers/detector_rich_label/tracker.py \
 STOPSIGNAL SIGTERM
 CMD ["python", "-u", "tools/start_detector.py"]
 
+FROM python:3.11-slim AS main-requirements
+COPY pyproject.toml /tmp/pyproject.toml
+COPY tools/docker_dependencies.py /tmp/docker_dependencies.py
+RUN python /tmp/docker_dependencies.py /tmp/pyproject.toml /tmp/requirements.txt \
+    --extras face webrtc vlm video
+
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -95,9 +101,13 @@ RUN apt-get update \
 
 WORKDIR /app
 
+COPY --from=main-requirements /tmp/requirements.txt /tmp/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install -r /tmp/requirements.txt
+
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN python -m pip install --no-cache-dir '.[face,webrtc,vlm,video]'
+RUN python -m pip install --no-cache-dir --no-deps --no-build-isolation .
 
 # InsightFace also requests GUI OpenCV; both distributions overwrite cv2.
 # Ship one server variant so dependency updates cannot silently select OpenCV 5.

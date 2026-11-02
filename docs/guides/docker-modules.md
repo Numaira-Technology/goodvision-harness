@@ -69,15 +69,52 @@ python tools/deploy_modules.py prepare-models --modules contour bbox system1 --n
 python tools/deploy_modules.py up --modules contour bbox system1 --namespace office
 ```
 
-`build` 会对所需共享底座去重：Contour 和 YOLO 使用同一 PyTorch 2.10 底座，System 1
-使用 2.8；共同 CUDA/Python 层由 Docker 缓存复用。单独安装公共依赖可运行
-`build --modules gpu-runtime`。同一发布版本生成相同镜像标签；升级依赖应使用新的
-`--version` 并重新构建相关模块。
+`build` 复用已安装的共享底座：Contour 和 YOLO 使用同一 PyTorch 2.10 底座，System 1
+使用 2.8。底座缺失时才补建；显式 `build --modules gpu-runtime --version <版本>`
+用于升级公共依赖。每个模块单独保存版本，更新 main 的版本不会推进其余模块或
+GPU 底座的版本。main / System 1 的代码层与依赖层分开，普通代码更新复用依赖层。
 
 `up` 不隐式构建或拉取应用镜像；可显式加 `--build`。缺少 Contour/System 1 模型时，
 在启动任何选中模块前报错。容器启动后等待健康检查，模型服务需要真正预热就绪；
 主程序检查的是界面/API 存活，保持分析停止。开始分析时还会核对所选工作流服务。
 发生启动失败时使用 `logs` 查看原因，已运行的其他独立模块不会被自动删除。
+
+## 单模块更新与回滚
+
+收到一个模块的预构建更新 ZIP 后，运行一条命令：
+
+```sh
+python tools/deploy_modules.py update --bundle goodvision-main-v2.zip --namespace office
+```
+
+安装器从 ZIP 识别模块，只载入该模块的变更镜像层并等待健康检查。已安装的底层镜像
+通过 ID 核对并复用；端口、服务地址、密钥、模型和数据卷沿用当前配置。健康检查失败
+会自动恢复此前的模块。重复执行同一个更新包保留当前容器和原回滚点。
+Contour 的接口与引擎镜像可以分别复用未变化的角色；其他模块不会被重新构建或重启。
+GPU 底座更新只载入镜像，不启动容器或重启使用它的现有模块。
+
+也可解压 ZIP，使用包内 `python install.py update --bundle update.json`；Windows 可直接
+运行 `update.cmd`。这些入口沿用首次安装所需的 Python 3.10+ 与 Docker。
+自定义安装使用原来的 `--namespace` 和 `--state-dir`。
+
+```sh
+python tools/deploy_modules.py rollback --modules main --namespace office
+```
+
+解压包内也提供 `python install.py rollback` 和 Windows `rollback.cmd`。
+回滚保留数据和模型，恢复上一个成功版本的镜像引用。更新包中的新增模型只补充缺失
+文件；遇到不同的已有权重会停止，不覆盖用户模型。
+
+发布方在完成本模块构建后导出独立更新包：
+
+```sh
+python tools/package_image_update.py main --version v2 --image goodvision-main:v2 --baseline previous/update.json --output dist/goodvision-main-v2
+```
+
+基线可以是首次完整镜像包的 JSON 清单，也可以是该模块上一个更新包的 `update.json`。
+基线中已有的 OCI blobs 不重复传输；不指定基线则导出该模块完整镜像包。
+增量载入使用 Docker 的 containerd image store；缺少指定基线时需先安装对应版本，
+或使用发布方提供的单模块完整包。更新动作不自动下载权重或构建镜像。
 
 ## 容器网络、地址与生命周期
 

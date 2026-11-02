@@ -10,6 +10,9 @@ from urllib.parse import urlsplit
 MODULES = ("main", "contour", "bbox", "system1", "gpu-runtime")
 PORTS = {"main": 8080, "contour": 8093, "bbox": 8096, "system1": 8097}
 TORCH = {"2.10": ("2.10.0", "0.25.0"), "2.8": ("2.8.0", "0.23.0")}
+IMAGE_ROLES = {"main": {"main"}, "bbox": {"bbox"},
+               "contour": {"contour", "engine"}, "system1": {"system1"},
+               "gpu-runtime": {"torch2.10", "torch2.8"}}
 
 
 def name(value):
@@ -43,6 +46,7 @@ def defaults(namespace="default", version="dev"):
     return {
         "namespace": name(namespace),
         "version": name(version),
+        "module_versions": {module: name(version) for module in MODULES},
         "bbox_device": "cpu",
         "bind": "127.0.0.1",
         "gpu_id": "0",
@@ -60,6 +64,22 @@ def defaults(namespace="default", version="dev"):
 def validate(settings):
     name(settings["namespace"])
     name(settings["version"])
+    versions = settings.get("module_versions", {})
+    if not isinstance(versions, dict) or set(versions) - set(MODULES):
+        raise ValueError("Invalid module versions")
+    for value in versions.values():
+        name(value)
+    images = settings.get("module_images", {})
+    if not isinstance(images, dict) or set(images) - set(MODULES):
+        raise ValueError("Invalid module image references")
+    for module, roles in images.items():
+        if not isinstance(roles, dict) or set(roles) - IMAGE_ROLES[module]:
+            raise ValueError("Invalid module image roles")
+        for value in roles.values():
+            if not isinstance(value, str) or not re.fullmatch(
+                rf"goodvision-{module}:[a-zA-Z0-9_][a-zA-Z0-9_.-]{{0,127}}", value
+            ):
+                raise ValueError("Invalid module image reference")
     ipaddress.ip_address(settings["bind"])
     if settings["bbox_device"] not in ("cpu", "cuda"):
         raise ValueError("bbox_device must be cpu or cuda")
@@ -85,7 +105,13 @@ def validate(settings):
 
 
 def runtime_image(settings, torch):
-    return f"goodvision-gpu-runtime:{settings['version']}-torch{torch}-cu128"
+    runtimes = settings.get("module_images", {}).get("gpu-runtime", {})
+    pinned = runtimes.get("torch" + torch)
+    if pinned:
+        return pinned
+    versions = settings.get("module_versions", {})
+    version = versions.get("gpu-runtime", settings["version"])
+    return f"goodvision-gpu-runtime:{version}-torch{torch}-cu128"
 
 
 def runtime_versions(modules, settings):
@@ -143,7 +169,8 @@ def compose(module, settings, source: Path, state: Path):
     validate(settings)
     if module not in PORTS:
         raise ValueError("The GPU runtime is a base image, not a running service")
-    ns, version = settings["namespace"], settings["version"]
+    ns = settings["namespace"]
+    version = settings.get("module_versions", {}).get(module, settings["version"])
     project = f"goodvision-{ns}-{module}"
     bind = settings["bind"]
     if ":" in bind:
@@ -316,6 +343,8 @@ def compose(module, settings, source: Path, state: Path):
                 start="600s",
             ),
         }
+    for role, image in settings.get("module_images", {}).get(module, {}).items():
+        document["services"][role]["image"] = image
     return compose_literals(document)
 
 
