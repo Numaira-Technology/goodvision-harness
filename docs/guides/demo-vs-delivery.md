@@ -83,6 +83,37 @@ README "Repository layout" 列的主体，本地运行与客户交付共用：
 `compose.analysis-gateway.yaml` 和 `compose.full-gpu.delivery.yaml` 是各自的部署入口。
 使用对应启动器或指南给出的 Compose 文件组合，见[源码部署](deployment.md)与[分机部署](modular-services.md)。
 
+## Compose 文件分组索引
+
+根目录的 `compose*.yaml` 是**扁平的稳定入口**（被 150+ 处测试/脚本/文档/Dockerfile 按原路径引用，
+见 CONTRIBUTING "Organization and stable paths"），**不移动**；这里只按用途分组，便于查找。用法是
+`docker compose -f compose.yaml -f compose.<overlay>.yaml ...`，或用对应启动器（`tools/start_*.py`）。
+
+| 组 | 文件 | 用途 |
+|---|---|---|
+| 基础 | `compose.yaml` | 基础栈（网络 `goodvision-demo`），其余按需叠加其上 |
+| 应用主机 (CPU) | `compose.main-server.yaml` | CPU 应用主机（`start_modular main`，无需显卡） |
+| | `compose.analysis-gateway.yaml` | 仅转发 console / camera / output 流量 |
+| 本地 GPU 追踪 | `compose.local-gpu.yaml` | 本地 NVIDIA GPU overlay（`start_local_gpu` 填设备；只叠在 `compose.yaml` 上） |
+| | `compose.local-tracking.yaml` | 应用主机本地 GPU 上的 SAM 运行时 |
+| | `compose.gpu.yaml` | Paddle rich-label worker 的 GPU overlay |
+| 人脸 / 全功能加速 | `compose.face-gpu.yaml` | GPU 人脸识别（`Dockerfile.face-gpu`） |
+| | `compose.full-gpu.accelerated.yaml` | 全功能 GPU 加速（`FACE_ACCELERATOR=gpu` + rich-label） |
+| 云 / 远端 GPU | `compose.cloud-gpu.yaml` | 本地网关 + UI 控制的云 GPU 租用 |
+| | `compose.detector-remote.yaml` | 租 GPU 跑 YOLO / RF-DETR 检测器 |
+| SAM 服务 / 验证 | `compose.sam-server.yaml` | 独立 SAM 服务（权重属该 GPU 主机） |
+| | `compose.sam31.yaml` | 原生 SAM 3.1 视频验证（有界批次各自模型记忆） |
+| | `compose.sam31-remote.yaml` | 连远端 SAM（替代本地 SAM overlay） |
+| | `compose.sam31-stream.yaml` | 实验性持久原生记忆（叠在 `sam31` 上） |
+| 场景 / 感知 | `compose.scene.yaml` | 连续人物 / 事件引擎（需 `compose.yaml` + 本地 SAM3 权重） |
+| | `compose.perception.yaml` | SAM 连续分析（叠在 `compose.yaml` + `sam31` 后） |
+| 大模型服务 | `compose.vlm-server.yaml` | 独立模型 + CPU 处理服务 |
+| **交付 / production** | `compose.full-gpu.delivery.yaml` | 客户交付部署入口（见 [DEPLOY.md](../../DEPLOY.md) / [RELEASE.md](../../RELEASE.md)） |
+| 诊断（在 `diag/`） | `diag/compose.sam-multistream.yaml` · `diag/compose.sam-tunnel.yaml` | 诊断专用，已单独放在 `diag/` 子目录 |
+
+> 配套的 `config.*.yaml`：`config.yaml`（开发默认，须与 `src/goodvision_harness/config.yaml` 逐字节一致）、
+> `config.vlm-rich.yaml`（富标注）、`config.delivery.yaml`（交付）。
+
 ## D. 本地运行数据与已审阅夹具
 
 凭据、模型权重、人脸库、录像和生成输出不应提交；以 `CONTRIBUTING.md` 的目录约定与
