@@ -7,7 +7,7 @@ GPU 基础镜像；每个服务单元使用独立 Compose 项目，按部署名�
 新构建与交付固定使用五个镜像仓库：`goodvision-main`、`goodvision-bbox`、
 `goodvision-contour`、`goodvision-system1`、`goodvision-gpu-runtime`。
 主程序镜像为 `goodvision-main:<version>`；Contour 接口和推理分别使用
-`goodvision-contour:<version>` 与 `goodvision-contour:<version>-engine`。
+`goodvision-contour:<version>-api` 与 `goodvision-contour:<version>-engine`。
 CPU/CUDA、PyTorch 版本和内部角色通过标签区分，不另设镜像仓库名称。
 
 ## 安装单元与依赖
@@ -86,7 +86,13 @@ python tools/deploy_modules.py up --modules contour bbox system1 --namespace off
 本安装器的网络时拒绝接管。各项目单独拥有自己的数据卷。
 容器实例使用固定模块名并追加安装名称，例如 `goodvision-main-office`、
 `goodvision-bbox-office`、`goodvision-system1-office`；Contour 的两种角色为
-`goodvision-contour-office` 和 `goodvision-contour-office-engine`。
+`goodvision-contour-office-api` 和 `goodvision-contour-office-engine`。
+两个角色均保留显式后缀，因此 `office` 与 `office-engine` 等合法安装名、
+`release1` 与 `release1-engine` 等合法版本不会互相占用容器名或镜像标签。
+从早期安装器生成的无 `-api` 名称升级时，先备份状态目录并记录当前镜像 ID，
+再用新安装包执行 `build`、`up`；Compose 按原项目及 service 识别并重建接口容器。
+保留 namespace、状态目录和数据卷，不要删除卷或重新生成模型、密钥及服务地址。
+回滚时使用备份的 Compose 文件和原镜像；仅修改 `settings.json` 不会回滚运行容器。
 
 | 服务 | 主程序容器使用的同机地址 | 默认宿主机端口 |
 | --- | --- | --- |

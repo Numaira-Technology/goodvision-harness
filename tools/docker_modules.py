@@ -248,7 +248,10 @@ def compose(module, settings, source: Path, state: Path):
         )
     else:
         service.update(
-            image=f"goodvision-contour:{version}",
+            # Both roles need disjoint suffixes: a namespace/version ending in
+            # "-engine" must not reuse another installation's engine identity.
+            container_name=f"goodvision-contour-{ns}-api",
+            image=f"goodvision-contour:{version}-api",
             build={
                 "context": str(source / "workers/contour"),
                 "dockerfile": "Dockerfile",

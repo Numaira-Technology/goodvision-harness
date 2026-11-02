@@ -16,6 +16,107 @@ from tools import docker_modules as spec
 from tools import package_modules as export
 
 
+@pytest.mark.parametrize("field", ["container_name", "image"])
+def test_contour_roles_cannot_collide_across_namespaces_or_releases(tmp_path, field):
+    identifiers = []
+    for suffix in ("", "-engine", "-api", "-api-engine", "-engine-api"):
+        settings = spec.defaults("office" + suffix, "release1" + suffix)
+        services = spec.compose("contour", settings, tmp_path, tmp_path)["services"]
+        identifiers.extend(service[field] for service in services.values())
+    assert len(set(identifiers)) == len(identifiers), f"Contour {field} collision"
+
+
+@pytest.mark.parametrize("namespace", ["office", "office-engine"])
+def test_contour_reconfigure_preserves_existing_deployment_state(
+    tmp_path, monkeypatch, namespace
+):
+    state = tmp_path / namespace
+    settings = spec.defaults(namespace, "release1-engine")
+    settings["bbox_device"] = "cuda"
+    settings["gpu_id"] = "2"
+    settings["ports"]["contour"] = 18093
+    settings["urls"]["bbox"] = "http://worker.example:18096"
+    settings["urls"]["contour"] = "https://contour.example"
+    deploy.initialize(state, ["contour"])
+    model = state / "models/contour/contour.pt"
+    model.write_bytes(b"existing model fixture")
+    key = state / "secrets/contour-key"
+    before_key = key.read_bytes()
+    original = spec.compose("contour", settings, tmp_path, state)
+    original["services"]["contour"].update(
+        container_name=f"goodvision-contour-{namespace}",
+        image="goodvision-contour:release1-engine",
+    )
+    deploy.write_json(state / "settings.json", settings)
+    deploy.write_json(state / "compose.contour.json", original)
+    monkeypatch.setattr(deploy, "location", lambda: (tmp_path, tmp_path))
+    monkeypatch.setattr(deploy, "run", lambda *a, **k: pytest.fail("Docker call"))
+    assert deploy.main([
+        "configure", "--modules", "contour", "--namespace", namespace,
+        "--state-dir", str(state),
+    ]) == 0
+    saved = json.loads((state / "compose.contour.json").read_text())
+    assert saved["services"]["contour"]["container_name"] == (
+        f"goodvision-contour-{namespace}-api"
+    )
+    assert saved["services"]["contour"]["image"] == (
+        "goodvision-contour:release1-engine-api"
+    )
+    # Compose finds existing containers by unchanged project/service labels;
+    # only the API's name and image reference should change on recreation.
+    original["services"]["contour"].update(
+        container_name=saved["services"]["contour"]["container_name"],
+        image=saved["services"]["contour"]["image"],
+    )
+    assert saved == original
+    assert json.loads((state / "settings.json").read_text()) == settings
+    assert model.read_bytes() == b"existing model fixture"
+    assert key.read_bytes() == before_key
+
+
+def test_exported_contour_installers_keep_roles_distinct_after_reload(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "fixture"
+    names = list(export.REQUIRED["contour"])
+    for relative in names:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture\n")
+    for filename in ("deploy_modules.py", "docker_modules.py"):
+        destination = root / "tools" / filename
+        destination.parent.mkdir(exist_ok=True)
+        destination.write_bytes((Path(deploy.__file__).parent / filename).read_bytes())
+    monkeypatch.setattr(export, "tracked_files", lambda *args: names)
+    containers, images = [], []
+    for suffix in ("", "-engine"):
+        version, namespace = "release1" + suffix, "office" + suffix
+        archive = tmp_path / f"{version}.zip"
+        export.package(root, "contour", version, "cpu", archive)
+        installed = tmp_path / version
+        with zipfile.ZipFile(archive) as bundle:
+            bundle.extractall(installed)
+        state = tmp_path / namespace
+        args = ["--namespace", namespace, "--state-dir", str(state)]
+        subprocess.run(
+            [sys.executable, str(installed / "install.py"), "configure", *args],
+            cwd=tmp_path, capture_output=True, text=True, check=True,
+        )
+        result = subprocess.run(
+            [sys.executable, str(installed / "install.py"), "plan", *args],
+            cwd=tmp_path, capture_output=True, text=True, check=True,
+        )
+        plan = json.loads(result.stdout)
+        saved = json.loads((state / "compose.contour.json").read_text())
+        assert plan["compose_projects"]["contour"] == saved
+        assert plan["settings"]["version"] == version
+        for service in saved["services"].values():
+            containers.append(service["container_name"])
+            images.append(service["image"])
+    assert len(set(containers)) == len(containers)
+    assert len(set(images)) == len(images)
+
+
 def test_delivery_uses_exactly_the_five_canonical_image_repositories(tmp_path):
     settings = spec.defaults("site1", "release1")
     settings["bbox_device"] = "cuda"
@@ -32,7 +133,7 @@ def test_delivery_uses_exactly_the_five_canonical_image_repositories(tmp_path):
         "main": {"main": "goodvision-main:release1"},
         "bbox": {"bbox": "goodvision-bbox:release1-cuda"},
         "contour": {
-            "contour": "goodvision-contour:release1",
+            "contour": "goodvision-contour:release1-api",
             "engine": "goodvision-contour:release1-engine",
         },
         "system1": {"system1": "goodvision-system1:release1"},
@@ -91,7 +192,7 @@ def test_gpu_layers_are_reused_without_sharing_contour_engine_port(tmp_path):
     contour = spec.compose("contour", settings, tmp_path, tmp_path)
     engine = contour["services"]["engine"]
     assert contour["services"]["contour"]["container_name"] == (
-        "goodvision-contour-default"
+        "goodvision-contour-default-api"
     )
     assert engine["container_name"] == "goodvision-contour-default-engine"
     system1 = spec.compose("system1", settings, tmp_path, tmp_path)["services"][

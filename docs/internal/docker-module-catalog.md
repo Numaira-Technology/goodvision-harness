@@ -24,7 +24,7 @@
 | --- | --- | --- | --- | --- | --- |
 | `goodvision-main` | `main` | 主程序：界面、视频接入、工作流、事件与结果 | 新安装为 `main`；旧安装为 `harness` / `harness-N` | `goodvision-main:<version>` | [Dockerfile](../../Dockerfile)、[应用源码](../../src/goodvision_harness) |
 | `goodvision-bbox` | `bbox` | Bbox：YOLO26-S 检测和追踪 | `bbox` | `goodvision-bbox:<version>-cpu` / `goodvision-bbox:<version>-cuda` | [CPU Dockerfile](../../workers/bbox/Dockerfile.cpu)、[CUDA Dockerfile](../../workers/bbox/Dockerfile)、[服务源码](../../workers/detector_rich_label) |
-| `goodvision-contour` | `contour` | Contour：对外接口与内部推理，作为一个安装单元管理 | `contour`（接口）+ `engine`（推理） | `goodvision-contour:<version>` + `goodvision-contour:<version>-engine` | [接口 Dockerfile](../../workers/contour/Dockerfile)、[推理 Dockerfile](../../workers/contour/Dockerfile.engine)、[接口源码](../../workers/contour)、[推理源码](../../workers/sam_scene) |
+| `goodvision-contour` | `contour` | Contour：对外接口与内部推理，作为一个安装单元管理 | `contour`（接口）+ `engine`（推理） | `goodvision-contour:<version>-api` + `goodvision-contour:<version>-engine` | [接口 Dockerfile](../../workers/contour/Dockerfile)、[推理 Dockerfile](../../workers/contour/Dockerfile.engine)、[接口源码](../../workers/contour)、[推理源码](../../workers/sam_scene) |
 | `goodvision-system1` | `system1` | System 1：VideoJev 视频推理 | `system1` | `goodvision-system1:<version>` | [Dockerfile](../../workers/system1/Dockerfile)、[服务源码](../../src/goodvision_harness/videojev_service.py) |
 | `goodvision-gpu-runtime` | `gpu-runtime` | 共享 GPU 依赖底座；只构建镜像，无常驻容器 | 无 | `goodvision-gpu-runtime:<version>-torch2.10-cu128` / `goodvision-gpu-runtime:<version>-torch2.8-cu128` | [Dockerfile](../../workers/gpu_runtime/Dockerfile)、[底座说明](../../workers/gpu_runtime/README.md) |
 
@@ -43,7 +43,7 @@ Contour 与 CUDA Bbox 共用 PyTorch 2.10 底座，System 1 使用 2.8 底座；
 | 对象 | 固定规则 | `office` 安装示例 |
 | --- | --- | --- |
 | Compose project | `goodvision-<namespace>-<module>`，`<module>` 使用安装器短 ID | `goodvision-office-bbox` |
-| 容器实例 | 固定模块名后追加 `-<namespace>`；Contour 推理角色再追加 `-engine` | `goodvision-main-office`、`goodvision-contour-office-engine` |
+| 容器实例 | 固定模块名后追加 `-<namespace>`；Contour 两角色分别追加 `-api` / `-engine` | `goodvision-main-office`、`goodvision-contour-office-api`、`goodvision-contour-office-engine` |
 | 同机共享网络 | `goodvision-<namespace>` | `goodvision-office` |
 | 网络别名 | `gv-<module>`，只在所在网络内使用 | `gv-bbox` |
 | 默认状态根目录 | `~/.goodvision/docker/<namespace>`；可用 `--state-dir` 指定 | `~/.goodvision/docker/office` |
