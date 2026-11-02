@@ -105,16 +105,16 @@ COPY --from=main-requirements /tmp/requirements.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install -r /tmp/requirements.txt
 
-COPY pyproject.toml README.md ./
-COPY src ./src
-RUN python -m pip install --no-cache-dir --no-deps --no-build-isolation .
-
 # InsightFace also requests GUI OpenCV; both distributions overwrite cv2.
 # Ship one server variant so dependency updates cannot silently select OpenCV 5.
 # Preserve upstream package metadata, including its GUI-name-only dependency.
 RUN python -m pip uninstall -y opencv-python opencv-python-headless \
     && python -m pip install --no-cache-dir --no-deps opencv-python-headless==4.14.0.94 \
     && python -c "import cv2; assert cv2.__version__.startswith('4.14.')"
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN python -m pip install --no-cache-dir --no-deps --no-build-isolation .
 
 COPY config.yaml ./config.yaml
 COPY workers/__init__.py ./workers/__init__.py
