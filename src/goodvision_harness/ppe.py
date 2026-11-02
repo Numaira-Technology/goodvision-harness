@@ -241,8 +241,11 @@ def _merge_frame(people, presence, detector_state):
 
 
 class _PPE:
-    def __init__(self, torch):
+    def __init__(self, torch, *, batch_size=1, always_scene=True):
+        if type(batch_size) is not int or not 1 <= batch_size <= 4:
+            raise ValueError("PPE batch_size must be an integer from 1 to 4")
         self.torch, self.detector = torch, None
+        self.batch_size, self.always_scene = batch_size, always_scene
 
     def _error(self, error):
         if shared_failure(error):
@@ -337,8 +340,7 @@ class _PPE:
             people.append((record, person_image))
         return people
 
-    def _assess_frame(self, image, source_time):
-        started = time.perf_counter()
+    def _prepare_frame(self, image, source_time):
         detector = {"state": "completed", "source_size": list(image.size)}
         before_detection = time.perf_counter()
         try:
@@ -347,47 +349,220 @@ class _PPE:
             people = []
             detector.update(state="failed", error=self._error(error))
         detector["detector_seconds"] = time.perf_counter() - before_detection
-        try:
-            values, raw = self._score(image, source_time, scene=True)
-            presence, scene_raw = values["presence"], raw
-        except Exception as error:
-            presence, scene_raw = "unclear", {"error": self._error(error)}
-        rows = []
-        for record, crop in people:
-            try:
-                if isinstance(crop, Exception):
-                    raise crop
-                values, raw = self._score(crop, source_time, scene=False)
-                helmet, vest, error = values["helmet"], values["vest"], None
-                person_presence = "present"
-            except Exception as failure:
-                helmet = vest = "unassessable"
-                person_presence, raw, error = "unclear", None, self._error(failure)
-            row = {
-                **record,
-                "presence": person_presence,
-                "helmet": helmet,
-                "vest": vest,
-            }
-            row["detected"] = (
-                True
-                if person_presence == "present" and "missing" in (helmet, vest)
-                else False
-                if person_presence == "present" and helmet == vest == "worn"
-                else None
-            )
-            if raw is not None:
-                row["raw"] = raw
-            if error is not None:
-                row["error"] = error
-            rows.append(row)
-        return {
-            **_merge_frame(rows, presence, detector["state"]),
+        frame = {
             "source_time": source_time,
             "detector": detector,
-            "scene_raw": scene_raw,
+            "scene_presence": "unclear",
+            "scene_raw": {
+                "error": {"type": "NotAssessed", "detail": "PPE scoring is incomplete"}
+            },
+            "people": [],
+        }
+        tasks = []
+        if self.always_scene or (not people and detector["state"] == "completed"):
+            tasks.append((frame, None, image, True))
+        else:
+            frame["scene_raw"] = {
+                "state": "not_requested",
+                "reason": "person_crops_available"
+                if people
+                else "person_detection_incomplete",
+            }
+        for record, crop in people:
+            row = {
+                **record,
+                "presence": "unclear",
+                "helmet": "unassessable",
+                "vest": "unassessable",
+                "detected": None,
+                "error": {"type": "NotAssessed", "detail": "PPE scoring is incomplete"},
+            }
+            frame["people"].append(row)
+            tasks.append((frame, row, crop, False))
+        return frame, tasks
+
+    def _prepare_score(self, image, source_time, *, scene):
+        return image, source_time
+
+    def _predict_scores(self, prepared, *, scene, interrupted=None):
+        for index, (image, source_time) in enumerate(prepared):
+            if interrupted is not None and interrupted():
+                return
+            try:
+                result = self._score(image, source_time, scene=scene)
+            except Exception as error:
+                result = error
+            yield index, result
+
+    def _store_score(self, task, result, *, recover=True):
+        frame, row, _image, scene = task
+        raw = None
+        try:
+            if isinstance(result, Exception):
+                raw = getattr(result, "ppe_raw", None)
+                raise result
+            values, raw = result
+            parts = ("presence",) if scene else ("helmet", "vest")
+            if any(values[part] not in _VALUES[part] for part in parts):
+                raise ValueError("invalid PPE attribute state")
+            if scene:
+                frame.update(scene_presence=values["presence"], scene_raw=raw)
+            else:
+                helmet, vest = values["helmet"], values["vest"]
+                row.update(
+                    presence="present", helmet=helmet, vest=vest,
+                    detected=True if "missing" in (helmet, vest)
+                    else False if helmet == vest == "worn" else None,
+                    raw=raw,
+                )
+                row.pop("error", None)
+        except Exception as error:
+            # Store the failed item's CPU evidence before _error can raise a
+            # shared CUDA failure or a failed OOM recovery.
+            detail = {"type": type(error).__name__, "detail": str(error)[:1200]}
+            if scene:
+                frame["scene_raw"] = {"error": detail}
+                if raw is not None:
+                    frame["scene_raw"]["raw"] = raw
+            else:
+                row["error"] = detail
+                if raw is not None:
+                    row["raw"] = raw
+            if recover:
+                self._error(error)
+
+    def _finish_frame(self, frame, started):
+        if "detector" not in frame:
+            return frame
+        return {
+            **frame,
+            **_merge_frame(
+                frame["people"], frame["scene_presence"], frame["detector"]["state"]
+            ),
             "assessment_seconds": time.perf_counter() - started,
         }
+
+    def _assess_batched_frames(self, images, frame_times):
+        frames, starts, tasks = [], [], []
+        try:
+            for image, source_time in zip(images, frame_times, strict=True):
+                started = time.perf_counter()
+                try:
+                    if isinstance(image, Exception):
+                        raise image
+                    frame, pending = self._prepare_frame(image, source_time)
+                except Exception as error:
+                    frame = {
+                        "detected": None,
+                        "source_time": source_time,
+                        "people": [],
+                        "reason": "frame_assessment_failed",
+                        "error": self._error(error),
+                    }
+                    pending = []
+                frames.append(frame)
+                starts.append(started)
+                tasks.extend(pending)
+            groups = {True: [], False: []}
+            for task in tasks:
+                frame, _row, image, scene = task
+                try:
+                    if isinstance(image, Exception):
+                        raise image
+                    prepared = self._prepare_score(
+                        image, frame["source_time"], scene=scene
+                    )
+                except Exception as error:
+                    self._store_score(task, error)
+                    continue
+                groups[scene].append((task, prepared))
+            for scene, group in groups.items():
+                for start in range(0, len(group), self.batch_size):
+                    chunk = group[start:start + self.batch_size]
+                    pending, shared, interruption = set(range(len(chunk))), None, None
+                    try:
+                        for index, result in self._predict_scores(
+                            [prepared for _task, prepared in chunk], scene=scene,
+                            interrupted=lambda: shared is not None,
+                        ):
+                            if type(index) is not int or not 0 <= index < len(chunk):
+                                raise ValueError("invalid PPE batch outcome index")
+                            if index not in pending:
+                                continue
+                            pending.remove(index)
+                            try:
+                                self._store_score(
+                                    chunk[index][0], result, recover=shared is None
+                                )
+                            except Exception as error:
+                                # Drain this already-started batch's CPU outcomes
+                                # without another recovery or any new inference.
+                                shared = shared or error
+                    except Exception as error:
+                        interruption = error
+                        if shared is None:
+                            try:
+                                self._error(error)
+                            except Exception as failure:
+                                shared = failure
+                    for index in sorted(pending):
+                        error = RuntimeError(
+                            "PPE batch interrupted before this item's outcome"
+                            + (f": {interruption or shared}" if interruption or shared else "")
+                        )
+                        self._store_score(chunk[index][0], error, recover=False)
+                    if shared is not None:
+                        raise shared
+        except Exception as error:
+            # Preserve all received CPU observations, including earlier people
+            # in the current frame, before entering the shared CUDA error path.
+            frames = [
+                self._finish_frame(frame, started)
+                for frame, started in zip(frames, starts, strict=True)
+            ]
+            error.ppe_observation = {
+                **failed_observation(error),
+                "frames": frames,
+                "detected": True if any(row["detected"] is True for row in frames) else None,
+            }
+            raise
+        return [
+            self._finish_frame(frame, started)
+            for frame, started in zip(frames, starts, strict=True)
+        ]
+
+    def _assess_frame(self, image, source_time):
+        return self._assess_batched_frames([image], [source_time])[0]
+
+    def _assess_frames(self, images, frame_times):
+        frames = []
+        for image, source_time in zip(images, frame_times, strict=True):
+            try:
+                if isinstance(image, Exception):
+                    raise image
+                frame = self._assess_frame(image, source_time)
+            except Exception as error:
+                try:
+                    detail = self._error(error)
+                except Exception as shared:
+                    partial = getattr(shared, "ppe_observation", {}).get("frames", [])
+                    shared.ppe_observation = {
+                        **failed_observation(shared),
+                        "frames": frames + partial,
+                        "detected": True
+                        if any(row["detected"] is True for row in frames + partial)
+                        else None,
+                    }
+                    raise
+                frame = {
+                    "detected": None,
+                    "source_time": source_time,
+                    "people": [],
+                    "reason": "frame_assessment_failed",
+                    "error": detail,
+                }
+            frames.append(frame)
+        return frames
 
     def assess(self, payloads, frame_times):
         if (
@@ -403,8 +578,8 @@ class _PPE:
             raise ValueError(
                 "PPE requires distinct source frames with increasing source times"
             )
-        frames = []
-        for payload, source_time in zip(payloads, frame_times, strict=True):
+        images = []
+        for payload in payloads:
             try:
                 if isinstance(payload, Exception):
                     raise payload
@@ -414,27 +589,11 @@ class _PPE:
                         or source.width * source.height > 16_000_000
                     ):
                         raise ValueError("invalid PPE source JPEG")
-                    frame = self._assess_frame(source.convert("RGB"), source_time)
+                    image = source.convert("RGB")
             except Exception as error:
-                try:
-                    detail = self._error(error)
-                except Exception as shared:
-                    shared.ppe_observation = {
-                        **failed_observation(shared),
-                        "frames": frames,
-                        "detected": True
-                        if any(row["detected"] is True for row in frames)
-                        else None,
-                    }
-                    raise
-                frame = {
-                    "detected": None,
-                    "source_time": source_time,
-                    "people": [],
-                    "reason": "frame_assessment_failed",
-                    "error": detail,
-                }
-            frames.append(frame)
+                image = error
+            images.append(image)
+        frames = self._assess_frames(images, frame_times)
         values = [row["detected"] for row in frames]
         return {
             "detected": True
@@ -448,10 +607,10 @@ class _PPE:
 
 
 class VideoJevPPE(_PPE):
-    def __init__(self, runtime):
+    def __init__(self, runtime, *, batch_size=4, always_scene=False):
         from .vlm_questions import QuestionTemplate
 
-        super().__init__(runtime.torch)
+        super().__init__(runtime.torch, batch_size=batch_size, always_scene=always_scene)
         self.runtime = runtime
         queries = {
             "presence": "Which human-presence observation is supported by this image?",
@@ -479,9 +638,10 @@ class VideoJevPPE(_PPE):
                 )
             )
 
-    def _score(self, image, source_time, *, scene):
-        from .videojev_core import choice_indices
+    def _assess_frames(self, images, frame_times):
+        return self._assess_batched_frames(images, frame_times)
 
+    def _prepare_score(self, image, source_time, *, scene):
         template, jpeg = self.templates[scene], _jpeg(image)
         times = (source_time, source_time)
         prepared = self.runtime.prepare(
@@ -490,27 +650,91 @@ class VideoJevPPE(_PPE):
             question_template=template,
             frame_times=times,
         )
-        raw, timings = self.runtime.predict_prepared(
-            prepared,
-            question_template=template,
-            frame_times=times,
-        )
-        indices = choice_indices(native_rows(raw), template.rows)
         return {
-            key.removeprefix("ppe/"): _VALUES[key.removeprefix("ppe/")][index]
-            for key, index in indices.items()
-        }, {
+            "prepared": prepared,
+            "question_template": template,
+            "frame_times": times,
+        }
+
+    def _format_score(self, result, *, scene):
+        from .videojev_core import choice_indices
+
+        try:
+            raw, timings = result
+        except Exception as error:
+            error.ppe_raw = result
+            raise
+        diagnostic = {
             "raw": raw,
             "timings": timings,
             "input_mode": "one_source_frame_copied_twice",
         }
+        try:
+            indices = choice_indices(native_rows(raw), self.templates[scene].rows)
+            return {
+                key.removeprefix("ppe/"): _VALUES[key.removeprefix("ppe/")][index]
+                for key, index in indices.items()
+            }, diagnostic
+        except Exception as error:
+            error.ppe_raw = diagnostic
+            raise
+
+    def _predict_one(self, prepared, *, scene):
+        try:
+            result = self.runtime.predict_prepared(**prepared)
+            return self._format_score(result, scene=scene)
+        except Exception as error:
+            return error
+
+    def _predict_scores(self, prepared, *, scene, interrupted=None):
+        pending = set(range(len(prepared)))
+        batch = getattr(self.runtime, "predict_prepared_batch", None)
+        fallback = len(prepared) == 1 or not callable(batch)
+        if not fallback:
+            outcomes = batch(prepared)
+            if outcomes is None:
+                fallback = True
+            else:
+                for outcome in outcomes:
+                    if outcome is None:
+                        fallback = True
+                        break
+                    index, result = outcome
+                    if type(index) is not int or not 0 <= index < len(prepared):
+                        raise ValueError("invalid PPE batch outcome index")
+                    if index not in pending:
+                        continue
+                    # Even an invalid or failed returned item was attempted.
+                    # None may only fall back for the still-unreturned items.
+                    pending.remove(index)
+                    if not isinstance(result, Exception):
+                        try:
+                            result = self._format_score(result, scene=scene)
+                        except Exception as error:
+                            result = error
+                    yield index, result
+        for index in sorted(pending):
+            if interrupted is not None and interrupted():
+                return
+            yield index, (
+                self._predict_one(prepared[index], scene=scene)
+                if fallback
+                else ValueError("PPE batch did not return this item's outcome")
+            )
+
+    def _score(self, image, source_time, *, scene):
+        prepared = self._prepare_score(image, source_time, scene=scene)
+        result = self._predict_one(prepared, scene=scene)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 class ClipPPE(_PPE):
     """Fixed attributes and unknown classes; scores are not probabilities."""
 
-    def __init__(self, encoder):
-        super().__init__(encoder.torch)
+    def __init__(self, encoder, *, batch_size=4, always_scene=False):
+        super().__init__(encoder.torch, batch_size=batch_size, always_scene=always_scene)
         self.encoder, self.text_features, self.state_features = encoder, None, None
         self.keys, self.slices, self.texts = [], [], []
         for attribute, states in _CLIP_TEXTS.items():
@@ -543,23 +767,43 @@ class ClipPPE(_PPE):
             state_features = torch.stack(ensembles)
         self.text_features, self.state_features = text_features, state_features
 
-    def _score(self, image, source_time, *, scene):
-        self._encode_text()
-        encoder, torch = self.encoder, self.torch
-        model, device = encoder.model, next(encoder.model.parameters()).device
-        inputs = encoder.processor(
+    def _assess_frames(self, images, frame_times):
+        return self._assess_batched_frames(images, frame_times)
+
+    def _prepare_score(self, image, source_time, *, scene):
+        return self.encoder.processor(
             images=_square_pad(image) if scene else image, return_tensors="pt"
-        )
-        with torch.inference_mode():
-            pooled = model.vision_model(
-                pixel_values=inputs["pixel_values"].to(device)
-            ).pooler_output
-            features = model.visual_projection(pooled)
-            features = features / features.norm(p=2, dim=-1, keepdim=True)
-            scores = (features @ self.state_features.t())[0].float().cpu().tolist()
-            individual = (features @ self.text_features.t())[0].float().cpu().tolist()
+        )["pixel_values"]
+
+    def _predict_scores(self, prepared, *, scene, interrupted=None):
+        try:
+            self._encode_text()
+            encoder, torch = self.encoder, self.torch
+            model, device = encoder.model, next(encoder.model.parameters()).device
+            with torch.inference_mode():
+                pixels = torch.cat(prepared, dim=0).to(device)
+                pooled = model.vision_model(pixel_values=pixels).pooler_output
+                features = model.visual_projection(pooled)
+                features = features / features.norm(p=2, dim=-1, keepdim=True)
+                scores = (features @ self.state_features.t()).float().cpu().tolist()
+                individual = (features @ self.text_features.t()).float().cpu().tolist()
+            del pixels, pooled, features
+        except Exception as error:
+            for index in range(len(prepared)):
+                yield index, error
+            return
+        for index in range(len(prepared)):
+            try:
+                result = self._format_score(scores[index], individual[index], scene=scene)
+            except Exception as error:
+                result = error
+            yield index, result
+
+    def _format_score(self, scores, individual, *, scene):
         if any(not math.isfinite(value) for value in (*scores, *individual)):
-            raise ValueError("nonfinite CLIP PPE cosine")
+            error = ValueError("nonfinite CLIP PPE cosine")
+            error.ppe_raw = {"cosine": scores, "text_cosine": individual}
+            raise error
         values, raw = {}, {}
         for attribute in ("presence",) if scene else ("helmet", "vest"):
             state_scores = {
@@ -585,3 +829,10 @@ class ClipPPE(_PPE):
                 },
             }
         return values, raw
+
+    def _score(self, image, source_time, *, scene):
+        prepared = self._prepare_score(image, source_time, scene=scene)
+        for _index, result in self._predict_scores([prepared], scene=scene):
+            if isinstance(result, Exception):
+                raise result
+            return result
