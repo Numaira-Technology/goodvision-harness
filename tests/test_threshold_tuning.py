@@ -37,6 +37,24 @@ def check(data, **kwargs):
     return tuner.validate_run(data["per_video"], data, **kwargs)
 
 
+@pytest.mark.parametrize(("field", "value"), [
+    ("frozen", False), ("frozen", "true"), ("provisional", True), ("provisional", None),
+    ("spec_version", "base4-provisional-v1"), ("scored_events", ["fight"]),
+])
+def test_unfrozen_metadata_cannot_enter_calibration_even_with_valid_hashes(field, value):
+    data = run("val")
+    data[field] = value
+    with pytest.raises(ValueError):
+        check(data, validation=True)
+
+
+def test_non_v2_retry_budget_cannot_be_relabelled_as_v2():
+    data = run("val")
+    data["config"]["retries"] = 8
+    with pytest.raises(ValueError, match="three total"):
+        check(data, validation=True)
+
+
 @pytest.mark.parametrize("score", [None, True, "0.8", -0.1, 1.1, float("nan"), float("inf")])
 def test_invalid_probability_is_rejected(score):
     data = run("val")

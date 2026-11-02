@@ -59,7 +59,11 @@ def _digest(value):
 def validate_run(per_video, metadata, *, validation=False):
     """Only compatible, complete v2 evidence can enter threshold selection."""
     if metadata.get("spec_version") != "v2":
-        raise ValueError("v2 run output required; historical v1 archives are not eligible")
+        raise ValueError("v2 run output required; historical/provisional experiments are not eligible")
+    if metadata.get("frozen", True) is not True or metadata.get("provisional", False) is not False:
+        raise ValueError("frozen, non-provisional evidence required")
+    if "scored_events" in metadata and metadata["scored_events"] != EVENTS:
+        raise ValueError("the complete frozen base-4 event set is required")
     if metadata.get("score_precision") != "lossless":
         raise ValueError("lossless scores required; rounded v2 archives are not eligible")
     if (metadata.get("backend") != "decision"
@@ -72,6 +76,8 @@ def validate_run(per_video, metadata, *, validation=False):
     required = {"gate", "interval", "frame_rule", "frame_width", "temperature", "retries", "timeout", "decision"}
     if not isinstance(config, dict) or not required <= set(config) or config["gate"] != 0.5:
         raise ValueError("complete frozen gate=0.5 configuration required")
+    if type(config["retries"]) is not int or config["retries"] != 3:
+        raise ValueError("frozen v2 requires three total request attempts")
     if not isinstance(per_video, list) or not per_video:
         raise ValueError("per_video must contain scored questions")
     numbers, identities = set(), set()

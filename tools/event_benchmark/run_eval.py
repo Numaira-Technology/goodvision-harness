@@ -22,7 +22,6 @@ from pathlib import Path
 
 # ---------------------------------------------------------------- frozen rules
 SCORED_EVENTS = ["fight", "smoking", "fall", "weapon"]  # §2
-BAG_EVENTS = ["bag_knife", "bag_alcohol_bottle"]  # 3-value bag Qs; GT already collapsed to yes/no (unknown->no)
 FRAME_MAX = 14            # §4  n = max(3, min(14, int(dur)))
 FRAME_MIN = 3
 FRAME_WIDTH = 720         # §4  scale=720:-2
@@ -30,7 +29,7 @@ GATE = 0.5               # §5  uniform, never tuned on the set
 TEMPERATURE = 0           # §6
 CHAT_MAX_TOKENS = 30      # §6
 TIMEOUT = 90              # §6
-RETRIES = 8               # §6 (raised from 3 for transient 429 backoff on shared provider pools)
+RETRIES = 3               # §6: total attempts, including the first request
 CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 LUNA_URL = "https://openrouter.ai/api/alpha/decisions"
 # model ID + backend class for each named candidate (§3, §6). Three classes:
@@ -63,7 +62,9 @@ def load_key(env_file):
 
 def question_core(question):
     """§1: the exam question minus the trailing 'Answer yes or no.'"""
-    return re.sub(r"\s*answer\s+(yes or no|yes, no, or unknown)\.?\s*$", "", question, flags=re.I).strip()
+    if re.search(r"\banswer\b[^.!?]*\bunknown\b", question, flags=re.I):
+        raise ValueError("three-valued questions require a separate scoring protocol; do not collapse unknown")
+    return re.sub(r"\s*answer yes or no\.?\s*$", "", question, flags=re.I).strip()
 
 
 # ---------------------------------------------------------------- frame sampling (§4)
@@ -132,7 +133,7 @@ def frame_score(backend, model, qcore, uri, key):
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": uri}}]}],
             "max_tokens": CHAT_MAX_TOKENS, "temperature": TEMPERATURE}
-        for attempt in range(RETRIES):
+        for _ in range(RETRIES):
             try:
                 choice = _post(CHAT_URL, body, key)["choices"][0]
                 if choice.get("finish_reason") != "stop":
@@ -145,7 +146,7 @@ def frame_score(backend, model, qcore, uri, key):
                     raise ValueError("language answer must be a JSON boolean")
                 return float(answer["answer"])
             except Exception:
-                time.sleep(min(2 ** attempt, 20))
+                time.sleep(1)
         return None
     if backend == "decision":
         body = {"model": model,
@@ -153,7 +154,7 @@ def frame_score(backend, model, qcore, uri, key):
                           {"type": "image_url", "image_url": {"url": uri}}],
                 "questions": {"answer": {"type": "noul", "instructions": qcore,
                     "criteria": {"true": "Yes — " + qcore, "false": "No — " + qcore}}}}
-        for attempt in range(RETRIES):
+        for _ in range(RETRIES):
             try:
                 answer = _post(LUNA_URL, body, key)["answers"]["answer"]
                 score = answer.get("noul")
@@ -163,7 +164,7 @@ def frame_score(backend, model, qcore, uri, key):
                     raise ValueError("decision answer must be a probability in [0, 1]")
                 return score
             except Exception:
-                time.sleep(min(2 ** attempt, 20))
+                time.sleep(1)
         return None
     raise ValueError("unknown backend " + backend)
 
@@ -213,7 +214,7 @@ def sha256(path):
     return h.hexdigest()
 
 
-def frozen_inputs(samples_path, manifest_path, media_dirs, scored_events=SCORED_EVENTS):
+def frozen_inputs(samples_path, manifest_path, media_dirs):
     """Verify the reviewed answers and exact media before any paid request."""
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("status") != "human_reviewed":
@@ -221,10 +222,10 @@ def frozen_inputs(samples_path, manifest_path, media_dirs, scored_events=SCORED_
     if sha256(samples_path) != manifest.get("samples_json_sha256"):
         raise ValueError("samples.json does not match the frozen manifest")
     samples = [s for s in json.loads(samples_path.read_text(encoding="utf-8"))["samples"]
-               if s["event"] in scored_events]
+               if s["event"] in SCORED_EVENTS]
     if not samples or len({s["number"] for s in samples}) != len(samples):
         raise ValueError("samples must contain unique scored question numbers")
-    frozen = {row["number"]: row for row in manifest["files"] if row["event"] in scored_events}
+    frozen = {row["number"]: row for row in manifest["files"] if row["event"] in SCORED_EVENTS}
     if set(frozen) != {s["number"] for s in samples}:
         raise ValueError("scored questions do not match the manifest")
     wanted = {s["filename"] for s in samples}
@@ -255,9 +256,9 @@ def frozen_inputs(samples_path, manifest_path, media_dirs, scored_events=SCORED_
 
 
 def provisional_inputs(samples_path, media_dirs, scored_events):
-    """Draft/unfrozen loader: no manifest, no checksum match. Still requires binary
-    (yes/no) answers and that every referenced clip exists. Used for provisional runs
-    such as the 120 set while its GT is under review (`--provisional`)."""
+    """Unreviewed base-4 diagnostics, never frozen v2 or threshold evidence."""
+    if not scored_events or not set(scored_events) <= set(SCORED_EVENTS):
+        raise ValueError("provisional diagnostics support only binary base-4 events")
     data = json.loads(samples_path.read_text(encoding="utf-8"))
     samples = [s for s in data["samples"] if s["event"] in scored_events]
     if not samples or len({s["number"] for s in samples}) != len(samples):
@@ -274,7 +275,7 @@ def provisional_inputs(samples_path, media_dirs, scored_events):
     hashes = {}
     for sample in samples:
         if sample["proposed_answer"] not in {"yes", "no"}:
-            raise ValueError("answer must be yes/no (collapse unknown first): #%s" % sample["number"])
+            raise ValueError("non-binary answer requires a separate scoring protocol: #%s" % sample["number"])
         if not question_core(sample["question"]):
             raise ValueError("empty question core: #%s" % sample["number"])
         fn = sample["filename"]
@@ -291,7 +292,7 @@ def main():
     ap.add_argument("--model", help="explicit model id (with --backend)")
     ap.add_argument("--backend", choices=["language", "decision"], help="explicit backend class")
     ap.add_argument("--samples", type=Path, required=True)
-    ap.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    ap.add_argument("--manifest", type=Path, help="reviewed frozen manifest (default: datasets/manifest_50.json)")
     ap.add_argument("--media", type=Path, nargs="+", required=True,
                     help="one or more dirs holding the clips; searched by filename "
                          "(the dataset may be split across folders)")
@@ -305,13 +306,14 @@ def main():
     ap.add_argument("--dense", action="store_true",
                     help="ignore --interval; use the capped dense rule "
                          "(max 14 uniform frames) instead of 1 fps")
-    ap.add_argument("--checksums", action="store_true", help="compatibility flag; checksums are always verified")
+    ap.add_argument("--checksums", action="store_true",
+                    help="compatibility flag; frozen mode verifies hashes, provisional mode only records them")
     ap.add_argument("--out", type=Path, help="write full result JSON here")
-    ap.add_argument("--events", nargs="+", choices=SCORED_EVENTS + BAG_EVENTS,
-                    help="scored event set; default = frozen base-4. Pass bag events for the 120 set.")
+    ap.add_argument("--events", nargs="+", choices=SCORED_EVENTS,
+                    help="base-4 event filter for provisional diagnostics; bag/unknown scoring is unsupported")
     ap.add_argument("--provisional", action="store_true",
                     help="draft/unfrozen run: skip the manifest+checksum freeze (GT under review). "
-                         "Records frozen=false in the output.")
+                         "Uses the separate base4-provisional-v1 protocol, ineligible for v2 calibration.")
     a = ap.parse_args()
     if a.workers < 1 or not math.isfinite(a.interval) or a.interval <= 0:
         ap.error("workers and interval must be positive; interval must be finite")
@@ -327,11 +329,20 @@ def main():
 
     interval = None if a.dense else a.interval  # None -> dense rule
     scored = list(a.events) if a.events else list(SCORED_EVENTS)
+    if len(set(scored)) != len(scored):
+        ap.error("--events must not contain duplicates")
+    if a.provisional and a.manifest is not None:
+        ap.error("--manifest cannot be combined with --provisional; use frozen mode to verify it")
+    if not a.provisional and set(scored) != set(SCORED_EVENTS):
+        ap.error("frozen v2 requires the complete base-4 event set; filters require --provisional")
+    if not a.provisional:
+        a.manifest = a.manifest or DEFAULT_MANIFEST
+        scored = list(SCORED_EVENTS)
     try:
         if a.provisional:
             samples, media_index, hashes = provisional_inputs(a.samples, a.media, scored)
         else:
-            samples, media_index, hashes = frozen_inputs(a.samples, a.manifest, a.media, scored)
+            samples, media_index, hashes = frozen_inputs(a.samples, a.manifest, a.media)
     except (OSError, ValueError, KeyError, TypeError) as error:
         ap.error(str(error))
     key = load_key(a.env_file)
@@ -356,6 +367,8 @@ def main():
         oc += r["correct"]; ot += 1
 
     samp = "dense(≤14)" if interval is None else f"{interval}s (~{1/interval:.3g}fps)"
+    if a.provisional:
+        print("PROVISIONAL: unreviewed base-4 diagnostics; not frozen v2 or calibration evidence")
     print(f"\n=== {a.candidate or model}  (backend={backend}, gate={GATE}, sampling={samp}) ===")
     print(f"{'event':8s} {'acc':>7s} {'TP':>4s} {'FN':>4s} {'TN':>4s} {'FP':>4s} {'err':>4s}  specificity")
     for ev in scored:
@@ -366,14 +379,15 @@ def main():
     print(f"OVERALL {oc}/{ot} = {100*oc/ot:.1f}%" if ot else "OVERALL n/a")
 
     out = {
-        "spec_version": SPEC_VERSION,
+        "spec_version": "base4-provisional-v1" if a.provisional else SPEC_VERSION,
         "score_precision": "lossless",
         "frozen": not a.provisional,
+        "provisional": a.provisional,
         "scored_events": scored,
         "samples_json_sha256": sha256(a.samples),
         "manifest_sha256": None if a.provisional else sha256(a.manifest),
         "runner_sha256": sha256(Path(__file__)),
-        "spec_sha256": sha256(Path(__file__).with_name("SPEC.md")),
+        "spec_sha256": sha256(Path(__file__).with_name("PROVISIONAL.md" if a.provisional else "SPEC.md")),
         "run_at": datetime.now(timezone.utc).isoformat(),
         "candidate": a.candidate, "model": model, "backend": backend,
         "config": {"gate": GATE, "sampling": samp, "interval": interval,
