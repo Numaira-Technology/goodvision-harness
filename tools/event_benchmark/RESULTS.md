@@ -63,6 +63,19 @@
 
 - 本集 smoking/weapon 有负例（不同于 50 片全阳性），可算误报；luna fall 误报偏多（FP7）。
 
+## Bag 存档：未审阅的二值实验，不是 v2 或三值任务验收
+
+`results/{gemini,luna,maverick,qwen-235b}_bag.json` 保留原始字节。虽然文件写有
+`spec_version=v2`，它们同时记录 `frozen=false`、`manifest_sha256=null` 和 8 次尝试，
+且没有 lossless 标记；因此不符合冻结 v2 的 3 次总尝试和已审阅输入要求。
+每份包含 20 题 / 10 视频，使用二值预测，不能验证 bag 的 yes/no/unknown 契约。
+不要据此合并成已验收的 120 题结果，也不要事后补写 provenance 或精度标记。
+
+当前 runner 对 bag/unknown 评分关闭，等待单独审阅的三值回答、聚合与指标协议。
+新的 `--provisional` 只支持 base-4 诊断，输出独立的
+[`base4-provisional-v1`](PROVISIONAL.md) 版本和显式未冻结标记；仍不能解除已审阅
+validation/media/source-group 清单与新鲜兼容 lossless v2 证据的验收阻塞。
+
 ## luna 阈值调参（held-out 24 验证集，SPEC §5/§8 脚注）
 
 **只调 decision 类（luna）**；qwen/gemini 输出硬 0/1，阈值无意义。历史拟定验证集有 24 片，但实际只对 22 个可用分数选阈（并列最优网格点的中位数），随后对历史 test 分数做算术比较。该流程未完成 v2 冻结与评分资格校验。主表仍冻结在 gate=0.5，本节为脚注、不替换主表。

@@ -9,6 +9,11 @@
 - **git(本目录的 manifest)**:钉死内容。这才是权威冻结物。
 - **run_eval.py**:v2 跑分前强制校验 manifest、samples.json 与每片 SHA，并将指纹写入结果。`--checksums` 仅保留为兼容参数。待审 draft manifest 不能用于正式跑分。
 
+`--provisional` 仅提供 base-4 二值诊断，使用独立的
+[`base4-provisional-v1`](../PROVISIONAL.md) 协议；可用 `--events` 筛选 base-4 事件。
+此模式只记录输入指纹，不验证已审阅 manifest，不能与 `--manifest` 同用，也不能用于 v2
+调阈或正式比较。bag 的 yes/no/unknown 任务仍不支持；不得把 unknown 改成 no 来绕过。
+
 ## manifest 内容
 
 `manifest_<name>.json` 每条:`filename` · `sha256` · `event` · `question` · `proposed_answer` ·

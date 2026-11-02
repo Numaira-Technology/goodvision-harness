@@ -136,7 +136,13 @@ def test_request_envelope_matches_canonical_runner(monkeypatch, backend):
     )
     url, body = latency.build_body(backend, "model", "image")
     assert captured == [(url, body, "synthetic-key")]
-    assert set(latency.CANDIDATES) == {"qwen", "gemini", "luna"}
+    assert latency.CANDIDATES == {
+        "qwen": ("qwen/qwen3-vl-8b-instruct", "language"),
+        "gemini": ("google/gemini-2.5-flash", "language"),
+        "luna": ("openai/gpt-6-luna-decisions", "decision"),
+        "qwen-235b": ("qwen/qwen3-vl-235b-a22b-instruct", "language"),
+        "maverick": ("meta-llama/llama-4-maverick", "language"),
+    }
 
 
 def test_failures_remain_in_attempt_counts_but_not_conditional_percentiles():

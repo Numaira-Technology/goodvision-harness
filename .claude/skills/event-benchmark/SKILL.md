@@ -63,6 +63,11 @@ use the user's authorized scope and budget.
   itself change the sampling spec; rerun every compared candidate on the same set.
 - Provisional labels may be described as historical/exploratory evidence only, never
   as reviewed v2 results. No new official run until the manifest is reviewed.
+  Explicitly authorized `--provisional` diagnostics use `base4-provisional-v1`
+  (`tools/event_benchmark/PROVISIONAL.md`), support only binary base-4 questions,
+  and record rather than verify input hashes. They cannot be used for v2 tuning.
+  Bag yes/no/unknown questions require a separate reviewed scoring protocol;
+  never collapse unknown into no or remove the third answer to fit this runner.
 - No negatives means specificity unavailable, not zero false positives.
 
 ## Other model classes
