@@ -442,15 +442,69 @@ class _PPE:
             "assessment_seconds": time.perf_counter() - started,
         }
 
+    def _assess_chunk(self, tasks, *, scene):
+        # Model inputs can be much larger than their crops. Keep only one
+        # inference chunk prepared, even for crowded multi-frame windows.
+        chunk = []
+        for task in tasks:
+            frame, _row, image, _scene = task
+            try:
+                if isinstance(image, Exception):
+                    raise image
+                prepared = self._prepare_score(image, frame["source_time"], scene=scene)
+            except Exception as error:
+                self._store_score(task, error)
+                continue
+            chunk.append((task, prepared))
+        if not chunk:
+            return
+        pending, shared, interruption = set(range(len(chunk))), None, None
+
+        def interrupted():
+            return shared is not None
+
+        try:
+            for index, result in self._predict_scores(
+                [prepared for _task, prepared in chunk], scene=scene,
+                interrupted=interrupted,
+            ):
+                if type(index) is not int or not 0 <= index < len(chunk):
+                    raise ValueError("invalid PPE batch outcome index")
+                if index not in pending:
+                    continue
+                pending.remove(index)
+                try:
+                    self._store_score(chunk[index][0], result, recover=shared is None)
+                except Exception as error:
+                    # Drain this already-started batch's CPU outcomes without
+                    # another recovery or any new inference.
+                    shared = shared or error
+        except Exception as error:
+            interruption = error
+            if shared is None:
+                try:
+                    self._error(error)
+                except Exception as failure:
+                    shared = failure
+        for index in sorted(pending):
+            error = RuntimeError(
+                "PPE batch interrupted before this item's outcome"
+                + (f": {interruption or shared}" if interruption or shared else "")
+            )
+            self._store_score(chunk[index][0], error, recover=False)
+        if shared is not None:
+            raise shared
+
     def _assess_batched_frames(self, images, frame_times):
-        frames, starts, tasks = [], [], []
+        frames, starts = [], []
+        groups = {True: [], False: []}
         try:
             for image, source_time in zip(images, frame_times, strict=True):
                 started = time.perf_counter()
                 try:
                     if isinstance(image, Exception):
                         raise image
-                    frame, pending = self._prepare_frame(image, source_time)
+                    frame, tasks = self._prepare_frame(image, source_time)
                 except Exception as error:
                     frame = {
                         "detected": None,
@@ -459,60 +513,22 @@ class _PPE:
                         "reason": "frame_assessment_failed",
                         "error": self._error(error),
                     }
-                    pending = []
+                    tasks = []
                 frames.append(frame)
                 starts.append(started)
-                tasks.extend(pending)
-            groups = {True: [], False: []}
-            for task in tasks:
-                frame, _row, image, scene = task
-                try:
-                    if isinstance(image, Exception):
-                        raise image
-                    prepared = self._prepare_score(
-                        image, frame["source_time"], scene=scene
-                    )
-                except Exception as error:
-                    self._store_score(task, error)
-                    continue
-                groups[scene].append((task, prepared))
+                for task in tasks:
+                    scene = task[3]
+                    group = groups[scene]
+                    group.append(task)
+                    if len(group) == self.batch_size:
+                        self._assess_chunk(group, scene=scene)
+                        group.clear()
+                # Retain at most a partial batch of crops per template between
+                # frames, rather than every detected crop in the whole window.
+                tasks.clear()
             for scene, group in groups.items():
-                for start in range(0, len(group), self.batch_size):
-                    chunk = group[start:start + self.batch_size]
-                    pending, shared, interruption = set(range(len(chunk))), None, None
-                    try:
-                        for index, result in self._predict_scores(
-                            [prepared for _task, prepared in chunk], scene=scene,
-                            interrupted=lambda: shared is not None,
-                        ):
-                            if type(index) is not int or not 0 <= index < len(chunk):
-                                raise ValueError("invalid PPE batch outcome index")
-                            if index not in pending:
-                                continue
-                            pending.remove(index)
-                            try:
-                                self._store_score(
-                                    chunk[index][0], result, recover=shared is None
-                                )
-                            except Exception as error:
-                                # Drain this already-started batch's CPU outcomes
-                                # without another recovery or any new inference.
-                                shared = shared or error
-                    except Exception as error:
-                        interruption = error
-                        if shared is None:
-                            try:
-                                self._error(error)
-                            except Exception as failure:
-                                shared = failure
-                    for index in sorted(pending):
-                        error = RuntimeError(
-                            "PPE batch interrupted before this item's outcome"
-                            + (f": {interruption or shared}" if interruption or shared else "")
-                        )
-                        self._store_score(chunk[index][0], error, recover=False)
-                    if shared is not None:
-                        raise shared
+                self._assess_chunk(group, scene=scene)
+                group.clear()
         except Exception as error:
             # Preserve all received CPU observations, including earlier people
             # in the current frame, before entering the shared CUDA error path.
@@ -523,7 +539,8 @@ class _PPE:
             error.ppe_observation = {
                 **failed_observation(error),
                 "frames": frames,
-                "detected": True if any(row["detected"] is True for row in frames) else None,
+                "detected": True
+                if any(row["detected"] is True for row in frames) else None,
             }
             raise
         return [
@@ -610,7 +627,9 @@ class VideoJevPPE(_PPE):
     def __init__(self, runtime, *, batch_size=4, always_scene=False):
         from .vlm_questions import QuestionTemplate
 
-        super().__init__(runtime.torch, batch_size=batch_size, always_scene=always_scene)
+        super().__init__(
+            runtime.torch, batch_size=batch_size, always_scene=always_scene
+        )
         self.runtime = runtime
         queries = {
             "presence": "Which human-presence observation is supported by this image?",
@@ -734,7 +753,9 @@ class ClipPPE(_PPE):
     """Fixed attributes and unknown classes; scores are not probabilities."""
 
     def __init__(self, encoder, *, batch_size=4, always_scene=False):
-        super().__init__(encoder.torch, batch_size=batch_size, always_scene=always_scene)
+        super().__init__(
+            encoder.torch, batch_size=batch_size, always_scene=always_scene
+        )
         self.encoder, self.text_features, self.state_features = encoder, None, None
         self.keys, self.slices, self.texts = [], [], []
         for attribute, states in _CLIP_TEXTS.items():
@@ -794,7 +815,9 @@ class ClipPPE(_PPE):
             return
         for index in range(len(prepared)):
             try:
-                result = self._format_score(scores[index], individual[index], scene=scene)
+                result = self._format_score(
+                    scores[index], individual[index], scene=scene
+                )
             except Exception as error:
                 result = error
             yield index, result
