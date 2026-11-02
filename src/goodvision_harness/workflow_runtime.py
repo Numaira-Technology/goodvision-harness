@@ -820,8 +820,10 @@ class WorkflowRuntimeMixin:
             ]
         return result
 
-    def _workflow_native_event_test(self, plan, connection, snapshot, context, preview_frames):
-        """Run the existing native inspector on distinct, already-captured preview frames."""
+    def _workflow_native_event_test(
+        self, plan, connection, snapshot, context, preview_frames,
+    ):
+        """Run the native inspector on distinct captured preview frames."""
         from .model_api import ModelAPISettings
         from .neural_model import NeuralInspector
         from .runtime.scene import TemporalInspection
@@ -843,7 +845,9 @@ class WorkflowRuntimeMixin:
             status = connection.status()
             if (not status.get("connected")
                     or status.get("connection_id") != snapshot.connection_id):
-                raise RuntimeError("The preview connection changed; retry the workflow test.")
+                raise RuntimeError(
+                    "The preview connection changed; retry the workflow test."
+                )
             candidates = {
                 sequence: (sequence, timestamp, jpeg)
                 for sequence, timestamp, _width, _height, jpeg in preview_frames
@@ -858,7 +862,8 @@ class WorkflowRuntimeMixin:
             if not candidates:
                 result["note"] = (
                     "Only one distinct preview frame is available. Start live analysis "
-                    "or wait for another source frame, then retry. No model request was sent."
+                    "or wait for another source frame, then retry. "
+                    "No model request was sent."
                 )
                 return result
             # Match the native live route's half-second context when available;
@@ -867,13 +872,15 @@ class WorkflowRuntimeMixin:
                 abs(item[1] - (snapshot.timestamp_seconds - 0.5)), -item[0],
             ))
             selected = (earlier, (
-                snapshot.source_frame_sequence, snapshot.timestamp_seconds, snapshot.jpeg_bytes,
+                snapshot.source_frame_sequence,
+                snapshot.timestamp_seconds, snapshot.jpeg_bytes,
             ))
             result["input"].update(
                 source_frame_sequences=[item[0] for item in selected],
                 source_timestamps_seconds=[item[1] for item in selected],
                 model_frame_usage=(
-                    "base labels: last preview frame; PPE derived: both supplied source frames"
+                    "base labels: last preview frame; "
+                    "PPE derived: both supplied source frames"
                     if plan["events_engine"] == "neural"
                     else "last preview frame with the earlier frame as context"
                 ),
@@ -886,12 +893,15 @@ class WorkflowRuntimeMixin:
                 return result
             endpoint = plan.get("events_service_url")
             if not endpoint:
-                raise ValueError("Configure the recognition service URL before testing.")
+                raise ValueError(
+                    "Configure the recognition service URL before testing."
+                )
             labels = tuple(label for label in plan["features"] if label != "stranger")
             delta = selected[-1][1] - selected[0][1]
             settings = ModelAPISettings(
                 provider="local", endpoint=native_endpoints(endpoint)[0],
-                timeout_seconds=self.config.runtime.scene_timeout_seconds, max_retries=0,
+                timeout_seconds=self.config.runtime.scene_timeout_seconds,
+                max_retries=0,
             )
             config = VLMProcessConfig(
                 context["stream_session_id"], self.source_id, self._generation,
@@ -907,13 +917,15 @@ class WorkflowRuntimeMixin:
             job = TemporalInspection(
                 context["stream_session_id"], self.source_id,
                 InspectionRequest(
-                    f"preview-{self._workflow_operation}", (), "workflow_preview", labels,
+                    f"preview-{self._workflow_operation}", (),
+                    "workflow_preview", labels,
                     frames[0].timestamp_seconds, frames[-1].timestamp_seconds,
                 ),
                 frames, event_sensitivities=config.sensitivities,
                 vocabulary=config.vocabulary,
             )
-            cls = NeuralInspector if plan["events_engine"] == "neural" else VideoJevInspector
+            cls = (NeuralInspector if plan["events_engine"] == "neural"
+                   else VideoJevInspector)
             inspector = cls(config)
             verdicts = inspector.inspect(job)
             result.update(
@@ -925,7 +937,8 @@ class WorkflowRuntimeMixin:
                 } for verdict in verdicts],
                 note=(
                     "Actual native recognition on the listed preview evidence. "
-                    "This does not exercise tracking, temporal confirmation or delivery."
+                    "This does not exercise tracking, "
+                    "temporal confirmation or delivery."
                 ),
             )
         except Exception as error:
@@ -1171,7 +1184,8 @@ class WorkflowRuntimeMixin:
                     "camera_id": f"camera{self._fleet_camera_index:02d}",
                     "results": results,
                     "note": (
-                        "API and face observations use the current frame; native recognition "
+                        "API and face observations use the current frame; "
+                        "native recognition "
                         "uses the listed distinct preview frames. Tracking, temporal "
                         "confirmation and delivery are exercised by live analysis."
                     ),

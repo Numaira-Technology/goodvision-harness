@@ -119,8 +119,9 @@ def test_custom_events_do_not_bypass_summary_credentials(rig):
         runtime.prepare_analysis()
 
 
-def test_draft_native_events_probe_selected_route_without_vlm_inference(
-    rig, monkeypatch
+@pytest.mark.parametrize("engine", ["system1", "neural"])
+def test_draft_native_events_require_two_frames_without_inference(
+    rig, monkeypatch, engine
 ):
     runtime, _, _, _ = rig
     seen = []
@@ -132,11 +133,78 @@ def test_draft_native_events_probe_selected_route_without_vlm_inference(
         lambda *a, **kw: pytest.fail("wrong event adapter"),
     )
     baseline = runtime.config
-    result = runtime.test_workflow(event_graph("neural"))["results"][0]
+    result = runtime.test_workflow(event_graph(engine))["results"][0]
     assert result["state"] == "live_analysis_required"
     assert result["observations"] == []
-    assert seen[0]["events_engine"] == "neural"
+    assert seen == []
+    assert result["input"]["source_frame_sequences"] == [1]
+    assert "No model request was sent" in result["note"]
     assert runtime.config is baseline and runtime._workflow_plan is None
+
+
+@pytest.mark.parametrize("engine", ["system1", "neural"])
+def test_native_preview_runs_inspector_with_distinct_evidence_without_live_mutation(
+    rig,
+    monkeypatch,
+    engine,
+):
+    from test_video_connection import frame, publish, wait_for
+
+    from goodvision_harness import neural_model, videojev_model
+    from goodvision_harness.videojev_contract import OPTIONS
+    from goodvision_harness.vlm_independent_model import IndependentVerdict
+
+    runtime, connection, adapter, _ = rig
+    publish(connection, adapter, frame(8))
+    wait_for(lambda: connection.display_frames()[-1][0] == 8)
+    runtime.dry_run = False
+    baseline, before_epoch = runtime.config, runtime.results.epoch
+    calls, closed = [], []
+    cls = (
+        neural_model.NeuralInspector
+        if engine == "neural"
+        else videojev_model.VideoJevInspector
+    )
+
+    class Inspector(cls):
+        def inspect(self, job):
+            # Exercise real payload validation too: IDs, times and JPEG evidence.
+            import json
+
+            payload = json.loads(self._payload(job)[0])
+            calls.append((self.config, job, payload))
+            assert payload["question_template"][0]["options"] == OPTIONS
+            return (IndependentVerdict("smoking", (), True, None, ()),)
+
+        def close(self):
+            closed.append(True)
+            super().close()
+
+    module = neural_model if engine == "neural" else videojev_model
+    monkeypatch.setattr(module, cls.__name__, Inspector)
+    monkeypatch.setattr(
+        runtime, "_workflow_event_probe", lambda _: pytest.fail("probe only")
+    )
+    result = runtime.test_workflow(event_graph(engine))
+    event = result["results"][0]
+    assert event["state"] == "completed", event
+    assert event["input"]["source_frame_sequences"] == [1, 8]
+    assert event["observations"] == [
+        {"event_label": "smoking", "detected": True, "confidence": None}
+    ]
+    cfg, job, payload = calls[0]
+    assert cfg.model == MODELS[engine] and cfg.model_settings.max_retries == 0
+    assert cfg.model_settings.endpoint == "http://127.0.0.1:8094/predict"
+    assert payload["frame_times"] == [1 / 15, 8 / 15]
+    assert len(set(payload["images"])) == 2
+    assert job.stream_session_id == result["stream_session_id"]
+    assert job.diagnostics is None and job.subject_boxes == ()
+    assert closed == [True]
+    assert runtime.config is baseline and runtime._workflow_plan is None
+    assert runtime.results.epoch == before_epoch and runtime.results.latest() is None
+    assert runtime._session is None and runtime._vlm_branch is None
+    assert not list(runtime.config.events.directory.glob("**/*"))
+    assert not runtime._processing_lifecycle_busy()
 
 
 @pytest.mark.parametrize("engine", ["system1", "neural"])

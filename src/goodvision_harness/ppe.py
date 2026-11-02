@@ -12,10 +12,10 @@ import io
 import math
 import os
 import time
+from itertools import pairwise
 from pathlib import Path
 
 from PIL import Image
-
 
 PPE_ID = "scene/ppe_violation"
 _VALUES = {
@@ -26,7 +26,8 @@ _VALUES = {
 _POLICY = (
     "Assess only visible image evidence. For this PPE task, a safety helmet and "
     "a reflective safety vest are required for every visible person, regardless "
-    "of occupation or location. An ordinary soft cap is not a safety helmet. Bright ordinary "
+    "of occupation or location. An ordinary soft cap is not a safety helmet. "
+    "Bright ordinary "
     "clothing alone is not a reflective safety vest. Clipping, occlusion, "
     "distance or blur never establishes missing equipment. A hand or arm is a "
     "visible body part but does not establish head or torso equipment status. "
@@ -38,19 +39,23 @@ _POLICY = (
 _OPTIONS = {
     "presence": (
         "A. A person or a human body part is visibly present.",
-        "B. Only objects and background are visible; no person or human body part is visible.",
+        "B. Only objects and background are visible; "
+        "no person or human body part is visible.",
         "C. The image does not establish whether a person or body part is visible.",
     ),
     "helmet": (
-        "A. The visible person's head is assessable and clearly uncovered or wearing an ordinary soft cap.",
-        "B. The visible person's head is assessable and clearly wearing a hard safety helmet.",
+        "A. The visible person's head is assessable and clearly uncovered "
+        "or wearing an ordinary soft cap.",
+        "B. The visible person's head is assessable and clearly wearing "
+        "a hard safety helmet.",
         "C. The person's head or helmet status cannot be assessed from this image.",
     ),
     "vest": (
         "A. A clearly visible chest or back region shows ordinary clothing or bare "
         "torso, and clearly lacks a reflective safety vest. Hands, arms, sleeves, "
         "or a narrow body edge alone do not support this answer.",
-        "B. A reflective safety vest is clearly visible on this person's chest or back.",
+        "B. A reflective safety vest is clearly visible "
+        "on this person's chest or back.",
         "C. The chest or back area needed to judge the vest is not clearly visible. "
         "Only hands, arms, sleeves, a narrow body edge, or an obscured torso are "
         "insufficient to determine the vest status.",
@@ -90,7 +95,8 @@ _CLIP_TEXTS = {
     "vest": {
         "missing": (
             "A person's visible chest and upper body in a plain T-shirt.",
-            "A clearly visible chest or back wearing an ordinary shirt, jacket, or coveralls.",
+            "A clearly visible chest or back wearing "
+            "an ordinary shirt, jacket, or coveralls.",
             "A person's bare chest or back.",
         ),
         "worn": (
@@ -101,15 +107,19 @@ _CLIP_TEXTS = {
             "A person with the torso outside the picture.",
             "A person's torso hidden behind objects.",
             "A distant blurry upper body.",
-            "A close-up of hands and shirt sleeves, with the chest and back outside the picture.",
-            "An arm and a narrow edge of clothing, while the person's chest and back are hidden.",
+            "A close-up of hands and shirt sleeves, "
+            "with the chest and back outside the picture.",
+            "An arm and a narrow edge of clothing, "
+            "while the person's chest and back are hidden.",
         ),
     },
 }
 
 
 def native_rows(raw):
-    return [row for group in raw for row in (group if isinstance(group, list) else [group])]
+    return [
+        row for group in raw for row in (group if isinstance(group, list) else [group])
+    ]
 
 
 def has_ppe(template):
@@ -118,8 +128,11 @@ def has_ppe(template):
 
 def failed_observation(error, *, reason="ppe_assessment_failed"):
     return {
-        "detected": None, "aggregation": "window_presence", "frames": [],
-        "reason": reason, "error": {"type": type(error).__name__, "detail": str(error)[:1200]},
+        "detected": None,
+        "aggregation": "window_presence",
+        "frames": [],
+        "reason": reason,
+        "error": {"type": type(error).__name__, "detail": str(error)[:1200]},
     }
 
 
@@ -149,11 +162,15 @@ def parse_ppe_choices(raw, expected):
         [row for row in rows if not isinstance(row, dict) or row.get("id") != PPE_ID],
         [row for row in expected if row["id"] != PPE_ID],
     )
-    ppe_rows = [row for row in rows if isinstance(row, dict) and row.get("id") == PPE_ID]
+    ppe_rows = [
+        row for row in rows if isinstance(row, dict) and row.get("id") == PPE_ID
+    ]
     derived = ppe_rows[0].get("derived") if len(ppe_rows) == 1 else None
     values[PPE_ID] = (
-        derived["detected"] if isinstance(derived, dict)
-        and "detected" in derived and type(derived["detected"]) in (bool, type(None))
+        derived["detected"]
+        if isinstance(derived, dict)
+        and "detected" in derived
+        and type(derived["detected"]) in (bool, type(None))
         else None
     )
     return values
@@ -171,7 +188,10 @@ class PPEFailure(RuntimeError):
 def shared_failure(error):
     from .videojev_service import _shared_cuda_failure
 
-    return _shared_cuda_failure(error) or getattr(error, "code", None) == "cuda_recovery_failed"
+    return (
+        _shared_cuda_failure(error)
+        or getattr(error, "code", None) == "cuda_recovery_failed"
+    )
 
 
 def _square_pad(image):
@@ -212,7 +232,9 @@ def _merge_frame(people, presence, detector_state):
     else:
         detected, reason = False, "all_detected_assessed_people_wear_both_items"
     return {
-        "detected": detected, "reason": reason, "people": people,
+        "detected": detected,
+        "reason": reason,
+        "people": people,
         "scene_presence": presence,
         "presence_basis": "fresh_person_detection" if fresh else "scene_presence",
     }
@@ -225,7 +247,10 @@ class _PPE:
     def _error(self, error):
         if shared_failure(error):
             raise error
-        if "out of memory" in str(error).lower() or type(error).__name__ == "OutOfMemoryError":
+        if (
+            "out of memory" in str(error).lower()
+            or type(error).__name__ == "OutOfMemoryError"
+        ):
             # A crop OOM is local if CUDA can still complete subsequent work.
             try:
                 self.torch.cuda.empty_cache()
@@ -243,10 +268,15 @@ class _PPE:
         if self.detector is None:
             path = os.environ.get("DETECTOR_WEIGHTS", "").strip()
             if not path:
-                directory = os.environ.get("DETECTOR_WEIGHTS_DIR", "/models").strip() or "/models"
+                directory = (
+                    os.environ.get("DETECTOR_WEIGHTS_DIR", "/models").strip()
+                    or "/models"
+                )
                 path = str(Path(directory) / "yolo26s.pt")
             if not Path(path).is_file():
-                raise FileNotFoundError(f"staged PPE person weights are unavailable: {path}")
+                raise FileNotFoundError(
+                    f"staged PPE person weights are unavailable: {path}"
+                )
             self.detector = YOLO(path)
         try:
             confidence_threshold = float(os.environ.get("DETECTOR_CONF", "0.35"))
@@ -259,8 +289,12 @@ class _PPE:
         device = os.environ.get("DETECTOR_DEVICE", "cuda").strip() or "cuda"
         bgr = np.ascontiguousarray(np.asarray(image.convert("RGB"))[:, :, ::-1])
         predictions = self.detector.predict(
-            bgr, imgsz=image_size, conf=confidence_threshold,
-            classes=[0], device=device, verbose=False,
+            bgr,
+            imgsz=image_size,
+            conf=confidence_threshold,
+            classes=[0],
+            device=device,
+            verbose=False,
         )
         first = next(iter(predictions), None)
         if first is None or first.boxes is None:
@@ -271,24 +305,36 @@ class _PPE:
             bbox = tuple(float(value) for value in box.xyxy[0].tolist())
             confidence = float(box.conf[0])
             if (
-                len(bbox) != 4 or any(not math.isfinite(value)
-                       for value in (*bbox, confidence)) or not 0 <= confidence <= 1
+                len(bbox) != 4
+                or any(not math.isfinite(value) for value in (*bbox, confidence))
+                or not 0 <= confidence <= 1
             ):
                 raise ValueError("invalid automatic person detection")
             if confidence < confidence_threshold:
                 continue
             x1, y1, x2, y2 = bbox
             if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
-                continue
+                raise ValueError("person detection is outside the source image")
             dx, dy = (x2 - x1) * 0.05, (y2 - y1) * 0.05
             crop = (
-                max(0, math.floor(x1 - dx)), max(0, math.floor(y1 - dy)),
-                min(width, math.ceil(x2 + dx)), min(height, math.ceil(y2 + dy)),
+                max(0, math.floor(x1 - dx)),
+                max(0, math.floor(y1 - dy)),
+                min(width, math.ceil(x2 + dx)),
+                min(height, math.ceil(y2 + dy)),
             )
-            people.append(({
-                "person_id": f"person{len(people) + 1:02d}", "bbox_pixels": list(bbox),
-                "crop_bbox_pixels": list(crop), "detector_confidence": float(confidence),
-            }, _square_pad(image.crop(crop))))
+            record = {
+                "person_id": f"person{len(people) + 1:02d}",
+                "bbox_pixels": list(bbox),
+                "crop_bbox_pixels": list(crop),
+                "detector_confidence": float(confidence),
+            }
+            try:
+                person_image = _square_pad(image.crop(crop))
+            except Exception as error:
+                # Keep this person's failure local so other visible people can
+                # still establish a violation in the same source frame.
+                person_image = error
+            people.append((record, person_image))
         return people
 
     def _assess_frame(self, image, source_time):
@@ -309,16 +355,25 @@ class _PPE:
         rows = []
         for record, crop in people:
             try:
+                if isinstance(crop, Exception):
+                    raise crop
                 values, raw = self._score(crop, source_time, scene=False)
                 helmet, vest, error = values["helmet"], values["vest"], None
                 person_presence = "present"
             except Exception as failure:
                 helmet = vest = "unassessable"
                 person_presence, raw, error = "unclear", None, self._error(failure)
-            row = {**record, "presence": person_presence, "helmet": helmet, "vest": vest}
+            row = {
+                **record,
+                "presence": person_presence,
+                "helmet": helmet,
+                "vest": vest,
+            }
             row["detected"] = (
-                True if person_presence == "present" and "missing" in (helmet, vest)
-                else False if person_presence == "present" and helmet == vest == "worn"
+                True
+                if person_presence == "present" and "missing" in (helmet, vest)
+                else False
+                if person_presence == "present" and helmet == vest == "worn"
                 else None
             )
             if raw is not None:
@@ -327,27 +382,37 @@ class _PPE:
                 row["error"] = error
             rows.append(row)
         return {
-            **_merge_frame(rows, presence, detector["state"]), "source_time": source_time,
-            "detector": detector, "scene_raw": scene_raw,
+            **_merge_frame(rows, presence, detector["state"]),
+            "source_time": source_time,
+            "detector": detector,
+            "scene_raw": scene_raw,
             "assessment_seconds": time.perf_counter() - started,
         }
 
     def assess(self, payloads, frame_times):
         if (
-            not 2 <= len(payloads) <= 4 or not isinstance(frame_times, (list, tuple))
+            not 2 <= len(payloads) <= 4
+            or not isinstance(frame_times, (list, tuple))
             or len(payloads) != len(frame_times)
-            or any(type(value) not in (int, float) or not math.isfinite(value) or value < 0
-                   for value in frame_times)
-            or any(right <= left for left, right in zip(frame_times, frame_times[1:]))
+            or any(
+                type(value) not in (int, float) or not math.isfinite(value) or value < 0
+                for value in frame_times
+            )
+            or any(right <= left for left, right in pairwise(frame_times))
         ):
-            raise ValueError("PPE requires distinct source frames with increasing source times")
+            raise ValueError(
+                "PPE requires distinct source frames with increasing source times"
+            )
         frames = []
         for payload, source_time in zip(payloads, frame_times, strict=True):
             try:
                 if isinstance(payload, Exception):
                     raise payload
                 with Image.open(io.BytesIO(payload)) as source:
-                    if source.format != "JPEG" or source.width * source.height > 16_000_000:
+                    if (
+                        source.format != "JPEG"
+                        or source.width * source.height > 16_000_000
+                    ):
                         raise ValueError("invalid PPE source JPEG")
                     frame = self._assess_frame(source.convert("RGB"), source_time)
             except Exception as error:
@@ -355,18 +420,30 @@ class _PPE:
                     detail = self._error(error)
                 except Exception as shared:
                     shared.ppe_observation = {
-                        **failed_observation(shared), "frames": frames,
-                        "detected": True if any(row["detected"] is True for row in frames) else None,
+                        **failed_observation(shared),
+                        "frames": frames,
+                        "detected": True
+                        if any(row["detected"] is True for row in frames)
+                        else None,
                     }
                     raise
-                frame = {"detected": None, "source_time": source_time, "people": [],
-                         "reason": "frame_assessment_failed", "error": detail}
+                frame = {
+                    "detected": None,
+                    "source_time": source_time,
+                    "people": [],
+                    "reason": "frame_assessment_failed",
+                    "error": detail,
+                }
             frames.append(frame)
         values = [row["detected"] for row in frames]
         return {
-            "detected": True if any(value is True for value in values)
-            else False if values and all(value is False for value in values) else None,
-            "aggregation": "window_presence", "frames": frames,
+            "detected": True
+            if any(value is True for value in values)
+            else False
+            if values and all(value is False for value in values)
+            else None,
+            "aggregation": "window_presence",
+            "frames": frames,
         }
 
 
@@ -378,19 +455,29 @@ class VideoJevPPE(_PPE):
         self.runtime = runtime
         queries = {
             "presence": "Which human-presence observation is supported by this image?",
-            "helmet": "For this person crop, which head-equipment observation is supported?",
-            "vest": "For this person crop, which torso-equipment observation is supported?",
+            "helmet": (
+                "For this person crop, which head-equipment observation is supported?"
+            ),
+            "vest": (
+                "For this person crop, which torso-equipment observation is supported?"
+            ),
         }
         self.templates = {}
         for scene, parts in ((True, ("presence",)), (False, ("helmet", "vest"))):
-            self.templates[scene] = QuestionTemplate(tuple({
-                "id": "ppe/" + part, "task": "choice",
-                "query_parts": (
-                    _POLICY + '\nEvidence metadata: {"source_times": ',
-                    "}\nFor this single original frame, " + queries[part],
-                ),
-                "options": list(_OPTIONS[part]),
-            } for part in parts))
+            self.templates[scene] = QuestionTemplate(
+                tuple(
+                    {
+                        "id": "ppe/" + part,
+                        "task": "choice",
+                        "query_parts": (
+                            _POLICY + '\nEvidence metadata: {"source_times": ',
+                            "}\nFor this single original frame, " + queries[part],
+                        ),
+                        "options": list(_OPTIONS[part]),
+                    }
+                    for part in parts
+                )
+            )
 
     def _score(self, image, source_time, *, scene):
         from .videojev_core import choice_indices
@@ -398,23 +485,29 @@ class VideoJevPPE(_PPE):
         template, jpeg = self.templates[scene], _jpeg(image)
         times = (source_time, source_time)
         prepared = self.runtime.prepare(
-            [jpeg, jpeg], 1.0, question_template=template, frame_times=times,
+            [jpeg, jpeg],
+            1.0,
+            question_template=template,
+            frame_times=times,
         )
         raw, timings = self.runtime.predict_prepared(
-            prepared, question_template=template, frame_times=times,
+            prepared,
+            question_template=template,
+            frame_times=times,
         )
         indices = choice_indices(native_rows(raw), template.rows)
         return {
             key.removeprefix("ppe/"): _VALUES[key.removeprefix("ppe/")][index]
             for key, index in indices.items()
         }, {
-            "raw": raw, "timings": timings,
+            "raw": raw,
+            "timings": timings,
             "input_mode": "one_source_frame_copied_twice",
         }
 
 
 class ClipPPE(_PPE):
-    """Fixed affirmative attributes with explicit unknown classes, not calibrated probabilities."""
+    """Fixed attributes and unknown classes; scores are not probabilities."""
 
     def __init__(self, encoder):
         super().__init__(encoder.torch)
@@ -432,10 +525,15 @@ class ClipPPE(_PPE):
         encoder, torch = self.encoder, self.torch
         model, device = encoder.model, next(encoder.model.parameters()).device
         inputs = encoder.processor(
-            text=self.texts, return_tensors="pt", padding=True, truncation=True,
+            text=self.texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
         )
         with torch.inference_mode():
-            pooled = model.text_model(**{key: value.to(device) for key, value in inputs.items()}).pooler_output
+            pooled = model.text_model(
+                **{key: value.to(device) for key, value in inputs.items()}
+            ).pooler_output
             features = model.text_projection(pooled)
             text_features = features / features.norm(p=2, dim=-1, keepdim=True)
             ensembles = []
@@ -449,9 +547,13 @@ class ClipPPE(_PPE):
         self._encode_text()
         encoder, torch = self.encoder, self.torch
         model, device = encoder.model, next(encoder.model.parameters()).device
-        inputs = encoder.processor(images=_square_pad(image) if scene else image, return_tensors="pt")
+        inputs = encoder.processor(
+            images=_square_pad(image) if scene else image, return_tensors="pt"
+        )
         with torch.inference_mode():
-            pooled = model.vision_model(pixel_values=inputs["pixel_values"].to(device)).pooler_output
+            pooled = model.vision_model(
+                pixel_values=inputs["pixel_values"].to(device)
+            ).pooler_output
             features = model.visual_projection(pooled)
             features = features / features.norm(p=2, dim=-1, keepdim=True)
             scores = (features @ self.state_features.t())[0].float().cpu().tolist()
@@ -459,9 +561,10 @@ class ClipPPE(_PPE):
         if any(not math.isfinite(value) for value in (*scores, *individual)):
             raise ValueError("nonfinite CLIP PPE cosine")
         values, raw = {}, {}
-        for attribute in (("presence",) if scene else ("helmet", "vest")):
+        for attribute in ("presence",) if scene else ("helmet", "vest"):
             state_scores = {
-                state: scores[index] for index, (part, state) in enumerate(self.keys)
+                state: scores[index]
+                for index, (part, state) in enumerate(self.keys)
                 if part == attribute
             }
             ordered = sorted(state_scores, key=state_scores.get, reverse=True)
@@ -470,10 +573,14 @@ class ClipPPE(_PPE):
                 ("unclear" if scene else "unassessable") if gap <= 0 else ordered[0]
             )
             raw[attribute] = {
-                "cosine": state_scores, "winning_class": ordered[0], "cosine_gap": gap,
+                "cosine": state_scores,
+                "winning_class": ordered[0],
+                "cosine_gap": gap,
                 "text_cosine": {
                     state: individual[start:end]
-                    for (part, state), (start, end) in zip(self.keys, self.slices, strict=True)
+                    for (part, state), (start, end) in zip(
+                        self.keys, self.slices, strict=True
+                    )
                     if part == attribute
                 },
             }

@@ -571,7 +571,8 @@ class Scorer:
             exc.code if isinstance(exc, WindowError) else "window_failed",
             f"{type(exc).__name__}: {exc}", raw=raw, timings=timings,
         )
-        if _shared_cuda_failure(exc) or getattr(exc, "code", None) == "cuda_recovery_failed":
+        if (_shared_cuda_failure(exc)
+                or getattr(exc, "code", None) == "cuda_recovery_failed"):
             error.code = "cuda_shared_failure"
             self._stop_shared(error)
         elif "out of memory" in str(exc).lower() or type(exc).__name__ == "OutOfMemoryError":

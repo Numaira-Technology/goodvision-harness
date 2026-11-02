@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 from dataclasses import replace
+from threading import Event
 
 import httpx
 import pytest
@@ -107,3 +108,92 @@ def test_inspector_performs_real_asgi_inference_with_exact_predict_endpoint():
         assert inspector.last_http_timing["http_status"] == 200
     finally:
         inspector.close()
+
+
+def test_base_cuda_failure_closes_shared_admission():
+    _, payload, _ = client_and_request()
+    calls = []
+
+    class Failed:
+        def scores(self, *args):
+            calls.append(True)
+            raise RuntimeError("CUDA error: illegal memory access")
+
+    with TestClient(create_app(Failed()), raise_server_exceptions=False) as client:
+        response = client.post("/predict", json=payload)
+        assert response.status_code == 503
+        assert response.json()["error"] == "cuda_shared_failure"
+        assert client.get("/health").json()["ready"] is False
+        assert client.post("/predict", json=payload).status_code == 503
+    assert calls == [True]
+
+
+def test_ppe_is_derived_from_both_frames_and_local_failures_keep_other_labels(
+    monkeypatch,
+):
+    from goodvision_harness import ppe
+
+    inspector, payload, expected = client_and_request()
+    payload["question_template"][1]["id"] = "scene/ppe_violation"
+    expected[1]["id"] = "scene/ppe_violation"
+    observed = []
+
+    class Scores:
+        def scores(self, image, labels):
+            return [[0.9, 0.1], [float("nan"), 0.1]]
+
+    class PPE:
+        def __init__(self, encoder):
+            pass
+
+        def assess(self, sources, times):
+            observed.append((sources, times))
+            raise ValueError("local crop failure")
+
+    monkeypatch.setattr(ppe, "ClipPPE", PPE)
+    with TestClient(create_app(Scores())) as client:
+        response = client.post("/predict", json=payload)
+        assert response.status_code == 200
+        assert client.get("/health").json()["ready"] is True
+    raw = response.json()["raw"]
+    assert raw[1]["pair_scores"] == ["nan", 0.1]
+    assert raw[1]["derived"]["detected"] is None
+    assert observed == [
+        ([base64.b64decode(x) for x in payload["images"]], payload["frame_times"])
+    ]
+    assert [
+        v.detected
+        for v in inspector._decode(
+            response.json(),
+            expected,
+            ("smoking", "ppe_violation"),
+        )
+    ] == [True, None]
+
+
+def test_cancelled_request_keeps_gpu_lock_until_worker_finishes():
+    _, payload, _ = client_and_request()
+    entered, release = Event(), Event()
+
+    class Blocking(Encoder):
+        def scores(self, *args):
+            entered.set()
+            assert release.wait(5)
+            return super().scores(*args)
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app(Blocking())),
+            base_url="http://offline.test",
+        ) as client:
+            first = asyncio.create_task(client.post("/predict", json=payload))
+            try:
+                assert await asyncio.to_thread(entered.wait, 3)
+                first.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await first
+                assert (await client.post("/predict", json=payload)).status_code == 429
+            finally:
+                release.set()
+
+    asyncio.run(run())

@@ -170,7 +170,11 @@ class VideoJevRuntime(NativeVideoJevModel):
 
     def _append_ppe(self, raw, timings, prepared):
         from .ppe import (
-            PPEFailure, VideoJevPPE, attach_observation, failed_observation, has_ppe,
+            PPEFailure,
+            VideoJevPPE,
+            attach_observation,
+            failed_observation,
+            has_ppe,
             shared_failure,
         )
 
@@ -179,10 +183,14 @@ class VideoJevRuntime(NativeVideoJevModel):
         started = time.perf_counter()
         try:
             if not prepared.source_payloads:
-                raise ValueError("PPE source JPEGs were not retained during preparation")
+                raise ValueError(
+                    "PPE source JPEGs were not retained during preparation"
+                )
             if self._ppe is None:
                 self._ppe = VideoJevPPE(self)
-            observation = self._ppe.assess(prepared.source_payloads, prepared.frame_times)
+            observation = self._ppe.assess(
+                prepared.source_payloads, prepared.frame_times,
+            )
         except Exception as error:
             observation = getattr(error, "ppe_observation", failed_observation(error))
             if shared_failure(error):
@@ -478,8 +486,10 @@ class VideoJevRuntime(NativeVideoJevModel):
             except Exception as exc:
                 from .ppe import attach_observation, failed_observation, has_ppe
 
-                for other_index, other_result, other_prepared in outcomes[position + 1:]:
-                    if not isinstance(other_result, Exception) and has_ppe(other_prepared.question_template):
+                remaining = outcomes[position + 1:]
+                for other_index, other_result, other_prepared in remaining:
+                    if (not isinstance(other_result, Exception)
+                            and has_ppe(other_prepared.question_template)):
                         attach_observation(other_result[0], failed_observation(
                             exc, reason="ppe_not_run_after_shared_cuda_failure",
                         ))

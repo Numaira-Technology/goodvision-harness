@@ -157,7 +157,9 @@ def create_app(encoder):
                     try:
                         if (
                             len(pair) != 2
-                            or any(not math.isfinite(p) or not 0 <= p <= 1 for p in pair)
+                            or any(
+                                not math.isfinite(p) or not 0 <= p <= 1 for p in pair
+                            )
                             or abs(sum(pair) - 1) > 1e-5
                         ):
                             raise ValueError("invalid model scores")
@@ -166,12 +168,18 @@ def create_app(encoder):
                             raise
                         from .videojev_service import _json_safe
 
-                        rows.append({
-                            "id": question["id"], "task": "choice",
-                            "pair_scores": _json_safe(pair),
-                            "prompts": list(PROMPTS["ppe_violation"]),
-                            "error": {"type": type(error).__name__, "detail": str(error)},
-                        })
+                        rows.append(
+                            {
+                                "id": question["id"],
+                                "task": "choice",
+                                "pair_scores": _json_safe(pair),
+                                "prompts": list(PROMPTS["ppe_violation"]),
+                                "error": {
+                                    "type": type(error).__name__,
+                                    "detail": str(error),
+                                },
+                            }
+                        )
                         continue
                     index = 0 if pair[0] > pair[1] else 1
                     rows.append(
@@ -191,7 +199,10 @@ def create_app(encoder):
                 }
                 if "ppe_violation" in labels:
                     from .ppe import (
-                        ClipPPE, attach_observation, failed_observation, shared_failure,
+                        ClipPPE,
+                        attach_observation,
+                        failed_observation,
+                        shared_failure,
                     )
 
                     started = time.perf_counter()
@@ -206,17 +217,41 @@ def create_app(encoder):
                                 sources.append(error)
                         observation = ppe.assess(sources, payload.get("frame_times"))
                     except Exception as error:
-                        observation = getattr(error, "ppe_observation", failed_observation(error))
+                        observation = getattr(
+                            error, "ppe_observation", failed_observation(error)
+                        )
                         if shared_failure(error):
-                            shared_error = observation.get("error") or failed_observation(error)["error"]
+                            shared_error = (
+                                observation.get("error")
+                                or failed_observation(error)["error"]
+                            )
                     attach_observation(rows, observation)
                     response["timings"]["ppe_seconds"] = time.perf_counter() - started
                     if shared_error is not None:
-                        response.update(error="cuda_shared_failure", detail=shared_error["detail"])
+                        response.update(
+                            error="cuda_shared_failure", detail=shared_error["detail"]
+                        )
                         return JSONResponse(status_code=503, content=response)
                 return response
             except (TypeError, ValueError):
                 raise HTTPException(503, "recognition could not complete") from None
+            except Exception as error:
+                from .ppe import failed_observation, shared_failure
+
+                # The base classifier uses the same CUDA context as PPE. A
+                # poisoned context must close admission regardless of which
+                # forward encountered it first.
+                if shared_failure(error):
+                    shared_error = failed_observation(error)["error"]
+                    return JSONResponse(
+                        status_code=503,
+                        content={
+                            "request_id": payload["request_id"],
+                            "error": "cuda_shared_failure",
+                            "detail": shared_error["detail"],
+                        },
+                    )
+                raise
             finally:
                 lock.release()
 
