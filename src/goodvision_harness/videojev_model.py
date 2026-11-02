@@ -20,12 +20,12 @@ from .diagnostics import note
 from .model_api import ModelAPIError
 from .scene_inspection import _validate_job
 from .scene_model import _json
-from .videojev_contract import MODEL, parse_choices, scene_question_template
+from .videojev_contract import MODEL, scene_question_template
 from .video_to_stream import encode_jpeg
 from .vlm_independent_model import IndependentVerdict
 from .vlm_transport import create_vlm_http_client
 
-_MAX_RESPONSE_BYTES = 256 * 1024
+_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 _MAX_REQUEST_BYTES = 23 * 1024 * 1024
 NATIVE_SHARED_ERRORS = frozenset((
     "cuda_shared_failure", "cuda_recovery_failed", "result_log_failure",
@@ -39,6 +39,7 @@ _NATIVE_SERVICE_ERRORS = NATIVE_SHARED_ERRORS | frozenset((
 ))
 _SERVICE_METRICS = frozenset((
     "preprocess_seconds", "visual_encode_seconds", "decision_seconds",
+    "ppe_seconds",
     "model_pipeline_seconds", "gpu_pipeline_seconds", "server_queue_seconds",
     "cpu_queue_seconds", "gpu_queue_seconds", "server_preprocess_seconds",
     "server_gpu_seconds", "server_elapsed_seconds", "peak_allocated_bytes", "peak_reserved_bytes",
@@ -155,7 +156,9 @@ class VideoJevInspector:
         return body, self._expected
 
     def _decode(self, response, expected, labels):
-        values = parse_choices(response.get("raw"), expected)
+        from .ppe import parse_ppe_choices
+
+        values = parse_ppe_choices(response.get("raw"), expected)
         self.last_response_diagnostics = {
             "choices_count": len(expected), "model_match": "unreported",
         }
