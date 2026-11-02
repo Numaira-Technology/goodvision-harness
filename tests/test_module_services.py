@@ -166,11 +166,19 @@ def test_unhealthy_external_listener_never_launches_another_model(
     assert services.start("bbox")["state"] == "error"
 
 
-def test_slow_external_listener_is_not_treated_as_an_unused_port(services, monkeypatch):
+@pytest.mark.parametrize(("failure", "state"), [
+    (httpx.ReadTimeout, "starting"),
+    (httpx.ConnectTimeout, "starting"),
+    (httpx.RemoteProtocolError, "error"),
+    (httpx.ReadError, "error"),
+])
+def test_unresponsive_listener_is_not_treated_as_an_unused_port(
+    services, monkeypatch, failure, state
+):
     client_class = httpx.Client
 
     def timeout(request):
-        raise httpx.ReadTimeout("inference is busy", request=request)
+        raise failure("listener did not respond correctly", request=request)
 
     monkeypatch.setattr(
         module_services.httpx, "Client",
@@ -179,7 +187,16 @@ def test_slow_external_listener_is_not_treated_as_an_unused_port(services, monke
     monkeypatch.setattr(
         module_services.subprocess, "Popen", lambda *a, **k: pytest.fail("duplicate")
     )
-    assert services.start("neural")["state"] == "starting"
+    assert services.start("neural")["state"] == state
+
+
+def test_zero_port_in_local_url_is_rejected_before_spawn(services, monkeypatch):
+    monkeypatch.setenv("GOODVISION_BBOX_LOCAL_URL", "http://127.0.0.1:0")
+    monkeypatch.setattr(
+        module_services.subprocess, "Popen", lambda *a, **k: pytest.fail("invalid port")
+    )
+    with pytest.raises(ValueError, match="port"):
+        services.start("bbox")
 
 
 def test_failed_owned_process_can_be_restarted_after_listener_disappears(

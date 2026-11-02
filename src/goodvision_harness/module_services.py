@@ -123,11 +123,14 @@ class LocalModuleServices:
             # A listener answered, but it is unhealthy or not this module's API.
             # Loading another model cannot repair or replace its occupied port.
             return "error"
-        except httpx.ReadTimeout:
-            # The connection was accepted. A slow/busy worker still owns it.
+        except (httpx.ReadTimeout, httpx.ConnectTimeout):
+            # A slow worker or a full connection backlog does not prove the port
+            # is unused. Do not load another model while it may still be busy.
             return "starting"
-        except httpx.HTTPError:
+        except httpx.ConnectError:
             return "unavailable"
+        except httpx.HTTPError:
+            return "error"
 
     def status(self, engine):
         self._check_engine(engine)

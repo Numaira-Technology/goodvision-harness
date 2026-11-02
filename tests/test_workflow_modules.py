@@ -63,6 +63,7 @@ def test_alternative_engines_keep_connections_but_only_selected_engine_compiles(
         "http://host?q=1",
         "http://host/#token",
         "http://host:99999",
+        "http://host:0",
         "http://host\\path",
     ],
 )

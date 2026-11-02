@@ -87,5 +87,8 @@ def service_url(value):
     ):
         raise ValueError("Service URL must be an HTTP(S) address without credentials.")
     if value:
-        _ = parsed.port  # Validate malformed or out-of-range ports before persisting.
+        # Validate before persisting or turning a local URL into launch arguments.
+        # Port zero is for binding an ephemeral server, never a client endpoint.
+        if parsed.port == 0:
+            raise ValueError("Service URL port must be within 1..65535.")
     return value
