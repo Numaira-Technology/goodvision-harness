@@ -144,9 +144,16 @@ def test_native_http_error_preserves_valid_sibling_answers(monkeypatch):
     assert result["predictions"]["fall"]["format_state"] == "invalid"
 
 
-@pytest.mark.parametrize("status", [401, 402, 403])
+@pytest.mark.parametrize(
+    "status,classification",
+    [
+        (401, "authentication rejected"),
+        (402, "payment required"),
+        (403, "request forbidden"),
+    ],
+)
 def test_provider_rejection_stops_later_requests_even_before_body_read(
-    monkeypatch, status
+    monkeypatch, status, classification
 ):
     backend = remote()
     nested, calls = [], []
@@ -170,7 +177,8 @@ def test_provider_rejection_stops_later_requests_even_before_body_read(
     monkeypatch.setattr(backends.urllib.request, "urlopen", send)
     result = backend.predict(window())
     assert len(calls) == 1
-    assert result["shared_error"]
+    assert classification in result["shared_error"]
+    assert f"HTTP {status}" in result["shared_error"]
     assert nested[0]["predictions"]["fight"]["request_state"] == "not_sent"
 
 
@@ -206,6 +214,151 @@ def test_429_records_immediately_without_retry_and_cools_subsequent_work(
     assert waits
     assert len(calls) == 1
     assert expired["expired_before_request"]
+
+
+@pytest.mark.parametrize("retry_after,delay", [("120", 120), ("5", 60), ("nan", 60)])
+def test_close_finishes_last_429_cooldown_without_retry(
+    monkeypatch, retry_after, delay
+):
+    backend, now, calls, waits = remote(), [100.0], [], []
+    monkeypatch.setattr(backends, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    def send(*args, **kwargs):
+        calls.append(args)
+        raise urllib.error.HTTPError(
+            backend.endpoint,
+            429,
+            "rate limited",
+            {"Retry-After": retry_after},
+            io.BytesIO(b"busy"),
+        )
+
+    def wait(seconds):
+        waits.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr(backends.urllib.request, "urlopen", send)
+    monkeypatch.setattr(backend._cooldown, "wait", wait)
+    result = backend.predict(window())
+    assert result["raw"] == "busy" and not waits
+    assert result["cooldown"]["wait_completed"] is False
+    backend.close()
+    assert now[0] == pytest.approx(100 + delay)
+    assert sum(waits) == pytest.approx(delay)
+    assert len(calls) == 1
+    wait_count = len(waits)
+    backend.close()
+    assert len(waits) == wait_count  # Closing again must not restart the cooldown.
+
+
+def test_close_without_pending_cooldown_neither_waits_nor_transmits(monkeypatch):
+    backend = remote()
+    monkeypatch.setattr(backends, "time", SimpleNamespace(monotonic=lambda: 100.0))
+    monkeypatch.setattr(
+        backend._cooldown,
+        "wait",
+        lambda _: pytest.fail("no cooldown remains"),
+    )
+    backend.close()
+    backend._cooldown_until = 99.0
+    backend.close()
+
+
+def test_close_rechecks_deadline_after_spurious_wakeup_and_extension(monkeypatch):
+    backend, now, waits = remote(), [100.0], []
+    backend._cooldown_until = 100.5
+    monkeypatch.setattr(backends, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    def wait(seconds):
+        waits.append(seconds)
+        if len(waits) == 1:
+            return  # A notification alone does not complete the cooldown.
+        now[0] += seconds
+        if len(waits) == 2:
+            backend._cooldown_until = 101.25
+
+    monkeypatch.setattr(backend._cooldown, "wait", wait)
+    backend.close()
+    assert now[0] == pytest.approx(101.25)
+
+
+def test_streaming_entrypoint_saves_last_429_before_final_cooldown(
+    tmp_path, monkeypatch
+):
+    fake_video(monkeypatch, fps=10, frames=2)
+    backend, now, calls, waits = remote(), [100.0], [], []
+    output = tmp_path / "run.json"
+    records = tmp_path / "run-windows.jsonl"
+    samples = [
+        {
+            "number": 1,
+            "filename": "clip.mp4",
+            "event": "fight",
+            "question": "Fight?",
+            "proposed_answer": "no",
+        }
+    ]
+    monkeypatch.setattr(backends, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(backends, "RemoteBackend", lambda *a, **k: backend)
+    monkeypatch.setattr(run_eval, "load_key", lambda _: "")
+    monkeypatch.setattr(
+        run_eval,
+        "streaming_inputs",
+        lambda *a: (samples, {"clip.mp4": tmp_path / "clip.mp4"}, {}, []),
+    )
+
+    def send(*args, **kwargs):
+        calls.append(args)
+        raise urllib.error.HTTPError(
+            backend.endpoint,
+            429,
+            "rate limited",
+            {},
+            io.BytesIO(b"busy"),
+        )
+
+    def wait(seconds):
+        saved = json.loads(records.read_text())
+        assert saved["raw"] == "busy"
+        assert saved["http_status"] == 429
+        assert saved["predictions"]["fight"]["request_state"] == "request_failed"
+        assert not output.exists()
+        waits.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr(backends.urllib.request, "urlopen", send)
+    monkeypatch.setattr(backend._cooldown, "wait", wait)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_eval",
+            "--protocol",
+            "streaming-v3",
+            "--candidate",
+            "qwen",
+            "--samples",
+            str(tmp_path / "samples.json"),
+            "--media",
+            str(tmp_path),
+            "--out",
+            str(output),
+            "--slots",
+            "1",
+            "--workers",
+            "1",
+            "--events",
+            "fight",
+            "--interval",
+            "0.1",
+        ],
+    )
+    result = run_eval.main()
+    assert len(calls) == 1
+    assert sum(waits) == pytest.approx(60)
+    assert result["overall"]["unknown"] == 1
+    assert result["overall"]["correct"] == 0
+    assert json.loads(output.read_text())["overall"] == result["overall"]
 
 
 @pytest.mark.parametrize(
