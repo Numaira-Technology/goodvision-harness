@@ -73,13 +73,14 @@ def configuration(args, package):
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         if settings["namespace"] != namespace:
             raise ValueError("This data directory belongs to a different deployment")
-    if package:
-        settings["version"] = package["version"]
-        settings["bbox_device"] = package["bbox_device"]
+    fixed = {"version": package["version"]} if package else {}
+    if package and package["module"] == "bbox":
+        fixed["bbox_device"] = package["bbox_device"]
+    settings.update(fixed)
     for key in ("version", "bbox_device", "bind", "gpu_id", "contour_capacity"):
         value = getattr(args, key)
         if value is not None:
-            if package and key in ("version", "bbox_device") and value != package[key]:
+            if key in fixed and value != fixed[key]:
                 raise ValueError("Package version and Bbox device cannot be changed")
             settings[key] = value
     for module in spec.PORTS:
@@ -105,10 +106,40 @@ def compose_command(state, module, *arguments):
     ]
 
 
+def check_contour_model_access(path):
+    """Check the image's UID/GID without changing existing host permissions."""
+    if os.name == "nt":
+        return
+    info = path.stat()
+    required = 0o5 if path.is_dir() else 0o4
+    if info.st_uid == 10004:
+        required <<= 6
+    elif info.st_gid == 10004:
+        required <<= 3
+    if info.st_mode & required != required:
+        raise ValueError(
+            f"Contour model path requires read/traverse access for UID/GID 10004: "
+            f"{path}. Existing permissions were left unchanged."
+        )
+
+
 def initialize(state, modules):
-    state.mkdir(parents=True, exist_ok=True)
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
     for module in set(modules) & {"bbox", "system1", "contour"}:
-        (state / "models" / module).mkdir(parents=True, exist_ok=True)
+        path = state / "models" / module
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            path.mkdir()
+        except FileExistsError:
+            if not path.is_dir():
+                raise ValueError(f"Model path is not a directory: {path}") from None
+        else:
+            if module == "contour" and os.name != "nt":
+                # Only this newly created mount root is made container-readable.
+                # Its host-side state directory remains private; secrets stay 0700.
+                path.chmod(0o755)
+        if module == "contour":
+            check_contour_model_access(path)
     if "contour" in modules:
         directory = state / "secrets"
         directory.mkdir(mode=0o700, exist_ok=True)
@@ -331,6 +362,8 @@ def main(argv=None):
                 raise ValueError(
                     "Run prepare-models for Contour before starting its module"
                 )
+            if "contour" in documents:
+                check_contour_model_access(state / "models/contour/contour.pt")
             if "system1" in documents and not any(
                 (state / "models/system1/huggingface").glob(
                     "models--ZhuYuhan--VideoJev-4B/snapshots/*/config.json"

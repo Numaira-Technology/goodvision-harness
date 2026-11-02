@@ -113,6 +113,96 @@ def test_configure_persists_addresses_and_plan_has_no_side_effects(
     assert "18080:8080" in rendered["services"]["main"]["ports"][0]
 
 
+@pytest.mark.parametrize("module", ["main", "contour", "system1", "gpu-runtime"])
+def test_independent_package_preserves_existing_bbox_device(
+    tmp_path, monkeypatch, module
+):
+    root, state = tmp_path / "source", tmp_path / "state"
+    root.mkdir()
+    settings = spec.defaults(version="release1")
+    settings["bbox_device"] = "cuda"
+    deploy.write_json(state / "settings.json", settings)
+    monkeypatch.setattr(deploy, "location", lambda: (root, root))
+    monkeypatch.setattr(deploy, "read_package", lambda _: {
+        "module": module, "version": "release1", "bbox_device": "cpu", "files": {},
+    })
+    monkeypatch.setattr(deploy, "run", lambda *a, **k: pytest.fail("Docker call"))
+    assert deploy.main(["configure", "--state-dir", str(state)]) == 0
+    saved = json.loads((state / "settings.json").read_text())
+    assert saved["bbox_device"] == "cuda"
+
+
+def test_bbox_package_keeps_its_own_device_fixed(tmp_path, monkeypatch):
+    root, state = tmp_path / "source", tmp_path / "state"
+    root.mkdir()
+    monkeypatch.setattr(deploy, "location", lambda: (root, root))
+    monkeypatch.setattr(deploy, "read_package", lambda _: {
+        "module": "bbox", "version": "release1", "bbox_device": "cuda", "files": {},
+    })
+    assert deploy.main(["configure", "--state-dir", str(state)]) == 0
+    saved = (state / "settings.json").read_bytes()
+    assert json.loads(saved)["bbox_device"] == "cuda"
+    assert deploy.main([
+        "configure", "--state-dir", str(state), "--bbox-device", "cpu",
+    ]) == 1
+    assert (state / "settings.json").read_bytes() == saved
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission modes")
+@pytest.mark.parametrize("umask", [0o022, 0o077])
+def test_new_contour_model_directory_handles_restrictive_umask(tmp_path, umask):
+    state = tmp_path / "state"
+    previous = os.umask(umask)
+    try:
+        deploy.initialize(state, ["contour"])
+    finally:
+        os.umask(previous)
+    assert state.stat().st_mode & 0o777 == 0o700
+    assert (state / "models").stat().st_mode & 0o777 == 0o700
+    assert (state / "models/contour").stat().st_mode & 0o777 == 0o755
+    assert (state / "secrets").stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or getattr(os, "getuid", lambda: None)() == 10004,
+    reason="POSIX host user distinct from the container UID",
+)
+def test_existing_private_model_permissions_are_not_changed(tmp_path):
+    state = tmp_path / "state"
+    models = state / "models/contour"
+    models.mkdir(parents=True)
+    models.chmod(0o700)
+    with pytest.raises(ValueError, match="Existing permissions were left unchanged"):
+        deploy.initialize(state, ["contour"])
+    assert models.stat().st_mode & 0o777 == 0o700
+    assert not (state / "secrets").exists()
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or getattr(os, "getuid", lambda: None)() == 10004,
+    reason="POSIX host user distinct from the container UID",
+)
+def test_unreadable_contour_checkpoint_prevents_start_without_chmod(
+    tmp_path, monkeypatch
+):
+    state = tmp_path / "state"
+    deploy.initialize(state, ["contour"])
+    checkpoint = state / "models/contour/contour.pt"
+    checkpoint.write_bytes(b"fixture")
+    checkpoint.chmod(0o600)
+    calls = []
+    monkeypatch.setattr(deploy, "location", lambda: (tmp_path, tmp_path))
+    monkeypatch.setattr(deploy, "run", lambda command, **kw: calls.append(command))
+    monkeypatch.setattr(
+        deploy, "ensure_network", lambda *_: pytest.fail("network mutation")
+    )
+    assert deploy.main([
+        "up", "--modules", "contour", "--state-dir", str(state),
+    ]) == 1
+    assert checkpoint.stat().st_mode & 0o777 == 0o600
+    assert not any("up" in command for command in calls)
+
+
 def test_group_start_waits_for_workers_and_stop_preserves_other_projects(
     tmp_path, monkeypatch
 ):

@@ -34,6 +34,9 @@ python tools/deploy_modules.py plan --modules main contour bbox system1 --bbox-d
 和宿主机端口。默认状态目录是用户目录下的 `.goodvision/docker/<namespace>`。
 使用 `--state-dir` 时，同一套安装的各模块须指定相同的绝对目录。
 目录内保存安装设置、各模块 Compose 文件、模型和 Contour 密钥；不要提交到 Git。
+新建状态目录仅供当前用户访问；新建的 Contour 模型挂载目录允许容器 UID/GID 10004
+读取和进入，密钥目录保持私有。已有模型目录和文件的权限不会自动修改；若容器不能
+读取，安装器会报错，需由目录所有者明确配置所需访问权限后继续。
 
 ## 在有 Docker 的安装主机执行
 
