@@ -14,6 +14,46 @@ from goodvision_harness.service import HarnessRuntime, MissingAPIKeyError
 from goodvision_harness.video_to_stream import LiveFrame
 
 
+def test_app_routes_its_own_camera_to_internal_listener(rig, monkeypatch):
+    from fastapi.testclient import TestClient
+    from starlette.requests import Request
+
+    from goodvision_harness.local_camera import CameraPublication
+    from goodvision_harness.service import create_app
+
+    adapters = []
+
+    def make_adapter(url, **kwargs):
+        adapter = ControlledAdapter(url, **kwargs)
+        adapters.append(adapter)
+        return adapter
+
+    monkeypatch.setattr(video_connection, "NetworkStreamAdapter", make_adapter)
+    runtime = rig.make()
+    with TestClient(create_app(lambda: runtime)) as client:
+        cameras = client.app.state.local_cameras
+        publication_id = "c" * 32
+        cameras.publications[publication_id] = CameraPublication(peer=None)
+        cameras.bind_origin(publication_id, Request({
+            "type": "http", "scheme": "http", "path": "/v1/local-camera",
+            "server": ("0.0.0.0", 8080),
+            "headers": [(b"host", b"127.0.0.1:18080")],
+        }))
+        url = f"webrtc+http://127.0.0.1:18080/v1/local-camera/{publication_id}/whep"
+        try:
+            response = client.post("/v1/video/connect", json={"stream_url": url})
+            assert response.status_code == 200, response.text
+            assert adapters[0].options["whep_url"] == url.removeprefix(
+                "webrtc+",
+            ).replace(":18080", ":8080")
+            assert runtime._video_connection.stream_url == url
+            adapters[0].items.put(frame(0))
+            wait_for(lambda: runtime._video_connection.latest_jpeg() is not None)
+            assert runtime.status()["connected"]
+        finally:
+            cameras.publications.clear()
+
+
 @pytest.fixture
 def connected_runtime(rig, monkeypatch):
     adapters = []

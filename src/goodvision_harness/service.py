@@ -533,6 +533,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         )
         self._control_lock = RLock()
         self._video_connection: VideoConnection | None = None
+        self._local_camera_stream_options: Callable[[str], dict[str, str]] = (
+            lambda _url: {}
+        )
         self._connection_camera_layout: str | None = None
         self._analysis_settings = {
             "features": list(self._event_vocabulary().default_labels()),
@@ -2153,6 +2156,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             connection = VideoConnection(
                 url, output_fps=self._video_connection_fps(),
                 whep_headers=self.config.stream.whep_headers,
+                **self._local_camera_stream_options(url),
                 frame_crop="left_half" if layout == "stereo" else "none",
                 **({"adapter": _adapter} if _adapter is not None else {}),
             )
@@ -2704,6 +2708,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     connection = VideoConnection(
                         stream_url, output_fps=self._video_connection_fps(),
                         whep_headers=session_config.stream.whep_headers,
+                        **self._local_camera_stream_options(stream_url),
                         frame_crop=session_config.stream.frame_crop,
                     )
                     connection.start()
@@ -2729,6 +2734,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     callbacks,
                     stream_url=stream_url,
                     whep_headers=session_config.stream.whep_headers,
+                    **self._local_camera_stream_options(stream_url),
                     source_id=self.source_id,
                     archive=self.event_archive(),
                     **stream_options,
@@ -4923,6 +4929,9 @@ def create_app(
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         runtime = factory()
         application.state.runtime = runtime
+        runtime._local_camera_stream_options = (
+            application.state.local_cameras.stream_options
+        )
         runtime.start()
         start_resource_sampling()
         try:

@@ -179,6 +179,7 @@ class LocalVideoRelay:
             options["stream_url"],
             output_fps=options["fps"],
             whep_headers=options["whep_headers"],
+            **({"whep_url": options["whep_url"]} if "whep_url" in options else {}),
         )
         self.task = None
         self.socket = None

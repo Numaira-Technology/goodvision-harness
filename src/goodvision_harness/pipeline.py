@@ -233,6 +233,7 @@ class StreamingSession:
         *,
         stream_url: str,
         whep_headers: Mapping[str, str] | None = None,
+        whep_url: str | None = None,
         source_id: str = "camera",
         archive: EventArchive | None = None,
         video_stream: Any | None = None,
@@ -244,6 +245,7 @@ class StreamingSession:
                 config.events.fps if archive is not None else 0,
             ),
             whep_headers=whep_headers,
+            **({"whep_url": whep_url} if whep_url is not None else {}),
         )
         return cls(
             config,

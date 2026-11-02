@@ -1,6 +1,7 @@
 """Real camera publish -> WHEP media, with synthetic frames and no models."""
 
 import asyncio
+import socket
 
 import httpx
 import numpy as np
@@ -16,7 +17,11 @@ from aiortc import (
 )
 from av import VideoFrame
 
-from goodvision_harness.local_camera import install_local_camera_routes
+from goodvision_harness.local_camera import (
+    CameraPublication,
+    LocalCameraPublications,
+    install_local_camera_routes,
+)
 from goodvision_harness.stream_adapter import parse_stream_source
 
 
@@ -26,6 +31,130 @@ class PatternTrack(VideoStreamTrack):
         frame = VideoFrame.from_ndarray(np.full((120, 160, 3), 145, np.uint8), "bgr24")
         frame.pts, frame.time_base = pts, time_base
         return frame
+
+
+def test_owned_camera_uses_listener_port_behind_docker_or_https_proxy():
+    from starlette.requests import Request
+
+    cameras = LocalCameraPublications()
+    publication_id = "a" * 32
+    resource = f"/v1/local-camera/{publication_id}"
+    cameras.publications[publication_id] = CameraPublication(peer=None)
+    request = Request({
+        "type": "http", "scheme": "https", "path": "/v1/local-camera",
+        "server": ("0.0.0.0", 8080),
+        "headers": [(b"host", b"camera.example:18080")],
+    })
+    cameras.bind_origin(publication_id, request)
+    source = "webrtc+https://camera.example:18080" + resource + "/whep"
+    assert cameras.stream_options(source) == {
+        "whep_url": "http://127.0.0.1:8080" + resource + "/whep",
+    }
+    # A matching path on another source/installation is still an external URL.
+    for other in [
+        source.replace("camera.example", "external.example"),
+        source.replace(":18080", ":18081"),
+        source.replace("webrtc+https", "webrtc+http"),
+        source.replace(publication_id, "b" * 32),
+        source.replace("camera.example", "user:secret@camera.example"),
+        source + "?token=other", source + "#other",
+        "rtsp://camera.example:18080" + resource + "/whep",
+    ]:
+        assert cameras.stream_options(other) == {}
+    assert LocalCameraPublications().stream_options(source) == {}
+    cameras.publications.clear()
+    assert cameras.stream_options(source) == {}
+
+
+def receive_camera_on_loopback(options, slot, stop, result):
+    import aioice.ice
+
+    from goodvision_harness.whep_process import _worker
+
+    aioice.ice.get_host_addresses = lambda **_kwargs: ["127.0.0.1"]
+    _worker(options, slot, stop, result)
+
+
+def test_real_camera_frames_reach_spawned_receiver_with_mapped_http_port(monkeypatch):
+    import aioice.ice
+    import uvicorn
+
+    from goodvision_harness import whep_process
+    from goodvision_harness.stream_adapter import NetworkStreamAdapter
+
+    monkeypatch.setattr(aioice.ice, "get_host_addresses", lambda **_: ["127.0.0.1"])
+    receiver = whep_process.WhepProcessReceiver
+    monkeypatch.setattr(
+        whep_process, "WhepProcessReceiver",
+        lambda options: receiver(options, worker=receive_camera_on_loopback),
+    )
+
+    async def scenario():
+        app = FastAPI()
+        cameras = install_local_camera_routes(app)
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        sock.listen()
+        port = sock.getsockname()[1]
+        # Reserve a different, non-listening browser-facing port. This models
+        # the unavailable host port inside a container without any proxy.
+        external = socket.socket()
+        external.bind(("127.0.0.1", 0))
+        public_port = external.getsockname()[1]
+        server = uvicorn.Server(uvicorn.Config(app, lifespan="off", log_level="error"))
+        serving = asyncio.create_task(server.serve(sockets=[sock]))
+        publisher = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+        track = PatternTrack()
+        adapter = stream = reading = None
+        try:
+            async with asyncio.timeout(5):
+                while not server.started:
+                    await asyncio.sleep(0.01)
+            async with httpx.AsyncClient(
+                base_url=f"http://127.0.0.1:{port}", trust_env=False,
+                headers={"Host": f"127.0.0.1:{public_port}"},
+            ) as client:
+                publisher.addTransceiver(track, direction="sendonly")
+                await publisher.setLocalDescription(await publisher.createOffer())
+                response = await client.post(
+                    "/v1/local-camera", content=publisher.localDescription.sdp,
+                    headers={"Content-Type": "application/sdp"},
+                )
+                assert response.status_code == 201, response.text
+                resource = response.headers["Location"]
+                await publisher.setRemoteDescription(
+                    RTCSessionDescription(response.text, "answer"),
+                )
+                async with asyncio.timeout(5):
+                    while not (await client.get(resource)).json()["frames_received"]:
+                        await asyncio.sleep(0.01)
+                public = f"webrtc+http://127.0.0.1:{public_port}{resource}/whep"
+                adapter = NetworkStreamAdapter(public, **cameras.stream_options(public))
+                assert adapter.source.source_url == public
+                assert adapter.source.transport_url == (
+                    f"http://127.0.0.1:{port}{resource}/whep"
+                )
+                stream = adapter.frames()
+                reading = asyncio.create_task(asyncio.to_thread(next, stream, None))
+                received = await asyncio.wait_for(asyncio.shield(reading), 15)
+                assert received.bgr.shape == (120, 160, 3)
+                assert 130 < received.bgr.mean() < 160
+        finally:
+            if adapter is not None:
+                adapter.stop()
+            if reading is not None:
+                await asyncio.wait_for(asyncio.shield(reading), 5)
+            if stream is not None:
+                stream.close()
+            track.stop()
+            await publisher.close()
+            await cameras.aclose()
+            server.should_exit = True
+            await asyncio.wait_for(serving, 5)
+            sock.close()
+            external.close()
+
+    asyncio.run(scenario())
 
 
 def test_real_publish_whep_fanout_and_stop():

@@ -77,7 +77,7 @@ def create_app(origin=None, *, controller=None, transport=None):
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.control_lock = asyncio.Lock()
     app.state.video = video
-    install_local_camera_routes(app)
+    video.local_camera_stream_options = install_local_camera_routes(app).stream_options
 
     @app.get("/gateway/video-source")
     async def video_source():
