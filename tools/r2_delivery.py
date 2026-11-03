@@ -309,12 +309,12 @@ def publish(s3, bucket, root, release, checkpoint, previous=None, workers=8):
     if found:
         if s3.get_object(Bucket=bucket, Key=key)["Body"].read() != body:
             raise ValueError("Release already exists with different content")
+        for entry in value["files"]:
+            require_object(s3, bucket, entry)
         return key
     for entry in value["files"]:
         if entry["key"] in reusable.values():
-            found = head(s3, bucket, entry["key"])
-            if not found or found["ContentLength"] != entry["bytes"]:
-                raise ValueError("Previous release object is missing or incomplete")
+            require_object(s3, bucket, entry)
             continue
         changed = upload_file(s3, bucket, Path(root), entry, state, checkpoint, workers)
         print(("Uploaded: " if changed else "Reused: ") + entry["file"], flush=True)
@@ -328,10 +328,22 @@ def publish(s3, bucket, root, release, checkpoint, previous=None, workers=8):
     return key
 
 
+def require_object(s3, bucket, entry):
+    found = head(s3, bucket, entry["key"])
+    if (
+        not found
+        or found["ContentLength"] != entry["bytes"]
+        or found.get("Metadata", {}).get("sha256", entry["sha256"]) != entry["sha256"]
+    ):
+        raise ValueError("Release object is missing or differs: " + entry["file"])
+
+
 def download_plan(s3, bucket, key, seconds=3600):
     value = validate_manifest(
         json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read())
     )
+    for entry in value["files"]:
+        require_object(s3, bucket, entry)
     for entry in value["files"]:
         entry["url"] = s3.generate_presigned_url(
             "get_object",

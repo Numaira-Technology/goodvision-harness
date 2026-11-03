@@ -201,3 +201,25 @@ def test_new_main_release_reuses_the_existing_model_object(tmp_path, monkeypatch
         S3(), "bucket", tmp_path, "release-2", tmp_path / "resume.json", previous
     )
     assert uploaded == ["main-v2.1.zip"]
+
+
+def test_missing_object_rejected_before_issuing_a_server_download_plan(monkeypatch):
+    class S3:
+        def get_object(self, **_kwargs):
+            return {
+                "Body": io.BytesIO(
+                    json.dumps(
+                        {
+                            "schema": 1,
+                            "files": [entry("missing-model.tar.gz")],
+                        }
+                    ).encode()
+                )
+            }
+
+        def generate_presigned_url(self, *_args, **_kwargs):
+            pytest.fail("A missing model must fail before URL generation")
+
+    monkeypatch.setattr(r2, "head", lambda *_: None)
+    with pytest.raises(ValueError, match="Release object is missing"):
+        r2.download_plan(S3(), "bucket", "release.json")
