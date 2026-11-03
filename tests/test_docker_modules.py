@@ -630,8 +630,10 @@ def test_project_migration_keeps_volumes_and_recovers(tmp_path, failure, legacy_
     rollback = {"compose": copy.deepcopy(document), "version": "v0"}
     deploy.write_json(tmp_path / "rollback.main.json", rollback)
     calls = []
+    injected = False
 
     def run(command, **options):
+        nonlocal injected
         calls.append(command)
         if command[1] == "inspect":
             return SimpleNamespace(stdout=json.dumps([{
@@ -647,8 +649,8 @@ def test_project_migration_keeps_volumes_and_recovers(tmp_path, failure, legacy_
                 ],
                 "NetworkSettings": {"Networks": {}},
             }]))
-        if (failure and "up" in command
-                and str(tmp_path / "compose.main.renamed.json") in command):
+        if failure and "up" in command and not injected:
+            injected = True
             raise subprocess.CalledProcessError(1, command)
         return SimpleNamespace(stdout="")
 
@@ -665,6 +667,9 @@ def test_project_migration_keeps_volumes_and_recovers(tmp_path, failure, legacy_
         expected_services = copy.deepcopy(document["services"])
         expected_services["main"]["container_name"] = "goodvision-main-office"
         assert migrated["services"] == expected_services
+        assert not (tmp_path / "compose.main.renamed.json").exists()
+        start = next(call for call in calls if "up" in call)
+        assert start[start.index("-f") + 1] == str(path)
         assert migrated["volumes"] == {
             "data": {"external": True, "name": "customer_saved_data"},
             "face-models": {"external": True, "name": "customer_saved_models"},

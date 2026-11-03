@@ -215,14 +215,18 @@ def rename_project(state, module, settings, timeout, run=None, write=None):
     try:
         run([*command, str(path), "stop"])
         run([*command, str(path), "rm", "-f"])
-        start(pending)
+        # Docker Desktop stores the recipe path in its project labels. Start
+        # from the durable file, not a temporary file that will disappear.
+        write(path, after)
+        start(path)
         if rollback is not None:
             write(rollback_path, renamed_rollback)
-        pending.replace(path)
+        pending.unlink(missing_ok=True)
     except (OSError, subprocess.SubprocessError) as error:
         try:
             run([*command, str(pending), "stop"])
             run([*command, str(pending), "rm", "-f"])
+            write(path, before)
             start(path)
             if rollback is not None:
                 write(rollback_path, rollback)
