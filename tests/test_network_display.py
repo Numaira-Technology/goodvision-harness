@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from goodvision_harness.camera_display import CameraDisplayMetadata
 from goodvision_harness.network_display import MEDIA_TYPE, display_response
+from goodvision_harness.result_bus import FrameBus, FramePacket
 
 
 def runtime():
@@ -113,6 +114,75 @@ def test_stopping_analysis_keeps_live_video_and_removes_old_run_geometry():
     with pytest.raises(HTTPException) as exc:
         display_response(run)
     assert exc.value.status_code == 404
+
+
+def bbox_runtime():
+    run = runtime()
+    run.config.rich_labeling.backend = "paddle"
+    run._workflow_plan = {"tracking_enabled": True, "tracking_engine": "bbox"}
+    run.annotated_frames = FrameBus()
+    run.annotated_frames.publish(FramePacket(
+        jpeg=b"actual server-drawn boxes", media_timestamp=10.1,
+        frame_sequence=101, observed_at="now", annotation_mode="held",
+    ))
+    return run
+
+
+@pytest.mark.parametrize("managed", [True, False])
+def test_bbox_network_playback_delivers_server_annotations_without_sam_geometry(
+    managed,
+):
+    run = bbox_runtime()
+    if not managed:
+        run._workflow_plan = None
+    data, image = unpack(display_response(run))
+    assert image == b"actual server-drawn boxes"
+    assert data["frames"][0] == {
+        "source_sequence": 101, "media_timestamp": 10.1,
+        "width": 1280, "height": 720, "bytes": len(image),
+    }
+    assert data["config"]["server_annotations"] is True
+    assert data["config"]["enabled"] is False
+    assert data["metadata"] is None
+
+
+def test_bbox_annotation_cursor_and_retained_source_must_both_match():
+    run = bbox_runtime()
+    data, image = unpack(display_response(run, after=101, connection_id="connection"))
+    assert data["frames"] == [] and image == b""
+    run.annotated_frames.publish(FramePacket(
+        jpeg=b"stale boxes", media_timestamp=9.0,
+        frame_sequence=90, observed_at="now", annotation_mode="held",
+    ))
+    data, image = unpack(display_response(run))
+    assert data["frames"] == [] and image == b""
+    run._state["pipeline_state"] = "idle"
+    data, image = unpack(display_response(run))
+    assert image == b"jpeg" and data["config"]["server_annotations"] is False
+
+
+def test_bbox_continuous_stream_delivers_boxes_then_returns_to_raw_after_stop():
+    import asyncio
+
+    from goodvision_harness.network_display import display_stream_response
+
+    run = bbox_runtime()
+
+    async def read():
+        iterator = display_stream_response(run).body_iterator
+        first = await anext(iterator)
+        duplicate = await anext(iterator)
+        run._state["pipeline_state"] = "idle"
+        stopped = await anext(iterator)
+        await iterator.aclose()
+        return [unpack(SimpleNamespace(body=b[4:], media_type=MEDIA_TYPE))
+                for b in (first, duplicate, stopped)]
+
+    (first, image), (duplicate, _), (stopped, raw) = asyncio.run(read())
+    assert image == b"actual server-drawn boxes"
+    assert first["config"]["transport"] == "stream" and first["metadata"] is None
+    assert duplicate["frames"] == []
+    assert stopped["config"]["server_annotations"] is False and raw == b"jpeg"
 
 
 def test_stream_never_requests_contours_and_recovers_inside_playback_budget():
@@ -413,3 +483,18 @@ def test_metadata_delta_filters_old_contours_before_copying(monkeypatch):
     monkeypatch.setattr(module, "public_safe_value", copied)
     assert bus.delta(8, stream_session_id="run")["metadata_revision"] == 9
     assert selected == [102]
+
+
+def test_bbox_large_playback_buffer_still_finds_latest_annotation():
+    run = bbox_runtime()
+    run._display_settings.delay_seconds = 30
+    history = tuple((i, i / 10, 1280, 720, b"raw") for i in range(300))
+    run._video_connection.display_frames = lambda after, **kw: tuple(
+        frame for frame in history if after is None or frame[0] > after
+    )[:kw["limit"]]
+    run.annotated_frames.publish(FramePacket(
+        jpeg=b"latest boxes", media_timestamp=29.9,
+        frame_sequence=299, observed_at="now",
+    ))
+    data, image = unpack(display_response(run))
+    assert image == b"latest boxes" and data["frames"][0]["source_sequence"] == 299

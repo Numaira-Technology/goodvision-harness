@@ -379,6 +379,7 @@ class RichLabelHTTPClient:
         enabled configuration flag cannot establish its inference capability.
         Legacy workers still require GPU readiness. The optional SAM3 ONNX
         worker instead attests its explicitly configured CPU/CUDA/CoreML sessions.
+        YOLO also supports an explicit, warmed CPU worker without claiming CUDA.
         """
 
         return self._ready(
@@ -406,6 +407,25 @@ class RichLabelHTTPClient:
             if not isinstance(payload, dict) or payload.get("ready") is not True:
                 return False
             requested = httpx.Headers(self._headers).get("X-GoodVision-Detector-Model")
+            model = payload.get("model")
+            yolo_models = {"yolo26-s", "yolov8-m"}
+            if requested in yolo_models or (
+                isinstance(model, str) and model in yolo_models
+            ):
+                return (
+                    isinstance(model, str)
+                    and model in yolo_models
+                    and requested in {None, model}
+                    and (
+                        payload.get("gpu_ready") is True
+                        or (
+                            payload.get("device") == "cpu"
+                            and payload.get("runtime") == "ultralytics"
+                            and payload.get("provider_ready") is True
+                            and payload.get("gpu_ready") is False
+                        )
+                    )
+                )
             if requested == "sam3-onnx" or payload.get("model") == "sam3-onnx":
                 device = payload.get("device")
                 provider = {

@@ -1,0 +1,288 @@
+{
+  "schema": 1,
+  "date_utc": "2026-11-03",
+  "passed": true,
+  "delivery_version": "v2.0",
+  "module_versions": {
+    "main": "v2.0",
+    "contour": "v2.0",
+    "bbox": "v2.0",
+    "system1": "v2.0",
+    "gpu-runtime": "v2.0"
+  },
+  "installer_revision": "c76adbff427b9bd333e1be5d494657105898740d",
+  "source_release": "releases/v2.0/r2-release-manifest.json",
+  "validated_release": "releases/v2.0-gpu-validated-20261103/r2-release-manifest.json",
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 5090, 580.95.05, 32607 MiB",
+    "kernel": "6.8.0-87-generic",
+    "architecture": "x86_64",
+    "docker": "29.0.3",
+    "compose": "Docker Compose version v2.40.3",
+    "docker_storage": [
+      [
+        "driver-type",
+        "io.containerd.snapshotter.v1"
+      ]
+    ]
+  },
+  "images": [
+    {
+      "name": "goodvision-main:pr75-603f20d",
+      "id": "sha256:26b03fbe21d6be0f704554189abc5487e9997ca3129eead1ba093f67f548f307",
+      "os": "linux",
+      "architecture": "amd64"
+    },
+    {
+      "name": "goodvision-contour:pr75-4c10721-api",
+      "id": "sha256:6c2d506fa31da8699d9ba62db97f9171e609f635f2bc477e5f9dad34844a546c",
+      "os": "linux",
+      "architecture": "amd64"
+    },
+    {
+      "name": "goodvision-contour:pr75-4c10721-engine",
+      "id": "sha256:a13ccf02181466e7cd4d3ec236b8ac336e816064be1917e2151f62a6ba537548",
+      "os": "linux",
+      "architecture": "amd64"
+    },
+    {
+      "name": "goodvision-bbox:pr75-9a7dd24-cuda-amd64",
+      "id": "sha256:bedcc097ae196b9d2271cafd1cac3a944c19e7cb26b8332a9646ba41660f7141",
+      "os": "linux",
+      "architecture": "amd64"
+    },
+    {
+      "name": "goodvision-system1:pr75-603f20d",
+      "id": "sha256:b7e2098b9aa4e6dcf98810797d490df5993027db31e476ad22d326e73750f779",
+      "os": "linux",
+      "architecture": "amd64"
+    },
+    {
+      "name": "goodvision-gpu-runtime:pr75-4c10721-torch2.10-cu128",
+      "id": "sha256:b60f2440b80eb3483e7aaacdba3fb8e0a19b36e894c930ab904660e9ec081acf",
+      "os": "linux",
+      "architecture": "amd64"
+    },
+    {
+      "name": "goodvision-gpu-runtime:pr75-4c10721-torch2.8-cu128",
+      "id": "sha256:61d629ebeb68ac0700c396d325f04a650f1dde6253920acabdf88d231245ea98",
+      "os": "linux",
+      "architecture": "amd64"
+    }
+  ],
+  "r2_files_downloaded_and_sha256_verified": 34,
+  "prebuilt_docker_install_passed": true,
+  "all_five_containers_healthy": true,
+  "image_identity_verified": true,
+  "durable_compose_files_verified": true,
+  "runtime_kernels": {
+    "2.10": {
+      "cuda_kernels_passed": true,
+      "torch": "2.10.0+cu128",
+      "torchvision": "0.25.0+cu128",
+      "cuda": "12.8",
+      "gpu": "NVIDIA GeForce RTX 5090",
+      "compute_capability": [
+        12,
+        0
+      ],
+      "memory_bytes": 33668988928,
+      "compiled_architectures": [
+        "sm_70",
+        "sm_75",
+        "sm_80",
+        "sm_86",
+        "sm_90",
+        "sm_100",
+        "sm_120"
+      ],
+      "matrix_max_abs_error": 2.86102294921875e-05,
+      "torchvision_cuda_nms": [
+        0,
+        2
+      ],
+      "model_inference_tested": false
+    },
+    "2.8": {
+      "cuda_kernels_passed": true,
+      "torch": "2.8.0+cu128",
+      "torchvision": "0.23.0+cu128",
+      "cuda": "12.8",
+      "gpu": "NVIDIA GeForce RTX 5090",
+      "compute_capability": [
+        12,
+        0
+      ],
+      "memory_bytes": 33668988928,
+      "compiled_architectures": [
+        "sm_70",
+        "sm_75",
+        "sm_80",
+        "sm_86",
+        "sm_90",
+        "sm_100",
+        "sm_120"
+      ],
+      "matrix_max_abs_error": 2.86102294921875e-05,
+      "torchvision_cuda_nms": [
+        0,
+        2
+      ],
+      "model_inference_tested": false
+    }
+  },
+  "workflows": {
+    "bbox": {
+      "initial": {
+        "passed": true,
+        "result_sha256": "bb46f8fdfbc2953bed470b99c07135f3ed245cd792e8c252a800e1d95897247e",
+        "elapsed_seconds": 0.046,
+        "requests": 8,
+        "person_counts": [
+          3,
+          3,
+          4,
+          5,
+          3,
+          3,
+          4,
+          5
+        ],
+        "independent_sessions": 2,
+        "device": "cuda"
+      },
+      "restart": {
+        "passed": true,
+        "result_sha256": "201dc04cd508dfb9db354d4d9da5c0ae30e4420c3d5c8d7826144d1b1999f890",
+        "elapsed_seconds": 0.083,
+        "requests": 8,
+        "person_counts": [
+          3,
+          3,
+          4,
+          5,
+          3,
+          3,
+          4,
+          5
+        ],
+        "independent_sessions": 2,
+        "device": "cuda"
+      }
+    },
+    "contour": {
+      "initial": {
+        "passed": true,
+        "result_sha256": "b7bf828b0f695fbb1d5115168ca7c160b3290b912f67b0f1b233d7b3c34980c0",
+        "elapsed_seconds": 0.711,
+        "requests": 8,
+        "sessions_closed": 2,
+        "objects_with_mask_geometry": 26,
+        "gpu_ready": true
+      },
+      "restart": {
+        "passed": true,
+        "result_sha256": "9d9ba3552a1d1aa09f9866a4e6682a22ce0717002b28b6218e0f82504bf4f882",
+        "elapsed_seconds": 0.761,
+        "requests": 8,
+        "sessions_closed": 2,
+        "objects_with_mask_geometry": 26,
+        "gpu_ready": true
+      }
+    },
+    "system1": {
+      "initial": {
+        "passed": true,
+        "result_sha256": "f8ed292c6f6b3f875f3a19b80e1ab88f3afe734ed77a00711fee83ad62eb68ff",
+        "elapsed_seconds": 0.625,
+        "workflow_reports": 4,
+        "independent_sessions": 2,
+        "judgments": 8,
+        "model": "ZhuYuhan/VideoJev-4B",
+        "all_reports_complete": true
+      },
+      "restart": {
+        "passed": true,
+        "result_sha256": "99b709ac2637c4f73c570bbab08e01da81fd31ae1093ce638b69d1f2596c7f5a",
+        "elapsed_seconds": 0.629,
+        "workflow_reports": 4,
+        "independent_sessions": 2,
+        "judgments": 8,
+        "model": "ZhuYuhan/VideoJev-4B",
+        "all_reports_complete": true
+      }
+    },
+    "neural": {
+      "initial": {
+        "passed": true,
+        "result_sha256": "14aaa69a52ac52d36118450682b0c969456dd41840b6abfd75d84425b61b1f93",
+        "elapsed_seconds": 0.316,
+        "workflow_reports": 4,
+        "independent_sessions": 2,
+        "judgments": 8,
+        "model": "openai/clip-vit-large-patch14",
+        "all_reports_complete": true
+      },
+      "restart": {
+        "passed": true,
+        "result_sha256": "ef6c4d5444e1d3a7807bc339441fe0fa74b1ea30322e8112876bb44e1292ff63",
+        "elapsed_seconds": 0.317,
+        "workflow_reports": 4,
+        "independent_sessions": 2,
+        "judgments": 8,
+        "model": "openai/clip-vit-large-patch14",
+        "all_reports_complete": true
+      }
+    }
+  },
+  "input": {
+    "description": "Eight ordered public OpenCV vtest.avi JPEG samples, 2 FPS, width 640",
+    "frames": [
+      {
+        "file": "001.jpg",
+        "sha256": "9bd2f30ed48dd30387cb69c12745d23a249c0c7b09988f0e714d9fdb90e7b6f7"
+      },
+      {
+        "file": "002.jpg",
+        "sha256": "b4c7d0fe67693044ae52a71d96fc1cad976c900048b8f03a024a6aec8629fc21"
+      },
+      {
+        "file": "003.jpg",
+        "sha256": "ae07f424b5445fbdc8745f0550450b294dfb442af22dd85fcbfb08cc5083b3e0"
+      },
+      {
+        "file": "004.jpg",
+        "sha256": "61f0c61aae06a19c54949769aebd2d2037872a1e21ea3be16eca1294149f97df"
+      },
+      {
+        "file": "005.jpg",
+        "sha256": "29d2cef96884b25ab4a1271cc5e33c0a738a91b0df9015c910628a6514b5e253"
+      },
+      {
+        "file": "006.jpg",
+        "sha256": "d37d0a652de69e5c11206ff143e6c55b404dad7e2c36ea4584ac50d0c340d738"
+      },
+      {
+        "file": "007.jpg",
+        "sha256": "278cb50d97a2edd4912d8d9320b270cf153bde81966be0a41ff98b4e43f51382"
+      },
+      {
+        "file": "008.jpg",
+        "sha256": "b6ef5e4d1ff790cd476d332deca97db492f2cf30bafdc3cded086576bd1fb313"
+      }
+    ]
+  },
+  "smoke_tool_sha256": "ad430baa41dba10d8ec773544de2fe0c53955b025c3fcef97c6f72399b30991f",
+  "test_seconds": 68.57772445678711,
+  "notes": [
+    "The first check used the service root instead of /predict. Its failure evidence was retained; the corrected complete run passed. Application images and model archives were unchanged.",
+    "This is short functional acceptance, not an accuracy or sustained throughput benchmark. CLIP was run from the shipped System1 image as the existing standalone service, sequentially with VideoJev.",
+    "Linux/amd64 RTX 5090 was tested. Actual Windows CMD execution and other GPU types were not tested."
+  ],
+  "cleanup": {
+    "test_instance_destroyed": true,
+    "owned_instances_remaining": 0,
+    "existing_local_main_bbox_unchanged": true
+  },
+  "windows_cmd_execution_tested": false
+}

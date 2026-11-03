@@ -60,6 +60,14 @@ class Encoder:
             .to("cuda")
         )
 
+    def warmup(self):
+        # Loading weights alone does not prove compatible CUDA kernels or the
+        # processor/model interface. Do not publish ready until inference works.
+        labels = list(PROMPTS)
+        pairs = self.scores(Image.new("RGB", (224, 224)), labels)
+        if len(pairs) != len(labels) or not all(_valid_pair(pair) for pair in pairs):
+            raise ValueError("invalid model scores during warmup")
+
     def scores(self, image, labels):
         torch = self.torch
         inputs = self.processor(
@@ -80,6 +88,14 @@ class Encoder:
             .cpu()
             .tolist()
         )
+
+
+def _valid_pair(pair):
+    return (
+        len(pair) == 2
+        and all(math.isfinite(p) and 0 <= p <= 1 for p in pair)
+        and abs(sum(pair) - 1) <= 1e-5
+    )
 
 
 def create_app(encoder):
@@ -155,13 +171,7 @@ def create_app(encoder):
                 rows = []
                 for question, pair in zip(questions, pairs, strict=True):
                     try:
-                        if (
-                            len(pair) != 2
-                            or any(
-                                not math.isfinite(p) or not 0 <= p <= 1 for p in pair
-                            )
-                            or abs(sum(pair) - 1) > 1e-5
-                        ):
+                        if not _valid_pair(pair):
                             raise ValueError("invalid model scores")
                     except (TypeError, ValueError) as error:
                         if question["id"] != "scene/ppe_violation":
@@ -266,10 +276,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache-dir", required=True)
     parser.add_argument("--port", type=int, default=8094)
+    parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
     import uvicorn
 
-    uvicorn.run(create_app(Encoder(args.cache_dir)), host="127.0.0.1", port=args.port)
+    encoder = Encoder(args.cache_dir)
+    encoder.warmup()
+    uvicorn.run(create_app(encoder), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

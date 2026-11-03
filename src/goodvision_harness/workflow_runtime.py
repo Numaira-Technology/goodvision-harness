@@ -43,6 +43,34 @@ class WorkflowRuntimeMixin:
     def _workflow_summary_configuration(self):
         return self.config
 
+    def _workflow_prepare_modules(self, plan):
+        from .module_services import local_modules
+        from .workflow_modules import LOCAL_PORTS, NAMES
+
+        if not plan or self.dry_run:
+            return
+        pending = []
+        for role in ("tracking", "events"):
+            selected = plan.get(role + "_engine")
+            if (
+                selected in LOCAL_PORTS
+                and plan.get(role + "_execution_mode") == "local"
+            ):
+                status = local_modules.start(selected)
+                if status.get("state") == "error":
+                    raise ValueError(
+                        "Local module failed: " + NAMES[selected]
+                        + ". Check its model dependencies, weights and GPU."
+                    )
+                if not status["ready"]:
+                    pending.append(NAMES[selected])
+        if pending:
+            raise ValueError(
+                "Local modules are starting: " + ", ".join(pending)
+                + ". Check their status in the module settings, "
+                "then start analysis when ready."
+            )
+
     def _workflow_event_configuration(self, configuration=None):
         from .model_api import ModelAPISettings
         from .workflow_modules import MODELS, native_endpoints
@@ -891,6 +919,7 @@ class WorkflowRuntimeMixin:
                     "Use real analysis mode to test the configured service."
                 )
                 return result
+            self._workflow_prepare_modules(plan)
             endpoint = plan.get("events_service_url")
             if not endpoint:
                 raise ValueError(
@@ -1041,6 +1070,7 @@ class WorkflowRuntimeMixin:
                             else (self.config.rich_labeling)
                         )
                         if bbox:
+                            self._workflow_prepare_modules(plan)
                             self._workflow_bbox_probe(plan.get("tracking_service_url"))
                         else:
                             probe = self._create_tracking_client(

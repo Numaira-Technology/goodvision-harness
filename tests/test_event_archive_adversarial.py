@@ -150,6 +150,8 @@ def test_stalled_durable_staging_never_blocks_live_frame_or_result_submission(
     try:
         for index in range(17):
             assert archive.submit_frame(_jpeg(), index / 5, index, "session")
+        # Finish fixture ingestion before entering the staged-I/O condition.
+        assert archive.flush()
         assert archive.submit_result(_result(1.0))
         assert entered.wait(2)
 

@@ -547,7 +547,9 @@ def test_unavailable_encoder_reports_failure_without_stopping_archive(
     )
     try:
         for index in range(21):
-            archive.submit_frame(jpeg(), index / 5, index, "session")
+            assert archive.submit_frame(jpeg(), index / 5, index, "session")
+        # Drain fixture storage before timing the encoder's failure response.
+        assert archive.flush()
         archive.submit_result(result(1, "first"))
         until = time.monotonic() + 3
         while time.monotonic() < until:
@@ -572,7 +574,9 @@ def test_video_lease_covers_path_lookup_until_response_finishes(tmp_path: Path) 
     )
     try:
         for index in range(21):
-            archive.submit_frame(jpeg(), index / 5, index, "session")
+            assert archive.submit_frame(jpeg(), index / 5, index, "session")
+        # Drain fixture storage before waiting for the video whose lease is tested.
+        assert archive.flush()
         archive.submit_result(result(1, "first"))
         event = wait_ready(archive)
         leased = archive.acquire_video(event["event_id"], 1)
@@ -769,8 +773,11 @@ def test_idle_wait_includes_encoding_and_failed_first_clip_falls_back(
     )
     try:
         for index in range(71):
-            archive.submit_frame(jpeg(), index / 5, index, "session")
-        archive.submit_result(result(1, "first", label="stranger"))
+            assert archive.submit_frame(jpeg(), index / 5, index, "session")
+        # Drain fixture frames before timing the controlled encoder checkpoint.
+        # Durable frame processing is separate from the idle/encoding contract.
+        assert archive.flush()
+        assert archive.submit_result(result(1, "first", label="stranger"))
         assert entered.wait(3)
         archive.submit_result(result(11, "second", label="stranger"))
         archive.end_session("session")

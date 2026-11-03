@@ -9,11 +9,17 @@ from PIL import Image
 from test_workflow_runtime import configure, graph
 from test_workflow_runtime import rig as rig
 from test_workflow_tracking import tracking_graph
+from test_workflows import command
 
 from goodvision_harness.model_api import MissingAPIKeyError
 from goodvision_harness.workflow_modules import MODELS
 from goodvision_harness.workflow_render import render_output
-from goodvision_harness.workflows import compile_graph, validate_graph
+from goodvision_harness.workflows import (
+    WorkflowStore,
+    compile_document,
+    compile_graph,
+    validate_graph,
+)
 
 
 def event_graph(engine):
@@ -57,6 +63,7 @@ def test_alternative_engines_keep_connections_but_only_selected_engine_compiles(
         "http://host?q=1",
         "http://host/#token",
         "http://host:99999",
+        "http://host:0",
         "http://host\\path",
     ],
 )
@@ -67,15 +74,106 @@ def test_module_rejects_unsafe_or_malformed_endpoints(url):
         validate_graph(value)
 
 
-def test_draft_service_is_optional_but_apply_requires_it():
+def test_local_apply_needs_no_url_but_remote_apply_requires_its_selected_url():
     value = event_graph("neural")
     value["nodes"][-1]["config"]["service_url"] = ""
     validate_graph(value)
+    plan = compile_graph(value, camera_id="camera01")
+    assert plan["events_execution_mode"] == "local"
+    assert plan["events_service_url"] == "http://127.0.0.1:8098"
+    value["nodes"][-1]["config"]["execution_mode"] = "server"
     with pytest.raises(ValueError, match="service URL"):
         compile_graph(value, camera_id="camera01")
     value["nodes"][-1]["config"]["event_sensitivities"] = {"smoking": "high"}
     with pytest.raises(ValueError, match="fixed visual prompts"):
         validate_graph(value)
+
+
+@pytest.mark.parametrize("engine", ["bbox", "system1", "neural"])
+def test_locations_compile_independent_addresses_and_preserve_legacy_workers(engine):
+    value = tracking_graph() if engine == "bbox" else event_graph(engine)
+    config = value["nodes"][-1].setdefault("config", {})
+    config.update(
+        engine=engine,
+        service_url="http://server.test",
+        cloud_service_url="https://cloud.test",
+    )
+    role = "tracking" if engine == "bbox" else "events"
+    suffix = "/v1/labels" if engine == "bbox" else ""
+    legacy = compile_graph(value, camera_id="camera01")
+    assert legacy[role + "_execution_mode"] == "server"
+    assert legacy[role + "_service_url"] == "http://server.test" + suffix
+    config["execution_mode"] = "cloud"
+    cloud = compile_graph(value, camera_id="camera01")
+    assert cloud[role + "_service_url"] == "https://cloud.test" + suffix
+    config["cloud_service_url"] = ""
+    with pytest.raises(ValueError, match="service URL"):
+        compile_graph(value, camera_id="camera01")
+    config["execution_mode"] = "local"
+    local = compile_graph(value, camera_id="camera01")
+    assert "127.0.0.1" in local[role + "_service_url"]
+    assert local["features"] == legacy["features"]
+    assert local["outputs"] == legacy["outputs"]
+
+
+@pytest.mark.parametrize("engine", ["bbox", "system1", "neural"])
+def test_location_and_both_addresses_survive_apply_and_store_reload(
+    tmp_path, monkeypatch, engine
+):
+    monkeypatch.delenv(f"GOODVISION_{engine.upper()}_LOCAL_URL", raising=False)
+    value = tracking_graph() if engine == "bbox" else event_graph(engine)
+    value["nodes"][0]["config"] = {"camera_id": "camera01"}
+    config = value["nodes"][-1].setdefault("config", {})
+    config.update(engine=engine, service_url="http://server.test",
+                  cloud_service_url="https://cloud.test")
+    store = WorkflowStore(tmp_path / "workflow-assets.json")
+    doc = command(store, "create_workflow", {"name": engine, "graph": value})
+    wid = doc["workflows"][0]["id"]
+    role = "tracking" if engine == "bbox" else "events"
+    for mode, host in (("server", "server.test"), ("cloud", "cloud.test"),
+                       ("local", "127.0.0.1")):
+        config["execution_mode"] = mode
+        command(store, "apply", {"workflow_id": wid, "graph": value, "group_ids": []})
+        store = WorkflowStore(store.path)
+        loaded = store.load()
+        saved = loaded["workflows"][0]["graph"]["nodes"][-1]["config"]
+        assert saved["execution_mode"] == mode
+        assert saved["service_url"] == "http://server.test"
+        assert saved["cloud_service_url"] == "https://cloud.test"
+        plan = compile_document(loaded)["camera01"]
+        assert plan[role + "_execution_mode"] == mode
+        assert host in plan[role + "_service_url"]
+
+
+def test_local_preparation_starts_selected_workers_and_remote_never_launches(
+    rig, monkeypatch
+):
+    from goodvision_harness.module_services import local_modules
+
+    runtime, _, _, _ = rig
+    seen = []
+    monkeypatch.setattr(
+        local_modules, "start", lambda engine: seen.append(engine) or {"ready": False}
+    )
+    value = event_graph("system1")
+    value["nodes"][-1]["config"]["execution_mode"] = "local"
+    configure(runtime, value)
+    runtime.dry_run = False
+    with pytest.raises(ValueError, match="Local modules are starting"):
+        runtime.prepare_analysis()
+    assert seen == ["system1"]
+    assert runtime._session is None
+    assert (
+        runtime._workflow_event_configuration().model_api.endpoint
+        == "http://127.0.0.1:8097/predict"
+    )
+    value["nodes"][-1]["config"].update(
+        execution_mode="cloud", cloud_service_url="http://cloud.test"
+    )
+    configure(runtime, value)
+    monkeypatch.setattr(runtime, "_workflow_event_probe", lambda plan: None)
+    assert runtime.prepare_analysis()["prepared"]
+    assert seen == ["system1"]
 
 
 @pytest.mark.parametrize("engine", ["system1", "neural"])
@@ -143,14 +241,17 @@ def test_draft_native_events_require_two_frames_without_inference(
 
 
 @pytest.mark.parametrize("engine", ["system1", "neural"])
+@pytest.mark.parametrize("location", ["server", "local", "cloud"])
 def test_native_preview_runs_inspector_with_distinct_evidence_without_live_mutation(
     rig,
     monkeypatch,
     engine,
+    location,
 ):
     from test_video_connection import frame, publish, wait_for
 
     from goodvision_harness import neural_model, videojev_model
+    from goodvision_harness.module_services import local_modules
     from goodvision_harness.videojev_contract import OPTIONS
     from goodvision_harness.vlm_independent_model import IndependentVerdict
 
@@ -160,6 +261,10 @@ def test_native_preview_runs_inspector_with_distinct_evidence_without_live_mutat
     runtime.dry_run = False
     baseline, before_epoch = runtime.config, runtime.results.epoch
     calls, closed = [], []
+    starts = []
+    monkeypatch.setattr(local_modules, "start", lambda selected: (
+        starts.append(selected) or {"ready": True}
+    ))
     cls = (
         neural_model.NeuralInspector
         if engine == "neural"
@@ -185,7 +290,11 @@ def test_native_preview_runs_inspector_with_distinct_evidence_without_live_mutat
     monkeypatch.setattr(
         runtime, "_workflow_event_probe", lambda _: pytest.fail("probe only")
     )
-    result = runtime.test_workflow(event_graph(engine))
+    value = event_graph(engine)
+    value["nodes"][-1]["config"].update(
+        execution_mode=location, cloud_service_url="http://cloud.test",
+    )
+    result = runtime.test_workflow(value)
     event = result["results"][0]
     assert event["state"] == "completed", event
     assert event["input"]["source_frame_sequences"] == [1, 8]
@@ -194,7 +303,13 @@ def test_native_preview_runs_inspector_with_distinct_evidence_without_live_mutat
     ]
     cfg, job, payload = calls[0]
     assert cfg.model == MODELS[engine] and cfg.model_settings.max_retries == 0
-    assert cfg.model_settings.endpoint == "http://127.0.0.1:8094/predict"
+    endpoint = (
+        f"http://127.0.0.1:{8097 if engine == 'system1' else 8098}"
+        if location == "local" else
+        "http://cloud.test" if location == "cloud" else "http://127.0.0.1:8094"
+    )
+    assert cfg.model_settings.endpoint == endpoint + "/predict"
+    assert starts == ([engine] if location == "local" else [])
     assert payload["frame_times"] == [1 / 15, 8 / 15]
     assert len(set(payload["images"])) == 2
     assert job.stream_session_id == result["stream_session_id"]
@@ -205,6 +320,36 @@ def test_native_preview_runs_inspector_with_distinct_evidence_without_live_mutat
     assert runtime._session is None and runtime._vlm_branch is None
     assert not list(runtime.config.events.directory.glob("**/*"))
     assert not runtime._processing_lifecycle_busy()
+
+
+@pytest.mark.parametrize("engine", ["system1", "neural"])
+@pytest.mark.parametrize("state", ["starting", "error"])
+def test_native_preview_waits_for_local_module_before_constructing_inspector(
+    rig, monkeypatch, engine, state
+):
+    from test_video_connection import frame, publish, wait_for
+
+    from goodvision_harness import neural_model, videojev_model
+    from goodvision_harness.module_services import local_modules
+
+    runtime, connection, adapter, _ = rig
+    publish(connection, adapter, frame(8))
+    wait_for(lambda: connection.display_frames()[-1][0] == 8)
+    runtime.dry_run = False
+    starts = []
+    monkeypatch.setattr(local_modules, "start", lambda selected: (
+        starts.append(selected) or {"ready": False, "state": state}
+    ))
+    for module, name in [(neural_model, "NeuralInspector"),
+                         (videojev_model, "VideoJevInspector")]:
+        monkeypatch.setattr(module, name, lambda *_: pytest.fail("module is not ready"))
+    value = event_graph(engine)
+    value["nodes"][-1]["config"]["execution_mode"] = "local"
+    event = runtime.test_workflow(value)["results"][0]
+    assert starts == [engine]
+    assert event["state"] == "unavailable" and event["error"]
+    assert event["observations"] == []
+    assert runtime._session is None and connection.status()["connected"]
 
 
 @pytest.mark.parametrize("engine", ["system1", "neural"])

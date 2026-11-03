@@ -591,7 +591,51 @@ test('model palette groups five independent modules and retains inactive alterna
  assert.equal(app.graph.nodes.filter(n=>n.type==='events'&&n.enabled!==false).length,1);
  assert.deepEqual(neural.config.event_sensitivities,{});
  assert(!app.renderInspector().includes('data-wc-sensitivity'));
- assert(app.renderInspector().includes('Service URL'));
+ assert(app.renderInspector().includes('Execution location'));
+ assert(app.renderInspector().includes('Start / check local service'));
+ assert(!app.renderInspector().includes('data-wc-field="service_url"'));
+});
+
+test('all three modules default to local and keep independent server and cloud settings through undo',async()=>{
+ for(const key of ['bbox','system1','neural']){
+  const app=trackingEditorFixture();app.add(key);const current=app.graph.nodes.find(n=>n.config?.engine===key);app.selected=current.id;
+  assert.equal(current.config.execution_mode,'local');
+  assert(!validateGraph(app.graph,{complete:true}).some(error=>error.includes('service URL')));
+  assert(app.renderInspector().includes('value="local" selected'));
+  await app.fieldChange({wcExecutionMode:''},{value:'server'});
+  assert.equal(current.config.execution_mode,'server');
+  assert(app.renderInspector().includes('data-wc-field="service_url"'));
+  await app.fieldInput({wcField:'service_url'},{value:'http://independent:9000'});
+  await app.fieldChange({wcExecutionMode:''},{value:'cloud'});
+  assert(app.renderInspector().includes('data-wc-field="cloud_service_url"'));
+  await app.fieldInput({wcField:'cloud_service_url'},{value:'https://cloud.example'});
+  await app.fieldChange({wcExecutionMode:''},{value:'local'});
+  assert.equal(current.config.service_url,'http://independent:9000');assert.equal(current.config.cloud_service_url,'https://cloud.example');
+  await app.handleAction('undo',{});
+  assert.equal(app.graph.nodes.find(n=>n.id===current.id).config.execution_mode,'cloud');
+ }
+});
+
+test('local service start uses the selected fixed module and never changes the workflow',async()=>{
+ const app=trackingEditorFixture();app.add('system1');const before=clone(app.graph),calls=[];
+ app.request=async(url,options)=>{calls.push({url,options});return{engine:'system1',state:'ready',ready:true};};
+ await app.handleAction('start-module',{dataset:{engine:'system1'}});
+ assert.equal(calls[0].url,'/v1/workflow-modules/system1/local');assert.equal(calls[0].options.method,'POST');
+ assert.deepEqual(app.graph,before);assert.equal(app.moduleStates.system1.state,'ready');
+ app.data.cameras[0].status={analysis_state:'running'};
+ await app.handleAction('start-module',{dataset:{engine:'system1'}});assert.equal(calls.length,1);
+});
+
+test('container-managed modules show installer controls and keep ownership after an error',async()=>{
+ const app=trackingEditorFixture();app.add('bbox');app.selected=app.graph.nodes.find(n=>n.config?.engine==='bbox').id;
+ app.request=async()=>({state:'stopped',ready:false,manager:'compose'});
+ await app.localModuleStatus('bbox',true);
+ assert.match(app.renderInspector(),/Check module service/);
+ assert.match(app.renderInspector(),/managed by the installation launcher/);
+ app.request=async()=>{throw new Error('Unavailable');};
+ await app.localModuleStatus('bbox',true);
+ assert.equal(app.moduleStates.bbox.manager,'compose');
+ assert.match(app.renderInspector(),/Check module service/);
 });
 
 test('Output appearance persists separately from result connections and participates in Undo',async()=>{

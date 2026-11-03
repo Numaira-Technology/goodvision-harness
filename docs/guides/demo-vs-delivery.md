@@ -108,6 +108,7 @@ README "Repository layout" 列的主体，本地运行与客户交付共用：
 | | [`compose.sam31-stream.yaml`](../../compose.sam31-stream.yaml) | 实验性持久原生记忆 | 叠加在 `compose.yaml` + `compose.sam31.yaml` 后 |
 | 场景 / 感知 | [`compose.scene.yaml`](../../compose.scene.yaml) | 连续人物 / 事件引擎 | 叠加在 `compose.yaml` 上；需本地 SAM3 权重 |
 | | [`compose.perception.yaml`](../../compose.perception.yaml) | SAM 连续分析 | 叠加在 `compose.yaml` + `compose.sam31.yaml` 后 |
+| 独立工作流模块 | [`compose.modules.yaml`](../../compose.modules.yaml) | Bbox / System 1 独立进程、模型卷与健康检查，共用版本化 GPU 底座 | 独立入口；`--profile bbox` / `--profile system1`，见[模块部署](workflow-module-deployment.md) |
 | 大模型服务 | [`compose.vlm-server.yaml`](../../compose.vlm-server.yaml) | NVIDIA GPU 模型服务 + CPU 处理服务 | 独立入口；`python tools/start_modular.py vlm`，见[分机部署](modular-services.md) |
 | **交付 / production** | [`compose.full-gpu.delivery.yaml`](../../compose.full-gpu.delivery.yaml) | 客户交付镜像入口，默认 CPU 人脸、关闭 rich-label | 独立入口；`python tools/start_delivery.py`，见 [DEPLOY.md](../../DEPLOY.md) / [RELEASE.md](../../RELEASE.md) |
 | | [`compose.full-gpu.accelerated.yaml`](../../compose.full-gpu.accelerated.yaml) | 交付镜像的 GPU 人脸 + rich-label 加速 | 叠加在 `compose.full-gpu.delivery.yaml` 上，启用 `--profile gpu`；由交付启动器探测 GPU 后选用 |

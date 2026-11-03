@@ -26,6 +26,8 @@
 | --- | --- |
 | 配置调度、人脸与视觉大模型 | [运行指南](guides/runtime.md) |
 | 编排流程、摄像头组与定时总结 | [工作流画布](guides/workflows.md) |
+| 部署 Bbox、System 1 与共享 GPU 依赖 | [独立工作流模块](guides/workflow-module-deployment.md) |
+| 分别安装 Docker 模块、统一网络和启动 | [独立 Docker 安装单元](guides/docker-modules.md) |
 | 了解设置优先级、推理路线与参考记忆 | [配置指南](guides/configuration.md) |
 | 从源码部署、使用 Compose | [源码部署](guides/deployment.md) |
 | 区分本地运行与客户交付配置 | [本地运行与交付清单](guides/demo-vs-delivery.md) |
@@ -66,7 +68,10 @@
 <a id="internal-reference"></a>
 ## 内部参考
 
-[推理路线目录](internal/route-catalog.md)记录内部映射与历史供应商比较，与客户文档分开维护。
+| 资料 | 用途 |
+| --- | --- |
+| [Docker 模块命名目录](internal/docker-module-catalog.md) | `goodvision-xxx` 统一模块名称、安装器短 ID、镜像与源码映射、持久化位置及更新兼容边界。 |
+| [推理路线目录](internal/route-catalog.md) | 内部映射与历史供应商比较，与客户文档分开维护。 |
 
 ## 新文档放哪里
 
