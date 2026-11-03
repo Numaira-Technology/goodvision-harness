@@ -23,6 +23,54 @@ CPU/CUDA、PyTorch 版本和内部角色通过标签区分，不另设镜像仓�
 CLIP 和自备 VLM 继续使用现有独立服务入口，本轮没有为它们增加客户安装包。
 主程序仍可通过保存的 URL 连接它们。
 
+## R2 发布与 Vast 验收
+
+`tools/r2_delivery.py` 将原 GoodVision 目录按文件发布到 R2。大文件使用分片上传，
+本地 checkpoint 保存本次 upload ID；中断后重复原命令会核对已上传分片并继续。
+发布清单记录每个文件的大小、SHA-256 和对象位置，只有全部文件完成后才发布清单。
+版本清单不可覆盖；内容相同的模型、镜像基线和安装器可在后续发布中复用。
+不需要把整个 GoodVision 目录再压成一个大 ZIP。
+
+发布端安装 `boto3` 和 `python-dotenv`，通过环境变量或仓库外的环境文件提供
+`R2_ENDPOINT_URL`、`R2_BUCKET`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`。
+这些依赖属于交付工具，不进入主程序或模型镜像。已有本地 `.env` 也可通过
+`--env-file` 指定；凭据、checkpoint 和临时下载计划均不提交 Git。
+
+```sh
+python tools/r2_delivery.py publish /path/to/GoodVision --release v2.1 \
+  --previous releases/v2.0/r2-release-manifest.json \
+  --checkpoint /path/to/private/upload-checkpoint.json --env-file /path/to/private/.env
+```
+
+首次发布省略 `--previous`。组件更新时先在原交付目录中更新对应 ZIP、安装器和
+`handoff.json`，再指定上个版本清单发布。未变化的文件沿用原对象，只上传新内容。
+发布标识对应一次完整交付快照；五个组件的实际版本仍分别记录，不随快照一起推进。
+
+上传完成后再租用 GPU。使用 Vast **VM** 运行 Docker Compose；普通 Vast 容器
+不能在内部运行这套 Docker 部署。先确认 NVIDIA 驱动、容器 GPU 支持和 Compose，
+并为镜像解压、模型和测试结果预留磁盘。GPU 费用与传输费用按授权预算单独控制。
+
+发布端生成临时链接计划，通过 SSH 传送该计划及本工具到测试 VM：
+
+```sh
+python tools/r2_delivery.py urls releases/v2.1/r2-release-manifest.json \
+  --output /path/to/private/download-plan.json --env-file /path/to/private/.env
+```
+
+计划文件权限为 `0600`，包含有效期有限的 GET URL。VM 不需要 R2 长期凭据或
+`boto3`；只需 Python 3.10+，按清单下载并完整核对 SHA-256：
+
+```sh
+python3 r2_delivery.py fetch download-plan.json --directory /workspace/GoodVision
+cd /workspace/GoodVision
+python3 server_install.py install
+```
+
+下载器保留中断的局部文件以继续下载；已有文件必须与清单完全一致才复用。
+清单路径越界、内容校验失败和不同的已有文件均会停止。下载计划到期后重新生成；
+临时 URL 不写入公开日志。模型健康、真实推理、工作流输出和重启需要另外验收，
+文件上传或 Docker 启动成功不能替代这些检查。保存结果后销毁本次实例以结束计费。
+
 需要 Python 3.10+、Docker Compose v2，以及运行 Linux 容器的 Docker。
 GPU 主机另需 NVIDIA 驱动和容器 GPU 支持。共享依赖减少相同镜像层的重复存储，
 不共享模型内存或推理状态；各模块的 GPU 编号通过 `--gpu-id` 指定。
