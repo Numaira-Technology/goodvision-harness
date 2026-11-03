@@ -61,7 +61,7 @@ def write_json(path, value, *, private=False):
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(dir=path.parent)
     try:
-        os.fchmod(descriptor, 0o600 if private else 0o644)
+        os.chmod(temporary, 0o600 if private else 0o644)
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
             json.dump(value, output, indent=2, ensure_ascii=False)
             output.write("\n")
