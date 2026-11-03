@@ -110,8 +110,8 @@ COPY config.yaml ./config.yaml
 
 RUN groupadd --system --gid 10001 harness \
     && useradd --system --uid 10001 --gid harness --home-dir /nonexistent harness \
-    && mkdir -p /models /data \
-    && chown -R harness:harness /app /models /data
+    && mkdir -p /models /data /var/lib/goodvision-vlm \
+    && chown -R harness:harness /app /models /data /var/lib/goodvision-vlm
 
 USER 10001:10001
 

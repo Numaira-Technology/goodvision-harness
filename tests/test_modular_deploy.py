@@ -562,6 +562,15 @@ class ModularLauncherTests(unittest.TestCase):
                     }
                     self.assertEqual(volumes["/data"], f"camera-{index:02d}-data")
                     self.assertEqual(volumes["/models"], "face-models")
+                    self.assertEqual(
+                        volumes["/var/lib/goodvision-vlm"], "vlm-admission"
+                    )
+                    self.assertEqual(
+                        env["VLM_ADMISSION_DATABASE"],
+                        "/var/lib/goodvision-vlm/admission.sqlite",
+                    )
+                    self.assertEqual(env["VLM_GLOBAL_MAX_IN_FLIGHT"], "1")
+                    self.assertEqual(env["VLM_PER_STREAM_MAX_IN_FLIGHT"], "1")
                     self.assertNotIn("/models/vision", volumes)
                     self.assertNotIn("/models/sam3.1_multiplex.pt", volumes)
                     if index == 1:

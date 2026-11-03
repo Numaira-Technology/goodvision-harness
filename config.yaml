@@ -13,7 +13,7 @@ stream:
 video:
   # Frames sampled from the live stream per second and sent to the model.
   # Independent of the source file's native frame rate.
-  fps: 1.0
+  fps: 2.5
   realtime: true
   playback_speed: 1.0
   max_sampled_frames: null
@@ -258,8 +258,8 @@ face:
   min_face_size: 20
   # Keep enrollment stricter so low-detail samples cannot degrade the gallery.
   enrollment_min_face_size: 80
-  sample_fps: 1.0
-  max_image_side: 720
+  sample_fps: 2.5
+  max_image_side: 1280
   jpeg_quality: 90
   gallery_path: .goodvision/face-gallery.json
 

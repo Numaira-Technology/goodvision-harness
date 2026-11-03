@@ -280,6 +280,11 @@ def test_compose_reuses_contour_engine_and_keeps_workers_private(tmp_path, strea
     for index in range(1, streams + 1):
         name = "harness" if index == 1 else f"harness-{index:02d}"
         service = services[name]
+        volumes = {item["target"]: item["source"] for item in service["volumes"]}
+        assert volumes["/var/lib/goodvision-vlm"] == "vlm-admission"
+        assert service["environment"]["VLM_ADMISSION_DATABASE"] == (
+            "/var/lib/goodvision-vlm/admission.sqlite"
+        )
         assert len(service.get("ports", [])) == int(index == 1)
         assert "devices" not in service.get("deploy", {}).get("resources", {}).get(
             "reservations", {},
