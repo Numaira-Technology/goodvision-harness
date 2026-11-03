@@ -72,7 +72,7 @@ def write_json(path, value, *, private=False):
 
 def inventory(root):
     root = Path(root).resolve()
-    handoff = json.loads((root / "handoff.json").read_text())
+    handoff = json.loads((root / "handoff.json").read_text(encoding="utf-8"))
     entries = {}
     for entry in handoff["payloads"]:
         name = relative(entry["file"])
@@ -296,7 +296,11 @@ def publish(s3, bucket, root, release, checkpoint, previous=None, workers=8):
     value = inventory(root)
     old = validate_manifest(previous)["files"] if previous else []
     reusable = {(entry["sha256"], entry["bytes"]): entry["key"] for entry in old}
-    state = json.loads(checkpoint.read_text()) if checkpoint.exists() else {}
+    state = (
+        json.loads(checkpoint.read_text(encoding="utf-8"))
+        if checkpoint.exists()
+        else {}
+    )
     # Content keys keep baselines and weights reusable across releases.
     for entry in value["files"]:
         entry["key"] = reusable.get(
@@ -450,7 +454,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.action == "fetch":
-            fetch(json.loads(args.plan.read_text()), args.directory)
+            fetch(json.loads(args.plan.read_text(encoding="utf-8")), args.directory)
             return
         s3, bucket = client(args.env_file)
         if args.action == "publish":
