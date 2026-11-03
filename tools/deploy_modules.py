@@ -151,7 +151,7 @@ def rename_project(
     )):
         if persist_settings and renamed_settings != saved_settings:
             write(settings_path, renamed_settings)
-        return
+        return False
     after = copy.deepcopy(before)
     after["name"] = project
     for role, service in after["services"].items():
@@ -263,6 +263,7 @@ def rename_project(
         if persist_settings:
             write(settings_path, renamed_settings)
         pending.unlink(missing_ok=True)
+        return True
     except (OSError, subprocess.SubprocessError) as error:
         try:
             run([*command, str(pending), "stop"])
@@ -310,15 +311,14 @@ def rename_projects(state, modules, settings, timeout, run=None, write=None):
             rollback_path = state / f"rollback.{module}.json"
             rollback = (json.loads(rollback_path.read_text())
                         if rollback_path.is_file() else None)
-            rename_project(state, module, settings, timeout, run, write,
-                           persist_settings=False)
-            if json.loads(path.read_text()) != before:
+            if rename_project(state, module, settings, timeout, run, write,
+                              persist_settings=False):
                 completed.append((module, before, rollback))
         write(settings_path, {
             **saved_settings,
             "namespaced_names": settings.get("namespaced_names", False),
         })
-    except (ValueError, OSError, subprocess.SubprocessError) as error:
+    except (KeyError, ValueError, OSError, subprocess.SubprocessError) as error:
         try:
             # A later module or the final settings write can fail. Restore
             # earlier migrations as well, using their exact original recipes.

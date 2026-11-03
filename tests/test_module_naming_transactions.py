@@ -160,7 +160,7 @@ def test_rename_rejects_image_drift_before_any_destructive_action(
     assert not docker.starts
 
 
-@pytest.mark.parametrize("failure", ["second_module", "settings_commit"])
+@pytest.mark.parametrize("failure", ["second_module", "settings_commit", "bad_record"])
 def test_multi_module_rename_rolls_back_partial_success_and_can_retry(
     tmp_path, monkeypatch, failure,
 ):
@@ -185,6 +185,8 @@ def test_multi_module_rename_rolls_back_partial_success_and_can_retry(
     original_write = deploy.write_json
     if failure == "second_module":
         bbox_docker.fail_next_up = True
+    elif failure == "bad_record":
+        deploy.write_json(state / "rollback.bbox.json", {"version": "broken"})
     else:
         def fail_commit(path, value):
             if path.name == "settings.json" and value.get("namespaced_names"):
@@ -199,7 +201,13 @@ def test_multi_module_rename_rolls_back_partial_success_and_can_retry(
     for module, engine in engines.items():
         recipe = json.loads((state / f"compose.{module}.json").read_text())
         assert engine.document == recipe
-        assert engine.starts[-1] == (state / f"compose.{module}.json", recipe)
+        if engine.starts:
+            assert engine.starts[-1] == (state / f"compose.{module}.json", recipe)
+    if failure == "bad_record":
+        record = state / "rollback.bbox.json"
+        assert json.loads(record.read_text()) == {"version": "broken"}
+        assert not bbox_docker.starts
+        record.unlink()  # Owner repairs the bad record before retrying.
     assert not list(state.glob("rollback.*.json"))
     assert deploy.main(["configure", *args]) == 0
 
