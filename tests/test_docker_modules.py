@@ -93,7 +93,7 @@ def test_exported_contour_installers_keep_roles_distinct_after_reload(
     monkeypatch.setattr(export, "tracked_files", lambda *args: names)
     containers, images = [], []
     for suffix in ("", "-engine"):
-        version, namespace = "release1" + suffix, "office" + suffix
+        version, namespace = "v2.0" + suffix, "office" + suffix
         archive = tmp_path / f"{version}.zip"
         export.package(root, "contour", version, "cpu", archive)
         installed = tmp_path / version
@@ -452,7 +452,7 @@ def test_system1_model_preparation_stages_videojev_and_ppe_weights(
 
 
 def test_main_upgrade_keeps_other_module_and_runtime_versions(tmp_path, monkeypatch):
-    settings = spec.defaults("site", "release1")
+    settings = spec.defaults("site", "v2.0")
     state = tmp_path / "state"
     deploy.write_json(state / "settings.json", settings)
     other = spec.compose("bbox", settings, tmp_path, state)
@@ -463,18 +463,33 @@ def test_main_upgrade_keeps_other_module_and_runtime_versions(tmp_path, monkeypa
         deploy, "run", lambda *a, **kw: pytest.fail("offline configure")
     )
     assert deploy.main(["configure", "--modules", "main", "--namespace", "site",
-                        "--state-dir", str(state), "--version", "release2"]) == 0
+                        "--state-dir", str(state), "--version", "v2.1"]) == 0
     saved = json.loads((state / "settings.json").read_text())
     assert saved["module_versions"] == {
-        **settings["module_versions"], "main": "release2",
+        **settings["module_versions"], "main": "v2.1",
     }
     assert spec.runtime_image(saved, "2.8").startswith(
-        "goodvision-gpu-runtime:release1-"
+        "goodvision-gpu-runtime:v2.0-"
     )
     assert (state / "compose.bbox.json").read_bytes() == original
     assert json.loads((state / "compose.main.json").read_text())["services"]["main"][
         "image"
-    ] == "goodvision-main:release2"
+    ] == "goodvision-main:v2.1"
+
+
+def test_component_release_versions_do_not_relax_project_names(tmp_path):
+    settings = spec.defaults("office", "v2.0")
+    spec.validate(settings)
+    for module in spec.PORTS:
+        doc = spec.compose(module, settings, tmp_path, tmp_path)
+        assert doc["name"] == "goodvision-" + module
+        assert all(":v2.0" in service["image"]
+                   for service in doc["services"].values())
+    with pytest.raises(ValueError):
+        spec.defaults("office.2", "v2.0")
+    for bad in ("../v2", "v2/0", "v2:0", "v2 0", "v2$HOME"):
+        with pytest.raises(ValueError):
+            spec.defaults("office", bad)
 
 
 def test_selected_gpu_module_build_reuses_existing_base(tmp_path, monkeypatch):

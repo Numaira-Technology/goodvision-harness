@@ -168,6 +168,21 @@ def test_health_failure_automatically_restores_previous_module(tmp_path):
     assert ups[-1][ups[-1].index("-f") + 1] == str(state / "compose.main.json")
 
 
+def test_dotted_component_update_and_rollback_keep_other_release_versions(tmp_path):
+    state, settings, _, path, manifest, docker = fixture(tmp_path)
+    settings["module_versions"] = {module: "v2.0" for module in spec.MODULES}
+    deploy.write_json(state / "settings.json", settings)
+    manifest["version"] = "v2.1"
+    deploy.write_json(path, manifest)
+    updates.update(state, path, settings, 30, docker, deploy.write_json)
+    assert settings["module_versions"] == {
+        **{module: "v2.0" for module in spec.MODULES}, "main": "v2.1",
+    }
+    spec.validate(settings)
+    updates.rollback(state, "main", settings, 30, docker, deploy.write_json)
+    assert settings["module_versions"] == {module: "v2.0" for module in spec.MODULES}
+
+
 @pytest.mark.parametrize("module", ["main", "system1", "contour"])
 @pytest.mark.parametrize("failure", [None, "update", "rollback", "settings"])
 def test_recorded_compose_path_survives_update_rollback_and_recovery(

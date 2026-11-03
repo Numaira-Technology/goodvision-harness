@@ -221,7 +221,7 @@ def inventory(root, module):
 
 
 def package(root, module, version, device, output):
-    spec.name(version)
+    spec.release_version(version)
     if module not in SOURCES or device not in ("auto", "cpu", "cuda"):
         raise ValueError("Unknown module or Bbox device")
     content = {
@@ -273,7 +273,7 @@ def main(argv=None):
         "--check", action="store_true", help="Check inputs only; write no package"
     )
     args = parser.parse_args(argv)
-    spec.name(args.version)
+    spec.release_version(args.version)
     if args.check:
         print(
             json.dumps(

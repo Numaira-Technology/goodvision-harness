@@ -59,7 +59,7 @@ def read_bundle(path):
     if bundle.get("schema") == 2:
         if module != "bbox" or not isinstance(bundle.get("variants"), dict):
             raise ValueError("Unsupported module variant package")
-        spec.name(bundle["version"])
+        spec.release_version(bundle["version"])
         supported = {"linux/amd64/cpu", "linux/arm64/cpu", "linux/amd64/cuda"}
         if not bundle["variants"] or set(bundle["variants"]) - supported:
             raise ValueError("Unsupported Bbox variant")
@@ -75,7 +75,7 @@ def read_bundle(path):
         return bundle
     if module not in ROLES or bundle.get("schema") != 1:
         raise ValueError("Unsupported module update package")
-    spec.name(bundle["version"])
+    spec.release_version(bundle["version"])
     if set(bundle["images"]) != ROLES[module]:
         raise ValueError("Update package does not match its module roles")
     for role, entry in bundle["images"].items():

@@ -111,6 +111,14 @@ def name(value):
     return value
 
 
+def release_version(value):
+    if not isinstance(value, str) or not re.fullmatch(
+        r"[a-z0-9][a-z0-9_.-]{0,39}", value,
+    ):
+        raise ValueError("Use a 1-40 character release version, such as v2.0.")
+    return value
+
+
 def endpoint(value):
     if not isinstance(value, str) or len(value) > 2048:
         raise ValueError("Invalid service address.")
@@ -133,8 +141,8 @@ def endpoint(value):
 def defaults(namespace="default", version="dev"):
     return {
         "namespace": name(namespace),
-        "version": name(version),
-        "module_versions": {module: name(version) for module in MODULES},
+        "version": release_version(version),
+        "module_versions": {module: release_version(version) for module in MODULES},
         "bbox_device": "cpu",
         "bind": "127.0.0.1",
         "gpu_id": "0",
@@ -157,14 +165,14 @@ def project_name(module, settings):
 
 def validate(settings):
     name(settings["namespace"])
-    name(settings["version"])
+    release_version(settings["version"])
     if type(settings.get("namespaced_names", False)) is not bool:
         raise ValueError("namespaced_names must be boolean")
     versions = settings.get("module_versions", {})
     if not isinstance(versions, dict) or set(versions) - set(MODULES):
         raise ValueError("Invalid module versions")
     for value in versions.values():
-        name(value)
+        release_version(value)
     images = settings.get("module_images", {})
     if not isinstance(images, dict) or set(images) - set(MODULES):
         raise ValueError("Invalid module image references")

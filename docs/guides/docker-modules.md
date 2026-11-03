@@ -147,7 +147,11 @@ python tools/package_image_update.py main --version v2 --image goodvision-main:v
 默认项目名固定为 `goodvision-main`、`goodvision-bbox`、`goodvision-contour`、
 `goodvision-system1`；主程序、Bbox、System1 容器与其项目同名。
 Contour 项目内的两个容器为 `goodvision-contour-api`、`goodvision-contour-engine`。
-更新和回滚保持容器名称不变，版本号只在镜像 tag 中改变。GPU runtime 是底座镜像。
+更新和回滚保持容器名称不变，镜像构建版本记录在 tag 中。GPU runtime 是底座镜像。
+交付可采用 `v2.0` 等带点的发布版本。每个组件分别记录在 `module_versions`，
+例如只将 Main 从 `v2.0` 升至 `v2.1`，其余四个组件仍保持 `v2.0`。
+交付清单可另保留实际镜像的构建 tag 和不可变 ID，用于追溯已验证的镜像；
+发布版本升级不要求重建未改动的镜像、共享底座或模型。
 默认网络名 `goodvision-<namespace>`。安装器创建并标识共享网络，遇到同名但不属于
 本安装器的网络时拒绝接管。各项目单独拥有自己的数据卷。
 仅需要同时运行多套部署时，显式传入 `--namespaced-names` 才将安装名称追加到

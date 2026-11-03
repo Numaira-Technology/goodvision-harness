@@ -76,8 +76,9 @@ def test_module_package_omits_only_blobs_in_its_selected_baseline(
         shutil.copyfile(new, command[command.index("--output") + 1])
 
     monkeypatch.setattr(export.subprocess, "run", save)
-    output = tmp_path / "goodvision-main-v2"
-    result = export.package("main", "v2", ["goodvision-main:v2"], output, baseline)
+    output = tmp_path / "goodvision-main-v2.0"
+    result = export.package("main", "v2.0", ["goodvision-main:v2"], output, baseline)
+    assert json.loads((output / "update.json").read_text())["version"] == "v2.0"
     base_blob = "blobs/sha256/" + hashlib.sha256(common).hexdigest()
     code_blob = "blobs/sha256/" + hashlib.sha256(b"new application code").hexdigest()
     with tarfile.open(output / "images.tar.gz") as archive:
@@ -85,11 +86,32 @@ def test_module_package_omits_only_blobs_in_its_selected_baseline(
         assert code_blob in archive.getnames()
     assert result["requires"][0]["name"] == "goodvision-main:v1"
     assert result["omitted_existing_blob_bytes"] >= len(common)
-    assert output.with_suffix(".zip").is_file()
-    with zipfile.ZipFile(output.with_suffix(".zip")) as archive:
+    zipped = tmp_path / "goodvision-main-v2.0.zip"
+    assert zipped.is_file()
+    with zipfile.ZipFile(zipped) as archive:
         assert {"install.py", "update.cmd", "rollback.cmd", "update.json"}.issubset(
             archive.namelist()
         )
+
+
+def test_bbox_release_keeps_the_complete_dotted_version_in_its_filename(
+    tmp_path, monkeypatch,
+):
+    from tools import package_bbox_release as bbox_export
+
+    source = tmp_path / "bbox.tar"
+    image_archive(source, "goodvision-bbox:v2.0-cpu-amd64", [b"bbox layer"])
+
+    def save(command, **options):
+        shutil.copyfile(source, command[command.index("--output") + 1])
+
+    monkeypatch.setattr(export.subprocess, "run", save)
+    folder = tmp_path / "goodvision-bbox-v2.0"
+    bbox_export.package("v2.0", {
+        "cpu-amd64": ("goodvision-bbox:v2.0-cpu-amd64", None),
+    }, folder)
+    assert (tmp_path / "goodvision-bbox-v2.0.zip").is_file()
+    assert not (tmp_path / "goodvision-bbox-v2.zip").exists()
 
 
 def test_export_rejects_two_images_for_one_role(tmp_path, monkeypatch):

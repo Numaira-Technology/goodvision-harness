@@ -102,7 +102,7 @@ def baseline_images(path, module):
 
 
 def package(module, version, names, output, baseline=None, assets=()):
-    spec.name(version)
+    spec.release_version(version)
     old = baseline_images(baseline, module)
     known = {digest for image in old for digest in image["blobs"]}
     output.mkdir(parents=True, exist_ok=False)

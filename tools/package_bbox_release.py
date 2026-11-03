@@ -66,7 +66,7 @@ def package(version, variants, output, *, assets=()):
         "Keep the original --namespace and --state-dir for this deployment.\n",
     )
     updates.read_bundle(output / "update.json")
-    zipped = output.with_suffix(".zip")
+    zipped = output.parent / (output.name + ".zip")
     partial = zipped.with_suffix(".zip.partial")
     with zipfile.ZipFile(partial, "w", compression=zipfile.ZIP_STORED) as archive:
         for path in sorted(output.rglob("*")):
