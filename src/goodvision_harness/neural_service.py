@@ -59,6 +59,8 @@ class Encoder:
             .eval()
             .to("cuda")
         )
+        # This eval model stays fixed for the encoder's lifetime. create_app's
+        # GPU lock also serializes first-use cache initialization with PPE.
         self._text_features = None
 
     def _encode_text(self):
