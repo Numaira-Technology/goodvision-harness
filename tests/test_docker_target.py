@@ -156,6 +156,7 @@ def test_first_source_install_falls_back_when_built_torch_cannot_run_gpu(
         if command[-1] == "build":
             document = json.loads((state / "compose.bbox.json").read_text())
             built.append(document["services"]["bbox"]["environment"]["DETECTOR_DEVICE"])
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(target, "resolve_bbox", resolve)
     monkeypatch.setattr(deploy, "location", lambda: (tmp_path, tmp_path))

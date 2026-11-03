@@ -4,6 +4,7 @@ import json
 import subprocess
 import tarfile
 import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -43,7 +44,8 @@ class Docker:
         self.images = dict(images)
         self.release = release
         self.calls = []
-        self.fail_pending = False
+        self.fail_next_up = False
+        self.running = None
 
     def __call__(self, command, **options):
         self.calls.append(command)
@@ -57,9 +59,11 @@ class Docker:
         if command[1:3] == ["image", "load"]:
             self.images.update({v["name"]: v["id"] for v in self.release.values()})
         if command[1] == "compose" and "up" in command:
-            compose = command[command.index("-f") + 1]
-            if self.fail_pending and compose.endswith(".pending.json"):
+            compose = Path(command[command.index("-f") + 1])
+            if self.fail_next_up:
+                self.fail_next_up = False
                 raise subprocess.CalledProcessError(1, command)
+            self.running = (compose, json.loads(compose.read_text()))
         return SimpleNamespace(stdout="", returncode=0)
 
 
@@ -154,7 +158,7 @@ def test_update_and_rollback_change_only_the_selected_module(tmp_path):
 def test_health_failure_automatically_restores_previous_module(tmp_path):
     state, settings, old, path, _, docker = fixture(tmp_path)
     before = (state / "settings.json").read_bytes()
-    docker.fail_pending = True
+    docker.fail_next_up = True
     with pytest.raises(ValueError, match="previous module was restored"):
         updates.update(state, path, settings, 30, docker, deploy.write_json)
     assert json.loads((state / "compose.main.json").read_text()) == old
@@ -162,6 +166,46 @@ def test_health_failure_automatically_restores_previous_module(tmp_path):
     ups = [call for call in docker.calls if call[1] == "compose" and "up" in call]
     assert len(ups) == 2
     assert ups[-1][ups[-1].index("-f") + 1] == str(state / "compose.main.json")
+
+
+@pytest.mark.parametrize("module", ["main", "system1", "contour"])
+@pytest.mark.parametrize("failure", [None, "update", "rollback", "settings"])
+def test_recorded_compose_path_survives_update_rollback_and_recovery(
+    tmp_path, module, failure,
+):
+    state, settings, old, path, _, docker = fixture(tmp_path, module)
+    active = state / f"compose.{module}.json"
+    initial_settings = (state / "settings.json").read_bytes()
+
+    def commit(target, value):
+        if (failure == "settings" and target.name == "settings.json"
+                and value["module_versions"][module] == "v2"):
+            raise OSError("injected settings write failure")
+        deploy.write_json(target, value)
+
+    if failure in ("update", "settings"):
+        docker.fail_next_up = failure == "update"
+        with pytest.raises(ValueError, match="previous module was restored"):
+            updates.update(state, path, settings, 30, docker, commit)
+        assert json.loads(active.read_text()) == old
+        assert (state / "settings.json").read_bytes() == initial_settings
+        assert not (state / f"rollback.{module}.json").exists()
+    else:
+        updates.update(state, path, settings, 30, docker, commit)
+        assert docker.running == (active, json.loads(active.read_text()))
+        updated = active.read_bytes()
+        rollback_before = (state / f"rollback.{module}.json").read_bytes()
+        if failure == "rollback":
+            docker.fail_next_up = True
+            with pytest.raises(ValueError, match="previous module was restored"):
+                updates.rollback(state, module, settings, 30, docker, commit)
+            assert active.read_bytes() == updated
+            assert (state / f"rollback.{module}.json").read_bytes() == rollback_before
+        else:
+            updates.rollback(state, module, settings, 30, docker, commit)
+            assert json.loads(active.read_text()) == old
+    assert docker.running == (active, json.loads(active.read_text()))
+    assert not (state / f"compose.{module}.pending.json").exists()
 
 
 def test_wrong_baseline_and_corrupt_archive_do_not_restart_anything(tmp_path):

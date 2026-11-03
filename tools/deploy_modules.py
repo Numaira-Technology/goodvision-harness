@@ -125,11 +125,18 @@ def compose_command(state, module, *arguments):
     ]
 
 
-def rename_project(state, module, settings, timeout, run=None, write=None):
+def rename_project(
+    state, module, settings, timeout, run=None, write=None, *, persist_settings=True,
+):
     """Move one Compose project without replacing its volumes or image IDs."""
     run, write = run or globals()["run"], write or write_json
     path = state / f"compose.{module}.json"
     before = json.loads(path.read_text(encoding="utf-8"))
+    settings_path = state / "settings.json"
+    saved_settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    renamed_settings = {
+        **saved_settings, "namespaced_names": settings.get("namespaced_names", False),
+    }
     project = spec.project_name(module, settings)
     names = {
         role: (f"{project}-{'api' if role == 'contour' else role}"
@@ -142,6 +149,8 @@ def rename_project(state, module, settings, timeout, run=None, write=None):
         service["container_name"] == names[role]
         for role, service in before["services"].items()
     )):
+        if persist_settings and renamed_settings != saved_settings:
+            write(settings_path, renamed_settings)
         return
     after = copy.deepcopy(before)
     after["name"] = project
@@ -166,6 +175,17 @@ def rename_project(state, module, settings, timeout, run=None, write=None):
         if (labels.get("com.docker.compose.project") != before["name"]
                 or labels.get("com.docker.compose.service") != role):
             raise ValueError("Container ownership differs from the saved project")
+        try:
+            image = run(["docker", "image", "inspect", service["image"]],
+                        capture_output=True, text=True)
+        except subprocess.CalledProcessError as error:
+            raise ValueError(
+                "Saved image is missing; naming migration left unchanged"
+            ) from error
+        if json.loads(image.stdout)[0]["Id"] != info["Image"]:
+            raise ValueError(
+                "Saved image differs from the running container; left unchanged"
+            )
         mounts = {item["Destination"]: item for item in info["Mounts"]}
         for volume in service.get("volumes", []):
             if isinstance(volume, str):
@@ -238,6 +258,10 @@ def rename_project(state, module, settings, timeout, run=None, write=None):
         start(path)
         if rollback is not None:
             write(rollback_path, renamed_rollback)
+        # Only naming mode is committed. The installer package may be newer
+        # than the installed images, and rename must not advance any version.
+        if persist_settings:
+            write(settings_path, renamed_settings)
         pending.unlink(missing_ok=True)
     except (OSError, subprocess.SubprocessError) as error:
         try:
@@ -247,6 +271,8 @@ def rename_project(state, module, settings, timeout, run=None, write=None):
             start(path)
             if rollback is not None:
                 write(rollback_path, rollback)
+            write(settings_path, saved_settings)
+            pending.unlink(missing_ok=True)
         except (OSError, subprocess.SubprocessError) as recovery:
             raise ValueError(
                 "Naming migration failed; restore the saved project"
@@ -254,6 +280,67 @@ def rename_project(state, module, settings, timeout, run=None, write=None):
         raise ValueError(
             "Naming migration failed; previous project restored"
         ) from error
+
+
+def rename_projects(state, modules, settings, timeout, run=None, write=None):
+    """Commit the shared naming mode only after every selected module succeeds."""
+    run, write = run or globals()["run"], write or write_json
+    settings_path = state / "settings.json"
+    saved_settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    if settings.get("namespaced_names", False) != saved_settings.get(
+        "namespaced_names", False,
+    ):
+        omitted = []
+        for module in spec.PORTS:
+            path = state / f"compose.{module}.json"
+            if (module not in modules and path.is_file()
+                    and json.loads(path.read_text())["name"]
+                    != spec.project_name(module, settings)):
+                omitted.append(module)
+        if omitted:
+            raise ValueError(
+                "Naming mode is shared; include these installed modules in rename: "
+                + ", ".join(omitted)
+            )
+    completed = []
+    try:
+        for module in modules:
+            path = state / f"compose.{module}.json"
+            before = json.loads(path.read_text(encoding="utf-8"))
+            rollback_path = state / f"rollback.{module}.json"
+            rollback = (json.loads(rollback_path.read_text())
+                        if rollback_path.is_file() else None)
+            rename_project(state, module, settings, timeout, run, write,
+                           persist_settings=False)
+            if json.loads(path.read_text()) != before:
+                completed.append((module, before, rollback))
+        write(settings_path, {
+            **saved_settings,
+            "namespaced_names": settings.get("namespaced_names", False),
+        })
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        try:
+            # A later module or the final settings write can fail. Restore
+            # earlier migrations as well, using their exact original recipes.
+            for module, before, rollback in reversed(completed):
+                path = state / f"compose.{module}.json"
+                run(compose_command(state, module, "stop"))
+                run(compose_command(state, module, "rm", "-f"))
+                write(path, before)
+                run(compose_command(state, module, "up", "-d", "--no-build",
+                                    "--pull", "never", "--wait", "--wait-timeout",
+                                    str(timeout)))
+                rollback_path = state / f"rollback.{module}.json"
+                if rollback is not None:
+                    write(rollback_path, rollback)
+                else:
+                    rollback_path.unlink(missing_ok=True)
+            write(settings_path, saved_settings)
+        except (OSError, subprocess.SubprocessError) as recovery:
+            raise ValueError(
+                "Naming migration recovery failed; restore naming-backup files"
+            ) from recovery
+        raise error
 
 
 def check_contour_model_access(path):
@@ -482,17 +569,18 @@ def execute(args):
         if args.platform and "bbox" not in modules:
             raise ValueError("--platform currently selects the Bbox build target")
         updating = args.action in ("update", "rollback")
-        if updating and args.version is not None:
-            raise ValueError("Update and rollback use their recorded versions")
-        state, settings = configuration(args, None if updating else package, modules)
+        if (updating or args.action == "rename") and args.version is not None:
+            raise ValueError("Update, rollback and rename use their recorded versions")
+        state, settings = configuration(
+            args, None if updating or args.action == "rename" else package, modules,
+        )
         if args.action == "rename":
-            for module in modules:
-                if module == "gpu-runtime":
-                    continue
-                if args.dry_run:
+            selected = [module for module in modules if module != "gpu-runtime"]
+            if args.dry_run:
+                for module in selected:
                     print(f"Project: {spec.project_name(module, settings)}")
-                else:
-                    rename_project(state, module, settings, args.wait_timeout)
+            elif selected:
+                rename_projects(state, selected, settings, args.wait_timeout)
             return 0
         if updating:
             if len(modules) != 1:

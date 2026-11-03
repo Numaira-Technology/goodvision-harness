@@ -117,7 +117,7 @@ def test_one_zip_loads_only_the_selected_variant_and_rolls_back_hardware_setting
 def test_failed_variant_health_restores_previous_module_and_metadata(tmp_path):
     state, settings, old, path, _, run, docker, _ = release(tmp_path)
     previous = copy.deepcopy(settings)
-    docker.fail_pending = True
+    docker.fail_next_up = True
     with pytest.raises(ValueError, match="previous module was restored"):
         updates.update(state, path, settings, 30, run, deploy.write_json)
     assert settings == previous

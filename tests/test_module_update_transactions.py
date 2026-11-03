@@ -41,7 +41,7 @@ def test_interleaved_modules_preserve_each_others_versions(tmp_path, first_actio
 
     def first_update():
         if first_action == "failure":
-            docker.fail_pending = True
+            docker.fail_next_up = True
             with pytest.raises(ValueError, match="previous module was restored"):
                 updates.update(state, path, first, 30, first_run, deploy.write_json)
         elif first_action == "rollback":

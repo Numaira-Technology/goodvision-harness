@@ -163,6 +163,12 @@ Contour 项目内的两个容器为 `goodvision-contour-api`、`goodvision-conto
 保留镜像、端口、环境、共享/内部网络和更新回滚记录。健康检查失败会恢复旧项目。
 已迁移的项目重复执行不会重启；后续 configure/up 继续使用原卷。
 状态目录中的 `naming-backup.*.json` 保留迁移前的配置。
+迁移前核对运行镜像 ID 与保存的 tag；tag 缺失或已指向另一镜像时拒绝停止容器。
+`rename --namespaced-names` 在所选模块全部成功后保存共享命名模式，不更改安装版本。
+切换此模式时需同时选中所有名称受影响的已安装模块；遗漏模块会在操作前报出。
+多模块迁移中后续模块失败，或最后保存设置失败，会恢复前面已迁移的模块。
+普通更新、回滚和失败恢复均从持久的 `compose.<module>.json` 启动，
+Docker 记录的配置文件路径在操作完成后仍有效。
 
 ```sh
 python tools/deploy_modules.py rename --modules main bbox --namespace office --state-dir ./state

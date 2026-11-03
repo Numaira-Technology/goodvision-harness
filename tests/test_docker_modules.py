@@ -632,6 +632,7 @@ def test_project_migration_keeps_volumes_and_recovers(tmp_path, failure, legacy_
     settings = spec.defaults("office", "v1")
     document = spec.compose("main", settings, tmp_path, tmp_path)
     document["name"] = "goodvision-office-main"
+    deploy.write_json(tmp_path / "settings.json", settings)
     if legacy_name:
         document["services"]["main"]["container_name"] = "old-harness-1"
     path = tmp_path / "compose.main.json"
@@ -650,6 +651,7 @@ def test_project_migration_keeps_volumes_and_recovers(tmp_path, failure, legacy_
                     "com.docker.compose.project": document["name"],
                     "com.docker.compose.service": "main",
                 }},
+                "Image": "sha256:" + "a" * 64,
                 "Mounts": [
                     {"Type": "volume", "Name": "customer_saved_data",
                      "Destination": "/data"},
@@ -658,6 +660,8 @@ def test_project_migration_keeps_volumes_and_recovers(tmp_path, failure, legacy_
                 ],
                 "NetworkSettings": {"Networks": {}},
             }]))
+        if command[1:3] == ["image", "inspect"]:
+            return SimpleNamespace(stdout=json.dumps([{"Id": "sha256:" + "a" * 64}]))
         if failure and "up" in command and not injected:
             injected = True
             raise subprocess.CalledProcessError(1, command)

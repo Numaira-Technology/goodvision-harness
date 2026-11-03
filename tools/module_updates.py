@@ -317,16 +317,25 @@ def apply_config(
             updated.pop(key, None)
         else:
             updated[key] = value
-    write_json(backup_path, backup)
     pending = state / f"compose.{module}.pending.json"
     if document is not None:
         write_json(pending, document)
         try:
-            up(state, module, pending, timeout, run)
-            write_json(state / "settings.json", updated)
+            run(["docker", "compose", "--project-directory", str(state),
+                 "-f", str(pending), "config", "--quiet"])
+        except (subprocess.SubprocessError, OSError):
+            pending.unlink(missing_ok=True)
+            raise
+        write_json(backup_path, backup)
+        try:
+            # Compose records this path in container labels. It must remain
+            # valid after update, rollback, and automatic failure recovery.
             pending.replace(active)
+            up(state, module, active, timeout, run)
+            write_json(state / "settings.json", updated)
         except (subprocess.SubprocessError, OSError) as error:
             try:
+                write_json(active, before)
                 write_json(state / "settings.json", saved_settings)
                 up(state, module, active, timeout, run)
                 if previous_backup is None:
@@ -343,7 +352,10 @@ def apply_config(
             raise ValueError(
                 "Module update failed; the previous module was restored"
             ) from error
+        finally:
+            pending.unlink(missing_ok=True)
     else:
+        write_json(backup_path, backup)
         write_json(state / "settings.json", updated)
     settings.clear()
     settings.update(updated)
