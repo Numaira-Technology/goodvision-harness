@@ -223,3 +223,24 @@ def test_missing_object_rejected_before_issuing_a_server_download_plan(monkeypat
     monkeypatch.setattr(r2, "head", lambda *_: None)
     with pytest.raises(ValueError, match="Release object is missing"):
         r2.download_plan(S3(), "bucket", "release.json")
+
+
+def test_existing_release_accepts_equivalent_json_without_reupload(
+    tmp_path, monkeypatch
+):
+    item = entry("README-服务器安装.txt")
+    value = {"schema": 1, "files": [item]}
+    source = {"schema": 1, "files": [{k: v for k, v in item.items() if k != "key"}]}
+    monkeypatch.setattr(r2, "inventory", lambda *_: source)
+    monkeypatch.setattr(r2, "head", lambda *_: {"ContentLength": item["bytes"]})
+
+    class S3:
+        def get_object(self, **_kwargs):
+            return {"Body": io.BytesIO(json.dumps(value, sort_keys=True).encode())}
+
+        def put_object(self, **_kwargs):
+            pytest.fail("An equivalent existing release must not be overwritten")
+
+    assert r2.publish(S3(), "bucket", tmp_path, "same", tmp_path / "resume", value) == (
+        "releases/same/r2-release-manifest.json"
+    )

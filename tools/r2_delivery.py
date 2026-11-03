@@ -311,7 +311,7 @@ def publish(s3, bucket, root, release, checkpoint, previous=None, workers=8):
     body = json.dumps(value, indent=2, ensure_ascii=False).encode()
     found = head(s3, bucket, key)
     if found:
-        if s3.get_object(Bucket=bucket, Key=key)["Body"].read() != body:
+        if json.loads(s3.get_object(Bucket=bucket, Key=key)["Body"].read()) != value:
             raise ValueError("Release already exists with different content")
         for entry in value["files"]:
             require_object(s3, bucket, entry)
