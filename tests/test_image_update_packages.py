@@ -90,3 +90,29 @@ def test_module_package_omits_only_blobs_in_its_selected_baseline(
         assert {"install.py", "update.cmd", "rollback.cmd", "update.json"}.issubset(
             archive.namelist()
         )
+
+
+def test_export_rejects_two_images_for_one_role(tmp_path, monkeypatch):
+    import pytest
+
+    new = tmp_path / "two.tar"
+    image_archive(new, "goodvision-main:v2", [b"code"])
+    with tarfile.open(new, "r") as archive:
+        objects = {m.name: archive.extractfile(m).read() for m in archive}
+    index = json.loads(objects["index.json"])
+    extra = json.loads(json.dumps(index["manifests"][0]))
+    extra["annotations"]["io.containerd.image.name"] = (
+        "docker.io/library/goodvision-main:v1"
+    )
+    index["manifests"].append(extra)
+    objects["index.json"] = json.dumps(index).encode()
+    with tarfile.open(new, "w") as archive:
+        for name, data in objects.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+    monkeypatch.setattr(export.subprocess, "run", lambda cmd, **kw:
+                        shutil.copyfile(new, cmd[cmd.index("--output") + 1]))
+    with pytest.raises(ValueError, match="Duplicate image role"):
+        export.package("main", "v2", ["goodvision-main:v1", "goodvision-main:v2"],
+                       tmp_path / "out")

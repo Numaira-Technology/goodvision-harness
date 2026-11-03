@@ -9,9 +9,11 @@ import os
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import zipfile
 from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path, PurePosixPath
 
 if __package__:
@@ -25,7 +27,9 @@ ROLES = spec.IMAGE_ROLES
 def digest(path):
     result = hashlib.sha256()
     with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+        for chunk in iter(
+                    lambda stream=stream: stream.read(8 * 1024 * 1024), b"",
+                ):
             result.update(chunk)
     return result.hexdigest()
 
@@ -74,7 +78,9 @@ def read_bundle(path):
     spec.name(bundle["version"])
     if set(bundle["images"]) != ROLES[module]:
         raise ValueError("Update package does not match its module roles")
-    for entry in bundle["images"].values():
+    for role, entry in bundle["images"].items():
+        if spec.image_role(module, entry) != role:
+            raise ValueError("Image name does not match its module role")
         if not entry["name"].startswith(f"goodvision-{module}:") or not re.fullmatch(
             r"sha256:[a-f0-9]{64}", entry["id"]
         ):
@@ -127,6 +133,92 @@ def bundle_files(path):
             raise ValueError("Incomplete or corrupt module update ZIP") from error
 
 
+def state_transaction(function):
+    @wraps(function)
+    def locked(state, subject, settings, *args, **kwargs):
+        with spec.state_lock(state) as outermost:
+            if outermost:
+                # Direct API callers can hold a snapshot predating another update.
+                # CLI overrides were already applied inside the same lock.
+                saved = json.loads((state / "settings.json").read_text())
+                settings.clear()
+                settings.update(saved)
+            return function(state, subject, settings, *args, **kwargs)
+    return locked
+
+
+def validate_archive(path, images):
+    """Reject undeclared import names before Docker can mutate any local tag.
+
+    Incremental bundles may omit existing blobs, but every included blob is
+    content-addressed and the complete import index must match the manifest.
+    Legacy Docker manifests are not part of our OCI-only update format.
+    """
+    expected = {image["name"]: image["id"] for image in images.values()}
+    if len(expected) != len(images):
+        raise ValueError("Duplicate image name in update manifest")
+    index, seen = None, set()
+    try:
+        with tarfile.open(path, "r:*") as archive:
+            for member in archive:
+                name = member.name
+                if name in seen or not member.isfile():
+                    raise ValueError("Duplicate or non-file OCI archive member")
+                seen.add(name)
+                stream = archive.extractfile(member)
+                if name in ("index.json", "oci-layout"):
+                    if member.size > 1024 * 1024:
+                        raise ValueError("OCI metadata is too large")
+                    value = json.load(stream)
+                    if name == "index.json":
+                        index = value
+                    continue
+                if not re.fullmatch(r"blobs/sha256/[a-f0-9]{64}", name):
+                    raise ValueError("Unexpected OCI archive member")
+                checksum, small = hashlib.sha256(), bytearray()
+                for chunk in iter(
+                    lambda stream=stream: stream.read(8 * 1024 * 1024), b"",
+                ):
+                    checksum.update(chunk)
+                    if member.size <= 2 * 1024 * 1024:
+                        small.extend(chunk)
+                if checksum.hexdigest() != name.rsplit("/", 1)[1]:
+                    raise ValueError("OCI blob digest mismatch")
+                if small:
+                    try:
+                        value = json.loads(small)
+                    except (ValueError, UnicodeError):
+                        continue
+                    if isinstance(value, dict):
+                        for child in value.get("manifests", []):
+                            annotations = child.get("annotations", {})
+                            if any(key in annotations for key in (
+                                "io.containerd.image.name",
+                                "org.opencontainers.image.ref.name",
+                            )):
+                                raise ValueError(
+                                    "Nested OCI image alias is not allowed"
+                                )
+    except (tarfile.TarError, ValueError, KeyError, TypeError) as error:
+        raise ValueError("Invalid OCI update archive: " + str(error)) from error
+    if index is None or "oci-layout" not in seen:
+        raise ValueError("An OCI image archive is required")
+    found = {}
+    for entry in index.get("manifests", []):
+        annotations = entry.get("annotations", {})
+        name = annotations.get("io.containerd.image.name", "").removeprefix(
+            "docker.io/library/",
+        )
+        alias = annotations.get("org.opencontainers.image.ref.name", name)
+        if (name not in expected or name in found
+                or alias not in (name, "docker.io/library/" + name,
+                                 name.split(":", 1)[-1])):
+            raise ValueError("Undeclared or duplicate OCI image alias")
+        found[name] = entry["digest"]
+    if found != expected:
+        raise ValueError("OCI archive identities differ from update manifest")
+
+
 def inspect_image(name, run):
     value = run(["docker", "image", "inspect", name], capture_output=True, text=True)
     return json.loads(value.stdout)[0]
@@ -172,21 +264,23 @@ def apply_config(
     write_json,
     runtime_images=None,
     module_settings=None,
+    previous_images=None,
 ):
     active = state / f"compose.{module}.json"
     saved_settings = json.loads((state / "settings.json").read_text())
     before = json.loads(active.read_text()) if module != "gpu-runtime" else None
     old_version = settings.get("module_versions", {}).get(module, settings["version"])
-    previous_images = []
-    if before:
-        for service in before["services"].values():
-            info = inspect_image(service["image"], run)
-            previous_images.append({"name": service["image"], "id": info["Id"]})
-    else:
-        for torch in spec.TORCH:
-            image = spec.runtime_image(settings, torch)
-            info = inspect_image(image, run)
-            previous_images.append({"name": image, "id": info["Id"]})
+    if previous_images is None:
+        previous_images = []
+        if before:
+            for service in before["services"].values():
+                info = inspect_image(service["image"], run)
+                previous_images.append({"name": service["image"], "id": info["Id"]})
+        else:
+            for torch in spec.TORCH:
+                image = spec.runtime_image(settings, torch)
+                info = inspect_image(image, run)
+                previous_images.append({"name": image, "id": info["Id"]})
     old_pins = (
         {key: service["image"] for key, service in before["services"].items()}
         if before
@@ -302,6 +396,7 @@ def update_files(state, path, settings, timeout, run, write_json, target=None):
         or digest(archive) != bundle["archive"]["sha256"]
     ):
         raise ValueError("Update image archive checksum mismatch")
+    validate_archive(archive, bundle["images"])
     run(["docker", "info"], stdout=subprocess.DEVNULL)
     # Release tags are immutable, so rollback never loses its old image bytes.
     present = True
@@ -340,10 +435,14 @@ def update_files(state, path, settings, timeout, run, write_json, target=None):
         return
     for entry in bundle.get("requires", []):
         check_identity(entry, run)
-    for name in current.values():
-        inspect_image(name, run)
+    previous_images = [
+        {"name": name, "id": inspect_image(name, run)["Id"]}
+        for name in current.values()
+    ]
     stage_assets(state, module, folder, bundle.get("assets", []))
     run(["docker", "image", "load", "--input", str(archive)])
+    for entry in previous_images:
+        check_identity(entry, run)
     for entry in bundle["images"].values():
         check_identity(entry, run)
     document = None
@@ -356,6 +455,7 @@ def update_files(state, path, settings, timeout, run, write_json, target=None):
         if target:
             service = document["services"]["bbox"]
             service["platform"] = target["bbox_platform"]
+            service["healthcheck"] = spec.bbox_health(target["bbox_runtime_device"])
             service.setdefault("environment", {})["DETECTOR_DEVICE"] = (
                 target["bbox_runtime_device"]
             )
@@ -380,10 +480,12 @@ def update_files(state, path, settings, timeout, run, write_json, target=None):
         write_json,
         {key: image["name"] for key, image in bundle["images"].items()},
         target,
+        previous_images,
     )
     print(f"Updated goodvision-{module}; other modules and persisted data retained.")
 
 
+@state_transaction
 def update(state, path, settings, timeout, run, write_json):
     bundle = read_bundle(path)
     if bundle["schema"] == 2:
@@ -437,6 +539,7 @@ def update(state, path, settings, timeout, run, write_json):
         update_files(state, manifest, settings, timeout, run, write_json)
 
 
+@state_transaction
 def rollback(state, module, settings, timeout, run, write_json):
     path = state / f"rollback.{module}.json"
     before = json.loads(path.read_text())

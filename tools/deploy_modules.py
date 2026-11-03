@@ -305,6 +305,20 @@ def parser():
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    if args.dry_run or args.action in ("plan", "status", "logs"):
+        return execute(args)
+    try:
+        namespace = spec.name(args.namespace)
+        state = (args.state_dir or Path.home() / ".goodvision/docker" / namespace)
+        # Acquire before configuration reads its shared settings snapshot.
+        with spec.state_lock(state):
+            return execute(args)
+    except (ValueError, OSError) as error:
+        print(f"Deployment not completed: {error}", file=sys.stderr)
+        return 1
+
+
+def execute(args):
     root, source = location()
     try:
         package = read_package(root)

@@ -1,6 +1,8 @@
 import copy
+import io
 import json
 import subprocess
+import tarfile
 import zipfile
 from types import SimpleNamespace
 
@@ -9,6 +11,31 @@ import pytest
 from tools import deploy_modules as deploy
 from tools import docker_modules as spec
 from tools import module_updates as updates
+
+
+def oci_archive(images, *, extra=()):
+    # Metadata-only fixture: image load/inspect is supplied by the Docker double.
+    index = {"schemaVersion": 2, "manifests": [
+        {"digest": image["id"], "annotations": {
+            "io.containerd.image.name": "docker.io/library/" + image["name"],
+        }} for image in [*images.values(), *extra]
+    ]}
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w:gz") as archive:
+        for name, value in [("index.json", index),
+                            ("oci-layout", {"imageLayoutVersion": "1.0.0"})]:
+            data = json.dumps(value).encode()
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+    return raw.getvalue()
+
+
+def replace_archive(path, manifest, data):
+    archive = path.parent / manifest["archive"]["file"]
+    archive.write_bytes(data)
+    manifest["archive"].update(bytes=len(data), sha256=updates.digest(archive))
+    deploy.write_json(path, manifest)
 
 
 class Docker:
@@ -74,7 +101,7 @@ def fixture(tmp_path, module="main"):
     folder = tmp_path / "release"
     folder.mkdir()
     image = folder / "images.tar.gz"
-    image.write_bytes(b"fake archive; Docker calls are replaced")
+    image.write_bytes(oci_archive(release))
     manifest = {
         "schema": 1,
         "module": module,
@@ -172,7 +199,7 @@ def test_contour_update_can_reuse_unchanged_engine_image(tmp_path):
     name = old["services"]["engine"]["image"]
     manifest["images"]["engine"] = {"name": name, "id": docker.images[name]}
     docker.release = manifest["images"]
-    deploy.write_json(path, manifest)
+    replace_archive(path, manifest, oci_archive(manifest["images"]))
     updates.update(state, path, settings, 30, docker, deploy.write_json)
     saved = spec.compose("contour", settings, tmp_path, state)
     assert saved["services"]["engine"]["image"] == name

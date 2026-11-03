@@ -3,12 +3,13 @@ import hashlib
 import io
 import json
 import subprocess
+import tarfile
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from test_module_updates import fixture
+from test_module_updates import fixture, oci_archive
 
 from tools import deploy_modules as deploy
 from tools import module_updates as updates
@@ -34,7 +35,7 @@ def release(tmp_path, arch="arm64", gpu=False):
         images[key] = image
         inner = copy.deepcopy(basic)
         inner["images"] = {"bbox": image}
-        marker = key.encode()
+        marker = oci_archive(inner["images"])
         inner["archive"].update(
             bytes=len(marker), sha256=hashlib.sha256(marker).hexdigest(),
         )
@@ -65,7 +66,11 @@ def release(tmp_path, arch="arm64", gpu=False):
                 raise subprocess.CalledProcessError(1, command)
             return SimpleNamespace(stdout="")
         if command[1:3] == ["image", "load"]:
-            selected = Path(command[-1]).read_text()
+            with tarfile.open(Path(command[-1])) as archive:
+                index = json.load(archive.extractfile("index.json"))
+            ref = index["manifests"][0]["annotations"]["io.containerd.image.name"]
+            selected = next(key for key, image in images.items()
+                            if ref.endswith(image["name"]))
             loaded.append(selected)
             docker.release = {"bbox": images[selected]}
         result = docker(command, **options)

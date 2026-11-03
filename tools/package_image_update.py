@@ -72,23 +72,7 @@ def archive_images(path):
     return images
 
 
-def role(module, image):
-    if not image["name"].startswith(f"goodvision-{module}:"):
-        raise ValueError("Image belongs to another module")
-    if module == "contour":
-        if image["name"].endswith("-engine"):
-            return "engine"
-        if image["name"].endswith("-api"):
-            return "contour"
-        raise ValueError("Contour image must use an explicit -api or -engine role")
-    if module == "gpu-runtime":
-        return next(
-            "torch" + version
-            for version in spec.TORCH
-            if image["name"].endswith(f"-torch{version}-cu128")
-        )
-    return module
-
+role = spec.image_role
 
 def baseline_images(path, module):
     if path is None:
@@ -127,7 +111,14 @@ def package(module, version, names, output, baseline=None, assets=()):
         subprocess.run(
             ["docker", "image", "save", "--output", str(full), *names], check=True
         )
-        images = {role(module, image): image for image in archive_images(full)}
+        images = {}
+        for image in archive_images(full):
+            key = role(module, image)
+            if key in images:
+                raise ValueError("Duplicate image role in export")
+            images[key] = image
+        if set(names) != {image["name"] for image in images.values()}:
+            raise ValueError("Exported image names differ from requested names")
         if set(images) != updates.ROLES[module]:
             raise ValueError("Selected images do not match the module roles")
         wanted = {key for image in images.values() for key in image["blobs"]} - known
@@ -152,6 +143,7 @@ def package(module, version, names, output, baseline=None, assets=()):
                             omitted += member.size
                             continue
                     delta.addfile(member, archive.extractfile(member))
+        updates.validate_archive(target, images)
         additions = []
         for target_name, source in assets:
             parts = Path(target_name).parts

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -13,6 +17,89 @@ TORCH = {"2.10": ("2.10.0", "0.25.0"), "2.8": ("2.8.0", "0.23.0")}
 IMAGE_ROLES = {"main": {"main"}, "bbox": {"bbox"},
                "contour": {"contour", "engine"}, "system1": {"system1"},
                "gpu-runtime": {"torch2.10", "torch2.8"}}
+
+
+# Every writer of one deployment shares this lock, including configure/build/up.
+# Keep the file after unlocking: unlinking it can split waiters across inodes.
+_STATE_LOCKS = {}
+_STATE_LOCKS_GUARD = threading.Lock()
+_STATE_HELD = threading.local()
+
+
+@contextmanager
+def state_lock(state):
+    state = state.resolve()
+    with _STATE_LOCKS_GUARD:
+        lock = _STATE_LOCKS.setdefault(state, threading.RLock())
+    with lock:
+        held = getattr(_STATE_HELD, "paths", set())
+        if state in held:
+            yield False
+            return
+        state.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with (state / ".installer.lock").open("a+b") as stream:
+            if os.name == "nt":
+                import msvcrt
+                if stream.tell() == 0:
+                    stream.write(b"0")
+                    stream.flush()
+                deadline = time.monotonic() + 900
+                while True:
+                    stream.seek(0)
+                    try:
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            raise ValueError(
+                                "Deployment is busy; retry later"
+                            ) from None
+                        time.sleep(.1)
+            else:
+                import fcntl
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            _STATE_HELD.paths = held | {state}
+            try:
+                yield True
+            finally:
+                _STATE_HELD.paths = held
+                if os.name == "nt":
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def bbox_health(device):
+    capability = (
+        "r['device']=='cpu' and r['runtime']=='ultralytics' and "
+        "r['provider_ready'] is True and r['gpu_ready'] is False"
+        if device == "cpu" else "r['gpu_ready'] is True"
+    )
+    return health(
+        "import json,urllib.request; r=json.load(urllib.request.urlopen("
+        "'http://127.0.0.1:8096/health/tracking',timeout=3)); "
+        "assert r['ready'] is True and r['model']=='yolo26-s' and " + capability
+    )
+
+
+def image_role(module, image):
+    ref = image["name"]
+    if not re.fullmatch(
+        rf"goodvision-{module}:[a-zA-Z0-9_][a-zA-Z0-9_.-]{{0,127}}", ref,
+    ):
+        raise ValueError("Image belongs to another module or has an invalid tag")
+    if module == "contour":
+        for suffix, role in (("-engine", "engine"), ("-api", "contour")):
+            if ref.endswith(suffix):
+                return role
+        raise ValueError("Contour image must use an explicit -api or -engine role")
+    if module == "gpu-runtime":
+        for version in TORCH:
+            if ref.endswith(f"-torch{version}-cu128"):
+                return "torch" + version
+        raise ValueError("Unsupported GPU runtime image role")
+    return module
 
 
 def name(value):
@@ -269,17 +356,7 @@ def compose(module, settings, source: Path, state: Path):
             "DETECTOR_WEIGHTS": "/models/yolo26s.pt",
         }
         service["volumes"].append(mount(state / "models/bbox", "/models"))
-        capability = (
-            "r['device']=='cpu' and r['runtime']=='ultralytics' and "
-            "r['provider_ready'] is True and r['gpu_ready'] is False"
-            if device == "cpu"
-            else "r['gpu_ready'] is True"
-        )
-        service["healthcheck"] = health(
-            "import json,urllib.request; r=json.load(urllib.request.urlopen("
-            "'http://127.0.0.1:8096/health/tracking',timeout=3)); "
-            "assert r['ready'] is True and r['model']=='yolo26-s' and " + capability
-        )
+        service["healthcheck"] = bbox_health(device)
         if device == "cuda":
             service["deploy"] = gpu(settings)
     elif module == "system1":
