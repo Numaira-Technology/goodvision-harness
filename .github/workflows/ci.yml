@@ -50,6 +50,27 @@ jobs:
       - name: Run regression suite (no models or service credentials)
         run: python -m pytest -vv -o faulthandler_timeout=60 --durations=20
 
+  clip-cache-contract:
+    name: CLIP cache equivalence (CPU, no weights)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install pinned CLIP libraries without CUDA dependencies
+        run: |
+          python -m pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install '.[dev]' transformers==5.14.1
+      - name: Compare cached and original CLIP paths offline
+        env:
+          HF_HUB_OFFLINE: '1'
+          TRANSFORMERS_OFFLINE: '1'
+        run: python -m pytest tests/test_neural_clip_cache.py -vv -o faulthandler_timeout=60
+
   sam3-onnx-contract:
     name: Optional SAM3 ONNX contract (no weights)
     runs-on: ubuntu-latest

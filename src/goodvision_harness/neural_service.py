@@ -59,22 +59,54 @@ class Encoder:
             .eval()
             .to("cuda")
         )
+        # This eval model stays fixed for the encoder's lifetime. create_app's
+        # GPU lock also serializes first-use cache initialization with PPE.
+        self._text_features = None
 
-    def scores(self, image, labels):
+    def _encode_text(self):
+        if self._text_features is not None:
+            return
         torch = self.torch
         inputs = self.processor(
-            images=image,
-            text=[text for label in labels for text in PROMPTS[label]],
+            text=[text for pair in PROMPTS.values() for text in pair],
             return_tensors="pt",
             padding=True,
             truncation=True,
         )
         with torch.inference_mode():
-            result = self.model(
+            pooled = self.model.text_model(
                 **{key: value.to("cuda") for key, value in inputs.items()}
+            ).pooler_output
+            features = self.model.text_projection(pooled)
+            features = features / torch.pow(
+                torch.sum(torch.pow(features, 2), dim=-1, keepdim=True), 0.5
             )
+        self._text_features = {
+            label: features[index * 2:index * 2 + 2]
+            for index, label in enumerate(PROMPTS)
+        }
+
+    def scores(self, image, labels):
+        self._encode_text()
+        torch = self.torch
+        inputs = self.processor(images=image, return_tensors="pt")
+        with torch.inference_mode():
+            pooled = self.model.vision_model(
+                pixel_values=inputs["pixel_values"].to("cuda")
+            ).pooler_output
+            features = self.model.visual_projection(pooled)
+            features = features / torch.pow(
+                torch.sum(torch.pow(features, 2), dim=-1, keepdim=True), 0.5
+            )
+            text_features = torch.cat([self._text_features[label] for label in labels])
+            logits_per_text = torch.matmul(
+                text_features, features.t().to(text_features.device)
+            )
+            logits_per_image = (
+                logits_per_text * self.model.logit_scale.exp().to(text_features.device)
+            ).t()
         return (
-            result.logits_per_image[0]
+            logits_per_image[0]
             .reshape(len(labels), 2)
             .softmax(dim=-1)
             .cpu()
