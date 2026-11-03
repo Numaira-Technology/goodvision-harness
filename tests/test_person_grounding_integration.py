@@ -72,12 +72,15 @@ def test_isolated_branch_detects_each_source_once_and_joins_owned_threads(
         grounding = [r for r in records if r.get("output_mode") == "compact"]
         assert grounding and all(r["analysis_complete"] for r in grounding)
         assert grounding[-1]["subject_id_scope"] == "stream_session"
+        # The first report can precede the final detector HTTP request.
+        # Drain submitted work before asserting the complete source audit.
+        broker = branch._detector_broker
+        assert broker.drain()["ready"] == 4
         assert len(calls["detector"]) == len(set(calls["detector"])) == 4
         assert any(
             "Allowed last-frame IDs:" in p["messages"][0]["content"]
             for p in calls["model"]
         )
-        broker = branch._detector_broker
     finally:
         branch.close(timeout_seconds=10)
     assert branch.health()["state"] == "stopped"
