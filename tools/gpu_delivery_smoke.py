@@ -57,7 +57,11 @@ def events(args, frames):
             "public-video-" + str(lane),
             1,
             ("smoking", "fall"),
-            ModelAPISettings(provider="local", endpoint=base, timeout_seconds=150),
+            ModelAPISettings(
+                provider="local",
+                endpoint=base.rstrip("/") + "/predict",
+                timeout_seconds=150,
+            ),
             model,
             observation_fps=2,
             observation_frame_delta_seconds=0.5,
@@ -116,7 +120,7 @@ def bbox(args, frames):
     assert health["ready"] and health["device"] == "cuda", health
     responses = []
     for lane in range(2):
-        session = f"bbox-{args.suffix}-{lane}"
+        session = f"bbox-{args.suffix}-{lane}-{uuid.uuid4().hex[:8]}"
         for i, f in enumerate(frames[:4]):
             r = http(
                 "POST",
@@ -238,6 +242,10 @@ def main():
         result["passed"] = True
     except Exception as error:
         result.update(passed=False, error=type(error).__name__)
+        for name in ("code", "status_code"):
+            value = getattr(error, name, None)
+            if isinstance(value, (str, int)):
+                result[name] = value
         raise SystemExit(1) from None
     finally:
         result["elapsed_seconds"] = round(time.time() - started, 3)

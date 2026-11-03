@@ -327,5 +327,9 @@ namespace 和状态目录完成组合安装。安装时先检查清单，文件�
 增量更新及回滚检查；隔离环境另验证并发模块更新、真实健康失败后的自动恢复，
 以及已有运行容器保持不变。详细版本和分阶段证据见
 [模块验证记录](../validation/workflow-modules.md)。
-CPU/CUDA 切换的健康契约有回归测试；真实 NVIDIA GPU 推理尚未验收，
-Contour、System 1 和 CLIP 的 GPU 功能门槛仍保留。
+CPU/CUDA 切换的健康契约有回归测试。2026-11-03 已通过 R2 → Vast RTX 5090
+的 Linux/amd64 Docker 实测：两个 GPU 底座、Bbox 人物框、Contour 轮廓、
+VideoJev/CLIP 工作流报告，以及独立会话和重启后的检查全部通过。
+原交付目录记录详见 `GPU-ACCEPTANCE.json`，公开摘要见
+[GPU 验收记录](../validation/pr75-gpu-v2.0.json)。这是短视频功能验收；
+Windows CMD 实机执行、其他 GPU 型号及长时间性能未在此次验证。
