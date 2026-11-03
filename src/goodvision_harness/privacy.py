@@ -25,6 +25,34 @@ PUBLIC_FACE_UNAVAILABLE_ERROR = (
 )
 PUBLIC_STREAM_ERROR = "video input failed; check the video source and retry"
 PUBLIC_STREAM_SUPPORT_ERROR = "video input support is missing on this server"
+STREAM_ERROR_MESSAGES = {
+    "connection_failed": PUBLIC_STREAM_ERROR,
+    "missing_support": PUBLIC_STREAM_SUPPORT_ERROR,
+    "signaling_timeout": "连接视频服务器超时，请检查视频地址和网络连通性。",  # noqa: RUF001
+    "signaling_unreachable": (
+        "无法连接视频服务器，请检查服务器是否在线及网络是否可达。"  # noqa: RUF001
+    ),
+    "source_rejected": (
+        "视频服务器拒绝了连接，请检查视频地址、访问授权和推流状态。"  # noqa: RUF001
+    ),
+    "invalid_response": (
+        "视频服务器未返回有效的视频协商响应，"  # noqa: RUF001
+        "请确认使用正确的视频输入地址。"
+    ),
+    "media_timeout": (
+        "视频协商已完成，但未收到画面，"  # noqa: RUF001
+        "请检查推流状态及媒体网络连通性。"
+    ),
+}
+
+
+def stream_error_code(value: object) -> str:
+    """Only approved codes, never exception text, cross the worker boundary."""
+    if isinstance(value, str) and value in STREAM_ERROR_MESSAGES:
+        return value
+    return "connection_failed"
+
+
 PUBLIC_MISSING_API_KEY_ERROR = (
     "请先在控制台保存 API key，再启动正式检测；无需创建 .env。 / "  # noqa: RUF001
     "Save an API key in the console before starting live detection; "

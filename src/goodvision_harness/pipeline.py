@@ -1132,11 +1132,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="seek to this video timestamp before streaming",
     )
     parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="exercise streaming and windowing without calling the model",
-    )
-    parser.add_argument(
         "--no-realtime",
         action="store_true",
         help="process as fast as possible instead of matching the wall clock",
@@ -1235,17 +1230,16 @@ def _main(argv: list[str] | None = None) -> int:
     transport: PooledModelAPIClient | None = None
     archive: EventArchive | None = None
     try:
-        if not args.dry_run:
-            transport = PooledModelAPIClient(
-                config.model_api,
-                timing_sink=emit if args.transport_timing else None,
-                trace_transport=args.transport_timing,
-            )
+        transport = PooledModelAPIClient(
+            config.model_api,
+            timing_sink=emit if args.transport_timing else None,
+            trace_transport=args.transport_timing,
+        )
         client = build_grounding_client(
             config.inference,
             config.model_api,
             memory_context=config.memory,
-            dry_run=args.dry_run,
+            dry_run=False,
             transport=transport,
             stream_decisions=args.stream_decisions,
             preliminary_callback=lambda result: emit(result.as_dict()),

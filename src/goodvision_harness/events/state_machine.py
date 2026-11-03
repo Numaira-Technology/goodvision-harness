@@ -16,11 +16,9 @@ from threading import RLock
 from uuid import uuid4
 
 from ..contracts import NormalizedBBox, json_mapping_as_dict
+from ..event_registry import BUILTIN_VOCABULARY, EventVocabulary
 from ..rich_labeling import validate_mask_contours
 
-_EVENT_LABELS = frozenset({
-    "fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter", "stranger",
-})
 _IDENTITY_KEYS = ("status", "person_id", "name", "identity_source", "matched_memory_id")
 _NATIVE_TRACK_KEYS = ("backend", "epoch", "object_id")
 _MAX_CONTOUR_HISTORY_POINTS = 131072
@@ -131,7 +129,9 @@ class SceneState:
         max_contour_history_points: int = _MAX_CONTOUR_HISTORY_POINTS,
         max_source_pin_jobs: int = 4,
         retain_pinned_sources: bool = False,
+        vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
     ) -> None:
+        self._event_labels = frozenset(vocabulary.labels())
         self.stream_session_id = _text(stream_session_id, "stream_session_id")
         self.source_id = _text(source_id, "source_id")
         self.max_entities = _integer(max_entities, "max_entities", 1, 4096)
@@ -1239,7 +1239,7 @@ class SceneState:
         revisable: bool,
         allow_historical: bool = False,
     ) -> bool:
-        if not isinstance(event_label, str) or event_label not in _EVENT_LABELS:
+        if not isinstance(event_label, str) or event_label not in self._event_labels:
             raise ValueError("unsupported event_label")
         revision = _integer(revision, "revision", 0)
         withdrawal = revisable and revision > 0 and detected is None

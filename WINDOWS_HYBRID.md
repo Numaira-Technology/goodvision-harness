@@ -56,6 +56,12 @@ directories. The launcher deliberately reuses the existing authorized test
 pack at `.models/insightface/models/buffalo_l` instead of downloading a second
 copy.
 
+The experiment uses a fresh temporary settings directory for each launch, so
+saved console routes and automatic video connections cannot override these
+settings. Console changes made during this experiment are removed when it
+exits; the normal console's saved settings, face gallery and model files remain
+unchanged.
+
 To use an already running NVIDIA GPU rich worker, pass its inference endpoint:
 
 ```powershell

@@ -245,6 +245,7 @@ class FleetController:
             "scene_url": f"{base}/scene",
             "settings_url": f"{base}/settings",
             "preview_url": f"{base}/video/annotated/latest.jpg",
+            "source_preview_url": f"{base}/video/source/latest.jpg",
             "display_url": f"{base}/video/display/frames",
             "display_metrics_url": f"{base}/video/display/metrics",
             "mjpeg_url": f"{base}/video/annotated/stream.mjpeg",

@@ -12,6 +12,7 @@ from threading import Event, RLock, Thread, current_thread
 from typing import Any
 
 from .diagnostics import note
+from .event_registry import SAFETY_BRANCH, branch_events, labels
 from .latency_trace import log_timing, trace_id
 from .model_api import ModelAPIError
 from .runtime.scene import SceneRuntime, TemporalInspection, TemporalVerdict
@@ -21,6 +22,10 @@ from .scene_inspection import (
     _validate_job,
     _validate_verdicts,
 )
+
+# Deliberately the built-in safety labels rather than whatever a session
+# requested: the verdict log must stay restricted to fixed public labels.
+_PUBLIC_VERDICT_LABELS = frozenset(labels(branch_events(SAFETY_BRANCH)))
 
 
 @contextmanager
@@ -51,9 +56,9 @@ def _verdict_log_fields(outcome: _InspectionOutcome) -> dict[str, Any]:
     A failed/unavailable response has no measurable verdict coverage, including
     no manufactured unknown/negative verdict. Only fixed public labels enter logs.
     """
-    requested = sorted(set(outcome.job.request.event_labels).intersection(
-        {"fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter"},
-    ))
+    requested = sorted(
+        set(outcome.job.request.event_labels).intersection(_PUBLIC_VERDICT_LABELS)
+    )
     counts = {
         label: dict.fromkeys(("true", "false", "unknown", "omitted"), None)
         for label in requested
@@ -64,11 +69,14 @@ def _verdict_log_fields(outcome: _InspectionOutcome) -> dict[str, Any]:
         for row in counts.values():
             row.update(dict.fromkeys(row, 0))
         for verdict in outcome.verdicts:
+            row = counts.get(verdict.event_label)
+            if row is None:
+                continue
             field = (
                 "true" if verdict.detected is True else
                 "false" if verdict.detected is False else "unknown"
             )
-            counts[verdict.event_label][field] += 1
+            row[field] += 1
         for row in counts.values():
             row["omitted"] = int(not any(row[field] for field in (
                 "true", "false", "unknown",

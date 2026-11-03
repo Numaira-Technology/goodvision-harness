@@ -38,6 +38,7 @@ vlm = [
   "httpx[http2]>=0.27,<1",
 ]
 videojev = [
+  "ultralytics==8.4.198",
   "torch==2.8.0",
   "torchvision==0.23.0",
   "transformers==5.14.1",
@@ -62,6 +63,13 @@ decision3 = [
 video = [
   "av==17.1.0",
 ]
+neural = [
+  "ultralytics==8.4.198",
+  "torch==2.8.0",
+  "torchvision==0.23.0",
+  "transformers==5.14.1",
+  "safetensors==0.8.0",
+]
 dev = [
   "jsonschema>=4.23,<5",
   "pytest>=8,<9",
@@ -80,6 +88,8 @@ face-directml = [
   "onnxruntime-directml==1.24.4; sys_platform == 'win32'",
 ]
 webrtc = [
+  # 0.11.0 starts incoming ICE checks before aiortc sets remote credentials.
+  "aioice>=0.10.2,<1,!=0.11.0",
   "aiohttp>=3.10,<4",
   "aiortc>=1.15,<2",
 ]
@@ -90,8 +100,8 @@ diag = [
 [project.scripts]
 goodvision-harness = "goodvision_harness.service:main"
 goodvision-harness-cli = "goodvision_harness.pipeline:main"
-goodvision-harness-demo = "goodvision_harness.demo.server:main"
 goodvision-videojev = "goodvision_harness.videojev_service:main"
+goodvision-neural = "goodvision_harness.neural_service:main"
 goodvision-vlm = "goodvision_harness.videojev_service:main"
 goodvision-event-replay = "goodvision_harness.evaluation.replay:main"
 

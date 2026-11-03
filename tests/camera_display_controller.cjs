@@ -110,6 +110,40 @@ test("buffer changes apply to an existing untracked stream and zero resumes imme
   assert.equal(view.canvas.dataset.frameSequence,"4");
 });
 
+for(const delay of [0,2])test(`untracked network resolution changes restart the ${delay}s playback buffer`,async t=>{
+  let size=[640,480],origin=1;
+  const errors=[],view=browser({globals:{createImageBitmap:async()=>({width:size[0],height:size[1],origin,close(){}})}});
+  const feed=new view.api.NetworkController({canvas:view.canvas,url:"/frames",onFailure:error=>errors.push(error)});
+  t.after(()=>{feed.stop();view.controller.stop();});
+  const config={stream_session_id:"connection",generation:0,crop_version:0,enabled:false,delay_seconds:delay,transport:"stream"};
+  const receive=async(seq)=>{
+    view.setClock((seq-1)*4);origin=seq;
+    await feed.accept({connection_id:"connection",config,
+      frames:[{source_sequence:seq,media_timestamp:10+(seq-1)*4,width:size[0],height:size[1],jpeg:new Uint8Array([1])}]});
+  };
+  await receive(1);
+  const previous=feed.controller,oldBitmap=previous.frames.frames[0].bitmap;
+  size=[1280,480];await receive(2);
+  assert.equal(previous.closed,true);
+  assert.equal(oldBitmap.closed,true);
+  assert.equal(feed.controller.capturing,true);
+  assert.equal(feed.controller.frames.delay,delay);
+  if(delay){view.setClock(4+delay-.001);feed.controller.animate();assert.equal(view.canvas.origin,undefined);}
+  view.setClock(4+delay);feed.controller.animate();
+  assert.equal(view.canvas.origin,2);assert.equal(view.canvas.dataset.frameSequence,"2");
+  assert.deepEqual([view.canvas.width,view.canvas.height],size);
+  assert.equal(feed.controller.snapshot().last_source_to_present_seconds,delay);
+  await receive(3);view.setClock(8+delay);feed.controller.animate();
+  assert.equal(view.canvas.origin,3);assert.equal(feed.after,3);
+  // Height-only changes also replace the buffer and keep source IDs intact.
+  size=[1280,720];await receive(4);view.setClock(12+delay);feed.controller.animate();
+  assert.equal(view.canvas.origin,4);assert.equal(view.canvas.dataset.frameSequence,"4");
+  assert.deepEqual([view.canvas.width,view.canvas.height],size);
+  assert.deepEqual(errors,[]);
+  assert.equal(view.workerMessages.filter(m=>["frame_bitmap","present","metadata"].includes(m.type)).length,0);
+  assert.equal(view.packets.length,0);
+});
+
 function browser({autoAck=true,metadataResponse,config={},globals={},settings:providedSettings,onMotionTrace=null,motionTraceOptions={}}={}){
   let clock=0,next=0;const encodings=[],packets=[],draws=[],labels=[],labelBoxes=[],workerMessages=[],workers=[],raf=new Map(),errors=[],reports=[];
   class Canvas{
@@ -1297,6 +1331,41 @@ test("continuous fetch parses split chunks without waiting for metadata and canc
   assert.equal(requests,1);assert.equal(feed.controller.stats.network_requests,1);
   assert.equal(feed.controller.stats.network_frames_received,2);
   feed.stop();await running;assert.equal(cancelled,true);view.controller.stop();
+});
+
+
+test("normal stream EOF reconnects with the consumed cursor and keeps buffered playback",async t=>{
+  const timers=new Map(),requests=[],failures=[];let nextTimer=0,cancelled=0;
+  const view=browser({globals:{
+    setTimeout:(callback,delay)=>{const id=++nextTimer;timers.set(id,{callback,delay});return id;},
+    clearTimeout:id=>timers.delete(id),
+    createImageBitmap:async()=>({width:640,height:480,close(){}}),
+    fetch:async(url,options)=>{
+      requests.push(new URLSearchParams(url.split("?")[1]));
+      assert.equal(options.signal.aborted,false);
+      const packet=streamPacket(requests.length,{enabled:false});
+      const chunks=[packet.subarray(0,2),packet.subarray(2,20),packet.subarray(20)];
+      return {ok:true,headers:{get:()=>"application/vnd.goodvision.display-stream"},body:{getReader:()=>({
+        read:async()=>chunks.length?{value:chunks.shift(),done:false}:{done:true},
+        cancel:async()=>{cancelled++;},
+      })}};
+    },
+  }});
+  const feed=new view.api.NetworkController({canvas:view.canvas,url:"/frames",onFailure:error=>failures.push(error)});
+  t.after(()=>{feed.stop();view.controller.stop();});
+  await feed.pull();await settle();
+  const playback=feed.controller,first=playback.frames.frames[0];
+  assert.equal(feed.after,1);assert.equal(cancelled,1);
+  assert.equal(requests[0].get("after"),"-1");
+  const retry=timers.get(feed.timer);assert.equal(retry.delay,100);
+  timers.delete(feed.timer);await retry.callback();await settle();
+  assert.equal(requests.length,2);assert.equal(requests[1].get("after"),"1");
+  assert.equal(requests[1].get("connection_id"),"connection");
+  assert.equal(feed.controller,playback);assert.equal(playback.frames.frames[0],first);
+  assert.equal(feed.after,2);assert.equal(playback.stats.network_frames_received,2);
+  assert.equal(playback.stats.network_requests,2);assert.equal(cancelled,2);
+  assert.deepEqual(failures,[]);
+  feed.stop();assert.equal(timers.has(feed.timer),false);
 });
 
 

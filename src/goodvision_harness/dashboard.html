@@ -180,7 +180,7 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
   </div>
 </div><script data-gateway-settings>fetch('/gateway/video-source').then(r=>{if(r.ok)document.getElementById('gateway-video-settings').hidden=false;}).catch(()=>{});</script>
 <div id="secure-warning" class="notice" hidden></div>
-<main id="console-main"><section id="console-overview" class="console-page" data-console-page="overview" aria-labelledby="title-overview"><div class="page-heading"><div><div class="eyebrow-label">LIVE WORKSPACE</div><h1 id="title-overview" tabindex="-1">实时工作台</h1><p>查看现场画面，按通道配置检测任务并跟进分析结果。</p></div></div><p class="workspace-guide">连接视频 → 在各路“检测任务”中选择项目 → 开始全部分析。全画面描述与任务实时判断直接显示在视频旁；逐帧记录在“实时结果”中查看。</p>  <section id="fleet-panel" class="panel fleet-panel" aria-labelledby="fleet-title">
+<main id="console-main"><section id="console-overview" class="console-page" data-console-page="overview" aria-labelledby="title-overview"><div class="page-heading"><div><div class="eyebrow-label">LIVE WORKSPACE</div><h1 id="title-overview" tabindex="-1">实时工作台</h1><p>查看工作流的视频画面、运行状态与分析结果。</p></div></div><p class="workspace-guide">在工作流中配置视频源、分析模块和服务连接后，在这里连接视频、开始分析并查看结果。</p>  <section id="fleet-panel" class="panel fleet-panel" aria-labelledby="fleet-title">
     <div class="fleet-toolbar">
       <div class="fleet-heading">
         <div class="section-title"><h2 id="fleet-title">现场视频</h2><span id="fleet-mode" class="fleet-mode">正在检查运行模式</span></div>
@@ -188,7 +188,7 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
       </div>
       <div class="fleet-actions">
         <button id="fleet-view-toggle" type="button" class="btn" aria-pressed="false" hidden>只看画面</button>
-        <button id="fleet-add" type="button" class="btn" disabled>＋ 添加一路</button>
+        <button id="fleet-add" type="button" class="btn" disabled hidden>＋ 添加一路</button><button type="button" class="btn" data-console-go="workflows">配置工作流</button>
         <button id="fleet-start-all" type="button" class="btn" disabled>连接全部视频</button>
         <button id="fleet-stop-all" type="button" class="btn" disabled>断开全部视频</button>
         <button id="fleet-analysis-start" type="button" class="btn primary" disabled>开始全部分析</button>
@@ -199,7 +199,7 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
     <div id="fleet-analysis-state" class="note" role="status">连接视频后，统一开始所有已连接视频的分析。</div>
     <div id="fleet-grid" class="fleet-grid" aria-label="摄像头画面"></div>
     <div id="fleet-note" class="status fleet-summary" role="status" aria-live="polite"></div>
-    <div class="fleet-detail-bar"><span class="note">停止分析后，视频保持连接。检测任务按通道保存；播放缓存可在分析中调整。</span></div>
+    <div class="fleet-detail-bar"><span class="note">停止分析后，视频保持连接。视频源与分析任务在工作流中配置；播放缓存可在分析中调整。</span></div>
   </section>
 
 </section><section id="console-workflows" class="console-page" data-console-page="workflows" aria-label="Workflow builder" hidden><div id="workflow-root"></div></section><section id="console-capabilities" class="console-page" data-console-page="capabilities" aria-labelledby="title-capabilities" hidden>
@@ -225,15 +225,15 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
       </table>
     </div>
   </section>
-<section class="panel capability-catalog" aria-labelledby="capability-catalog-title"><div class="head"><h2 id="capability-catalog-title">可用检测能力</h2><button id="refresh-event-catalog" type="button" class="btn">刷新检测项目</button></div><p class="note">检测项目与敏感度按视频通道保存；组合任务在工作流中配置。</p><div class="task-pills" data-event-presets aria-live="polite">正在读取检测项目…</div><button type="button" class="btn" data-console-go="overview" data-console-target="fleet-panel">配置通道检测任务</button></section>
-</section><section id="console-events" class="console-page" data-console-page="events" aria-labelledby="title-events" hidden><div class="page-heading"><div><div class="eyebrow-label">EVENTS & EVIDENCE</div><h1 id="title-events" tabindex="-1">事件与回放</h1><p>按视频通道筛选事件，查看人物信息和视频证据。</p></div></div><section class="panel channel-review"><div class="head"><h2>通道事件记录</h2><label class="field"><span>视频通道</span><select id="console-event-camera" aria-describedby="console-event-note"><option value="">正在读取通道…</option></select></label></div><p id="console-event-note" class="note" role="status">正在读取可用摄像头通道…</p><div id="console-event-view" class="channel-view"></div></section></section><section id="console-outputs" class="console-page" data-console-page="outputs" aria-labelledby="title-outputs" hidden><div class="page-heading"><div><div class="eyebrow-label">OUTPUT INTERFACES</div><h1 id="title-outputs" tabindex="-1">输出与集成</h1><p>选择视频通道，复制视频、分析数据和证据接口。</p></div></div><section class="panel api-directory"><div class="api-directory-head"><h2>通道输出接口</h2><label class="field"><span>输出通道</span><select id="console-output-camera" aria-describedby="console-output-note"><option value="">正在读取通道…</option></select></label></div><p id="console-output-note" class="note" role="status">正在读取已有输出接口…</p><div class="api-cards"><article class="api-card"><div><span class="api-format">MJPEG</span><h3>标注视频流</h3></div><p>连续输出带人物描边与分析标注的视频。</p><code data-output-path="video/annotated/stream.mjpeg">等待通道信息</code><div class="api-actions"><a data-output-link="video/annotated/stream.mjpeg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/annotated/stream.mjpeg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">MJPEG</span><h3>原始视频流</h3></div><p>拉取源视频的连续画面。</p><code data-output-path="video/live/stream.mjpeg">等待通道信息</code><div class="api-actions"><a data-output-link="video/live/stream.mjpeg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/live/stream.mjpeg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">MJPEG</span><h3>事件证据视频流</h3></div><p>逐帧对应原始分析结果的视频证据。</p><code data-output-path="video/stream.mjpeg">等待通道信息</code><div class="api-actions"><a data-output-link="video/stream.mjpeg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/stream.mjpeg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JPEG</span><h3>最新标注帧</h3></div><p>读取最近一张标注画面。</p><code data-output-path="video/annotated/latest.jpg">等待通道信息</code><div class="api-actions"><a data-output-link="video/annotated/latest.jpg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/annotated/latest.jpg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JPEG</span><h3>最新证据帧</h3></div><p>读取关联分析结果的证据图片。</p><code data-output-path="video/latest.jpg">等待通道信息</code><div class="api-actions"><a data-output-link="video/latest.jpg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/latest.jpg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>最新分析结果</h3></div><p>读取最近一次结构化分析结果。</p><code data-output-path="results/latest">等待通道信息</code><div class="api-actions"><a data-output-link="results/latest" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="results/latest" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>工作流输出</h3></div><p>读取该通道的工作流和当前流程输出。</p><code data-output-path="workflow/results">等待通道信息</code><div class="api-actions"><a data-output-link="workflow/results" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="workflow/results" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>定时总结记录</h3></div><p>读取该通道的定时总结、时间与运行状态。</p><code data-output-path="workflow/summaries">等待通道信息</code><div class="api-actions"><a data-output-link="workflow/summaries" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="workflow/summaries" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">SSE</span><h3>持续结果订阅</h3></div><p>持续接收该通道的分析结果。</p><code data-output-path="results/events">等待通道信息</code><div class="api-actions"><a data-output-link="results/events" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="results/events" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">GVD1</span><h3>显示帧数据包</h3></div><p>获取画面与关联元数据的二进制批次。</p><code data-output-path="video/display/frames">等待通道信息</code><div class="api-actions"><a data-output-link="video/display/frames" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/display/frames" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>显示元数据</h3></div><p>读取显示帧、时间与关联信息。</p><code data-output-path="video/display/metadata">等待通道信息</code><div class="api-actions"><a data-output-link="video/display/metadata" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/display/metadata" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>连续观察证据</h3></div><p>读取连续观察的请求与原始画面信息。</p><code data-output-path="scene/evidence">等待通道信息</code><div class="api-actions"><a data-output-link="scene/evidence" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="scene/evidence" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>运行状态</h3></div><p>读取该通道的运行状态。</p><code data-output-path="status">等待通道信息</code><div class="api-actions"><a data-output-link="status" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="status" disabled>复制地址</button></div></article></div><p id="console-copy-status" class="note" role="status" aria-live="polite"></p></section></section><section id="console-settings" class="console-page" data-console-page="settings" aria-labelledby="title-settings" hidden><div class="page-heading"><div><div class="eyebrow-label">DEPLOYMENT & SERVICES</div><h1 id="title-settings" tabindex="-1">部署与设置</h1><p>统一管理服务部署、连接凭据、视频默认值与线路。</p></div></div>  <section class="panel deployment-panel">
+<section class="panel capability-catalog" aria-labelledby="capability-catalog-title"><div class="head"><h2 id="capability-catalog-title">可用检测能力</h2><button id="refresh-event-catalog" type="button" class="btn">刷新检测项目</button></div><p class="note">检测项目与敏感度按视频通道保存；组合任务在工作流中配置。</p><div class="task-pills" data-event-presets aria-live="polite">正在读取检测项目…</div><button type="button" class="btn" data-console-go="workflows">配置工作流</button></section>
+</section><section id="console-events" class="console-page" data-console-page="events" aria-labelledby="title-events" hidden><div class="page-heading"><div><div class="eyebrow-label">EVENTS & EVIDENCE</div><h1 id="title-events" tabindex="-1">事件与回放</h1><p>按视频通道筛选事件，查看人物信息和视频证据。</p></div></div><section class="panel channel-review"><div class="head"><h2>通道事件记录</h2><label class="field"><span>视频通道</span><select id="console-event-camera" aria-describedby="console-event-note"><option value="">正在读取通道…</option></select></label></div><p id="console-event-note" class="note" role="status">正在读取可用摄像头通道…</p><div id="console-event-view" class="channel-view"></div></section></section><section id="console-outputs" class="console-page" data-console-page="outputs" aria-labelledby="title-outputs" hidden><div class="page-heading"><div><div class="eyebrow-label">OUTPUT INTERFACES</div><h1 id="title-outputs" tabindex="-1">输出与集成</h1><p>选择视频通道，复制视频、分析数据和证据接口。</p></div></div><section class="panel api-directory"><div class="api-directory-head"><h2>通道输出接口</h2><label class="field"><span>输出通道</span><select id="console-output-camera" aria-describedby="console-output-note"><option value="">正在读取通道…</option></select></label></div><p id="console-output-note" class="note" role="status">正在读取已有输出接口…</p><div class="api-cards"><article class="api-card"><div><span class="api-format">MJPEG</span><h3>标注视频流</h3></div><p>连续输出带人物描边与分析标注的视频。</p><code data-output-path="video/annotated/stream.mjpeg">等待通道信息</code><div class="api-actions"><a data-output-link="video/annotated/stream.mjpeg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/annotated/stream.mjpeg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">MJPEG</span><h3>原始视频流</h3></div><p>拉取源视频的连续画面。</p><code data-output-path="video/live/stream.mjpeg">等待通道信息</code><div class="api-actions"><a data-output-link="video/live/stream.mjpeg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/live/stream.mjpeg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">MJPEG</span><h3>事件证据视频流</h3></div><p>逐帧对应原始分析结果的视频证据。</p><code data-output-path="video/stream.mjpeg">等待通道信息</code><div class="api-actions"><a data-output-link="video/stream.mjpeg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/stream.mjpeg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JPEG</span><h3>最新标注帧</h3></div><p>读取最近一张标注画面。</p><code data-output-path="video/annotated/latest.jpg">等待通道信息</code><div class="api-actions"><a data-output-link="video/annotated/latest.jpg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/annotated/latest.jpg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JPEG</span><h3>最新证据帧</h3></div><p>读取关联分析结果的证据图片。</p><code data-output-path="video/latest.jpg">等待通道信息</code><div class="api-actions"><a data-output-link="video/latest.jpg" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/latest.jpg" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>最新分析结果</h3></div><p>读取最近一次结构化分析结果。</p><code data-output-path="results/latest">等待通道信息</code><div class="api-actions"><a data-output-link="results/latest" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="results/latest" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>工作流输出</h3></div><p>读取该通道的工作流和当前流程输出。</p><code data-output-path="workflow/results">等待通道信息</code><div class="api-actions"><a data-output-link="workflow/results" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="workflow/results" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>定时总结记录</h3></div><p>读取该通道的定时总结、时间与运行状态。</p><code data-output-path="workflow/summaries">等待通道信息</code><div class="api-actions"><a data-output-link="workflow/summaries" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="workflow/summaries" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">SSE</span><h3>持续结果订阅</h3></div><p>持续接收该通道的分析结果。</p><code data-output-path="results/events">等待通道信息</code><div class="api-actions"><a data-output-link="results/events" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="results/events" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">GVD1</span><h3>显示帧数据包</h3></div><p>获取画面与关联元数据的二进制批次。</p><code data-output-path="video/display/frames">等待通道信息</code><div class="api-actions"><a data-output-link="video/display/frames" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/display/frames" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>显示元数据</h3></div><p>读取显示帧、时间与关联信息。</p><code data-output-path="video/display/metadata">等待通道信息</code><div class="api-actions"><a data-output-link="video/display/metadata" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="video/display/metadata" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>连续观察证据</h3></div><p>读取连续观察的请求与原始画面信息。</p><code data-output-path="scene/evidence">等待通道信息</code><div class="api-actions"><a data-output-link="scene/evidence" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="scene/evidence" disabled>复制地址</button></div></article><article class="api-card"><div><span class="api-format">JSON</span><h3>运行状态</h3></div><p>读取该通道的运行状态。</p><code data-output-path="status">等待通道信息</code><div class="api-actions"><a data-output-link="status" target="_blank" rel="noreferrer" aria-disabled="true">打开 ↗</a><button type="button" class="text-button" data-output-copy="status" disabled>复制地址</button></div></article></div><p id="console-copy-status" class="note" role="status" aria-live="polite"></p></section></section><section id="console-settings" class="console-page" data-console-page="settings" aria-labelledby="title-settings" hidden><div class="page-heading"><div><div class="eyebrow-label">DEPLOYMENT & SERVICES</div><h1 id="title-settings" tabindex="-1">部署与设置</h1><p>管理 API 凭据、线路测速和本机摄像头。视频源与分析服务在工作流节点侧栏中配置。</p></div></div>  <section class="panel deployment-panel">
     <div class="deployment-head">
       <div class="deployment-title">
         <div class="section-title">
-          <h2>服务与部署配置</h2>
+          <h2>API 凭据</h2>
           <span class="scope persistent">重启后保留</span>
         </div>
-        <div class="note">设置保存在 Docker 数据卷中。停止全部分析后保存，对下次统一分析生效；已连接的视频可继续预览。密钥不会回显。</div>
+        <div class="note">管理云端 API 凭据。密钥保存在服务的持久数据目录中，不会回显。</div>
       </div>
       <span id="deployment-storage" class="channel">Persistence · loading</span>
     </div>
@@ -336,7 +336,7 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
         <div id="default-api-key-status" class="secret-status">Checking key status...</div>
         <div class="row">
           <button id="save-api-key-button" class="btn" disabled>保存 API key</button>
-          <span class="note">可直接在此配置，无需 .env；保存后重启仍有效。正式检测请取消 Test mode。</span>
+          <span class="note">保存后重启仍有效，密钥不会回显。</span>
         </div>
         </div>
       </div>
@@ -360,14 +360,12 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
             <option value="stereo">双目 · 使用左半幅</option>
           </select>
         </label>
-        <label class="switch"><input id="default-dry-run" type="checkbox"> Test mode · no model calls</label>
-        <div class="secret-status">Unchecked means formal mode with model calls enabled.</div>
         <label class="switch"><input id="default-autostart" type="checkbox"> 启动时自动连接视频（分析需手动统一开始）</label>
         <div id="deployment-source-status" class="secret-status">Loading effective settings source...</div>
       </div>
     </div>
     <div class="deployment-actions">
-      <button id="save-deployment-button" class="btn primary" disabled>保存部署设置</button>
+      <button id="save-deployment-button" class="btn primary" disabled>保存服务设置</button>
       <button id="reset-deployment-button" class="btn" disabled>放弃修改</button>
       <button id="clear-api-key-button" class="btn danger" disabled>清除已保存的 API key</button>
     </div>
@@ -492,7 +490,7 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
       <pre id="result-json" data-interface-copy="true">Waiting for the first analysis result...</pre>
     </section>
   </div></div><div id="fleet-detail-console" hidden>
-  <p class="fleet-detail-label">本机摄像头 · 浏览器预览检查。网络视频连接、检测任务和分析操作在实时工作台管理。</p>
+  <p class="fleet-detail-label">本机摄像头 · 浏览器预览检查。网络视频与检测任务在工作流中配置，分析操作在实时工作台进行。</p>
   <section id="local-camera-panel" class="panel control-panel">
     <div class="control-grid">
       <div class="control-block">
@@ -526,7 +524,6 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
             <div id="feature-select" class="feature-select">正在读取检测项目…
             </div>
           </div>
-          <label class="switch"><input id="dry-run" type="checkbox"> this run only · dry run · no model calls</label>
         </div>
         <div class="field" id="event-sensitivity-controls">
           <span>事件敏感度 · 启动前调整</span>
@@ -674,7 +671,7 @@ function consoleJson(value){
 const ui={
   deploymentStorage:$("deployment-storage"),defaultStreamUrl:$("default-stream-url"),
   defaultStreamStatus:$("default-stream-status"),defaultApiKey:$("default-api-key"),
-  defaultApiKeyStatus:$("default-api-key-status"),defaultDryRun:$("default-dry-run"),
+  defaultApiKeyStatus:$("default-api-key-status"),
   localInference:$("local-inference-enabled"),localTracking:$("local-tracking-enabled"),
   inferenceMode:$("inference-mode"),trackingMode:$("tracking-mode"),
   inferenceLocalOption:$("inference-mode-local"),trackingLocalOption:$("tracking-mode-local"),
@@ -705,7 +702,7 @@ const ui={
   warning:$("secure-warning"),cameraMode:$("camera-mode"),streamMode:$("stream-mode"),
   cameraControls:$("camera-controls"),streamControls:$("stream-controls"),cameraButton:$("camera-button"),
   cameraNote:$("camera-note"),sourceNote:$("source-note"),streamUrl:$("stream-url"),
-  dryRun:$("dry-run"),featureSelect:$("feature-select"),start:$("start-button"),stop:$("stop-button"),
+  featureSelect:$("feature-select"),start:$("start-button"),stop:$("stop-button"),
   gallerySummary:$("gallery-summary"),personId:$("person-id"),personName:$("person-name"),
   personFile:$("person-file"),enroll:$("enroll-button"),galleryNote:$("gallery-note"),
   galleryBody:$("gallery-body"),refreshGallery:$("refresh-gallery-button"),eyebrow:$("decision-eyebrow"),
@@ -1020,7 +1017,8 @@ async function toggleAnnotationFullscreen(){
   }catch(error){say("Could not change fullscreen view: "+error.message,true)}
 }
 function deploymentSay(text,error=false){
-  ui.deploymentNote.textContent=text;ui.deploymentNote.className="status deployment-note"+(error?" error":"")
+  ui.deploymentNote.textContent=text;ui.deploymentNote.className="status deployment-note"+(error?" error":"");
+  globalThis.GoodvisionWorkflowServices?.say(text,error)
 }
 function configured(){
   return state.deployment&&state.deployment.configured_stream===true||
@@ -1118,7 +1116,7 @@ function controls(){
   for(const button of $("route-results").querySelectorAll("button"))
     button.disabled=localInference||sharedBusy||routeBusy||state.deploymentSaving||!state.routes||!state.routes.can_select||
       button.dataset.routeId===state.routes.selected_id;
-  for(const item of [ui.cameraMode,ui.streamMode,ui.streamUrl,ui.dryRun,ui.cameraLayout])item.disabled=busy;
+  for(const item of [ui.cameraMode,ui.streamMode,ui.streamUrl,ui.cameraLayout])item.disabled=busy;
   for(const item of featureInputs)item.disabled=busy;
   for(const [key,item] of sensitivityInputs)item.disabled=busy||!selectedFeatures().includes(key);
   ui.cameraButton.disabled=busy||!cameraAllowed||!cameraConfig();
@@ -1134,7 +1132,7 @@ function controls(){
     item.disabled=!persistenceReady||deploymentBusy||sharedBusy;
   ui.inferenceLocalOption.disabled=localGpuUnavailable("inference");
   ui.trackingLocalOption.disabled=localGpuUnavailable("tracking");
-  for(const item of [ui.defaultStreamUrl,ui.defaultApiKey,ui.defaultDryRun,ui.defaultAutostart,ui.defaultCameraLayout])
+  for(const item of [ui.defaultStreamUrl,ui.defaultApiKey,ui.defaultAutostart,ui.defaultCameraLayout])
     item.disabled=!persistenceReady||deploymentBusy;
   ui.saveDeployment.disabled=!persistenceReady||deploymentBusy||sharedBusy;
   saveApiKeyButton.disabled=localInference||!persistenceReady||deploymentBusy||sharedBusy||!ui.defaultApiKey.value.trim();
@@ -1146,7 +1144,8 @@ function controls(){
   ui.bufferDelay.disabled=!persistenceReady||deploymentBusy||state.pending||!!localBuffer;
   ui.saveBufferDelay.disabled=ui.bufferDelay.disabled;
   ui.clearApiKey.disabled=!persistenceReady||deploymentBusy||sharedBusy||
-    state.deployment.api_key_persisted!==true
+    state.deployment.api_key_persisted!==true;
+  globalThis.GoodvisionWorkflowServices?.sync()
 }
 function processingMethods(){
   const items=state.deployment?.processing_methods||state.info?.processing_methods;
@@ -1544,7 +1543,7 @@ function renderLocalGpuSettings(){
   }
   if(localInferenceEnabled())ui.localGpuStatus.textContent+=" 已保存的大模型服务无需云端 API key。";
   if(gpu.error&&(localInference||localTracking)){ui.localGpuStatus.textContent+=" "+String(gpu.error);ui.localGpuStatus.className+=" error"}
-  if(changed)ui.localGpuStatus.textContent+=" 此处为待保存选择，请保存默认设置后开始新会话。"
+  if(changed)ui.localGpuStatus.textContent+=" 此处为待保存选择，请保存对应服务设置后开始新会话。"
 }
 function updateSourceNote(){
   const deployment=state.deployment;
@@ -1561,7 +1560,6 @@ function renderDeploymentSettings(clearSecrets=true,syncRun=false){
   const data=state.deployment;if(!data)return;
   if(clearSecrets){ui.defaultStreamUrl.value="";ui.defaultApiKey.value="";
     ui.trackingNodeKey.value="";ui.clearTrackingNodeKey.checked=false}
-  ui.defaultDryRun.checked=data.dry_run===true;
   ui.defaultAutostart.checked=data.autostart===true;
   ui.inferenceMode.value=savedExecutionMode("inference");ui.trackingMode.value=savedExecutionMode("tracking");
   ui.inferenceServerUrl.value=data.inference_server_url||"";
@@ -1590,14 +1588,14 @@ function renderDeploymentSettings(clearSecrets=true,syncRun=false){
     ?"Saved API key present · value hidden · blank keeps it"
     :data.api_key_present===true
       ?"API key available from runtime/environment · value hidden"
-      :"No API key configured · formal mode cannot call the model";
+      :"No API key configured · save a key before starting analysis";
   ui.defaultApiKey.placeholder=data.api_key_present===true
     ?"Leave blank to keep the current key"
-    :"Enter an API key for formal mode";
+    :"Enter an API key for analysis";
   ui.deploymentSourceStatus.textContent="Effective source: "+settingsSourceLabel(data.settings_source)+
     (data.settings_saved===true?" · persistent settings saved":" · no persistent override saved");
   if(syncRun&&!state.running&&!state.pending){
-    ui.streamUrl.value="";ui.dryRun.checked=data.dry_run===true;
+    ui.streamUrl.value="";
     ui.cameraLayout.value=ui.defaultCameraLayout.value;state.runOverridesDirty=false
   }
   updateSourceNote();controls()
@@ -1613,7 +1611,7 @@ async function loadDeploymentSettings(discarded=false){
     if(state.deployment.storage_error){
       deploymentSay("Persistent storage error: "+state.deployment.storage_error,true)
     }else if(state.deployment.persistence_available!==true){
-      deploymentSay("Persistent storage is unavailable. The container needs a writable deployment data volume.",true)
+      deploymentSay("设置存储不可用。请为服务配置可写的数据目录。",true)
     }else{
       deploymentSay(discarded
         ?"Unsaved deployment edits discarded. Saved/default values reloaded; secret fields remain hidden."
@@ -1625,13 +1623,14 @@ async function loadDeploymentSettings(discarded=false){
     deploymentSay("Could not load persistent settings: "+error.message,true)
   }finally{state.deploymentLoading=false;controls()}
 }
-async function updateDeploymentSettings(payload,successMessage,{syncRun=false}={}){
+async function updateDeploymentSettings(payload,successMessage,{syncRun=false,preserveFields=[]}={}){
   if(state.running||state.pending||state.stopping||sessionBusyStates.has(state.processingStatus?.pipeline_state)||
     state.processingStatus?.processing_cleanup==="closing"||globalThis.GoodvisionFleet?.extraBusy?.()===true){
     deploymentSay("请先停止全部分析并等待收尾完成，再保存运行设置。",true);return false
   }
   if(state.deploymentLoading||state.deploymentSaving||state.routeSubmitting||state.routes?.state==="running")return false;
   if(!state.deployment||state.deployment.persistence_available!==true)return false;
+  const preserved=preserveFields.map(field=>({field,value:field.value,checked:field.checked}));
   state.deploymentSaving=true;deploymentSay("Saving persistent settings...");controls();
   try{
     const response=await fetch("/v1/deployment/settings",{
@@ -1645,16 +1644,34 @@ async function updateDeploymentSettings(payload,successMessage,{syncRun=false}={
     deploymentSay(successMessage);globalThis.GoodvisionFleet?.refresh?.();return true
   }catch(error){
     deploymentSay("Could not save persistent settings: "+error.message,true);return false
-  }finally{state.deploymentSaving=false;controls()}
+  }finally{
+    for(const {field,value,checked} of preserved){field.value=value;field.checked=checked;}
+    if(preserved.length)renderLocalGpuSettings();
+    state.deploymentSaving=false;controls()
+  }
 }
-async function saveDeploymentSettings(){
+function workflowServiceFields(section){
+  return section==="analysis"?[ui.inferenceMode,ui.inferenceServerUrl,ui.inferenceServerModel,ui.inferenceServerProtocol]:
+    [ui.trackingMode,ui.trackingServerUrl,ui.trackingServerCapacity,ui.trackingServerProtocol,ui.trackingSampleFps,
+      ui.trackingNodeKey,ui.clearTrackingNodeKey,ui.richlabelModel];
+}
+function workflowUsesSimulation(){return state.deployment?.dry_run===true;}
+async function useRealWorkflowAnalysis(){
+  if(!workflowUsesSimulation())return true;
+  return updateDeploymentSettings({dry_run:false},"已切换为真实分析，下次开始分析时使用已配置的服务。",{
+    syncRun:true,preserveFields:[...workflowServiceFields("analysis"),...workflowServiceFields("tracking"),ui.defaultApiKey,ui.defaultStreamUrl]
+  });
+}
+async function saveDeploymentSettings(section=null){
+  // Native click handlers pass an Event; only explicit section names scope a save.
+  if(!["analysis","tracking"].includes(section))section=null;
+  const saveAnalysis=section!=="tracking",saveTracking=section!=="analysis";
   const inference=draftExecutionMode("inference"),tracking=draftExecutionMode("tracking");
-  const payload={dry_run:ui.defaultDryRun.checked,autostart:ui.defaultAutostart.checked,
-    camera_layout:ui.defaultCameraLayout.value,
-    inference_mode:inference,tracking_mode:tracking,
-    local_inference_enabled:inference==="local",local_tracking_enabled:tracking==="local"};
-  if(ui.richlabelModel.value)payload.rich_label_model=ui.richlabelModel.value;
-  if(inference==="local"&&localGpuUnavailable("inference")||tracking==="local"&&localGpuUnavailable("tracking")){
+  const payload=section?{}:{autostart:ui.defaultAutostart.checked};
+  if(saveAnalysis)Object.assign(payload,{inference_mode:inference,local_inference_enabled:inference==="local"});
+  if(saveTracking)Object.assign(payload,{tracking_mode:tracking,local_tracking_enabled:tracking==="local"});
+  if(saveTracking&&ui.richlabelModel.value)payload.rich_label_model=ui.richlabelModel.value;
+  if(saveAnalysis&&inference==="local"&&localGpuUnavailable("inference")||saveTracking&&tracking==="local"&&localGpuUnavailable("tracking")){
     deploymentSay("所选本机 GPU 服务未部署或不可用。请准备对应运行环境，或选择云端 / 独立服务器。",true);return
   }
   const serverOrigin=(field,label)=>{
@@ -1667,11 +1684,13 @@ async function saveDeploymentSettings(){
     return url.origin
   };
   try{
-    const fpsText=ui.trackingSampleFps.value.trim(),fps=Number(fpsText);
-    if(!fpsText||!Number.isFinite(fps)||fps<.5||fps>30)
-      throw {field:ui.trackingSampleFps,message:"采样帧率请输入 0.5–30 之间的数值，建议从 2 FPS 开始。"};
-    payload.tracking_sample_fps=fps;
-    if(inference==="server"){
+    if(saveTracking){
+      const fpsText=ui.trackingSampleFps.value.trim(),fps=Number(fpsText);
+      if(!fpsText||!Number.isFinite(fps)||fps<.5||fps>30)
+        throw {field:ui.trackingSampleFps,message:"采样帧率请输入 0.5–30 之间的数值，建议从 2 FPS 开始。"};
+      payload.tracking_sample_fps=fps;
+    }
+    if(saveAnalysis&&inference==="server"){
       payload.inference_server_protocol=ui.inferenceServerProtocol.value;
       if(!["compatible","goodvision"].includes(payload.inference_server_protocol))
         throw {field:ui.inferenceServerProtocol,message:"请选择兼容模型 API 或 GoodVision 分析服务。"};
@@ -1680,7 +1699,7 @@ async function saveDeploymentSettings(){
       if(!payload.inference_server_model||payload.inference_server_model.length>512||/[\u0000-\u001f\u007f]/.test(payload.inference_server_model))
         throw {field:ui.inferenceServerModel,message:"请填写服务器提供的服务标识。"}
     }
-    if(tracking==="server"){
+    if(saveTracking&&tracking==="server"){
       payload.tracking_server_protocol=ui.trackingServerProtocol.value;
       payload.tracking_server_url=serverOrigin(ui.trackingServerUrl,"人物追踪服务器地址");
       const raw=ui.trackingServerCapacity.value.trim(),capacity=Number(raw);
@@ -1699,22 +1718,26 @@ async function saveDeploymentSettings(){
     (payload.tracking_server_url!==(state.deployment?.tracking_server_url||"")||
       payload.tracking_server_capacity!==Number(state.deployment?.tracking_server_capacity||1)||
       payload.tracking_server_protocol!==(state.deployment?.tracking_server_protocol||"legacy"));
-  if(!trackingChanged&&processingMethods().some(method=>method.available!==false))payload.processing_method="person_tracking";
+  if(saveTracking&&!trackingChanged&&processingMethods().some(method=>method.available!==false))payload.processing_method="person_tracking";
   const streamUrl=ui.defaultStreamUrl.value.trim(),apiKey=ui.defaultApiKey.value.trim();
-  if(streamUrl)payload.stream_url=streamUrl;
-  if(apiKey&&inference==="cloud")payload.api_key=apiKey;
-  await updateDeploymentSettings(payload,
+  if(!section&&streamUrl)payload.stream_url=streamUrl;
+  if(!section&&apiKey&&inference==="cloud")payload.api_key=apiKey;
+  return await updateDeploymentSettings(payload,section
+    ?(section==="analysis"?"分析服务":"人物追踪服务")+"设置已保存，下次分析生效。"
+    :
     "默认设置已保存，对下次统一分析生效，重启后继续保留。"+
       (payload.processing_method?" 新会话使用 人员追踪模块 连续分析。":"")+
       (apiKey&&inference!=="cloud"?" 自部署大模型不使用云端 API key；本次输入未保存。":""),
-    {syncRun:true})
+    {syncRun:!section,preserveFields:section?
+      [...workflowServiceFields(section==="analysis"?"tracking":"analysis"),ui.defaultApiKey,ui.defaultStreamUrl]:[]})
 }
 async function saveApiKey(){
   if(localInferenceEnabled())return;
   const key=ui.defaultApiKey.value.trim();
   if(!key){deploymentSay("请输入 API key 后保存。",true);return}
   await updateDeploymentSettings({api_key:key},
-    "API key 已保存，无需 .env 或重启服务。正式检测请取消 Test mode，再开始检测。")
+    "API key 已保存，无需 .env 或重启服务。",
+    {preserveFields:[...workflowServiceFields("analysis"),...workflowServiceFields("tracking"),ui.defaultStreamUrl]})
 }
 async function saveBufferDelay(){
   const raw=ui.bufferDelay.value.trim(),seconds=Number(raw);
@@ -1749,10 +1772,11 @@ async function saveBufferDelay(){
 }
 async function clearSavedApiKey(){
   if(!state.deployment||state.deployment.api_key_persisted!==true)return;
-  const prompt="Clear the saved API key? Formal mode will require another available key.";
+  const prompt="Clear the saved API key? Analysis will require another available key.";
   if(!window.confirm(globalThis.GoodvisionI18n?.text(prompt)||prompt))return;
   await updateDeploymentSettings({clear_api_key:true},
-    "Saved API key cleared. A runtime/environment key, if configured, remains available.")
+    "Saved API key cleared. A runtime/environment key, if configured, remains available.",
+    {preserveFields:[...workflowServiceFields("analysis"),...workflowServiceFields("tracking"),ui.defaultStreamUrl]})
 }
 
 async function info(){
@@ -1782,7 +1806,6 @@ async function info(){
     renderProcessingSettings();
     updateAnnotatedOutput(data.annotated_output);
     if(!state.runOverridesDirty&&!state.deployment){
-      ui.dryRun.checked=Boolean(data.dry_run||!data.api_key_present&&!localInferenceEnabled());
       ui.cameraLayout.value=data.camera_layout==="stereo"?"stereo":"mono"
     }
     updateSourceNote();
@@ -2183,7 +2206,7 @@ function message(data){
     if(state.sessionMode==="camera")startSampler();
     say("Live | "+(state.sessionMode==="camera"?"browser camera":"network stream")+
       " | "+(state.sessionAnalysisMode==="face"?"face diagnostics":state.sessionFeatures.join(" + "))+
-      " | 人员追踪模块 连续描边"+(state.sessionAnalysisMode!=="face"&&data.dry_run?" | DRY RUN":""));
+      " | 人员追踪模块 连续描边");
     controls()
   }else if(data.type==="error"){
     state.pending=false;const detail=data.message||data.error||"Session error";
@@ -2212,7 +2235,7 @@ async function start(){
     say("人员追踪模块 连续分析暂不可用："+(processing.reason||"服务尚未就绪"),true);return
   }
   const needsKey=selectedFeatures().some(feature=>feature!=="stranger");
-  if(needsKey&&!ui.dryRun.checked&&!localInferenceEnabled()&&!state.info.api_key_present){
+  if(needsKey&&!localInferenceEnabled()&&!state.info.api_key_present){
     const message="请先在控制台填写并保存 API key，再启动正式检测；无需创建 .env。";
     say(message,true);deploymentSay(message,true);
     ui.defaultApiKey.scrollIntoView({behavior:"smooth",block:"center"});ui.defaultApiKey.focus();return
@@ -2225,7 +2248,7 @@ async function start(){
       type:"start",mode:state.mode,analysis_mode:"multi",features:selectedFeatures(),
       event_sensitivities:selectedSensitivities()
     };
-    data.dry_run=ui.dryRun.checked;
+    data.dry_run=false;
     if(state.mode==="stream"){
       data.stream_url=ui.streamUrl.value.trim();data.camera_layout=ui.cameraLayout.value
     }
@@ -2360,8 +2383,7 @@ async function status(){
       openFeed();
       if(state.stopping){stopSampler();say("检测已停止；"+sceneDrainMessage(data.scene_drain||{})+"。")}
       else say("Server session "+data.pipeline_state+" | "+
-        (data.ready?"ready":data.readiness_reason||"warming")+" | 人员追踪模块 连续描边"+
-        (state.sessionAnalysisMode!=="face"&&data.dry_run?" | DRY RUN":""))
+        (data.ready?"ready":data.readiness_reason||"warming")+" | 人员追踪模块 连续描边")
     }else if(state.running&&!state.pending){
       resetOverallDescription();
       $("vlm-current-observation").textContent="任务已停止";
@@ -2842,7 +2864,7 @@ function connectArchiveEvents(cursor){
 function deploymentEdited(){
   deploymentSay(state.running||state.pending
     ?"运行设置尚未保存。请先停止全部分析，再保存修改。"
-    :"Unsaved deployment edits. Save defaults or discard edits.");controls()
+    :"设置尚未保存，请点击当前区域的保存按钮。");controls()
 }
 ui.defaultStreamUrl.oninput=deploymentEdited;ui.defaultApiKey.oninput=deploymentEdited;
 ui.trackingNodeKey.oninput=deploymentEdited;ui.clearTrackingNodeKey.onchange=deploymentEdited;
@@ -2852,7 +2874,7 @@ $("refresh-events").onclick=()=>loadEventArchive();
 $("archive-more").onclick=()=>loadEventArchive(true);
 $("archive-feature").onchange=()=>loadEventArchive();
 $("archive-subject").onchange=()=>loadEventArchive();
-ui.defaultDryRun.onchange=deploymentEdited;ui.defaultAutostart.onchange=deploymentEdited;
+ui.defaultAutostart.onchange=deploymentEdited;
 ui.inferenceMode.onchange=ui.trackingMode.onchange=()=>{renderLocalGpuSettings();deploymentEdited()};
 for(const field of [ui.inferenceServerUrl,ui.inferenceServerModel,ui.inferenceServerProtocol,ui.trackingServerUrl,ui.trackingServerCapacity,
   ui.trackingServerProtocol,ui.trackingSampleFps])
@@ -2875,7 +2897,6 @@ ui.cameraMode.onclick=()=>mode("camera");ui.streamMode.onclick=()=>mode("stream"
 ui.cameraButton.onclick=camera;
 ui.streamUrl.oninput=()=>{state.runOverridesDirty=true;controls()};
 ui.cameraLayout.onchange=()=>{state.runOverridesDirty=true;controls()};
-ui.dryRun.onchange=()=>{state.runOverridesDirty=true;controls()};
 ui.enroll.onclick=enrollPerson;ui.refreshGallery.onclick=refreshGallery;
 ui.start.onclick=start;ui.stop.onclick=stop;
 ui.fullscreenButton.onclick=toggleAnnotationFullscreen;
@@ -3198,7 +3219,7 @@ setInterval(()=>{
     {key:"tracking",title:"人物追踪",description:"配置追踪服务、视频容量与采样帧率。"},
     {key:"video",title:"视频默认值",description:"设置默认视频源与摄像头画面类型。"},
     {key:"credentials",title:"凭据",description:"云端 API 的密钥在此单独保存。"},
-    {key:"startup",title:"启动与测试",description:"设置启动行为与分析测试模式。"}
+    {key:"startup",title:"启动设置",description:"设置服务启动时的视频连接行为。"}
   ];
 
   function organizeSettings(doc,{diagnostic=root.GoodvisionDiagnostic===true}={}){
@@ -3221,7 +3242,7 @@ setInterval(()=>{
       card.append(heading,make("p","note settings-section-description",section.description));
       const body=make("div","settings-section-body");card.append(body);group.set(section.key,body);
       const link=make("a","settings-index-link",section.title);link.href="#"+card.id;
-      // Console routes use the URL hash. A section jump must keep #settings intact.
+      // Section jumps preserve the current console route.
       link.addEventListener("click",event=>{
         event.preventDefault();card.focus({preventScroll:true});card.scrollIntoView({block:"start",behavior:"smooth"});
       });
@@ -3262,10 +3283,6 @@ setInterval(()=>{
       (actions||cloud).append(clear,...help);
     }
 
-    const dryRun=byId("default-dry-run")?.closest("label");
-    const dryRunHelp=dryRun?.nextElementSibling;
-    move("default-dry-run","startup",{label:true});
-    if(dryRunHelp?.classList.contains("secret-status"))group.get("startup").append(dryRunHelp);
     move("default-autostart","startup",{label:true});
     move("deployment-source-status","startup");
 
@@ -3294,6 +3311,51 @@ setInterval(()=>{
   if(root.document&&!root.GoodvisionDiagnostic)organizeSettings(root.document);
 })(typeof globalThis!=="undefined"?globalThis:this);
 
+</script>
+<script id="workflow-services-script">
+(function(root){
+  const doc=root.document;if(!doc||root.GoodvisionDiagnostic)return;
+  const page=doc.getElementById('console-workflows');
+  const panel=doc.querySelector('#console-settings .deployment-panel');if(!page||!panel)return;
+  // Keep bound controls alive between canvas renders, including pending drafts.
+  const store=doc.createElement('div');store.id='workflow-service-store';store.hidden=true;page.append(store);
+  const sections=new Map();let active=null;
+  for(const kind of ['analysis','tracking']){
+    const card=doc.getElementById('settings-'+kind);if(!card)continue;
+    const note=doc.createElement('p');note.className='wc-note';note.textContent='此服务连接供工作流共用，保存后在下次分析生效。';
+    const actions=doc.createElement('div');actions.className='wc-service-actions';
+    const save=doc.createElement('button');save.type='button';save.className='btn primary';
+    save.textContent=kind==='analysis'?'保存分析服务':'保存人物追踪服务';
+    const status=doc.createElement('p');status.className='wc-note';status.setAttribute('role','status');
+    save.onclick=async()=>{await root.saveDeploymentSettings(kind);root.GoodvisionWorkflows?.app?.refreshMetadata();};
+    actions.append(save);card.append(note,actions,status);store.append(card);
+    sections.set(kind,{card,save,status});
+  }
+  // Removed UI blocks stay out of the rendered interface. Their existing
+  // runtime bindings remain mounted so background status updates stay safe.
+  for(const id of ['settings-video','settings-startup','processing-method-field','processing-comparison','save-deployment-button','reset-deployment-button']){
+    const element=doc.getElementById(id);if(element)store.append(element);
+  }
+  for(const kind of ['analysis','tracking','video','startup'])panel.querySelector('a[href="#settings-'+kind+'"]')?.remove();
+  const footer=doc.getElementById('deployment-note')?.parentElement;footer?.classList.remove('settings-save-actions');
+  const api={
+    park(){active=null;for(const {card} of sections.values())store.append(card);},
+    mount(host){api.park();if(host){active=sections.get(host.dataset.wcService)||null;if(active)host.append(active.card);}api.sync();},
+    sync(){
+      const disabled=doc.getElementById('save-deployment-button')?.disabled!==false;
+      for(const item of sections.values())item.save.disabled=disabled;
+      const notice=doc.getElementById('workflow-test-mode'),button=doc.getElementById('workflow-real-analysis');
+      if(notice)notice.hidden=root.workflowUsesSimulation?.()!==true;
+      if(button)button.disabled=disabled;
+    },
+    useRealAnalysis(){return root.useRealWorkflowAnalysis();},
+    say(text,error=false){
+      if(active){active.status.textContent=text;active.status.className='wc-note'+(error?' is-error':'');}
+      const status=doc.getElementById('workflow-mode-status');if(status){status.textContent=text;status.className='wc-note'+(error?' is-error':'');}
+    }
+  };
+  root.GoodvisionWorkflowServices=api;api.sync();
+})(globalThis);
 </script>
 <script src="/assets/workflow_canvas.js"></script>
 </body>

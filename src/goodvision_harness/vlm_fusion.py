@@ -289,5 +289,6 @@ class VLMFusion:
                         for sid, target in matches.items()
                     ),
                     event_sensitivities=scene.event_sensitivities,
+                    vocabulary=scene.vocabulary,
                 )
         return changed

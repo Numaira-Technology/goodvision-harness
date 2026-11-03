@@ -9,6 +9,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from . import grounding
+from .event_registry import EventVocabulary
 from .event_sensitivity import sensitivity_ui_info
 
 # Optional presentation metadata. A newly registered detector still appears
@@ -36,12 +37,23 @@ EVENT_PRESENTATION = {
 }
 
 
-def event_catalog() -> dict:
+def event_catalog(vocabulary: EventVocabulary | None = None) -> dict:
     """Build fresh values from the authoritative supported event list."""
     sensitivities = sensitivity_ui_info()
     events = []
-    for key in grounding.DETECTION_EVENT_LABELS:
-        metadata = EVENT_PRESENTATION.get(key, {})
+    supported = (
+        vocabulary.labels()
+        if vocabulary is not None
+        else grounding.DETECTION_EVENT_LABELS
+    )
+    for key in supported:
+        definition = vocabulary.get(key) if vocabulary is not None else None
+        injected = definition is not None and not definition.builtin
+        metadata = (
+            {"labels": {"zh": definition.zh_name, "en": key}, "default_enabled": False}
+            if injected
+            else EVENT_PRESENTATION.get(key, {})
+        )
         item = {
             "id": key,
             "labels": dict(metadata.get("labels", {"zh": key, "en": key})),

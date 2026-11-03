@@ -2016,6 +2016,12 @@
         try{
           if(this.closed||epoch!==this.acceptEpoch)return;
           if(bitmap.width!==frame.width||bitmap.height!==frame.height)throw new Error("display dimensions changed");
+          const size=this.controller.sourceSize;
+          if(config.enabled===false&&size&&(size[0]!==bitmap.width||size[1]!==bitmap.height)){
+            // Preview has no crop-aligned tracking state. Retire the old native
+            // pixel buffer and start the configured delay at the new dimensions.
+            this.reset(config,data.connection_id);
+          }
           this.controller.noteTiming("network_decode",performance.now()-decodeStarted);
           this.controller.stats.network_frames_received++;
           if(this.after>=0)this.controller.stats.network_source_gap_frames+=Math.max(0,frame.source_sequence-this.after-1);
