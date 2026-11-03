@@ -144,22 +144,21 @@ python tools/package_image_update.py main --version v2 --image goodvision-main:v
 
 ## 容器网络、地址与生命周期
 
-默认网络名 `goodvision-<namespace>`；每个模块项目名为
-`goodvision-<module>-<namespace>`，因此 Docker Desktop 的项目分组、容器和
-镜像都以 `goodvision-main`、`goodvision-bbox`、`goodvision-contour`、
-`goodvision-system1` 等模块名开头。安装器创建并标识共享网络，遇到同名但不属于
+默认项目名固定为 `goodvision-main`、`goodvision-bbox`、`goodvision-contour`、
+`goodvision-system1`；主程序、Bbox、System1 容器与其项目同名。
+Contour 项目内的两个容器为 `goodvision-contour-api`、`goodvision-contour-engine`。
+更新和回滚保持容器名称不变，版本号只在镜像 tag 中改变。GPU runtime 是底座镜像。
+默认网络名 `goodvision-<namespace>`。安装器创建并标识共享网络，遇到同名但不属于
 本安装器的网络时拒绝接管。各项目单独拥有自己的数据卷。
-容器实例使用固定模块名并追加安装名称，例如 `goodvision-main-office`、
-`goodvision-bbox-office`、`goodvision-system1-office`；Contour 的两种角色为
-`goodvision-contour-office-api` 和 `goodvision-contour-office-engine`。
-两个角色均保留显式后缀，因此 `office` 与 `office-engine` 等合法安装名、
-`release1` 与 `release1-engine` 等合法版本不会互相占用容器名或镜像标签。
+仅需要同时运行多套部署时，显式传入 `--namespaced-names` 才将安装名称追加到
+项目和容器名之后；该选项持久保存，不随模块版本变化。默认固定名称已被其他部署
+占用时拒绝接管，不会覆盖另一套程序的数据。
 从早期安装器生成的无 `-api` 名称升级时，先备份状态目录并记录当前镜像 ID，
 再用新安装包执行 `build`、`up`；Compose 按原项目及 service 识别并重建接口容器。
 保留 namespace、状态目录和数据卷，不要删除卷或重新生成模型、密钥及服务地址。
 回滚时使用备份的 Compose 文件和原镜像；仅修改 `settings.json` 不会回滚运行容器。
 
-旧版 `goodvision-<namespace>-<module>` 项目用以下命令迁移后再更新。
+旧版带环境或测试版本后缀的项目用以下命令迁移到固定名称后再更新。
 迁移仅短暂重建所选模块的容器，不构建或下载镜像；按容器实际挂载绑定原数据卷，
 保留镜像、端口、环境、共享/内部网络和更新回滚记录。健康检查失败会恢复旧项目。
 已迁移的项目重复执行不会重启；后续 configure/up 继续使用原卷。

@@ -149,9 +149,17 @@ def defaults(namespace="default", version="dev"):
     }
 
 
+def project_name(module, settings):
+    base = f"goodvision-{module}"
+    return (f"{base}-{settings['namespace']}"
+            if settings.get("namespaced_names", False) else base)
+
+
 def validate(settings):
     name(settings["namespace"])
     name(settings["version"])
+    if type(settings.get("namespaced_names", False)) is not bool:
+        raise ValueError("namespaced_names must be boolean")
     versions = settings.get("module_versions", {})
     if not isinstance(versions, dict) or set(versions) - set(MODULES):
         raise ValueError("Invalid module versions")
@@ -284,12 +292,13 @@ def compose(module, settings, source: Path, state: Path):
         raise ValueError("The GPU runtime is a base image, not a running service")
     ns = settings["namespace"]
     version = settings.get("module_versions", {}).get(module, settings["version"])
-    project = f"goodvision-{module}-{ns}"
+    project = project_name(module, settings)
     bind = settings["bind"]
     if ":" in bind:
         bind = f"[{bind}]"
     service = {
-        "container_name": f"goodvision-{module}-{ns}",
+        "container_name": project,
+        "labels": {"io.goodvision.namespace": ns},
         "init": True,
         "restart": "unless-stopped",
         "ports": [f"{bind}:{settings['ports'][module]}:{PORTS[module]}"],
@@ -382,7 +391,7 @@ def compose(module, settings, source: Path, state: Path):
         service.update(
             # Both roles need disjoint suffixes: a namespace/version ending in
             # "-engine" must not reuse another installation's engine identity.
-            container_name=f"goodvision-contour-{ns}-api",
+            container_name=f"{project}-api",
             image=f"goodvision-contour:{version}-api",
             build={
                 "context": str(source / "workers/contour"),
@@ -414,7 +423,8 @@ def compose(module, settings, source: Path, state: Path):
         )
         document["networks"]["engine"] = {"internal": True}
         document["services"]["engine"] = {
-            "container_name": f"goodvision-contour-{ns}-engine",
+            "container_name": f"{project}-engine",
+            "labels": {"io.goodvision.namespace": ns},
             "image": f"goodvision-contour:{version}-engine",
             "build": {
                 "context": str(source / "workers"),

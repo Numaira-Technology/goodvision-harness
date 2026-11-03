@@ -204,8 +204,9 @@ GPU 依赖和模型验收。工具可导出的是可独立构建安装的源码�
 
 ## Docker Desktop 命名迁移追加验证
 
-2026-11-03：模块项目名统一为 `goodvision-<module>-<namespace>`，与容器及
-五个镜像仓库的模块前缀一致。新增 `rename` / `rename.cmd`，读取实际挂载卷和
+2026-11-03：项目和容器默认固定使用 `goodvision-main`、`goodvision-bbox` 等模块名，
+更新仅改变镜像 tag。Contour 保留 api/engine 角色后缀；多套并行部署需显式选择。
+新增 `rename` / `rename.cmd`，读取实际挂载卷和
 内部网络后迁移；更新回滚记录同时绑定原资源。后续 configure/up 继续保留这些绑定，
 旧项目未经迁移时拒绝直接覆盖配置。
 

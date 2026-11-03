@@ -84,6 +84,8 @@ def configuration(args, package, modules=None):
             and package["bbox_device"] != "auto"):
         fixed["bbox_device"] = package["bbox_device"]
     settings.update(fixed)
+    if getattr(args, "namespaced_names", False):
+        settings["namespaced_names"] = True
     if args.bbox_device is not None and args.bbox_device != settings["bbox_device"]:
         settings.get("module_images", {}).pop("bbox", None)
         settings.pop("bbox_runtime_device", None)
@@ -128,21 +130,32 @@ def rename_project(state, module, settings, timeout, run=None, write=None):
     run, write = run or globals()["run"], write or write_json
     path = state / f"compose.{module}.json"
     before = json.loads(path.read_text(encoding="utf-8"))
-    project = f"goodvision-{module}-{settings['namespace']}"
-    prefix = f"goodvision-{module}-"
-    if (before["name"] == project and all(
-        service["container_name"].startswith(prefix)
-        for service in before["services"].values()
+    project = spec.project_name(module, settings)
+    names = {
+        role: (f"{project}-{'api' if role == 'contour' else role}"
+               if module == "contour" else project)
+        for role in before["services"]
+    }
+    if (before["name"] == project
+            and (module == "contour" or set(before["services"]) == {module})
+            and all(
+        service["container_name"] == names[role]
+        for role, service in before["services"].items()
     )):
         return
     after = copy.deepcopy(before)
     after["name"] = project
     for role, service in after["services"].items():
-        if not service["container_name"].startswith(prefix):
-            service["container_name"] = (
-                f"{project}-{'api' if role == 'contour' else role}"
-                if module == "contour" else project
-            )
+        service["container_name"] = names[role]
+        service.setdefault("labels", {})["io.goodvision.namespace"] = (
+            settings["namespace"]
+        )
+        if service["container_name"] != before["services"][role]["container_name"]:
+            existing = run(["docker", "ps", "-aq", "--filter",
+                            f"name=^/{service['container_name']}$"],
+                           capture_output=True, text=True)
+            if existing.stdout.strip():
+                raise ValueError("The fixed module name is already in use")
     # Resolve the actual mounts, including Compose's historic hyphen-to-
     # underscore normalization, before stopping any container.
     for role, service in before["services"].items():
@@ -186,6 +199,8 @@ def rename_project(state, module, settings, timeout, run=None, write=None):
                     break
             else:
                 raise ValueError("Cannot resolve the existing module network")
+    if module != "contour" and len(after["services"]) == 1:
+        after["services"] = {module: next(iter(after["services"].values()))}
     pending = state / f"compose.{module}.renamed.json"
     rollback_path = state / f"rollback.{module}.json"
     rollback = (
@@ -195,6 +210,8 @@ def rename_project(state, module, settings, timeout, run=None, write=None):
         renamed_rollback = copy.deepcopy(rollback)
         recipe = renamed_rollback["compose"]
         recipe["name"] = project
+        if module != "contour" and len(recipe["services"]) == 1:
+            recipe["services"] = {module: next(iter(recipe["services"].values()))}
         for role in recipe["services"]:
             recipe["services"][role]["container_name"] = (
                 after["services"][role]["container_name"]
@@ -400,6 +417,8 @@ def parser():
     )
     value.add_argument("--modules", nargs="+", choices=spec.MODULES)
     value.add_argument("--namespace", default="default")
+    value.add_argument("--namespaced-names", action="store_true",
+                       help="Explicitly opt into multiple parallel installations")
     value.add_argument("--state-dir", type=Path)
     value.add_argument("--version")
     value.add_argument("--bundle", type=Path, help="Prebuilt module update manifest")
@@ -471,7 +490,7 @@ def execute(args):
                 if module == "gpu-runtime":
                     continue
                 if args.dry_run:
-                    print(f"Project: goodvision-{module}-{settings['namespace']}")
+                    print(f"Project: {spec.project_name(module, settings)}")
                 else:
                     rename_project(state, module, settings, args.wait_timeout)
             return 0
@@ -638,6 +657,24 @@ def execute(args):
             ensure_network(settings)
             # Start workers first when installing a group. Main remains idle.
             for module in sorted(documents, key=lambda item: item == "main"):
+                for service in documents[module]["services"].values():
+                    current = run(
+                        ["docker", "ps", "-aq", "--filter",
+                         f"name=^/{service['container_name']}$"],
+                        capture_output=True, text=True,
+                    )
+                    if current.stdout.strip():
+                        info = run(["docker", "inspect", service["container_name"]],
+                                   capture_output=True, text=True)
+                        labels = json.loads(info.stdout)[0]["Config"]["Labels"] or {}
+                        if (labels.get("io.goodvision.namespace", settings["namespace"])
+                                != settings["namespace"]
+                                or labels.get("com.docker.compose.project.working_dir")
+                                != str(state)):
+                            raise ValueError(
+                                "Module name belongs to another installation; "
+                                "use --namespaced-names for a parallel installation"
+                            )
                 run(
                     compose_command(
                         state,

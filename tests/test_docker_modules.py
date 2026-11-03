@@ -22,6 +22,7 @@ def test_contour_roles_cannot_collide_across_namespaces_or_releases(tmp_path, fi
     identifiers = []
     for suffix in ("", "-engine", "-api", "-api-engine", "-engine-api"):
         settings = spec.defaults("office" + suffix, "release1" + suffix)
+        settings["namespaced_names"] = True
         services = spec.compose("contour", settings, tmp_path, tmp_path)["services"]
         identifiers.extend(service[field] for service in services.values())
     assert len(set(identifiers)) == len(identifiers), f"Contour {field} collision"
@@ -33,6 +34,7 @@ def test_contour_reconfigure_preserves_existing_deployment_state(
 ):
     state = tmp_path / namespace
     settings = spec.defaults(namespace, "release1-engine")
+    settings["namespaced_names"] = True
     settings["bbox_device"] = "cuda"
     settings["gpu_id"] = "2"
     settings["ports"]["contour"] = 18093
@@ -98,7 +100,8 @@ def test_exported_contour_installers_keep_roles_distinct_after_reload(
         with zipfile.ZipFile(archive) as bundle:
             bundle.extractall(installed)
         state = tmp_path / namespace
-        args = ["--namespace", namespace, "--state-dir", str(state)]
+        args = ["--namespace", namespace, "--state-dir", str(state),
+                "--namespaced-names"]
         subprocess.run(
             [sys.executable, str(installed / "install.py"), "configure", *args],
             cwd=tmp_path, capture_output=True, text=True, check=True,
@@ -167,8 +170,8 @@ def test_separate_projects_share_only_network_and_use_service_addresses(tmp_path
     main = spec.compose("main", settings, tmp_path, tmp_path)
     bbox = spec.compose("bbox", settings, tmp_path, tmp_path)
     assert main["name"] != bbox["name"]
-    assert main["services"]["main"]["container_name"] == "goodvision-main-site1"
-    assert bbox["services"]["bbox"]["container_name"] == "goodvision-bbox-site1"
+    assert main["services"]["main"]["container_name"] == "goodvision-main"
+    assert bbox["services"]["bbox"]["container_name"] == "goodvision-bbox"
     assert main["networks"]["modules"] == bbox["networks"]["modules"]
     assert main["networks"]["modules"]["external"] is True
     environment = main["services"]["main"]["environment"]
@@ -193,13 +196,13 @@ def test_gpu_layers_are_reused_without_sharing_contour_engine_port(tmp_path):
     contour = spec.compose("contour", settings, tmp_path, tmp_path)
     engine = contour["services"]["engine"]
     assert contour["services"]["contour"]["container_name"] == (
-        "goodvision-contour-default-api"
+        "goodvision-contour-api"
     )
-    assert engine["container_name"] == "goodvision-contour-default-engine"
+    assert engine["container_name"] == "goodvision-contour-engine"
     system1 = spec.compose("system1", settings, tmp_path, tmp_path)["services"][
         "system1"
     ]
-    assert system1["container_name"] == "goodvision-system1-default"
+    assert system1["container_name"] == "goodvision-system1"
     assert (
         bbox["build"]["args"]["GPU_RUNTIME_IMAGE"]
         == engine["build"]["args"]["GPU_RUNTIME_IMAGE"]
@@ -364,7 +367,9 @@ def test_group_start_waits_for_workers_and_stop_preserves_other_projects(
     monkeypatch.setattr(
         deploy, "ensure_network", lambda settings: calls.append(["network"])
     )
-    monkeypatch.setattr(deploy, "run", lambda command, **kwargs: calls.append(command))
+    monkeypatch.setattr(deploy, "run", lambda command, **kwargs: (
+        calls.append(command) or SimpleNamespace(stdout="")
+    ))
     state = tmp_path / "state"
     arguments = ["--state-dir", str(state), "--modules", "main", "bbox",
                  "--bbox-device", "cpu"]
@@ -605,7 +610,11 @@ def test_project_names_start_with_the_module_and_preserve_migrated_resources(tmp
     settings = spec.defaults("office", "v1")
     for module in spec.PORTS:
         document = spec.compose(module, settings, tmp_path, tmp_path)
-        assert document["name"] == f"goodvision-{module}-office"
+        assert document["name"] == f"goodvision-{module}"
+        parallel = {**settings, "namespaced_names": True}
+        assert spec.compose(module, parallel, tmp_path, tmp_path)["name"] == (
+            f"goodvision-{module}-office"
+        )
     document = spec.compose("main", settings, tmp_path, tmp_path)
     document["volumes"]["data"] = {"external": True, "name": "old_customer_data"}
     (tmp_path / "compose.main.json").write_text(json.dumps(document))
@@ -663,9 +672,9 @@ def test_project_migration_keeps_volumes_and_recovers(tmp_path, failure, legacy_
     else:
         deploy.rename_project(tmp_path, "main", settings, 30, run)
         migrated = json.loads(path.read_text())
-        assert migrated["name"] == "goodvision-main-office"
+        assert migrated["name"] == "goodvision-main"
         expected_services = copy.deepcopy(document["services"])
-        expected_services["main"]["container_name"] = "goodvision-main-office"
+        expected_services["main"]["container_name"] = "goodvision-main"
         assert migrated["services"] == expected_services
         assert not (tmp_path / "compose.main.renamed.json").exists()
         start = next(call for call in calls if "up" in call)

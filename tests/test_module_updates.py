@@ -128,6 +128,9 @@ def test_update_and_rollback_change_only_the_selected_module(tmp_path):
     key.write_bytes(b"existing private fixture")
     updates.update(state, path, settings, 30, docker, deploy.write_json)
     changed = json.loads((state / "compose.main.json").read_text())
+    assert changed["name"] == old["name"] == "goodvision-main"
+    assert (changed["services"]["main"]["container_name"]
+            == old["services"]["main"]["container_name"] == "goodvision-main")
     expected = copy.deepcopy(old)
     expected["services"]["main"]["image"] = "goodvision-main:v2"
     assert changed == expected
