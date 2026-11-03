@@ -71,6 +71,24 @@ python3 server_install.py install
 临时 URL 不写入公开日志。模型健康、真实推理、工作流输出和重启需要另外验收，
 文件上传或 Docker 启动成功不能替代这些检查。保存结果后销毁本次实例以结束计费。
 
+`tools/gpu_delivery_smoke.py` 是可重复使用的真实推理入口。将它和至少八张按时间
+排序的公开测试视频 JPEG 放在测试 VM 的检查目录中，在交付 Main 镜像内运行，
+避免另装一套客户端依赖。测试进程需能写结果目录，并读取本次安装的 Contour
+节点密钥；这些检查目录和临时会话应属于隔离的验收安装。
+
+```sh
+docker run --rm --user 0 --network host \
+  -v /workspace/checks:/checks -v /workspace/GoodVision/state:/state:ro \
+  --entrypoint python <交付清单中的Main镜像> /checks/gpu_delivery_smoke.py bbox \
+  --frames-dir /checks/frames --output /checks/bbox.json
+```
+
+另用 `contour`、`system1`、`neural` 分别检查原生轮廓、VideoJev 和 CLIP。
+Contour 增加 `--contour-key-file /state/secrets/contour-key`。
+服务地址可用 `--url` 指定；默认使用本交付安装器的本机端口。CLIP 沿用既有独立
+服务入口，需要先启动并预热。检查包含两套独立视频会话、真实人物框/轮廓，以及
+System 1/CLIP 的原生 HTTP 客户端到工作流报告；关闭和重启后的检查应再执行一次。
+
 需要 Python 3.10+、Docker Compose v2，以及运行 Linux 容器的 Docker。
 GPU 主机另需 NVIDIA 驱动和容器 GPU 支持。共享依赖减少相同镜像层的重复存储，
 不共享模型内存或推理状态；各模块的 GPU 编号通过 `--gpu-id` 指定。
