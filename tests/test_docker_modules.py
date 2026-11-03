@@ -1,5 +1,6 @@
 """Offline installer contracts; no Docker daemon, real package build or GPU."""
 
+import copy
 import json
 import os
 import shutil
@@ -598,3 +599,85 @@ def test_compose_documents_render_without_an_engine(tmp_path):
         context = rendered["services"][module]["build"]["context"]
         assert "source$CACHE" in context.replace("$$", "$")
         assert "UNEXPECTED_EXPANSION" not in context
+
+
+def test_project_names_start_with_the_module_and_preserve_migrated_resources(tmp_path):
+    settings = spec.defaults("office", "v1")
+    for module in spec.PORTS:
+        document = spec.compose(module, settings, tmp_path, tmp_path)
+        assert document["name"] == f"goodvision-{module}-office"
+    document = spec.compose("main", settings, tmp_path, tmp_path)
+    document["volumes"]["data"] = {"external": True, "name": "old_customer_data"}
+    (tmp_path / "compose.main.json").write_text(json.dumps(document))
+    regenerated = spec.compose("main", settings, tmp_path, tmp_path)
+    assert regenerated["volumes"]["data"] == document["volumes"]["data"]
+
+
+@pytest.mark.parametrize("failure", [False, True])
+@pytest.mark.parametrize("legacy_name", [False, True])
+def test_project_migration_keeps_volumes_and_recovers(tmp_path, failure, legacy_name):
+    from types import SimpleNamespace
+
+    from tools import deploy_modules as deploy
+
+    settings = spec.defaults("office", "v1")
+    document = spec.compose("main", settings, tmp_path, tmp_path)
+    document["name"] = "goodvision-office-main"
+    if legacy_name:
+        document["services"]["main"]["container_name"] = "old-harness-1"
+    path = tmp_path / "compose.main.json"
+    deploy.write_json(path, document)
+    rollback = {"compose": copy.deepcopy(document), "version": "v0"}
+    deploy.write_json(tmp_path / "rollback.main.json", rollback)
+    calls = []
+
+    def run(command, **options):
+        calls.append(command)
+        if command[1] == "inspect":
+            return SimpleNamespace(stdout=json.dumps([{
+                "Config": {"Labels": {
+                    "com.docker.compose.project": document["name"],
+                    "com.docker.compose.service": "main",
+                }},
+                "Mounts": [
+                    {"Type": "volume", "Name": "customer_saved_data",
+                     "Destination": "/data"},
+                    {"Type": "volume", "Name": "customer_saved_models",
+                     "Destination": "/models"},
+                ],
+                "NetworkSettings": {"Networks": {}},
+            }]))
+        if (failure and "up" in command
+                and str(tmp_path / "compose.main.renamed.json") in command):
+            raise subprocess.CalledProcessError(1, command)
+        return SimpleNamespace(stdout="")
+
+    if failure:
+        with pytest.raises(ValueError, match="previous project restored"):
+            deploy.rename_project(tmp_path, "main", settings, 30, run)
+        assert json.loads(path.read_text()) == document
+        assert json.loads((tmp_path / "rollback.main.json").read_text()) == rollback
+        assert calls[-1][calls[-1].index("-f") + 1] == str(path)
+    else:
+        deploy.rename_project(tmp_path, "main", settings, 30, run)
+        migrated = json.loads(path.read_text())
+        assert migrated["name"] == "goodvision-main-office"
+        expected_services = copy.deepcopy(document["services"])
+        expected_services["main"]["container_name"] = "goodvision-main-office"
+        assert migrated["services"] == expected_services
+        assert migrated["volumes"] == {
+            "data": {"external": True, "name": "customer_saved_data"},
+            "face-models": {"external": True, "name": "customer_saved_models"},
+        }
+        previous = json.loads((tmp_path / "rollback.main.json").read_text())
+        assert previous["compose"]["name"] == migrated["name"]
+        assert previous["compose"]["volumes"] == migrated["volumes"]
+        assert previous["version"] == "v0"
+        call_count = len(calls)
+        deploy.rename_project(tmp_path, "main", settings, 30, run)
+        assert len(calls) == call_count
+    assert json.loads((tmp_path / "naming-backup.main.json").read_text()) == document
+    assert not any(
+        arg in ("down", "-v", "--volumes", "build")
+        for call in calls for arg in call
+    )

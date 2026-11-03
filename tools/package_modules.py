@@ -195,6 +195,8 @@ stop 保留模型、设置、数据卷和共享网络。它仅停止此包的模
 再次 up 恢复。GPU 共享依赖包只有 build，无需 up/stop。
 收到本模块镜像更新 ZIP 后，一条命令完成更新：
 
+    # 旧版项目名先迁移一次，保留原卷、配置和镜像：
+    python install.py rename
     python install.py update --bundle goodvision-{module}-更新版本.zip
     python install.py rollback
 

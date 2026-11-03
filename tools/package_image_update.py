@@ -210,14 +210,16 @@ def package(module, version, names, output, baseline=None, assets=()):
         + "\n"
     )
     (output / "UPDATE.txt").write_text(
+        "旧项目命名迁移: 仅需一次; 保留数据卷和端口\n"
+        "python install.py rename\n"
         "更新本模块\n"
         "python install.py update --bundle update.json\n"
         "回滚\npython install.py rollback\n"
-        "Windows 可直接运行 update.cmd / rollback.cmd。\n"
+        "Windows 可直接运行 rename.cmd / update.cmd / rollback.cmd。\n"
         "沿用首次安装的 --namespace 和 --state-dir。默认安装无需附加参数。\n",
         encoding="utf-8",
     )
-    for action in ("update", "rollback"):
+    for action in ("rename", "update", "rollback"):
         arguments = (
             'update --bundle "%~dp0update.json"' if action == "update" else action
         )

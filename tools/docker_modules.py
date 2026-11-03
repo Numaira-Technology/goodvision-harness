@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import re
 import threading
@@ -283,7 +284,7 @@ def compose(module, settings, source: Path, state: Path):
         raise ValueError("The GPU runtime is a base image, not a running service")
     ns = settings["namespace"]
     version = settings.get("module_versions", {}).get(module, settings["version"])
-    project = f"goodvision-{ns}-{module}"
+    project = f"goodvision-{module}-{ns}"
     bind = settings["bind"]
     if ":" in bind:
         bind = f"[{bind}]"
@@ -449,6 +450,16 @@ def compose(module, settings, source: Path, state: Path):
         }
     for role, image in settings.get("module_images", {}).get(module, {}).items():
         document["services"][role]["image"] = image
+    # A project-name migration pins the original physical resources. Keep those
+    # bindings when configure/build/up subsequently regenerate the recipe.
+    saved = state / f"compose.{module}.json"
+    if saved.is_file():
+        previous = json.loads(saved.read_text(encoding="utf-8"))
+        for section in ("volumes", "networks"):
+            for key in document.get(section, {}):
+                resource = previous.get(section, {}).get(key) or {}
+                if resource.get("external") and resource.get("name"):
+                    document[section][key] = resource
     return compose_literals(document)
 
 

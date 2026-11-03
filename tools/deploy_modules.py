@@ -8,6 +8,7 @@ data, models, or the shared network.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -120,6 +121,118 @@ def compose_command(state, module, *arguments):
         str(state / f"compose.{module}.json"),
         *arguments,
     ]
+
+
+def rename_project(state, module, settings, timeout, run=None, write=None):
+    """Move one Compose project without replacing its volumes or image IDs."""
+    run, write = run or globals()["run"], write or write_json
+    path = state / f"compose.{module}.json"
+    before = json.loads(path.read_text(encoding="utf-8"))
+    project = f"goodvision-{module}-{settings['namespace']}"
+    prefix = f"goodvision-{module}-"
+    if (before["name"] == project and all(
+        service["container_name"].startswith(prefix)
+        for service in before["services"].values()
+    )):
+        return
+    after = copy.deepcopy(before)
+    after["name"] = project
+    for role, service in after["services"].items():
+        if not service["container_name"].startswith(prefix):
+            service["container_name"] = (
+                f"{project}-{'api' if role == 'contour' else role}"
+                if module == "contour" else project
+            )
+    # Resolve the actual mounts, including Compose's historic hyphen-to-
+    # underscore normalization, before stopping any container.
+    for role, service in before["services"].items():
+        result = run(["docker", "inspect", service["container_name"]],
+                     capture_output=True, text=True)
+        info = json.loads(result.stdout)[0]
+        labels = info["Config"].get("Labels") or {}
+        if (labels.get("com.docker.compose.project") != before["name"]
+                or labels.get("com.docker.compose.service") != role):
+            raise ValueError("Container ownership differs from the saved project")
+        mounts = {item["Destination"]: item for item in info["Mounts"]}
+        for volume in service.get("volumes", []):
+            if isinstance(volume, str):
+                source, target = volume.split(":", 2)[:2]
+            elif volume.get("type") == "volume":
+                source, target = volume["source"], volume["target"]
+            else:
+                continue
+            if source not in after.get("volumes", {}):
+                continue  # Bind mounts are unchanged.
+            mount_info = mounts.get(target, {})
+            if mount_info.get("Type") != "volume" or not mount_info.get("Name"):
+                raise ValueError("Cannot resolve the existing data volume")
+            after["volumes"][source] = {
+                "external": True, "name": mount_info["Name"],
+            }
+        # Internal Contour networks also belong to the old project. Reuse their
+        # physical network rather than disturbing either module role.
+        for network, options in before.get("networks", {}).items():
+            options = options or {}
+            if options.get("external"):
+                continue
+            for physical in info["NetworkSettings"]["Networks"]:
+                network_info = run(["docker", "network", "inspect", physical],
+                                   capture_output=True, text=True)
+                network_labels = json.loads(network_info.stdout)[0].get("Labels") or {}
+                if (network_labels.get("com.docker.compose.project") == before["name"]
+                        and network_labels.get("com.docker.compose.network")
+                        == network):
+                    after["networks"][network] = {"external": True, "name": physical}
+                    break
+            else:
+                raise ValueError("Cannot resolve the existing module network")
+    pending = state / f"compose.{module}.renamed.json"
+    rollback_path = state / f"rollback.{module}.json"
+    rollback = (
+        json.loads(rollback_path.read_text()) if rollback_path.is_file() else None
+    )
+    if rollback is not None:
+        renamed_rollback = copy.deepcopy(rollback)
+        recipe = renamed_rollback["compose"]
+        recipe["name"] = project
+        for role in recipe["services"]:
+            recipe["services"][role]["container_name"] = (
+                after["services"][role]["container_name"]
+            )
+        for section in ("volumes", "networks"):
+            recipe[section] = copy.deepcopy(after.get(section, {}))
+    write(pending, after)
+    command = ["docker", "compose", "--project-directory", str(state), "-f"]
+    run([*command, str(pending), "config", "--quiet"])
+    write(state / f"naming-backup.{module}.json", before)
+    if rollback is not None:
+        write(state / f"naming-backup.rollback.{module}.json", rollback)
+
+    def start(recipe):
+        run([*command, str(recipe), "up", "-d", "--no-build", "--pull", "never",
+             "--wait", "--wait-timeout", str(timeout)])
+
+    try:
+        run([*command, str(path), "stop"])
+        run([*command, str(path), "rm", "-f"])
+        start(pending)
+        if rollback is not None:
+            write(rollback_path, renamed_rollback)
+        pending.replace(path)
+    except (OSError, subprocess.SubprocessError) as error:
+        try:
+            run([*command, str(pending), "stop"])
+            run([*command, str(pending), "rm", "-f"])
+            start(path)
+            if rollback is not None:
+                write(rollback_path, rollback)
+        except (OSError, subprocess.SubprocessError) as recovery:
+            raise ValueError(
+                "Naming migration failed; restore the saved project"
+            ) from recovery
+        raise ValueError(
+            "Naming migration failed; previous project restored"
+        ) from error
 
 
 def check_contour_model_access(path):
@@ -278,6 +391,7 @@ def parser():
             "logs",
             "update",
             "rollback",
+            "rename",
         ),
     )
     value.add_argument("--modules", nargs="+", choices=spec.MODULES)
@@ -348,6 +462,15 @@ def execute(args):
         if updating and args.version is not None:
             raise ValueError("Update and rollback use their recorded versions")
         state, settings = configuration(args, None if updating else package, modules)
+        if args.action == "rename":
+            for module in modules:
+                if module == "gpu-runtime":
+                    continue
+                if args.dry_run:
+                    print(f"Project: goodvision-{module}-{settings['namespace']}")
+                else:
+                    rename_project(state, module, settings, args.wait_timeout)
+            return 0
         if updating:
             if len(modules) != 1:
                 raise ValueError("Update or roll back exactly one module")
@@ -436,6 +559,13 @@ def execute(args):
                 run(compose_command(state, module, *operation))
             return 0
         initialize(state, modules)
+        for module, document in documents.items():
+            previous = state / f"compose.{module}.json"
+            if (previous.is_file()
+                    and json.loads(previous.read_text())["name"] != document["name"]):
+                raise ValueError(
+                    "Run rename for this module before reconfiguring its project"
+                )
         write_json(state / "settings.json", settings)
         for module, document in documents.items():
             write_json(state / f"compose.{module}.json", document)

@@ -46,7 +46,8 @@ def package(version, variants, output, *, assets=()):
                 ]
             # The launchers are identical; no application image carries them.
             for filename in ("install.py", "docker_modules.py", "module_updates.py",
-                             "docker_target.py", "update.cmd", "rollback.cmd"):
+                             "docker_target.py", "rename.cmd", "update.cmd",
+                             "rollback.cmd"):
                 shutil.copyfile(folder / filename, output / filename)
     (output / "update.json").write_text(json.dumps(catalog, indent=2) + "\n")
     helpers = {name: updates.digest(output / name) for name in (
