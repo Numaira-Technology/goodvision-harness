@@ -794,14 +794,18 @@ def main():
     parser.add_argument("--request-timeout", type=float, default=20.0)
     parser.add_argument("--queue-age", type=float, default=19.5)
     parser.add_argument("--queue-capacity", type=int, default=48)
-    parser.add_argument("--ready-capacity", type=int, default=2)
-    parser.add_argument("--gpu-batch-size", type=int, default=2)
+    parser.add_argument("--ready-capacity", type=int)
+    parser.add_argument("--gpu-batch-size", type=int)
     parser.add_argument("--cpu-threads", type=int, default=4)
     parser.add_argument("--context", type=int, default=CONTEXT)
     parser.add_argument("--max-pixels", type=int)
     parser.add_argument("--prefix-cache", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--d3-shared-window-state", action=argparse.BooleanOptionalAction, default=False)
     args = parser.parse_args()
+    if args.ready_capacity is None:
+        args.ready_capacity = 4 if args.runtime == "videojev" else 2
+    if args.gpu_batch_size is None:
+        args.gpu_batch_size = 4 if args.runtime == "videojev" else 2
     if args.max_pixels is None:
         args.max_pixels = 200704 if args.runtime == "decision3" else 409600
     if args.cpu_threads < 1:

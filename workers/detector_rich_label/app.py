@@ -12,6 +12,7 @@ Response: {stream_session_id, frame_sequence, timestamp_seconds, objects:[...]}
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import os
@@ -96,9 +97,15 @@ class DetectorEngine:
 
     def health(self, requested: str | None = None) -> dict:
         key = self.resolve_model(requested)
+        is_yolo = MODEL_REGISTRY[key][0] == "yolo"
         # Each selection must attest its own readiness, including switching away
         # from a SAM3 default. Serialize lazy warmup with inference without queuing.
         if not self._lock.acquire(blocking=False):
+            detector = self._detectors.get(key)
+            if (is_yolo and key in self._warmed_models
+                    and detector is not None and detector.gpu_ready):
+                return {"ready": True, "gpu_ready": True, "model": key,
+                        "busy": True}
             return {"ready": False, "gpu_ready": False, "model": key,
                     "provider_ready": False, "error": "inference busy"}
         try:
@@ -222,6 +229,7 @@ def _required_header(request: Request, name: str) -> str:
 def create_app() -> FastAPI:
     application = FastAPI(title="Detector Rich Label", docs_url=None, redoc_url=None)
     engine = DetectorEngine()
+    admission = asyncio.Lock()
 
     @application.on_event("startup")
     def _startup() -> None:
@@ -249,8 +257,6 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     async def _infer_request(request: Request) -> dict:
-        import asyncio
-
         session_id = _required_header(request, "x-goodvision-stream-session-id")
         try:
             frame_sequence = int(
@@ -280,14 +286,28 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="invalid JPEG")
         requested_model = request.headers.get(DETECTOR_MODEL_HEADER, "").strip() or None
         try:
-            return await asyncio.to_thread(
-                engine.infer,
-                image,
-                stream_session_id=session_id,
-                frame_sequence=frame_sequence,
-                timestamp_seconds=timestamp_seconds,
-                model_key=requested_model,
-            )
+            def infer():
+                return engine.infer(
+                    image,
+                    stream_session_id=session_id,
+                    frame_sequence=frame_sequence,
+                    timestamp_seconds=timestamp_seconds,
+                    model_key=requested_model,
+                )
+
+            if MODEL_REGISTRY[engine.resolve_model(requested_model)][0] != "yolo":
+                return await asyncio.to_thread(infer)
+            async with admission:
+                if await request.is_disconnected():
+                    raise HTTPException(status_code=499, detail="client disconnected")
+                task = asyncio.create_task(asyncio.to_thread(infer))
+                try:
+                    return await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    await task
+                    raise
+        except HTTPException:
+            raise
         except RichLabelBusyError as exc:
             raise HTTPException(
                 status_code=429, detail="inference busy", headers={"Retry-After": "1"}

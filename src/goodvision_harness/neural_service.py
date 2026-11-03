@@ -1,6 +1,7 @@
 """Standalone CUDA classifier. Install transformers/torch separately to serve it."""
 
 import argparse
+import asyncio
 import base64
 import binascii
 import io
@@ -8,6 +9,7 @@ import json
 import math
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -59,22 +61,52 @@ class Encoder:
             .eval()
             .to("cuda")
         )
+        self._text_features = None
 
-    def scores(self, image, labels):
+    def _encode_text(self):
+        if self._text_features is not None:
+            return
         torch = self.torch
         inputs = self.processor(
-            images=image,
-            text=[text for label in labels for text in PROMPTS[label]],
+            text=[text for pair in PROMPTS.values() for text in pair],
             return_tensors="pt",
             padding=True,
             truncation=True,
         )
         with torch.inference_mode():
-            result = self.model(
+            pooled = self.model.text_model(
                 **{key: value.to("cuda") for key, value in inputs.items()}
+            ).pooler_output
+            features = self.model.text_projection(pooled)
+            features = features / torch.pow(
+                torch.sum(torch.pow(features, 2), dim=-1, keepdim=True), 0.5
             )
+        self._text_features = {
+            label: features[index * 2:index * 2 + 2]
+            for index, label in enumerate(PROMPTS)
+        }
+
+    def scores(self, image, labels):
+        self._encode_text()
+        torch = self.torch
+        inputs = self.processor(images=image, return_tensors="pt")
+        with torch.inference_mode():
+            pooled = self.model.vision_model(
+                pixel_values=inputs["pixel_values"].to("cuda")
+            ).pooler_output
+            features = self.model.visual_projection(pooled)
+            features = features / torch.pow(
+                torch.sum(torch.pow(features, 2), dim=-1, keepdim=True), 0.5
+            )
+            text_features = torch.cat([self._text_features[label] for label in labels])
+            logits_per_text = torch.matmul(
+                text_features, features.t().to(text_features.device)
+            )
+            logits_per_image = (
+                logits_per_text * self.model.logit_scale.exp().to(text_features.device)
+            ).t()
         return (
-            result.logits_per_image[0]
+            logits_per_image[0]
             .reshape(len(labels), 2)
             .softmax(dim=-1)
             .cpu()
@@ -84,7 +116,12 @@ class Encoder:
 
 def create_app(encoder):
     app, lock = FastAPI(), threading.Lock()
+    worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="clip-inference")
     ppe, shared_error = None, None
+
+    @app.on_event("shutdown")
+    def shutdown():
+        worker.shutdown(wait=False, cancel_futures=True)
 
     @app.get("/health")
     def health():
@@ -255,9 +292,17 @@ def create_app(encoder):
             finally:
                 lock.release()
 
-        from starlette.concurrency import run_in_threadpool
-
-        return await run_in_threadpool(infer)
+        pending = asyncio.get_running_loop().run_in_executor(worker, infer)
+        try:
+            while not pending.done():
+                await asyncio.wait({pending}, timeout=0.1)
+                if not pending.done() and await request.is_disconnected():
+                    pending.cancel()
+                    return JSONResponse(status_code=499, content={"detail": "client disconnected"})
+            return await pending
+        except asyncio.CancelledError:
+            pending.cancel()
+            raise
 
     return app
 
