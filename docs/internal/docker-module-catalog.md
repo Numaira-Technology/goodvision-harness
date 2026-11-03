@@ -102,8 +102,9 @@ Contour 与 CUDA Bbox 共用 PyTorch 2.10 底座，System 1 使用 2.8 底座；
 [Windows 客户更新包](../../tools/package_customer_docker_update.py) 的 component 仍只接受
 `harness` / `contour`。完整模块名称 `goodvision-main` 对应旧更新器的 component `harness`，
 但旧工具按 `harness` / `harness-N` service 发现主程序，不能据此声称已支持新 `main` service。
-新的 `bbox` / `system1` / `gpu-runtime` 也没有因此获得 Windows 双击更新包支持。
-新安装单元目前使用统一安装器的版本化 build / up 流程，具体步骤见
+旧工具没有因此扩展到 `bbox` / `system1` / `gpu-runtime`。
+新安装单元使用统一安装器的版本化 build / up 流程及独立镜像更新 ZIP；新更新包
+提供 `update.cmd` / `rollback.cmd`，与旧客户更新包入口分开。具体步骤见
 [Docker 安装指南](../guides/docker-modules.md)。
 
 旧 Contour 引擎镜像曾叫 `goodvision-contour-engine:<release>`，也使用过
