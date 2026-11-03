@@ -247,6 +247,137 @@ def test_stream_keeps_cursor_and_observes_stop_without_a_model_result():
     assert data["config"]["delay_seconds"] == 6
 
 
+@pytest.mark.parametrize("frames_available", [True, False])
+def test_stream_eof_preserves_packets_and_reconnect_cursor(
+    monkeypatch, frames_available
+):
+    import asyncio
+
+    import goodvision_harness.network_display as module
+
+    now = 0.0
+
+    async def sleep(delay):
+        nonlocal now
+        now += delay
+
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(
+        module, "asyncio", SimpleNamespace(sleep=sleep, to_thread=asyncio.to_thread)
+    )
+    run = runtime()
+    cursors, deliveries = [], []
+
+    def frames(after, **kwargs):
+        cursors.append(after)
+        seq = max(101, after + 1)
+        return ((seq, seq / 10, 1280, 720, b"jpeg"),) if frames_available else ()
+
+    run._video_connection.display_frames = frames
+    run._video_connection.record_display_delivery = lambda **data: deliveries.append(
+        data
+    )
+
+    async def read():
+        response = module.display_stream_response(run)
+        packets = [packet async for packet in response.body_iterator]
+        assert 0.5 <= now < 0.54
+        assert len(deliveries) == len(packets), "do not prepare a discarded EOF batch"
+        decoded = []
+        for packet in packets:
+            assert struct.unpack(">I", packet[:4])[0] == len(packet) - 4
+            data, jpeg = unpack(SimpleNamespace(body=packet[4:], media_type=MEDIA_TYPE))
+            assert data["metadata"] is None
+            assert jpeg == (b"jpeg" if frames_available else b"")
+            decoded.extend(frame["source_sequence"] for frame in data["frames"])
+        assert decoded == sorted(set(decoded))
+        after = decoded[-1] if decoded else -1
+        reconnect = module.display_stream_response(
+            run, connection_id="connection", after=after
+        ).body_iterator
+        packet = await anext(reconnect)
+        await reconnect.aclose()
+        assert cursors[-1] == after
+        data, _ = unpack(SimpleNamespace(body=packet[4:], media_type=MEDIA_TYPE))
+        if frames_available:
+            assert data["frames"][0]["source_sequence"] == after + 1
+
+    asyncio.run(read())
+
+
+@pytest.mark.parametrize("expired_during", ["send", "sleep"])
+def test_expired_stream_does_not_prepare_another_batch(monkeypatch, expired_during):
+    import asyncio
+
+    import goodvision_harness.network_display as module
+
+    now = 0.0
+    sleeps = []
+
+    async def sleep(delay):
+        nonlocal now
+        sleeps.append(delay)
+        now += 0.6  # Scheduling can resume after the generator's budget.
+
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(
+        module, "asyncio", SimpleNamespace(sleep=sleep, to_thread=asyncio.to_thread)
+    )
+    run = runtime()
+    deliveries = []
+    run._video_connection.record_display_delivery = lambda **data: deliveries.append(
+        data
+    )
+
+    async def read():
+        nonlocal now
+        iterator = module.display_stream_response(run).body_iterator
+        now = 10.0  # Start the budget when consumed, not when the response is created.
+        await anext(iterator)
+        if expired_during == "send":
+            now += 0.6  # Backpressure during the previous packet's ASGI send.
+        with pytest.raises(StopAsyncIteration):
+            await anext(iterator)
+
+    asyncio.run(read())
+    assert len(deliveries) == 1
+    assert len(sleeps) == (0 if expired_during == "send" else 1)
+
+
+def test_stream_cancellation_during_heartbeat_wait_stops_preparation(monkeypatch):
+    import asyncio
+
+    import goodvision_harness.network_display as module
+
+    run = runtime()
+    deliveries = []
+    run._video_connection.record_display_delivery = lambda **data: deliveries.append(
+        data
+    )
+
+    async def read():
+        waiting = asyncio.Event()
+
+        async def sleep(delay):
+            waiting.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(
+            module, "asyncio", SimpleNamespace(sleep=sleep, to_thread=asyncio.to_thread)
+        )
+        iterator = module.display_stream_response(run).body_iterator
+        await anext(iterator)
+        pending = asyncio.create_task(anext(iterator))
+        await asyncio.wait_for(waiting.wait(), 1)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        await iterator.aclose()
+
+    asyncio.run(read())
+    assert len(deliveries) == 1
+
+
 @pytest.mark.parametrize("delay", [0, 2.5, 30])
 @pytest.mark.parametrize("mode", ["idle", "no_tracking", "other_backend"])
 def test_network_preview_buffer_is_independent_of_analysis(delay, mode):
