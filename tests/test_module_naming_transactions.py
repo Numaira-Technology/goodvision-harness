@@ -160,7 +160,11 @@ def test_rename_rejects_image_drift_before_any_destructive_action(
     assert not docker.starts
 
 
-@pytest.mark.parametrize("failure", ["second_module", "settings_commit", "bad_record"])
+@pytest.mark.parametrize("failure", [
+    "second_module", "settings_commit", "bad_record", "bad_record_list",
+    "bad_record_compose", "bad_record_services", "bad_record_service",
+    "bad_record_null",
+])
 def test_multi_module_rename_rolls_back_partial_success_and_can_retry(
     tmp_path, monkeypatch, failure,
 ):
@@ -183,10 +187,18 @@ def test_multi_module_rename_rolls_back_partial_success_and_can_retry(
 
     monkeypatch.setattr(deploy, "run", run)
     original_write = deploy.write_json
+    bad_records = {
+        "bad_record": {"version": "broken"},
+        "bad_record_list": [],
+        "bad_record_compose": {"compose": []},
+        "bad_record_services": {"compose": {"services": []}},
+        "bad_record_service": {"compose": {"services": {"bbox": []}}},
+        "bad_record_null": None,
+    }
     if failure == "second_module":
         bbox_docker.fail_next_up = True
-    elif failure == "bad_record":
-        deploy.write_json(state / "rollback.bbox.json", {"version": "broken"})
+    elif failure in bad_records:
+        deploy.write_json(state / "rollback.bbox.json", bad_records[failure])
     else:
         def fail_commit(path, value):
             if path.name == "settings.json" and value.get("namespaced_names"):
@@ -203,9 +215,9 @@ def test_multi_module_rename_rolls_back_partial_success_and_can_retry(
         assert engine.document == recipe
         if engine.starts:
             assert engine.starts[-1] == (state / f"compose.{module}.json", recipe)
-    if failure == "bad_record":
+    if failure in bad_records:
         record = state / "rollback.bbox.json"
-        assert json.loads(record.read_text()) == {"version": "broken"}
+        assert json.loads(record.read_text()) == bad_records[failure]
         assert not bbox_docker.starts
         record.unlink()  # Owner repairs the bad record before retrying.
     assert not list(state.glob("rollback.*.json"))

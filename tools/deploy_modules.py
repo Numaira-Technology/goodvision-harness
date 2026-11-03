@@ -226,7 +226,18 @@ def rename_project(
     rollback = (
         json.loads(rollback_path.read_text()) if rollback_path.is_file() else None
     )
-    if rollback is not None:
+    if rollback_path.is_file():
+        # Valid JSON can still have the wrong shape. Reject it before stopping
+        # this module so the group transaction can restore earlier migrations.
+        if (not isinstance(rollback, dict)
+                or not isinstance(rollback.get("compose"), dict)):
+            raise ValueError("Invalid rollback record: expected a Compose document")
+        services = rollback["compose"].get("services")
+        if (not isinstance(services, dict) or not services
+                or not all(isinstance(service, dict) for service in services.values())
+                or (module == "contour" and set(services) != set(after["services"]))
+                or (module != "contour" and len(services) != 1)):
+            raise ValueError("Invalid rollback record: incompatible Compose services")
         renamed_rollback = copy.deepcopy(rollback)
         recipe = renamed_rollback["compose"]
         recipe["name"] = project
