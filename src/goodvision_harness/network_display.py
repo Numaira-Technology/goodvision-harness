@@ -84,7 +84,8 @@ def _display_batch(
         latest = runtime.annotated_frames.latest()
         packet = latest[1] if latest else None
         source = next((frame for frame in connection.display_frames(
-            None, max_age_seconds=config["delay_seconds"] + 0.5, limit=120,
+            (packet.frame_sequence - 1 if packet and packet.frame_sequence else None),
+            max_age_seconds=config["delay_seconds"] + 0.5, limit=1,
         ) if packet is not None and frame[0] == packet.frame_sequence
             and abs(frame[1] - packet.media_timestamp) < 0.001), None)
         frames = (

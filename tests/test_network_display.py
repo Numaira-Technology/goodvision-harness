@@ -483,3 +483,18 @@ def test_metadata_delta_filters_old_contours_before_copying(monkeypatch):
     monkeypatch.setattr(module, "public_safe_value", copied)
     assert bus.delta(8, stream_session_id="run")["metadata_revision"] == 9
     assert selected == [102]
+
+
+def test_bbox_large_playback_buffer_still_finds_latest_annotation():
+    run = bbox_runtime()
+    run._display_settings.delay_seconds = 30
+    history = tuple((i, i / 10, 1280, 720, b"raw") for i in range(300))
+    run._video_connection.display_frames = lambda after, **kw: tuple(
+        frame for frame in history if after is None or frame[0] > after
+    )[:kw["limit"]]
+    run.annotated_frames.publish(FramePacket(
+        jpeg=b"latest boxes", media_timestamp=29.9,
+        frame_sequence=299, observed_at="now",
+    ))
+    data, image = unpack(display_response(run))
+    assert image == b"latest boxes" and data["frames"][0]["source_sequence"] == 299
