@@ -48,6 +48,7 @@ _SERVICE_METRICS = frozenset((
     "source_height", "processed_width", "processed_height", "processor_max_pixels",
     "native_group_count", "native_input_tokens", "question_group_prepare_seconds",
     "gpu_scoring_seconds",
+    "batch_size",
     "forward_input_tokens", "prefix_tokens", "prefix_cache_hits", "prefix_cache_misses",
 ))
 
