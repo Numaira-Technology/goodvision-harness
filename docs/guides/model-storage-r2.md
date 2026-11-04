@@ -172,6 +172,35 @@ vastai 租机 → SSH + onstart(修权限) → controller 带 R2+HF 凭据
 
 预取环境需 `boto3`（已加进 `tools/videojev_probe/requirements.txt`）；缺了也能走 HF 兜底。每个 runner 各取各的模型，VideoJev 与 CLIP 同机或分开都适用。
 
+### 自动租机：通用远端预取（`tools/cloud_prefetch.py`）
+
+harness 的 SAM 风格自动租机脚本（`start_sam.py` 及复用其机器的 `start_detector.py` 等）在 SSH 就绪、起 worker 之前，调一行就把权重从 R2 预取到实例——**凭据和 `HF_TOKEN` 一样走 SSH stdin，不进 argv/镜像**；R2 不可达时远端自动走 HF 兜底。worker 无关、与具体模型解耦。
+
+```python
+from cloud_prefetch import prefetch_models   # start_sam 同目录
+host, port = wait_for_ssh(vast, instance_id, options)
+cache = prefetch_models(
+    ssh_options=options, host=host, port=port,
+    remote_dir=f"{REMOTE}/models",
+    models=[(MODEL, REVISION)],                 # 任意 (repo, 40位 sha)
+    r2_env={k: os.environ.get(k) for k in ("R2_ENDPOINT","R2_BUCKET","R2_ACCESS_KEY_ID","R2_SECRET_ACCESS_KEY")},
+    hf_token=os.environ.get("HF_TOKEN"),        # 兜底时解限速
+)
+# 随后用 cache 作为 worker 的 --cache-dir（服务 local_files_only 加载）
+```
+
+也可独立对一台已租好的机器预取：
+
+```bash
+python -m tools.cloud_prefetch --host H --port P --ssh-key ~/.ssh/goodvision_vast \
+  --remote-dir /workspace/goodvision-models \
+  --model ZhuYuhan/VideoJev-4B@1c1a253bf90dfa66176124d25a48ffb791d517d5 \
+  --model openai/clip-vit-large-patch14@32bd64288804d66eefd0ccbe215aa642df71cc41
+# R2_*/HF_TOKEN 从当前 shell 环境读取
+```
+
+机制通用：模型什么时候进了 R2 就从 R2 拉，没进就 HF 兜底——不绑定具体模型，也不改各 renter 的现有权重流程。
+
 ## R2 价格与成本估算
 
 官方价格页（`developers.cloudflare.com/r2/pricing/`，页面标注 **Last updated 2026-10-30**，当天查证）：
