@@ -14,6 +14,10 @@
   const palette={source:definitions.source,tracking:{...definitions.tracking,engine:'contour',category:'Person tracking'},bbox:{...definitions.tracking,name:'Bbox',zh:'Bbox',engine:'bbox',category:'Person tracking'},events:{...definitions.events,engine:'vlm',category:'Event recognition'},system1:{...definitions.events,name:'System 1 recognition',zh:'System 1 快速识别',engine:'system1',category:'Event recognition'},neural:{...definitions.events,name:'Neural network recognition',zh:'神经网络识别',engine:'neural',category:'Event recognition'},face:definitions.face,summary:definitions.summary,output:definitions.output};
   const family=type=>({bbox:'tracking',system1:'events',neural:'events'}[type]||type);
   const engine=node=>node?.config?.engine||({tracking:'contour',events:'vlm'}[node?.type]);
+  const localEngines=['bbox','system1','neural'];
+  const executionMode=node=>node?.config?.execution_mode||(node?.config?.service_url?'server':'local');
+  const remoteUrl=node=>node?.config?.[executionMode(node)==='cloud'?'cloud_service_url':'service_url'];
+  const moduleConfigured=node=>executionMode(node)==='local'||!!remoteUrl(node)?.trim();
   const definition=node=>Object.values(palette).find(d=>d.engine&&d.engine===engine(node))||definitions[node?.type];
   const sameModule=(node,key)=>node.type===family(key)&&(!palette[key].engine||engine(node)===palette[key].engine);
   const strings={
@@ -52,6 +56,19 @@
   Object.assign(strings,{'Connecting video…':'正在连接视频…','Video connection failed. Check this source URL and try again.':'视频连接失败，请检查本路 URL 后重试。','Live input':'实时输入画面','Connect video to preview the input.':'连接视频后显示输入画面','Waiting for input frame…':'正在等待输入画面…','Save video source settings before applying the workflow.':'请先保存视频源设置，再应用工作流。','Save this video source before connecting.':'请先保存视频源设置，再连接视频。'});
   Object.assign(strings,{'Test mode is active. Analysis produces simulated results.':'当前为测试模式，分析会产生模拟结果。','Use real analysis':'切换为真实分析','Real analysis enabled.':'已切换为真实分析。'});
   Object.assign(strings,{'Event recognition':'事件识别','Other modules':'其他模块','Service URL':'服务地址','Use one module per category; enabling this module turns the other options off.':'每类运行一种模块；启用当前模块会关闭同类的其他模块。','Output appearance':'输出画面','People outlines / boxes':'人物轮廓 / 方框','Event alerts':'事件提示','Summary text':'总结文字','top-left':'左上角','top-right':'右上角','bottom-left':'左下角','bottom-right':'右下角','Connect this result to Output to display it.':'将此类结果连接到 Output 后即可显示。','Output preview':'输出预览','Preview appears after applying this workflow and starting analysis.':'预览显示已应用的输出画面；应用工作流并开始分析后可查看。','VLM semantic recognition':'VLM 语义识别','System 1 recognition':'System 1 快速识别','Neural network recognition':'神经网络识别','Enable only one tracking module at a time.':'同一时间只能启用一种人物追踪模块。','Enable only one events module at a time.':'同一时间只能启用一种事件识别模块。'});
+  Object.assign(strings,{
+    'Execution location':'运行位置','This computer':'本机','Independent server':'独立服务器','Cloud GPU server':'云服务器','Cloud service URL':'云服务地址',
+    'Run the existing module code on the analysis host. Model dependencies, weights and a supported GPU must be installed.':'在分析主机运行现有模块代码；需要已安装对应依赖、模型权重和支持的显卡。',
+    'Bbox runs in its own environment. It uses NVIDIA CUDA when available, or CPU on this computer.':'Bbox 使用独立环境；有 NVIDIA 显卡时使用 CUDA，否则使用本机 CPU。',
+    'Connect to this module running on your cloud GPU server.':'连接部署在云服务器上的此模块服务。',
+    'Connect to this module running on an independent server.':'连接部署在独立服务器上的此模块服务。',
+    'Start / check local service':'启动 / 检查本机服务','Local service ready':'本机服务已就绪','Local service starting…':'本机服务正在启动…',
+    'Check module service':'检查模块服务',
+    'This module is managed by the installation launcher. Start or stop it there.':'此模块由安装工具管理，请通过安装工具启动或停止。',
+    'Local service stopped':'本机服务未启动','Check or start the local service before analysis.':'开始分析前可先启动或检查本机服务。',
+    'Local service failed. Check model dependencies, weights and GPU.':'本机服务启动失败，请检查模型依赖、权重和显卡。',
+    'Choose a supported execution location.':'请选择有效的运行位置。','Enter a valid service URL without credentials.':'请填写有效的服务地址，不包含用户名或密码。'
+  });
   function graphOf(value){const graph=value&&typeof value==='object'?value:{};return {nodes:Array.isArray(graph.nodes)?copy(graph.nodes):[],edges:Array.isArray(graph.edges)?copy(graph.edges):[]};}
   function edgeValue(edge){return {id:edge.id,from_node:edge.from_node,from_port:edge.from_port,to_node:edge.to_node,to_port:edge.to_port};}
   function nodePorts(node,direction){return definitions[node?.type]?.[direction==='out'?'outputs':'inputs']||[];}
@@ -88,7 +105,8 @@
       if(definitions[n.type].single&&single.has(n.type+':'+engine(n)))errors.push('Only one '+n.type+' block is supported.');single.add(n.type+':'+engine(n));
       if(n.config?.name!==undefined&&(typeof n.config.name!=='string'||!n.config.name.trim()||n.config.name.length>128||/[\x00-\x1f\x7f]/.test(n.config.name)))errors.push('Enter a nonempty block name of at most 128 characters.');
       if(['tracking','events'].includes(n.type)&&!Object.values(palette).some(d=>d.engine===engine(n)))errors.push('Unknown analysis module.');
-      if(n.config?.service_url){try{const u=new URL(n.config.service_url);if(!['http:','https:'].includes(u.protocol)||u.username||u.password||u.search||u.hash||/[\\\s]/.test(n.config.service_url))throw new Error();}catch(_){errors.push('Enter a valid service URL without credentials.');}}
+      if(n.config?.execution_mode&&!['local','server','cloud'].includes(n.config.execution_mode))errors.push('Choose a supported execution location.');
+      for(const key of ['service_url','cloud_service_url'])if(n.config?.[key]){try{const u=new URL(n.config[key]);if(!['http:','https:'].includes(u.protocol)||u.username||u.password||u.search||u.hash||/[\\\s]/.test(n.config[key]))throw new Error();}catch(_){errors.push('Enter a valid service URL without credentials.');}}
       if(n.type==='summary'){
         const interval=n.config?.interval_seconds,prompt=n.config?.prompt;
         if(!Number.isFinite(interval)||interval<1||interval>3600)errors.push('Summary interval must be between 1 and 3600 seconds.');
@@ -106,7 +124,7 @@
       }
     }
     for(const e of edges){const error=connectionError(built,e.from_node,e.from_port,e.to_node,e.to_port);if(error)errors.push(error);else built.edges.push(e);}
-    if(complete){for(const n of nodes)if(n.enabled!==false&&['bbox','system1','neural'].includes(engine(n))&&!n.config?.service_url?.trim())errors.push('Configure the service URL for '+(n.config?.name||n.id)+'.');for(const kind of ['tracking','events'])if(graph.nodes.filter(n=>n.type===kind&&n.enabled!==false).length>1)errors.push('Enable only one '+kind+' module at a time.');
+    if(complete){for(const n of nodes)if(n.enabled!==false&&localEngines.includes(engine(n))&&!moduleConfigured(n))errors.push('Configure the service URL for '+(n.config?.name||n.id)+'.');for(const kind of ['tracking','events'])if(graph.nodes.filter(n=>n.type===kind&&n.enabled!==false).length>1)errors.push('Enable only one '+kind+' module at a time.');
       const active=new Set(nodes.filter(node=>node.enabled!==false).map(node=>node.id));
       const sources=nodes.filter(node=>node.type==='source'&&active.has(node.id)).map(node=>node.id);
       const outputs=nodes.filter(node=>node.type==='output'&&active.has(node.id)).map(node=>node.id);
@@ -147,7 +165,7 @@
   function fitViewport(nodes,width,height){if(!nodes.length)return{x:35,y:55,scale:1};const minX=Math.min(...nodes.map(n=>Number(n.x)||0)),minY=Math.min(...nodes.map(n=>Number(n.y)||0)),maxX=Math.max(...nodes.map(n=>(Number(n.x)||0)+176)),maxY=Math.max(...nodes.map(n=>(Number(n.y)||0)+(n.height||190)));const scale=Math.min(1.15,Math.max(Number.EPSILON,Math.min((width-70)/(maxX-minX),(height-95)/(maxY-minY))));return{x:(width-(maxX-minX)*scale)/2-minX*scale,y:(height-(maxY-minY)*scale)/2-minY*scale,scale};}
   function isEditingTarget(target){return Boolean(target?.closest?.('input,textarea,select,[contenteditable=true],[role=textbox]'));}
   function cameraBusy(camera){const s=camera?.status;if(!s||s.session_start_pending||s.workflow_test_running||['closing','stopping'].includes(s.processing_cleanup))return true;return !['idle','stopped','ended','error','configuration_error'].includes(s.analysis_state||s.pipeline_state);}
-  function newNode(key,graph,point){const type=family(key),d=palette[key];let index=1,id;do{id=key+'-'+index++;}while(graph.nodes.some(n=>n.id===id));const count=graph.nodes.filter(n=>n.type===type).length;return{id,type,x:Math.max(12,Math.round(point?.x??(280+count*55))),y:Math.max(35,Math.round(point?.y??(90+graph.nodes.length*55))),enabled:!d.engine||!graph.nodes.some(n=>n.type===type&&n.enabled!==false),config:{name:d.name+(count&&!d.engine?' '+(count+1):''),...(d.engine?{engine:d.engine}:{}),...(['bbox','system1','neural'].includes(d.engine)?{service_url:''}:{}),...(type==='summary'?{interval_seconds:60,prompt:'Describe the current scene and any notable activity.'}:{}),...(type==='events'?{features:[],event_sensitivities:{}}:{})}};}
+  function newNode(key,graph,point){const type=family(key),d=palette[key];let index=1,id;do{id=key+'-'+index++;}while(graph.nodes.some(n=>n.id===id));const count=graph.nodes.filter(n=>n.type===type).length;return{id,type,x:Math.max(12,Math.round(point?.x??(280+count*55))),y:Math.max(35,Math.round(point?.y??(90+graph.nodes.length*55))),enabled:!d.engine||!graph.nodes.some(n=>n.type===type&&n.enabled!==false),config:{name:d.name+(count&&!d.engine?' '+(count+1):''),...(d.engine?{engine:d.engine}:{}),...(localEngines.includes(d.engine)?{execution_mode:'local',service_url:'',cloud_service_url:''}:{}),...(type==='summary'?{interval_seconds:60,prompt:'Describe the current scene and any notable activity.'}:{}),...(type==='events'?{features:[],event_sensitivities:{}}:{})}};}
 
   class WorkflowCanvas{
     constructor(element,{fetch=root.fetch?.bind(root),confirm=message=>root.confirm(message)}={}){
@@ -157,7 +175,7 @@
       root.addEventListener?.('beforeunload',event=>{if(this.anyDirty()){event.preventDefault();event.returnValue='';}});
       if(typeof root.ResizeObserver==='function'){this.observer=new root.ResizeObserver(()=>this.size());this.observer.observe(element);}
     }
-    t(en){return root.GoodvisionI18n?.language?.()==='en'?en:(strings[en]||Object.values(palette).find(d=>d.name===en)?.zh||en);}
+    t(en){if(root.GoodvisionI18n?.language?.()==='en')return en;const missing=/^Configure the service URL for (.+)\.$/.exec(en);return missing?'请配置 '+missing[1]+' 的服务地址。':(strings[en]||Object.values(palette).find(d=>d.name===en)?.zh||en);}
     name(node){const saved=node?.config?.name;return !saved||['Person tracking','人物追踪','Safety events','Event recognition','事件识别'].includes(saved)?this.t(definition(node)?.name||''):this.t(saved);}
     get document(){return this.data?.document||{revision:0,workflows:[],groups:[],trash:[]};}
     get workflows(){return this.document.workflows||[];}
@@ -290,11 +308,36 @@
       return graph;
     }
     testEnabled(){return this.testGraph().nodes.some(node=>node.type==='output'&&node.enabled!==false);}
-    trackingUnavailable(){return this.testGraph().nodes.some(node=>node.type==='tracking'&&node.enabled!==false&&(engine(node)==='bbox'?!node.config?.service_url:!this.trackingCapability().configured));}
+    trackingUnavailable(){return this.testGraph().nodes.some(node=>node.type==='tracking'&&node.enabled!==false&&(engine(node)==='bbox'?!moduleConfigured(node):!this.trackingCapability().configured));}
     trackingCapabilityContents(){const capability=this.trackingCapability();return `<div class="wc-note ${capability.configured?'':'is-error'}" role="status">${esc(this.t(capability.configured?'Tracking service configured; readiness is checked when analysis starts.':capability.reason))}</div>${!capability.configured?`<div class="wc-note">${esc(this.t('Configure person tracking in the tracking block sidebar.'))}</div>`:''}`;}
     renderTrackingCapability(){return `<div data-wc-tracking-capability>${this.trackingCapabilityContents()}</div>`;}
     updateTrackingCapability(){for(const element of this.el.querySelectorAll?.('[data-wc-tracking-capability]')||[])element.innerHTML=this.trackingCapabilityContents();for(const node of this.graph.nodes.filter(node=>node.type==='tracking')){const foot=this.el.querySelector?.(`[data-wc-node="${node.id}"] .wc-node-foot`);if(foot)foot.textContent=this.trackingFoot(node);}}
-    trackingFoot(node){const enabled=this.mode==='edit'?node.enabled!==false:(this.group?.camera_ids||[]).filter(id=>this.scope==='all'||id===this.scope).some(id=>effectiveEnabled(this.group,node,id));return this.t(enabled?'Configuration: on':'Configuration: off')+' · '+this.t((engine(node)==='bbox'?!!node.config?.service_url:this.trackingCapability().configured)?'Tracking service configured':'Tracking service not configured');}
+    trackingFoot(node){const enabled=this.mode==='edit'?node.enabled!==false:(this.group?.camera_ids||[]).filter(id=>this.scope==='all'||id===this.scope).some(id=>effectiveEnabled(this.group,node,id));return this.t(enabled?'Configuration: on':'Configuration: off')+' · '+this.t((engine(node)==='bbox'?moduleConfigured(node):this.trackingCapability().configured)?'Tracking service configured':'Tracking service not configured');}
+    renderModuleSettings(node,disabled){
+      const selected=engine(node),mode=executionMode(node),config=node.config||{};
+      let html=`<label class="wc-field"><span>${esc(this.t('Execution location'))}</span><select data-wc-execution-mode aria-label="${esc(this.t('Execution location'))}" ${disabled?'disabled':''}>${[['local','This computer'],['server','Independent server'],['cloud','Cloud GPU server']].map(([value,label])=>`<option value="${value}" ${mode===value?'selected':''}>${esc(this.t(label))}</option>`).join('')}</select></label>`;
+      if(mode==='local'){
+        const status=this.moduleStates?.[selected]?.state||'unchecked';
+        const managed=this.moduleStates?.[selected]?.manager==='compose';
+          html+=`<p class="wc-note">${esc(this.t(selected==='bbox'?'Bbox runs in its own environment. It uses NVIDIA CUDA when available, or CPU on this computer.':'Run the existing module code on the analysis host. Model dependencies, weights and a supported GPU must be installed.'))}</p><p class="wc-note" role="status">${esc(this.t({ready:'Local service ready',starting:'Local service starting…',error:'Local service failed. Check model dependencies, weights and GPU.',stopped:'Local service stopped',unchecked:'Check or start the local service before analysis.'}[status]))}</p>`;
+        if(managed)html+=`<p class="wc-note">${esc(this.t('This module is managed by the installation launcher. Start or stop it there.'))}</p>`;
+        html+=this.button('start-module',managed?'Check module service':'Start / check local service','',`data-engine="${selected}" ${disabled||this.cameras.some(camera=>cameraBusy(camera))?'disabled':''}`);
+      }else{
+        const key=mode==='cloud'?'cloud_service_url':'service_url';
+        html+=this.field(mode==='cloud'?'Cloud service URL':'Service URL',key,config[key]||'','url','placeholder="http://gpu-host:'+({bbox:8096,system1:8097,neural:8098}[selected])+'"',disabled);
+        html+=`<p class="wc-note">${esc(this.t(mode==='cloud'?'Connect to this module running on your cloud GPU server.':'Connect to this module running on an independent server.'))}</p>`;
+      }
+      return html;
+    }
+    async localModuleStatus(selected,start=false){
+      if(!localEngines.includes(selected))return;
+      clearTimeout(this.moduleTimer);this.moduleStates??={};
+      try{
+        const value=await this.request('/v1/workflow-modules/'+selected+'/local',start?{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}:undefined);
+        this.moduleStates[selected]=value;if(start)this.say('');this.render();
+        if(value.state==='starting'&&!this.closed)this.moduleTimer=root.setTimeout?.(()=>this.localModuleStatus(selected),2000);
+      }catch(error){this.moduleStates[selected]={...this.moduleStates[selected],state:'error'};this.say(error.message,true);this.render();}
+    }
     affectedBusy(group=this.group){return Boolean(group?.camera_ids?.some(id=>cameraBusy(this.cameras.find(c=>c.id===id))));}
     renderGroupControls(node){const group=this.group;if(!group)return '';const all=this.scope==='all',locked=this.busy||(all?this.affectedBusy():cameraBusy(this.cameras.find(c=>c.id===this.scope))),override=group.camera_overrides?.[this.scope]||{};const policy=(key,value,label)=>`<label class="wc-policy"><span>${esc(label)}</span><select data-wc-policy="${key}" data-node="${esc(node.id)}" ${locked?'disabled':''}><option value="inherit" ${value==null?'selected':''}>${esc(this.t('Inherit'))}</option><option value="on" ${value===true?'selected':''}>${esc(this.t('On'))}</option><option value="off" ${value===false?'selected':''}>${esc(this.t('Off'))}</option></select></label>`;
       if(node.type==='source')return `<div class="wc-note">${esc(this.t('Configure video connections on the workflow source blocks.'))}</div>${all?`<label class="wc-toggle">${esc(this.t('Enable group'))}<input type="checkbox" data-wc-group-enabled ${group.enabled!==false?'checked':''} ${locked?'disabled':''}></label>`:policy('camera',override.enabled,this.t('Camera settings'))}<div class="wc-camera-list">${(group.camera_ids||[]).filter(id=>all||id===this.scope).map(id=>`<div class="wc-connection"><span>${esc(this.cameraName(id))}</span><span>${esc(this.t(group.enabled===false?'Blocked by group':group.camera_overrides?.[id]?.enabled===false?'Off':'On'))}</span></div>`).join('')||`<div class="wc-note">${esc(this.t('No cameras assigned'))}</div>`}</div>${locked?`<div class="wc-note">${esc(this.t('Only stopped cameras can be changed.'))}</div>`:''}`;
@@ -307,7 +350,7 @@
       if(!editing)html+=this.renderGroupControls(node);
       if(['events','summary','tracking'].includes(node.type)&&!['bbox','system1','neural'].includes(engine(node)))html+=`<div class="wc-service-settings" data-wc-service="${node.type==='tracking'?'tracking':'analysis'}"></div>`;
       html+=`<fieldset data-wc-edit-fields style="border:0;margin:0;padding:0;min-width:0" ${disabled?'disabled':''}>`+this.field('Instance name','name',config.name||d.name,'text','maxlength="80"',disabled);
-      if(['tracking','events'].includes(node.type))html+=`<p class="wc-note">${esc(this.t('Use one module per category; enabling this module turns the other options off.'))}</p>`;if(['bbox','system1','neural'].includes(engine(node)))html+=this.field('Service URL','service_url',config.service_url||'','url','placeholder="'+(engine(node)==='bbox'?'http://127.0.0.1:8092/v1/labels':engine(node)==='system1'?'http://127.0.0.1:8093':'http://127.0.0.1:8094')+'"',disabled);if(editing)html+=`<label class="wc-toggle">${esc(this.t('Enable block'))}<input type="checkbox" data-wc-node-enabled ${node.enabled!==false?'checked':''}></label>`;
+      if(['tracking','events'].includes(node.type))html+=`<p class="wc-note">${esc(this.t('Use one module per category; enabling this module turns the other options off.'))}</p>`;if(localEngines.includes(engine(node)))html+=this.renderModuleSettings(node,disabled);if(editing)html+=`<label class="wc-toggle">${esc(this.t('Enable block'))}<input type="checkbox" data-wc-node-enabled ${node.enabled!==false?'checked':''}></label>`;
       if(d.inputs.length){
         html+=`<div class="wc-section-label">${esc(this.t('Inputs'))}</div>`;
         for(const port of d.inputs){
@@ -382,6 +425,7 @@
       for(const element of this.el.querySelectorAll('[data-wc-group-enabled],[data-wc-group-block],[data-wc-policy]'))element.disabled=locked;
       for(const element of this.el.querySelectorAll('[data-wc-apply-group]'))element.disabled=this.busy||this.assignedGroups().some(group=>group.id===element.dataset.wcApplyGroup)||this.affectedBusy(this.groups.find(group=>group.id===element.dataset.wcApplyGroup));
       if(this.mode==='edit'){
+        const localStart=this.el.querySelector('[data-wc-action=start-module]');if(localStart)localStart.disabled=editingLocked||this.cameras.some(camera=>cameraBusy(camera));
         for(const element of this.el.querySelectorAll('[data-wc-edit-fields],[data-wc-port],[data-wc-delete],[data-wc-field],[data-wc-node-enabled],[data-wc-feature],[data-wc-binding]'))element.disabled=editingLocked;
         const selected=this.graph.nodes.find(node=>node.id===this.selected);for(const element of this.el.querySelectorAll('[data-wc-display]'))element.disabled=editingLocked||!this.graph.edges.some(e=>e.to_node===selected?.id&&e.to_port===element.dataset.wcDisplay.split(':')[0]);for(const element of this.el.querySelectorAll('[data-wc-sensitivity]'))element.disabled=editingLocked||!selected?.config?.features?.includes(element.dataset.wcSensitivity);
         for(const element of this.el.querySelectorAll('[data-wc-add]'))element.disabled=editingLocked||!this.workflow||palette[element.dataset.wcAdd]?.single&&this.graph.nodes.some(node=>sameModule(node,element.dataset.wcAdd));
@@ -414,6 +458,7 @@
       if(this.busy&&!['close-test','inspector','library','fit','zoom-in','zoom-out'].includes(action))return;
       if(['undo','delete','arrange','apply','confirm-apply','assign-groups'].includes(action)&&this.mode==='edit'&&this.editLocked()){this.say(this.lockMessage(),true);return;}
       switch(action){
+        case'start-module':if(this.mode==='edit'&&!this.editLocked()&&!this.cameras.some(camera=>cameraBusy(camera)))await this.localModuleStatus(button.dataset.engine,true);break;
         case'mode-edit':this.setMode('edit');break;case'mode-groups':this.setMode('groups');break;
         case'library':this.library=!this.library;if(root.innerWidth<=760&&this.library)this.inspector=false;this.render();break;
         case'inspector':this.inspector=!this.inspector;if(root.innerWidth<=760&&this.inspector)this.library=false;this.render();break;
@@ -481,6 +526,7 @@
         if(target.matches('[data-wc-group-block]')){await this.groupPatch({block_enabled:{...this.group.block_enabled,[target.dataset.wcGroupBlock]:target.checked}});return;}
         if(target.matches('[data-wc-policy]')){const overrides=copy(this.group.camera_overrides||{}),camera=overrides[this.scope]||{enabled:null,block_enabled:{}};const value=target.value==='inherit'?null:target.value==='on';if(target.dataset.wcPolicy==='camera')camera.enabled=value;else camera.block_enabled={...camera.block_enabled,[target.dataset.node]:value};overrides[this.scope]=camera;await this.groupPatch({camera_overrides:overrides});return;}
         const node=this.graph.nodes.find(n=>n.id===this.selected);if(!node||this.mode!=='edit'||this.editLocked())return;
+        if(target.matches('[data-wc-execution-mode]')){if(!['local','server','cloud'].includes(target.value)||!localEngines.includes(engine(node)))return;this.checkpoint();node.config.execution_mode=target.value;this.changed();return;}
         if(target.matches('[data-wc-source-camera]')){if(!this.checkpoint())return;if(target.value)node.config.camera_id=target.value;else delete node.config.camera_id;this.changed();return;}
         if(target.matches('[data-wc-binding]')){
           const input=target.dataset.wcBinding,edgeId=target.dataset.wcEdgeId,previous=copy(this.graph),value=target.value;

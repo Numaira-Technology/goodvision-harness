@@ -33,22 +33,25 @@ def _display_batch(
     if connection is None or not connection.status()["connected"]:
         raise HTTPException(404, "video connection has no preview yet")
     identity = runtime._camera_display_metadata.source_identity()
-    active = (
+    plan = getattr(runtime, "_workflow_plan", None)
+    tracking_active = (
         runtime._state.get("pipeline_state") in {"starting", "running", "draining"}
         and identity["generation"] is not None
         and getattr(runtime._session, "mode", None) != "camera"
-        and runtime.config.rich_labeling.backend == "sam31_stream"
         and runtime._scene_mode == "active"
-        and (
-            getattr(runtime, "_workflow_plan", None) is None
-            or runtime._workflow_plan.get("tracking_enabled", False)
-        )
+        and (plan is None or plan.get("tracking_enabled", False))
+    )
+    active = tracking_active and runtime.config.rich_labeling.backend == "sam31_stream"
+    server_annotations = bool(
+        tracking_active and runtime.config.rich_labeling.backend == "paddle"
+        and (plan is None or plan.get("tracking_engine") == "bbox")
     )
     config = runtime.video_display_config()
     config.update(
         source_mode="network",
         transport="frames",
         enabled=active,
+        server_annotations=server_annotations,
         # Playback buffering belongs to the video connection, independently of
         # whether this run supplies tracking geometry (including local WHEP).
         delay_seconds=runtime._display_settings.delay_seconds,
@@ -73,11 +76,27 @@ def _display_batch(
     )
     if not include_metadata:
         config["transport"] = "stream"
-    frames = connection.display_frames(
-        after if connection_id == connection.connection_id else -1,
-        max_age_seconds=config["delay_seconds"] + 0.5,
-        limit=8 if include_metadata else 64,
-    )
+    cursor = after if connection_id == connection.connection_id else -1
+    if server_annotations:
+        # Bbox already draws its observations on source-aligned server JPEGs.
+        # Sending decoder JPEGs here silently discarded every box; the browser
+        # contour protocol is deliberately reserved for native SAM geometry.
+        latest = runtime.annotated_frames.latest()
+        packet = latest[1] if latest else None
+        source = next((frame for frame in connection.display_frames(
+            (packet.frame_sequence - 1 if packet and packet.frame_sequence else None),
+            max_age_seconds=config["delay_seconds"] + 0.5, limit=1,
+        ) if packet is not None and frame[0] == packet.frame_sequence
+            and abs(frame[1] - packet.media_timestamp) < 0.001), None)
+        frames = (
+            ((source[0], source[1], source[2], source[3], packet.jpeg),)
+            if source is not None and packet.frame_sequence > cursor else ()
+        )
+    else:
+        frames = connection.display_frames(
+            cursor, max_age_seconds=config["delay_seconds"] + 0.5,
+            limit=8 if include_metadata else 64,
+        )
     descriptors, images, size = [], [], 0
     for sequence, timestamp, width, height, jpeg in frames:
         if size + len(jpeg) > MAX_BYTES - 1024 * 1024:

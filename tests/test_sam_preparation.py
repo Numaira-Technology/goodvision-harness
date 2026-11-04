@@ -205,8 +205,9 @@ def test_prepared_buffers_are_bounded_even_while_gpu_is_busy(monkeypatch):
 
 @pytest.mark.parametrize("encoding", ["jpeg", "h264"])
 @pytest.mark.parametrize("failure", ["cancel", "timeout"])
+@pytest.mark.parametrize("recovery_body_delay", [0, 0.3])
 def test_abandoned_decoder_keeps_budget_and_lane_until_actual_exit(
-    monkeypatch, codec, failure, encoding
+    monkeypatch, codec, failure, encoding, recovery_body_delay
 ):
     entered, release = threading.Event(), threading.Event()
     images = []
@@ -235,8 +236,9 @@ def test_abandoned_decoder_keeps_budget_and_lane_until_actual_exit(
             transport=httpx.ASGITransport(app=app), base_url="http://worker"
         ) as client:
             paths = await _open(client, 2)
+            normal_settings = lane.video.settings
             lane.video.settings = replace(
-                lane.video.settings, request_timeout_seconds=0.2
+                normal_settings, request_timeout_seconds=0.2
             )
             request = asyncio.create_task(
                 client.post(paths[0], json=_body(1, encoding=encoding))
@@ -259,13 +261,23 @@ def test_abandoned_decoder_keeps_budget_and_lane_until_actual_exit(
                 assert (await client.post(paths[0], json=_body(1))).status_code == 429
                 assert (await client.post(paths[1], json=_body(2))).status_code == 200
             finally:
+                # The short deadline injects abandonment only. Recovery must use
+                # the normal request budget, even if uploading takes over 200 ms.
+                lane.video.settings = normal_settings
                 release.set()
                 await asyncio.gather(request, return_exceptions=True)
 
             # Image closure alone precedes gate release; wait for a real retry.
             async def retry():
                 while True:
-                    result = await client.post(paths[0], json=_body(1))
+                    async def body():
+                        await asyncio.sleep(recovery_body_delay)
+                        yield json.dumps(_body(1)).encode()
+
+                    result = await client.post(
+                        paths[0], content=body(),
+                        headers={"Content-Type": "application/json"},
+                    )
                     if result.status_code != 429:
                         return result
                     await asyncio.sleep(0.001)

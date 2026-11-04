@@ -155,6 +155,37 @@ def install_workflow_routes(application):
     application.state.workflows = control
     fleet = application.state.fleet
 
+    @application.get("/v1/workflow-modules/{engine}/local")
+    async def local_module_status(engine: str):
+        from .module_services import local_modules
+        from .workflow_modules import LOCAL_PORTS
+
+        fleet._require_primary()
+        if engine not in LOCAL_PORTS:
+            raise HTTPException(404, "unknown local module")
+        value = await asyncio.to_thread(local_modules.status, engine)
+        return JSONResponse(value, headers=NO_STORE)
+
+    @application.post("/v1/workflow-modules/{engine}/local")
+    async def start_local_module(engine: str, request: Request):
+        from .module_services import local_modules
+        from .workflow_modules import LOCAL_PORTS
+
+        fleet._require_primary()
+        if engine not in LOCAL_PORTS:
+            raise HTTPException(404, "unknown local module")
+        if await body(request):
+            raise HTTPException(400, "local module start takes no parameters")
+        async with fleet.control_lock:
+            await control.require_stopped(
+                [camera["id"] for camera in fleet.descriptor()["cameras"]]
+            )
+            try:
+                value = await asyncio.to_thread(local_modules.start, engine)
+            except ValueError as exc:
+                raise HTTPException(503, str(exc)) from None
+        return JSONResponse(value, headers=NO_STORE)
+
     @application.get("/v1/workflows")
     async def state():
         fleet._require_primary()

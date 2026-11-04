@@ -533,6 +533,9 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         )
         self._control_lock = RLock()
         self._video_connection: VideoConnection | None = None
+        self._local_camera_stream_options: Callable[[str], dict[str, str]] = (
+            lambda _url: {}
+        )
         self._connection_camera_layout: str | None = None
         self._analysis_settings = {
             "features": list(self._event_vocabulary().default_labels()),
@@ -2153,6 +2156,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             connection = VideoConnection(
                 url, output_fps=self._video_connection_fps(),
                 whep_headers=self.config.stream.whep_headers,
+                **self._local_camera_stream_options(url),
                 frame_crop="left_half" if layout == "stereo" else "none",
                 **({"adapter": _adapter} if _adapter is not None else {}),
             )
@@ -2219,7 +2223,11 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     and self._workflow_event_configuration().model_api.provider
                     != "local"):
                 raise MissingAPIKeyError(PUBLIC_MISSING_API_KEY_ERROR)
-        if bbox:
+        self._workflow_prepare_modules(self._workflow_plan)
+        if bbox and not (
+            self.dry_run
+            and self._workflow_plan.get("tracking_execution_mode") == "local"
+        ):
             self._workflow_bbox_probe(self._workflow_plan.get("tracking_service_url"))
         if (self._workflow_plan and not self.dry_run
                 and self._workflow_plan.get("events_engine") in {"system1", "neural"}):
@@ -2700,6 +2708,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     connection = VideoConnection(
                         stream_url, output_fps=self._video_connection_fps(),
                         whep_headers=session_config.stream.whep_headers,
+                        **self._local_camera_stream_options(stream_url),
                         frame_crop=session_config.stream.frame_crop,
                     )
                     connection.start()
@@ -2725,6 +2734,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     callbacks,
                     stream_url=stream_url,
                     whep_headers=session_config.stream.whep_headers,
+                    **self._local_camera_stream_options(stream_url),
                     source_id=self.source_id,
                     archive=self.event_archive(),
                     **stream_options,
@@ -4919,6 +4929,9 @@ def create_app(
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         runtime = factory()
         application.state.runtime = runtime
+        runtime._local_camera_stream_options = (
+            application.state.local_cameras.stream_options
+        )
         runtime.start()
         start_resource_sampling()
         try:
@@ -4928,6 +4941,9 @@ def create_app(
             await application.state.local_cameras.aclose()
             runtime.stop()
             await application.state.fleet.aclose()
+            from .module_services import local_modules
+
+            await asyncio.to_thread(local_modules.close)
 
     application = FastAPI(
         title="Goodvision Streaming Harness",

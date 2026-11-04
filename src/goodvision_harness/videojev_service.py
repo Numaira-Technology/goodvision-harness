@@ -17,10 +17,12 @@ from pathlib import Path
 
 from .event_sensitivity import EVENT_SENSITIVITY_DEFAULTS
 from .videojev_contract import (
-    CONTEXT, QuestionTemplate, parse_choices, scene_question_template,
+    CONTEXT,
+    QuestionTemplate,
+    parse_choices,
+    scene_question_template,
 )
 from .videojev_runtime import VideoJevRuntime
-
 
 MAX_BODY_BYTES = 64 * 1024 * 1024
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -791,6 +793,7 @@ def main():
     parser.add_argument("--cache-dir", required=True)
     parser.add_argument("--result-log", required=True)
     parser.add_argument("--port", type=int, default=8093)
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--request-timeout", type=float, default=20.0)
     parser.add_argument("--queue-age", type=float, default=19.5)
     parser.add_argument("--queue-capacity", type=int, default=48)
@@ -889,7 +892,7 @@ def main():
     server = None
     try:
         scorer.wait_ready()
-        server = ThreadingHTTPServer(("127.0.0.1", args.port), handler(scorer))
+        server = ThreadingHTTPServer((args.host, args.port), handler(scorer))
         print(json.dumps(scorer.snapshot()), flush=True)
         server.serve_forever()
     finally:

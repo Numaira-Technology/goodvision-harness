@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -100,6 +100,7 @@ class NetworkStreamAdapter:
         reconnect_attempts: int = 3,
         reconnect_delay_seconds: float = 1.0,
         whep_headers: Mapping[str, str] | None = None,
+        whep_url: str | None = None,
         connection_id: str | None = None,
         decoder_backend: str | None = None,
     ) -> None:
@@ -110,6 +111,14 @@ class NetworkStreamAdapter:
         if reconnect_delay_seconds < 0:
             raise ValueError("reconnect_delay_seconds must be non-negative")
         self.source = parse_stream_source(source_url)
+        self._whep_url = whep_url
+        if whep_url is not None:
+            if self.source.protocol != "webrtc":
+                raise ValueError("A WHEP transport override requires a WebRTC source")
+            transport = parse_stream_source("webrtc+" + whep_url)
+            if transport.protocol != "webrtc":
+                raise ValueError("Invalid WHEP transport URL")
+            self.source = replace(self.source, transport_url=transport.transport_url)
         self.output_fps = float(output_fps)
         self.reconnect_attempts = reconnect_attempts
         self.reconnect_delay_seconds = reconnect_delay_seconds
@@ -312,6 +321,7 @@ class NetworkStreamAdapter:
             "output_fps": self.output_fps,
             "whep_headers": self.whep_headers,
             "connection_id": self._diagnostics.connection_id,
+            **({"whep_url": self._whep_url} if self._whep_url is not None else {}),
         })
         with self._capture_lock:
             self._whep_receiver = receiver

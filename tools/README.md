@@ -19,6 +19,11 @@ for installation and offline checks. Generated outputs belong in `output/`,
 | `start_windows_hybrid_demo.ps1` | Start the native Windows / Docker worker demo. |
 | `start_local_gpu.py` | Detect NVIDIA GPUs and start SAM on this host using the Contour runtime; `--streams N` provisions camera lanes, `--with-local-inference` also starts the local VLM and CPU processing companion. |
 | `start_modular.py` | Deploy application, SAM or VLM separately; `main --inference-server ... --inference-protocol goodvision` delegates VLM image preparation to the model host. See [modular services](../docs/guides/modular-services.md). |
+| `setup_bbox.py` | Install pinned YOLO dependencies and weights in an independent CPU/CUDA environment; never modifies the main service environment. |
+| `deploy_modules.py` | Plan/configure/build/start/check/stop independent main, Contour, Bbox and System 1 Docker projects on one shared network; base GPU images are versioned and built once. `plan` and `--dry-run` never call Docker or write files. [Guide](../docs/guides/docker-modules.md). |
+| `r2_delivery.py` | Publish delivery files to R2 with resumable multipart uploads and independent component reuse; issue temporary download plans and verify fetched releases on a Docker test VM. [Guide](../docs/guides/docker-modules.md#r2-发布与-vast-验收). |
+| `package_modules.py` | Export each of the five independent source installers with the required source, a standard-library launcher and checksums; `--check` verifies inputs without generating a package. No images, models or credentials are bundled. |
+| `build_gpu_runtime.py` | Build the shared CUDA/Python base and compatible PyTorch layers for Contour, Bbox and System 1; `--plan` prints commands without building. |
 | `export_full_delivery.py` | Export the recorded full.4 image pair, metadata and checksums. |
 | `run_full_delivery_smoke.ps1` | Run isolated image protocol checks; accepts candidate image tags. |
 | `delivery_smoke.py` | Exercise a disposable main container using synthetic frames. |

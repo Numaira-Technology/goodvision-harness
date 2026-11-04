@@ -21,10 +21,14 @@ from .event_catalog import event_catalog
 from .event_registry import EventVocabulary
 from .workflow_modules import (
     ENGINES,
+    EXECUTION_MODES,
+    LOCAL_PORTS,
     NAMES,
     NEURAL_EVENTS,
     display_settings,
     engine_for,
+    execution_mode,
+    module_endpoint,
     service_url,
 )
 
@@ -153,7 +157,7 @@ def _event_options(vocabulary: EventVocabulary | None = None) -> dict[str, dict]
 def _config(kind: str, value: Any, vocabulary: EventVocabulary | None = None) -> dict:
     allowed = {"name"}
     if kind in ENGINES:
-        allowed |= {"engine", "service_url"}
+        allowed |= {"engine", "service_url", "cloud_service_url", "execution_mode"}
     if kind == "events":
         allowed |= {"features", "event_sensitivities"}
     elif kind == "summary":
@@ -177,11 +181,19 @@ def _config(kind: str, value: Any, vocabulary: EventVocabulary | None = None) ->
             config["engine"] = engine
             if "name" not in raw:
                 config["name"] = NAMES[engine]
-        if "service_url" in raw:
-            try:
-                config["service_url"] = service_url(raw["service_url"])
-            except ValueError as exc:
-                _fail(str(exc))
+        for key in ("service_url", "cloud_service_url"):
+            if key in raw:
+                try:
+                    config[key] = service_url(raw[key])
+                except ValueError as exc:
+                    _fail(str(exc))
+        if "execution_mode" in raw:
+            if (
+                engine not in LOCAL_PORTS
+                or raw["execution_mode"] not in EXECUTION_MODES
+            ):
+                _fail("unsupported module execution mode")
+            config["execution_mode"] = raw["execution_mode"]
     if kind == "source" and raw.get("camera_id") is not None:
         camera_id = raw["camera_id"]
         if not isinstance(camera_id, str) or not _CAMERA.fullmatch(camera_id):
@@ -356,8 +368,11 @@ def validate_graph(
             if (
                 node["enabled"]
                 and engine_for(node["type"], node["config"])
-                in {"bbox", "system1", "neural"}
-                and not node["config"].get("service_url")
+                in LOCAL_PORTS
+                and execution_mode(node["config"]) != "local"
+                and not module_endpoint(
+                    engine_for(node["type"], node["config"]), node["config"]
+                )
             ):
                 _fail("configure the module service URL before applying")
         for kind in ENGINES:
@@ -514,8 +529,15 @@ def compile_graph(
     }
     for kind, nid in (("tracking", tracking_id), ("events", event_id)):
         if nid is not None and "engine" in nodes[nid]["config"]:
-            plan[kind + "_engine"] = nodes[nid]["config"]["engine"]
-            plan[kind + "_service_url"] = nodes[nid]["config"].get("service_url", "")
+            config = nodes[nid]["config"]
+            selected = config["engine"]
+            plan[kind + "_engine"] = selected
+            plan[kind + "_service_url"] = (
+                module_endpoint(selected, config) if selected in LOCAL_PORTS
+                else config.get("service_url", "")
+            )
+            if selected in LOCAL_PORTS:
+                plan[kind + "_execution_mode"] = execution_mode(config)
     return plan
 
 

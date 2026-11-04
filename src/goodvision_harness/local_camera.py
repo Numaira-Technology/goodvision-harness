@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import anyio
@@ -27,12 +29,46 @@ class CameraPublication:
     frames_received: int = 0
     drain: asyncio.Task | None = None
     readers: dict[str, CameraReader] = field(default_factory=dict)
+    public_origin: tuple[str, str, int] | None = None
+    internal_origin: str | None = None
 
 
 class LocalCameraPublications:
     def __init__(self) -> None:
         self.publications: dict[str, CameraPublication] = {}
         self.idle_timeout_seconds = 30
+
+    def bind_origin(self, publication_id: str, request: Request) -> None:
+        publication = self.get(publication_id)
+        public = request.url
+        publication.public_origin = (
+            public.scheme, public.hostname,
+            public.port or (443 if public.scheme == "https" else 80),
+        )
+        server = request.scope.get("server")
+        if server and server[1]:
+            # The application's HTTP listener is inside the container; the
+            # browser's Host/forwarded port can belong to Docker or a proxy.
+            publication.internal_origin = f"http://127.0.0.1:{server[1]}"
+
+    def stream_options(self, source_url: str) -> dict[str, str]:
+        public = urlsplit(source_url)
+        if (
+            public.scheme not in {"webrtc+http", "webrtc+https"}
+            or public.username is not None or public.password is not None
+            or public.query or public.fragment
+        ):
+            return {}
+        match = re.fullmatch(r"/v1/local-camera/([a-f0-9]{32})/whep", public.path)
+        publication = self.publications.get(match[1]) if match else None
+        scheme = public.scheme.removeprefix("webrtc+")
+        origin = (
+            scheme, public.hostname, public.port or (443 if scheme == "https" else 80),
+        )
+        if (publication is None or publication.public_origin != origin
+                or publication.internal_origin is None):
+            return {}
+        return {"whep_url": publication.internal_origin + public.path}
 
     def get(self, publication_id: str) -> CameraPublication:
         publication = self.publications.get(publication_id)
@@ -262,6 +298,7 @@ def install_local_camera_routes(app: FastAPI) -> LocalCameraPublications:
     @app.post("/v1/local-camera", status_code=201)
     async def publish(request: Request):
         publication_id, sdp = await cameras.publish(await _offer(request))
+        cameras.bind_origin(publication_id, request)
         path = f"/v1/local-camera/{publication_id}"
         return Response(
             sdp,

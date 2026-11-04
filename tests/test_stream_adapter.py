@@ -42,6 +42,37 @@ def test_plain_whep_http_url_requires_explicit_webrtc_prefix() -> None:
         )
 
 
+def test_local_whep_transport_override_preserves_source_identity(monkeypatch):
+    from goodvision_harness import whep_process
+
+    public = "webrtc+http://127.0.0.1:18080/v1/local-camera/" + "a" * 32 + "/whep"
+    internal = public.removeprefix("webrtc+").replace(":18080", ":8080")
+    captured = []
+
+    class Receiver:
+        dropped_frames = 0
+
+        def __init__(self, options):
+            captured.append(options)
+
+        def frames(self):
+            return iter(())
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(whep_process, "WhepProcessReceiver", Receiver)
+    adapter = NetworkStreamAdapter(public, whep_url=internal)
+    assert adapter.source.source_url == public
+    assert adapter.source.transport_url == internal
+    assert list(adapter.frames()) == []
+    child = NetworkStreamAdapter(**captured[0])
+    assert child.source.source_url == public
+    assert child.source.transport_url == internal
+    with pytest.raises(ValueError, match="WebRTC"):
+        NetworkStreamAdapter("rtsp://camera/live", whep_url=internal)
+
+
 def test_missing_video_dependency_has_a_safe_actionable_error(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "aiortc", None)
     adapter = NetworkStreamAdapter(ROBOT_WHEP_URL)

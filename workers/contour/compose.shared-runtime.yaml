@@ -1,0 +1,7 @@
+# Build once with tools/build_gpu_runtime.py; preserves legacy standalone builds.
+services:
+  engine:
+    build:
+      args:
+        GPU_RUNTIME_IMAGE: goodvision-gpu-runtime:torch2.10-cu128
+        TORCH_CUDA: cu128

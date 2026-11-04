@@ -26,6 +26,7 @@ class GatewayVideo:
     def __init__(self, origin, *, settings_path=None):
         self.origin = origin
         self.relays = {}
+        self.local_camera_stream_options = lambda _url: {}
         self.lock = asyncio.Lock()
         self.path = Path(
             settings_path
@@ -108,6 +109,12 @@ class GatewayVideo:
                     if matched.group(1)
                     else f"/v1/video/relay/{options['id']}"
                 )
+                # Resolve against publications owned by this gateway, rather
+                # than accepting any transport override returned by the GPU.
+                options.pop("whep_url", None)
+                options.update(self.local_camera_stream_options(
+                    options.get("stream_url", ""),
+                ))
                 relay = LocalVideoRelay(self.origin, socket_path, options)
                 await relay.start()
                 old = self.relays.get(camera)

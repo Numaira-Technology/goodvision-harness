@@ -753,7 +753,10 @@ def model_selection_rig(tmp_path, monkeypatch):
             ready = control.probe(request) if control.probe else control.ready
             if control.provider_health is not None:
                 return httpx.Response(200, json=control.provider_health)
-            return httpx.Response(200, json={"ready": ready, "gpu_ready": ready})
+            return httpx.Response(200, json={
+                "ready": ready, "gpu_ready": ready,
+                "model": request.headers.get(DETECTOR_MODEL_HEADER),
+            })
         return httpx.Response(200, json={
             "stream_session_id": request.headers[STREAM_SESSION_HEADER],
             "frame_sequence": int(request.headers[FRAME_SEQUENCE_HEADER]),
@@ -831,6 +834,20 @@ def test_saved_detector_switch_rebuilds_existing_client_and_survives_restart(
     restored = rig.make()
     assert restored.config.rich_labeling == runtime.config.rich_labeling
     assert rig.requests[-1].headers[DETECTOR_MODEL_HEADER] == "rfdetr-l"
+
+
+@pytest.mark.parametrize("model", [None, "rfdetr-l"])
+def test_yolo_selection_rejects_missing_or_different_ready_model(
+    model_selection_rig, model
+):
+    rig = model_selection_rig
+    rig.store.save(DeploymentSettings("", True, False, rich_label_model="det-fast"))
+    rig.control.provider_health = {"ready": True, "gpu_ready": True, "model": model}
+    runtime = rig.make()
+    assert runtime._rich_labels is None
+    assert not runtime._try_enable_rich_labels()
+    assert runtime._rich_labels is None
+    assert rig.requests[-1].headers[DETECTOR_MODEL_HEADER] == "yolo26-s"
 
 
 def test_detector_selection_and_location_changes_retire_once_and_restore_contour(

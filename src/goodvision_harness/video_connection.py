@@ -31,6 +31,7 @@ class VideoConnection:
         *,
         output_fps: float,
         whep_headers: Mapping[str, str] | None = None,
+        whep_url: str | None = None,
         frame_crop: str = "none",
         preview_max_side: int | None = None,
         jpeg_quality: int = 80,
@@ -47,6 +48,7 @@ class VideoConnection:
         self._adapter = adapter if adapter is not None else NetworkStreamAdapter(
             stream_url, output_fps=output_fps, whep_headers=whep_headers,
             connection_id=self.connection_id,
+            **({"whep_url": whep_url} if whep_url is not None else {}),
         )
         self.source = self._adapter.source
         self.stream_url = self.source.source_url
