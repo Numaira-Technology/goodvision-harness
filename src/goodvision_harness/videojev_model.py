@@ -8,6 +8,7 @@ import io
 import json
 import math
 import time
+from dataclasses import replace
 from threading import RLock
 from urllib.parse import urlparse
 
@@ -121,6 +122,7 @@ class VideoJevInspector:
 
     def _payload(self, job):
         _validate_job(job)
+        frames = self._input_frames(job)
         # The native model uses uniform FPS for positional encoding. Actual
         # source timestamps remain separate; irregular input is not retimed.
         delta = self.config.observation_frame_delta_seconds
@@ -131,7 +133,7 @@ class VideoJevInspector:
             else max(2.0, self.config.observation_fps * 2)
         )
         images, encoded = [], []
-        for frame in job.frames:
+        for frame in frames:
             jpeg = frame.jpeg_bytes
             with Image.open(io.BytesIO(jpeg)) as image:
                 width, height = image.size
@@ -144,17 +146,20 @@ class VideoJevInspector:
             "request_id": job.request.request_id,
             "session": job.stream_session_id,
             "fps": fps,
-            "frame_times": [frame.timestamp_seconds for frame in job.frames],
+            "frame_times": [frame.timestamp_seconds for frame in frames],
             "images": images,
         }
         if not self._template_registered:
             payload["question_template"] = list(self._question_template)
         if job.diagnostics is not None:
-            note(job, "prepared", encoded)
+            note(replace(job, frames=frames), "prepared", encoded)
         body = json.dumps(payload, allow_nan=False, separators=(",", ":")).encode()
         if len(body) > _MAX_REQUEST_BYTES:
             raise ValueError(f"{self.display_name} request exceeds the encoded memory limit")
         return body, self._expected
+
+    def _input_frames(self, job):
+        return job.frames
 
     def _decode(self, response, expected, labels):
         from .ppe import parse_ppe_choices
@@ -181,7 +186,7 @@ class VideoJevInspector:
                 self.last_http_timing.update(
                     request_build_seconds=time.monotonic() - start,
                     request_bytes=len(body),
-                    encoded_image_bytes=sum(len(f.jpeg_bytes) for f in job.frames),
+                    encoded_image_bytes=sum(len(f.jpeg_bytes) for f in self._input_frames(job)),
                 )
                 self.last_inspection_timing["request_prepare_seconds"] = (
                     time.monotonic() - start

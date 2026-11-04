@@ -8,6 +8,10 @@ class NeuralInspector(VideoJevInspector):
     display_name = "Neural network recognition"
     metric_prefix = "neural_"
 
+    def _input_frames(self, job):
+        # Scene labels use the newest image; PPE assesses the full window.
+        return job.frames if "ppe_violation" in job.request.event_labels else job.frames[-1:]
+
     def _payload(self, job):
         # Stateless requests also survive service restarts and multiple clients.
         self._template_registered = False
