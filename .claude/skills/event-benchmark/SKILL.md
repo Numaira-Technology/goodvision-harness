@@ -20,8 +20,11 @@ use the user's authorized scope and budget.
    manifest, media directories and output path. Verify manifest review status,
    samples hash, question/label identities and media hashes. The runner does this
    before requests. Do not change a draft status to bypass review.
-   `manifest_50.json` is reviewed; `manifest_120.json` is currently draft and
-   includes 100 base-event questions plus 20 separate bag-search questions.
+   `manifest_50.json` is reviewed; merged PR #73 records `manifest_120.json` as
+   `human_reviewed` with all 120 rows `user_reviewed`. It includes 100 base-event
+   questions plus 20 separate bag-search questions. These recorded flags do not
+   independently verify owner approval, source grouping or fresh run provenance;
+   no `source_video_group` values are present in that manifest.
    Question count is not unique-video count. Larger sets require their own reviewed
    manifest. Never assume a colleague's Desktop path exists.
 2. **Run accuracy from the repository root**, only after authorization for calls:
@@ -63,6 +66,11 @@ use the user's authorized scope and budget.
   itself change the sampling spec; rerun every compared candidate on the same set.
 - Provisional labels may be described as historical/exploratory evidence only, never
   as reviewed v2 results. No new official run until the manifest is reviewed.
+  Explicitly authorized `--provisional` diagnostics use `base4-provisional-v1`
+  (`tools/event_benchmark/PROVISIONAL.md`), support only binary base-4 questions,
+  and record rather than verify input hashes. They cannot be used for v2 tuning.
+  Bag yes/no/unknown questions require a separate reviewed scoring protocol;
+  never collapse unknown into no or remove the third answer to fit this runner.
 - No negatives means specificity unavailable, not zero false positives.
 
 ## Other model classes

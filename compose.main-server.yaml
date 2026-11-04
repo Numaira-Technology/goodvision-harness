@@ -31,9 +31,14 @@ services:
       LOCAL_INFERENCE_API_KEY: "${LOCAL_INFERENCE_API_KEY:-}"
       LOCAL_INFERENCE_MAX_TOKENS: "${LOCAL_INFERENCE_MAX_TOKENS:-1600}"
       LOCAL_TRACKING_FPS: "${LOCAL_TRACKING_FPS:-2}"
+      VLM_ADMISSION_DATABASE: "${VLM_ADMISSION_DATABASE:-/var/lib/goodvision-vlm/admission.sqlite}"
+      VLM_GLOBAL_MAX_IN_FLIGHT: "${VLM_GLOBAL_MAX_IN_FLIGHT:-1}"
+      VLM_PER_STREAM_MAX_IN_FLIGHT: "${VLM_PER_STREAM_MAX_IN_FLIGHT:-1}"
       RICH_LABEL_BACKEND: "${RICH_LABEL_BACKEND:-}"
       SCENE_ENGINE_MODE: "${SCENE_ENGINE_MODE:-}"
       SAM31_CLIENT_TIMEOUT_SECONDS: "${SAM31_CLIENT_TIMEOUT_SECONDS:-75}"
+    volumes:
+      - vlm-admission:/var/lib/goodvision-vlm
     networks: !override
       default:
         aliases: [harness]
@@ -44,3 +49,4 @@ networks:
 volumes:
   face-models: {}
   face-data: {}
+  vlm-admission: {}

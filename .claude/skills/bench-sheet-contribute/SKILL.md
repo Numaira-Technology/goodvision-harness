@@ -20,9 +20,10 @@ within the user's authorized scope; this skill does not authorize inference.
 - Expected tab `results`, sheetId 0; headers rows 1–2, data starts row 3.
 - Expected pivoted schema: **A:W**, detailed in `references/column-contract.md`.
   This was checked against live headers on 2026-11-01; re-read metadata and headers
-  on every publication. **The repository's `sheet_config.json` describes a legacy
-  A:Q layout and is incompatible.** Do not use its positions or absent
-  `bench-sheet-push`/`build_rows.py` tooling. A header mismatch blocks writing;
+  on every publication. The repository's `sheet_config.json` now describes A:W;
+  it does not prove the live headers or authorize its suggested formatting/price
+  conventions. Do not use absent `bench-sheet-push`/`build_rows.py` tooling.
+  A header mismatch blocks writing;
   do not migrate the sheet, rename headers or modify the config as a side effect.
 
 Model in column A is the lookup key, but identifies **model + protocol + variant**,

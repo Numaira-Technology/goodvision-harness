@@ -1,15 +1,18 @@
 # Frozen benchmark methodology
 
 Authority: `tools/event_benchmark/SPEC.md` and `run_eval.py`, currently v2.
-`SPEC_V1.md`, `RESULTS.md` and checked-in result JSONs are historical v1 artifacts.
-They cannot establish v2 accuracy or calibrate a v2 variant without fresh evidence.
+`SPEC_V1.md` describes the historical protocol. `RESULTS.md` distinguishes v1
+archives, unreviewed binary bag experiments and current tooling. Those archives
+cannot establish v2 accuracy or calibrate a v2 variant without fresh evidence.
 
 ## Inputs and provenance
 
 Before any request, require a `human_reviewed` manifest matching the exact samples
 file and every scored media file. Pass `--manifest` explicitly. Missing media,
 ambiguous filenames, changed questions/labels and hash mismatches are blockers.
-`--checksums` is a compatibility flag: hash checking is always enforced.
+`--checksums` is a compatibility flag: frozen mode always verifies hashes.
+Explicit provisional diagnostics only record hashes and use a separate protocol;
+they do not establish reviewed v2 evidence.
 
 Record dataset ID, samples/manifest/media hashes, source commit, runner/spec hashes,
 model/backend/provider route, configuration, run timestamp, environment versions
@@ -17,9 +20,12 @@ and result-file hash. A count such as 50 or 100 is not a dataset identity. Recor
 question count and distinct-media count separately. Do not send labels or reference
 answers to the model. Private media, keys and raw outputs stay outside Git.
 
-Current manifests: 50 is reviewed; 120 is `draft_pending_user_review`, with 100
-base-4 questions and 20 bag-search questions. Review status must be resolved by
-reviewers, not relabeled by an agent to enable a run. Bag questions allow unknown
+Current manifests: 50 is reviewed; merged PR #73 records all 120 questions as
+`user_reviewed` under `status=human_reviewed`, with 100 base-4 and 20 bag questions.
+Questions, answers and media/sample fingerprints were unchanged by that metadata
+update. The flags do not independently establish owner verification, reviewed
+source groups or fresh v2 runs. Review status must be resolved by reviewers,
+not relabeled by an agent to enable a run. Bag questions allow unknown
 and require a separate versioned task/metric; the base runner filters them out.
 
 ## Frozen v2 procedure
