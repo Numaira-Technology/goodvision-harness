@@ -4,14 +4,24 @@
 >
 > 本文能离线查证的都已查证并给出结论；需要凭据/账号才能做的（真正上传、跑 live `vastai cloud copy`）列在文末 [待办与需要用户提供的信息](#待办与需要用户提供的信息)，没有卡住其余工作。
 
+## 上传状态
+
+| 日期 | bucket | 内容 |
+|---|---|---|
+| 2026-11-03 | `goodvision-models`（account `2c044451…`，Standard） | VideoJev-4B + CLIP 已上传，共 40 对象 / 10.68 GB（各含 `MANIFEST.json` + `_ADDED.json`） |
+
+账号 `sx2660@nyu.edu` 的 Cloudflare 已确认带 R2。SigLIP2 / d3-nano / Qwen FP8 尚未上传（见 [待办](#待办与需要用户提供的信息)）。
+
+> **上传踩坑（务必注意）**：`huggingface_hub` 若装了 `hf_xet`，大权重会走 HF 的 Xet CDN，期间可能报 `CAS Client Error ... error sending request`，导致只传上去几个小文件就中断。上传脚本因此：① `export HF_HUB_DISABLE_XET=1`（或卸载 `hf_xet`）强制走传统 LFS；② 每个文件最多重试 6 次、指数退避；③ 带 `HF_TOKEN`（本仓库 `.env` 已有）解除匿名限速。缺 token 也能跑，但 8GB 会被限速拖得很慢。
+
 ## 范围：哪些模型进 R2
 
 只把**在 GPU 上本地跑权重**的模型放进 R2。纯 API 模型没有权重，不进。
 
 | 模型 | 用途（benchmark 类别） | HF repo | 钉死 revision | 代码出处 | 是否进 R2 |
 |---|---|---|---|---|---|
-| VideoJev-4B | decision（system-one 决策，native） | `ZhuYuhan/VideoJev-4B` | `1c1a253bf90dfa66176124d25a48ffb791d517d5` | `src/goodvision_harness/videojev_core.py:7-8` | **是** |
-| CLIP ViT-L/14 | threshold（neural / CLIP 分数） | `openai/clip-vit-large-patch14` | `32bd64288804d66eefd0ccbe215aa642df71cc41` | `src/goodvision_harness/neural_service.py:18-19` | **是** |
+| VideoJev-4B | decision（system-one 决策，native） | `ZhuYuhan/VideoJev-4B` | `1c1a253bf90dfa66176124d25a48ffb791d517d5` | `src/goodvision_harness/videojev_core.py:7-8` | **已上传 ✅ (8.96 GB)** |
+| CLIP ViT-L/14 | threshold（neural / CLIP 分数） | `openai/clip-vit-large-patch14` | `32bd64288804d66eefd0ccbe215aa642df71cc41` | `src/goodvision_harness/neural_service.py:18-19` | **已上传 ✅ (1.71 GB)** |
 | SigLIP2 base | threshold（计划接入） | `google/siglip2-base-patch16-224` | **未钉死**（本分支代码里还没有，需补） | 任务指定，暂无代码引用 | 是（待补 revision） |
 | d3-nano | decision（本地 decision3 运行时） | `vllm-sr/d3-nano` | `462efc366229ea268cf4eed3738b3fc4415e4817` | `src/goodvision_harness/decision3_runtime.py:16-17` | 是（本地跑才需要） |
 | Qwen3.5-35B-A3B FP8 | 自部署 Qwen 基线（Vast） | `Qwen/Qwen3.5-35B-A3B-FP8` | `9d1823d2dee688a6b25e77009dc727688c44936e` | `tools/vast_vlm/fp8_profile.py:10-11` | 可选，见下 |
@@ -50,7 +60,7 @@ models/Qwen/Qwen3.5-35B-A3B-FP8/9d1823d2dee688a6b25e77009dc727688c44936e/
 - **按 HF 原始文件树 1:1 镜像**（含子目录），这样下游工具可以把 `local_dir` 直接指向该 revision 目录，和 `snapshot_download(..., revision=..., local_dir=...)` 的落盘结构一致（`tools/vast_vlm/runtime.py:195`、`tools/videojev_probe/__main__.py:60`）。
 - 每个 revision 目录放一个 **`MANIFEST.json`**：文件名 → sha256 + 字节数，和 runner 现有的 `verified.json` 校验逻辑对齐，拉取后可校验完整性。
 - 每个 revision 目录放一个 **`_ADDED.json`**（上传人、时间、来源 HF URL），记录来源，便于季度清理时判断。
-- **只上传权重相关文件**：`.safetensors / .json / .txt / .model / .jinja`，和 `runtime.py` 的 `allow_patterns` 一致；不要上传 `.bin` 双份、`.msgpack`、`*.h5`、README 图片等无关大文件。
+- **镜像该 revision 的完整快照**，只丢掉冗余的重复权重格式：当存在 `.safetensors` 时不传 `.bin / .msgpack / .h5 / .pth`。**务必保留自定义代码 `.py` 文件**——VideoJev 用 `trust_remote_code=True` 加载（`src/goodvision_harness/videojev_core.py:97`），缺了 `.py` 会无法 `from_pretrained`。配置/分词器等小文件（`.json / .txt / .model / .jinja`）照常保留。
 
 ## 管理规则（selective、定期、不要 abuse）
 
