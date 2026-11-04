@@ -143,6 +143,35 @@ endpoint = https://<account_id>.r2.cloudflarestorage.com
 acl = private
 ```
 
+## 在 Vast GPU 上丝滑取用（runner 集成）
+
+**设计原则：核心加载代码不动，只在 runner 预取阶段把数据源从 HF 换成 R2。** 模型服务（`videojev_core` / `neural_service`）仍按 repo id + revision 从 `cache_dir` 的 HF 缓存布局加载（`local_files_only`），我们只是先把缓存填好。无 R2 凭据时自动退化为纯 HF，所以可安全合并、增量迁移。
+
+- **新模块 `tools/model_source.py`**：`ensure_cached(repo, revision, cache_dir)`，顺序 **本地已校验 → R2（有凭据时）→ HF 兜底**；把 `models/<repo>/<rev>/` 按 HF 缓存布局（`models--org--name/snapshots/<rev>/`）填进 `cache_dir`，并按 bucket 的 `MANIFEST.json` 逐文件校验 sha256。也可当 CLI 用。
+- **凭据**：从环境读 `R2_ENDPOINT/R2_BUCKET/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY`，controller 经 SSH 带到 GPU（和 `HF_TOKEN` 一套，不进 repo/镜像）。服务启动前 `tools/vast_vlm/runtime.py` 会把 `R2_*` / `HF_TOKEN` / `*API_KEY*` 从服务进程环境抹除。
+- **VideoJev**：`videojev_probe download` 已改为走 `ensure_cached`；随后 `run` / `server` 用同一 `--cache-dir` 原样加载。
+- **CLIP**：无需改核心——controller 先跑预取 CLI，再照常起 `neural_service`（同一 `--cache-dir`，设 `HF_HUB_OFFLINE=1`）。
+
+```bash
+# 预取（R2 优先、HF 兜底）——revision 取自代码里钉死的常量
+python -m tools.model_source --model videojev --cache-dir /models/cache
+python -m tools.model_source --model clip     --cache-dir /models/cache
+# 服务原样从缓存加载
+python -m tools.videojev_probe run --cache-dir /models/cache ...
+HF_HUB_OFFLINE=1 python -m goodvision_harness.neural_service --cache-dir /models/cache --port 8900
+```
+
+端到端：
+
+```
+vastai 租机 → SSH + onstart(修权限) → controller 带 R2+HF 凭据
+  → model_source 预取(R2 拉 + MANIFEST 校验, ~2min; 本地已有则秒过)
+  → 服务 local_files_only 加载 → 跑 event benchmark
+重租同款(或挂持久卷): 本地已校验 → 跳过下载
+```
+
+预取环境需 `boto3`（已加进 `tools/videojev_probe/requirements.txt`）；缺了也能走 HF 兜底。每个 runner 各取各的模型，VideoJev 与 CLIP 同机或分开都适用。
+
 ## R2 价格与成本估算
 
 官方价格页（`developers.cloudflare.com/r2/pricing/`，页面标注 **Last updated 2026-10-30**，当天查证）：
@@ -175,17 +204,14 @@ acl = private
 
 ## 待办与需要用户提供的信息
 
-能直接做的已做（查价、验证 Vast CLI、定布局与规则、写本文）。下面这些需要账号/凭据，**真正上传模型到 R2 被这些 block**：
+**已完成：** 账号（`sx2660@nyu.edu`，account `2c044451…`）+ bucket `goodvision-models` 确认；VideoJev + CLIP 已上传校验；只读 token `vast-R2-goodvision-models-readonly` 已建并验证（能读、写被拒），4 个 `R2_*` 写入本地 `.env`（未提交）；runner 集成（`tools/model_source.py` + `videojev_probe download`）已落地并对真实 R2 冒烟通过。
 
-1. **确认 Cloudflare 账号**：团队是否已有带 R2 的 Cloudflare 账号？提供 **account ID**。
-2. **Bucket**：是否已存在（名字）？没有就建 `goodvision-models`（Standard，关 versioning）。
-3. **R2 S3 凭据**（走密码管理器 / 密钥管理，**不要贴进 repo 或聊天**）：
-   - 读写 API token 的 **Access Key ID + Secret Access Key**（限定该 bucket），用于上传。
-   - S3 endpoint：`https://<account_id>.r2.cloudflarestorage.com`。
-   - （可选）再要一个只读 token 发给 runner 拉取。
-4. **确认模型清单**：
-   - 自部署 **Qwen3.5-35B FP8** 要不要进 R2（建议：要；BF16 暂不）？
-   - **SigLIP2 的确切 revision**（`google/siglip2-base-patch16-224` 当前本分支代码里还没引用，需钉死一个 commit SHA）。
-5. **Vast（可选）**：是否要在 Vast 网页控制台把 R2 注册成云连接以用 `vastai cloud copy`？若只用 rclone/hf 在实例内拉取（推荐），这步可省。
+**待办：**
 
-拿到 1–3 后即可按上面的 seed 命令上传并建 MANIFEST；4–5 是清单/路径确认。
+1. **其余模型上传**（用读写 key，维护者执行）：
+   - **d3-nano**（`vllm-sr/d3-nano` @ `462efc36…`）。
+   - **Qwen3.5-35B FP8**（`Qwen/Qwen3.5-35B-A3B-FP8` @ `9d1823d2…`，~35GB）——确认要不要进（建议要；BF16 暂不）。
+   - **SigLIP2**：需先钉死一个 commit SHA（`google/siglip2-base-patch16-224` 本分支代码还没引用）。
+2. **只读凭据分发**：把那 4 个 `R2_*` 放进团队密码管理器，供其他同事 runner 用（**不要进 repo/聊天**）。
+3. **持久卷**：等 Qwen FP8 上了，给它在 Vast 挂持久卷以免重租重下。
+4. **Vast cloud connection（可选）**：若想用 `vastai cloud copy` 而非 boto3/rclone，在网页控制台把 R2 注册成 S3 连接。

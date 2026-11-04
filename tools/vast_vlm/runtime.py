@@ -336,7 +336,8 @@ def start(root, *, p=p):
             env.update(p.server_environment(root))
         # No cloud credentials are necessary for serving already verified weights.
         for key in list(env):
-            if any(term in key.upper() for term in ("API_KEY", "HF_TOKEN")):
+            upper = key.upper()
+            if any(term in upper for term in ("API_KEY", "HF_TOKEN")) or upper.startswith("R2_"):
                 env.pop(key)
         with (run / "server.log").open("w") as log:
 
