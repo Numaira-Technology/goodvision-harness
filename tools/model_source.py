@@ -168,16 +168,24 @@ def ensure_cached(repo, revision, cache_dir, *, prefer_r2=True):
     return Path(path)
 
 
+# Each entry is either a module path exposing MODEL/REVISION, or a direct
+# (repo, revision) tuple for a model not yet wired into any runtime module.
 _KNOWN = {
     "videojev": "tools.videojev_probe.contract",
     "clip": "goodvision_harness.neural_service",
+    # SigLIP2 is pinned here (no service imports it yet); move to a runtime
+    # module's MODEL/REVISION once it is wired in.
+    "siglip2": ("google/siglip2-base-patch16-224", "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2"),
 }
 
 
 def _resolve_known(name):
     import importlib
 
-    mod = importlib.import_module(_KNOWN[name])
+    entry = _KNOWN[name]
+    if isinstance(entry, tuple):
+        return entry
+    mod = importlib.import_module(entry)
     return mod.MODEL, mod.REVISION
 
 
