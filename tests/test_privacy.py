@@ -296,6 +296,45 @@ def test_result_bus_projects_public_records_without_mutating_caller() -> None:
     assert payload["description"] == PRIVATE_TEXT
 
 
+def test_transient_result_bus_records_do_not_replace_final_snapshots() -> None:
+    bus = ResultBus()
+    final = {"type": "analysis_result", "frame": {"timestamp_seconds": 1.0}}
+    preliminary = {
+        "type": "preliminary_vision_result",
+        "frame": {"timestamp_seconds": 2.0},
+    }
+    bus.publish(final)
+    bus.publish(preliminary, update_snapshots=False)
+
+    assert bus.latest().payload == final
+    assert [record.payload for record in bus.records_after(0)] == [final, preliminary]
+
+
+def test_transient_result_bus_records_do_not_evict_final_replay_history() -> None:
+    bus = ResultBus(history_size=2)
+    first = {"type": "analysis_result", "message_id": "final-1"}
+    second = {"type": "analysis_result", "message_id": "final-2"}
+    bus.publish(first)
+    bus.publish(second)
+
+    for index in range(10):
+        bus.publish(
+            {"type": "preliminary_vision_result", "window_index": index},
+            update_snapshots=False,
+        )
+
+    replay = bus.records_after(0)
+    assert [
+        record.payload["message_id"]
+        for record in replay
+        if record.payload["type"] == "analysis_result"
+    ] == ["final-1", "final-2"]
+    assert sum(
+        record.payload["type"] == "preliminary_vision_result"
+        for record in replay
+    ) == 2
+
+
 def test_webhook_projects_payload_and_preserves_matching_idempotency() -> None:
     requests: list[httpx.Request] = []
 

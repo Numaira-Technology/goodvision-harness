@@ -75,6 +75,26 @@ def test_unknown_diagnostic_view_is_rejected(monkeypatch, view):
         assert not app.state.own_requests
 
 
+def test_local_camera_document_restores_direct_browser_camera_controls(monkeypatch):
+    app = make_app(monkeypatch, capacity=1)
+    with TestClient(app) as client:
+        page = client.get("/local-camera")
+        assert page.status_code == 200
+        assert page.headers["cache-control"] == "no-store"
+        assert '<div id="fleet-detail-console">' in page.text
+        assert 'src="/assets/fleet_console.js"' not in page.text
+        assert 'mode("camera");' in page.text
+        assert 'ui.streamMode.onclick=()=>mode("stream")' in page.text
+        assert "globalThis.GoodvisionFleet=" not in page.text
+        assert "<h2>本机摄像头检测</h2>" in page.text
+        assert "globalThis.GoodvisionLocalCamera=true;" in page.text
+        assert "globalThis.GoodvisionConsoleManaged=false;" in page.text
+        assert "globalThis.GoodvisionDiagnostic=true;" not in page.text
+        assert 'const statusUrl="/v1/status?lightweight=true"' in page.text
+        assert 'src="/assets/workflow_canvas.js"' not in page.text
+        assert 'src="/assets/local_camera.js"' not in page.text
+
+
 def test_peer_buffer_updates_while_analysis_runs_without_affecting_primary(monkeypatch):
     app = make_app(monkeypatch)
     app.state.statuses[1]["analysis_state"] = "running"

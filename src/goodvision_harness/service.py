@@ -191,6 +191,7 @@ from .video_tracking_session import (
     VideoSessionTrackingCoordinator,
     continuous_source_history_seconds,
 )
+from .vision_result import PreliminaryVisionResult
 from .visual_memory import (
     VisualMemoryRecord,
     VisualMemorySink,
@@ -2618,10 +2619,16 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                         api_key=self._aiclub_api_key,
                         transport=(
                             self._pooled_transport()
-                            if self._route_pool_enabled
-                            and not use_dry_run
+                            if not use_dry_run
                             and any(item != "stranger" for item in frame_features)
                             else None
+                        ),
+                        stream_decisions=(
+                            not use_dry_run
+                            and session_config.model_api.provider == "openrouter"
+                        ),
+                        preliminary_callback=lambda result: self._guarded_callback(
+                            generation, self._on_preliminary_result, result
                         ),
                     )
                     if frame_features
@@ -2643,7 +2650,14 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     api_key=self._aiclub_api_key,
                     transport=(
                         self._pooled_transport()
-                        if self._route_pool_enabled and not use_dry_run else None
+                        if not use_dry_run else None
+                    ),
+                    stream_decisions=(
+                        not use_dry_run
+                        and session_config.model_api.provider == "openrouter"
+                    ),
+                    preliminary_callback=lambda result: self._guarded_callback(
+                        generation, self._on_preliminary_result, result
                     ),
                 )
             if scene_active:
@@ -2658,6 +2672,25 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                             session_config.video.max_image_side,
                             self.config.runtime.scene_max_image_side,
                         ),
+                    ),
+                )
+            elif (
+                mode == CAMERA_MODE
+                and not use_dry_run
+                and camera_owner is not None
+                and selected_analysis != FACE_ANALYSIS_MODE
+            ):
+                # Browser capture is the low-latency live path. Give safety
+                # events two adjacent frames of context while keeping the
+                # file/network defaults unchanged; the live scheduler still
+                # advances on each sampled frame and drops stale work.
+                session_config = replace(
+                    session_config,
+                    sliding_window=replace(
+                        session_config.sliding_window,
+                        size_frames=2,
+                        stride_frames=1,
+                        include_partial_final_window=True,
                     ),
                 )
             if mode == STREAM_MODE:
@@ -4153,6 +4186,28 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             self._on_scene_update()
             return
         self._publish_analysis_result(result)
+
+    def _on_preliminary_result(self, result: PreliminaryVisionResult) -> None:
+        """Publish an advisory model prefix without replacing final snapshots."""
+
+        session = self._session
+        if session is None:
+            return
+        payload = result.as_dict()
+        payload.update({
+            "message_id": (
+                f"preliminary-{session.stream_session_id}-"
+                f"{result.window_index}-{result.event_label}"
+            ),
+            "source_id": self.source_id,
+            "stream_session_id": session.stream_session_id,
+            "emitted_at": _utc_now(),
+            "frame": {
+                "source_frame_index": result.source_frame_index,
+                "timestamp_seconds": round(result.window_end_seconds, 3),
+            },
+        })
+        self.results.publish(payload, update_snapshots=False)
 
     def _publish_analysis_result(
         self, result: AnalysisResult, *, promote_latest: bool = True,
@@ -6266,6 +6321,13 @@ def _result_events_response(
             for record in records:
                 current = record.cursor
                 payload = record.payload
+                # Preliminary results belong only to the unfiltered event stream.
+                # Other result buses can publish their own overall projections.
+                if (
+                    (feature is not None or overall_only)
+                    and payload.get("type") == "preliminary_vision_result"
+                ):
+                    continue
                 if feature is not None:
                     selected = _feature_result_payload(payload, feature)
                     if selected is None:
@@ -6280,7 +6342,9 @@ def _result_events_response(
                 )
                 emitted = True
                 name = event_name or (
-                    "overall_description" if overall_only else "analysis_result"
+                    "overall_description" if overall_only else str(
+                        payload.get("type", "analysis_result")
+                    )
                 )
                 yield (
                     f"id: {bus.epoch}:{record.cursor}\n"

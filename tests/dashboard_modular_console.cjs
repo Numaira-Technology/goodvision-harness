@@ -4,7 +4,7 @@ const vm=require('node:vm');
 const {html,script}=require('./helpers/dashboard.cjs');
 const modular=html.match(/<script id="modular-console-script">([\s\S]*?)<\/script>/)[1];
 
-function fixture({hash='',search='',diagnostic=false,diagnosticView='diagnostics'}={}){
+function fixture({hash='',search='',diagnostic=false,diagnosticView='diagnostics',localCamera=false}={}){
   class Element{
     constructor(dataset={}){this.dataset=dataset;this.hidden=false;this.value='';this.attributes={};this.children=[];this.handlers={};this.classList={contains:name=>this.nav&&name==='nav-item'};}
     setAttribute(name,value){this.attributes[name]=value;}
@@ -31,6 +31,7 @@ function fixture({hash='',search='',diagnostic=false,diagnosticView='diagnostics
   })[selector]||[],createRange:()=>({selectNodeContents(item){element('selection').value=item.textContent;}})};
   const location={hash,search,origin:'http://localhost:7900'};
   const context=vm.createContext({document,location,URL,URLSearchParams,GoodvisionDiagnostic:diagnostic,GoodvisionDiagnosticView:diagnosticView,
+    GoodvisionLocalCamera:localCamera,GoodvisionConsoleManaged:!localCamera,
     navigator:{clipboard:{writeText:async text=>copied.push(text)}},
     getSelection:()=>({removeAllRanges(){},addRange(){}}),
     history:{pushState:(_,__,value)=>{location.hash=value;}},addEventListener:(name,fn)=>{handlers[name]=fn;},
@@ -42,6 +43,27 @@ function fixture({hash='',search='',diagnostic=false,diagnosticView='diagnostics
   const app={metadataOk:true,fleet:{cameras,analysis:{state:'idle'}},rows:new Map(cameras.map(camera=>[camera.id,{status:{connection_state:'disconnected'}}]))};
   return {api:context.GoodvisionConsole,context,element,pages,links,paths,outputLinks,copyButtons,app,copied,handlers,location};
 }
+
+test('standalone camera mounts detection controls and receives preliminary and final SSE events',async()=>{
+  const view=fixture({localCamera:true});
+  assert.equal(view.context.document.body.dataset.diagnosticView,'local_camera');
+  assert.ok(view.pages.every(page=>page.hidden));
+  const content=view.element('console-main').children.find(item=>item.id==='diagnostic-content');
+  assert.deepEqual(content.children.map(item=>item.id),['local-camera-panel','analysis-workspace','scene-panel','face-diagnostics-panel']);
+  const received=[],streams=[];
+  Object.assign(view.context,{
+    fetch:async()=>({ok:true,headers:{get:()=> '7'}}),
+    EventSource:class{constructor(url){this.url=url;this.listeners={};streams.push(this);}addEventListener(name,fn){this.listeners[name]=fn;}},
+    analysis:result=>received.push(result),preliminary:result=>received.push(result),
+    setChannel(){},say(message){throw new Error(message);},ui:{sseChannel:{}},
+    pollDiagnosticResults(){throw new Error('Standalone camera must use generic SSE');}
+  });
+  vm.runInContext('let events;'+script.slice(script.indexOf('async function connectResultEvents()'),script.indexOf('window.addEventListener("goodvision:language"')),view.context);
+  await view.context.connectResultEvents();
+  assert.equal(streams.length,1);assert.equal(streams[0].url,'/v1/results/events?after=7');
+  for(const type of ['preliminary_vision_result','analysis_result'])streams[0].listeners[type]({data:JSON.stringify({type})});
+  assert.deepEqual(received.map(result=>result.type),['preliminary_vision_result','analysis_result']);
+});
 
 test('navigation preserves existing controls, drafts and camera state and restores history',()=>{
   const view=fixture();view.api.sync(view.app);
@@ -206,7 +228,7 @@ test('frame result view mounts the actionable inference error outside its hidden
   assert.ok(!content.children.includes(view.element('overall-summary')));
   const ui=new Proxy({}, {get:(_target,name)=>view.element('runtime-'+String(name))});
   Object.assign(view.context,{ui,activeStates:new Set(['starting','running']),
-    updateRichAnnotationStatus(){},backgroundMessage:()=>'',backgroundRuns:()=>[],
+    updateRichAnnotationStatus(){},clearPreliminaryResults(){},backgroundMessage:()=>'',backgroundRuns:()=>[],
     count:value=>String(value||0),timeLabel:value=>String(value),setChannel(){},setConnection(){},$:view.element});
   vm.runInContext(script.slice(script.indexOf('function runtimeErrorText('),script.indexOf('async function status()')),view.context);
   view.context.updateRuntimeSummary({pipeline_state:'running',pipeline:{branch_errors:{safety:'http_error'},
