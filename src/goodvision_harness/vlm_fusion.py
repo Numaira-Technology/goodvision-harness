@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import time
 from collections import Counter, OrderedDict
 from threading import Event, Lock, Thread
@@ -471,6 +472,16 @@ class VLMFusion:
                     row.update(reason="person_assessment_failed",
                                error={"type": type(error).__name__,
                                       "detail": str(error)[:1200]})
+                    if getattr(error, "status_code", None) == 429:
+                        try:
+                            retry_after = float(getattr(error, "retry_after", None) or 0)
+                        except (TypeError, ValueError):
+                            retry_after = 0
+                        cooldown = max(60, retry_after) if math.isfinite(retry_after) else 60
+                        row["cooldown_seconds"] = cooldown
+                        # No retry: honor the received cooldown before moving to
+                        # another crop. Explicit branch shutdown can interrupt it.
+                        self._stop.wait(cooldown)
                 finally:
                     if pinned:
                         with scene._lock:
