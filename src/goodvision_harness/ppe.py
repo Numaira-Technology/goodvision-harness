@@ -25,6 +25,15 @@ _PRESENCE_OPTIONS = (
     "B. The scene clearly contains no person or human body part.",
     "C. Human presence cannot be determined from this image.",
 )
+_SCENE_EQUIPMENT_OPTIONS = (
+    "A. At least one visible person has a clearly assessable head without a "
+    "safety helmet, or a clearly assessable chest/back without a reflective "
+    "safety vest. One missing item is sufficient.",
+    "B. Every visible person clearly wears both a safety helmet and a "
+    "reflective safety vest; both required areas are assessable.",
+    "C. No person is visible, or the image does not establish either of the "
+    "equipment observations above because a required area is not assessable.",
+)
 SCENE_PPE_TEXTS = {
     "missing": (
         "A person with a clearly visible uncovered head or ordinary soft cap, "
@@ -47,8 +56,8 @@ _SCENE_RULE = (
     "Report a violation when any clearly assessable head lacks a safety helmet "
     "or any clearly assessable chest/back lacks a reflective safety vest. "
     "An ordinary soft cap is not a safety helmet; bright ordinary clothing "
-    "alone is not a reflective vest. Assessed absent requires either a clearly "
-    "empty scene or both items visibly worn by every visible person. If no "
+    "alone is not a reflective vest. Equipment is worn only when both items "
+    "are visibly worn by every visible person. If no "
     "violation is established but any person's required area is hidden, cropped, "
     "distant or blurred, select insufficient evidence, never assume compliance."
 )
@@ -75,16 +84,27 @@ def scene_questions(rows):
     for row in rows:
         before, after = row["query_parts"]
         before = _SCENE_RULE + "\n" + before
-        result.append({**row, "query_parts": (before, after)})
         if row["id"] == PPE_ID:
+            context = after.rpartition("\nFor ")[0]
+            result.append({
+                **row,
+                "query_parts": (
+                    before, context + "\nFor the last original frame, which "
+                    "observation of safety helmets and reflective safety "
+                    "vests is supported for the visible people?",
+                ),
+                "options": list(_SCENE_EQUIPMENT_OPTIONS),
+            })
             result.append({
                 "id": PPE_PRESENCE_ID, "task": "choice",
                 "query_parts": (
-                    before, after.rpartition("\nFor ")[0] +
+                    before, context +
                     "\nFor the last original frame, is any person or human body part visible?",
                 ),
                 "options": list(_PRESENCE_OPTIONS),
             })
+        else:
+            result.append({**row, "query_parts": (before, after)})
     return tuple(result)
 
 
@@ -96,14 +116,16 @@ def finish_scene_observation(raw, rows, frame_times):
         return raw
     flattened = native_rows(raw)
     choices = [row for row in flattened if row.get("id") in {PPE_ID, PPE_PRESENCE_ID}]
-    expected = [*[row for row in rows if row["id"] == PPE_ID],
-                {"id": PPE_PRESENCE_ID, "options": list(_PRESENCE_OPTIONS)}]
+    expected = [
+        {**row, "options": list(_SCENE_EQUIPMENT_OPTIONS)}
+        for row in rows if row["id"] == PPE_ID
+    ] + [{"id": PPE_PRESENCE_ID, "options": list(_PRESENCE_OPTIONS)}]
     try:
         values = parse_choices(choices, expected)
         violation, present = values[PPE_ID], values[PPE_PRESENCE_ID]
         state = (
             "missing" if violation is True and present is not False else
-            "absent" if violation is False and present is False else
+            "absent" if violation is None and present is False else
             "worn" if violation is False and present is True else "unassessable"
         )
         observation = scene_observation(
