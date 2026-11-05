@@ -310,8 +310,14 @@ def test_native_preview_runs_inspector_with_distinct_evidence_without_live_mutat
     )
     assert cfg.model_settings.endpoint == endpoint + "/predict"
     assert starts == ([engine] if location == "local" else [])
-    assert payload["frame_times"] == [1 / 15, 8 / 15]
-    assert len(set(payload["images"])) == 2
+    # The neural (CLIP) inspector only sends the newest image for scene labels,
+    # since the service scores images[-1]; VideoJev still sends the full window.
+    if engine == "neural":
+        assert payload["frame_times"] == [8 / 15]
+        assert len(set(payload["images"])) == 1
+    else:
+        assert payload["frame_times"] == [1 / 15, 8 / 15]
+        assert len(set(payload["images"])) == 2
     assert job.stream_session_id == result["stream_session_id"]
     assert job.diagnostics is None and job.subject_boxes == ()
     assert closed == [True]
