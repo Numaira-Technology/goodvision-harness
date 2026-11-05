@@ -74,7 +74,26 @@ def client_and_request():
     return inspector, json.loads(body), expected
 
 
-class Encoder:
+class StubEncoder:
+    """Adapt a single-image ``scores`` stub to the batched service interface.
+
+    The real service now prepares pixels on the request thread and scores them
+    in a background batch worker, so stubs must provide ``prepare`` and
+    ``score_batch``. Passing the PIL image straight through keeps the existing
+    ``scores`` assertions (e.g. ``image.mode == "RGB"``) meaningful.
+    """
+
+    def prepare(self, image):
+        return image
+
+    def score_batch(self, pixels, labels):
+        return [
+            self.scores(image, requested)
+            for image, requested in zip(pixels, labels, strict=True)
+        ]
+
+
+class Encoder(StubEncoder):
     def scores(self, image, labels):
         assert image.mode == "RGB"
         assert labels == ["smoking", "fall"]
@@ -116,7 +135,7 @@ def test_malformed_requests_fail_without_model_calls(mutation):
     _, payload, _ = client_and_request()
     mutation(payload)
 
-    class Unused:
+    class Unused(StubEncoder):
         def scores(self, *args):
             pytest.fail("invalid request reached the model")
 
@@ -127,7 +146,7 @@ def test_malformed_requests_fail_without_model_calls(mutation):
 def test_invalid_model_scores_do_not_publish_negative_detection():
     _, payload, _ = client_and_request()
 
-    class Invalid:
+    class Invalid(StubEncoder):
         def scores(self, *args):
             return [[float("nan"), 0], [0.2, 0.8]]
 
@@ -156,7 +175,7 @@ def test_base_cuda_failure_closes_shared_admission():
     _, payload, _ = client_and_request()
     calls = []
 
-    class Failed:
+    class Failed(StubEncoder):
         def scores(self, *args):
             calls.append(True)
             raise RuntimeError("CUDA error: illegal memory access")
@@ -180,7 +199,7 @@ def test_ppe_is_derived_from_both_frames_and_local_failures_keep_other_labels(
     expected[1]["id"] = "scene/ppe_violation"
     observed = []
 
-    class Scores:
+    class Scores(StubEncoder):
         def scores(self, image, labels):
             return [[0.9, 0.1], [float("nan"), 0.1]]
 
@@ -213,14 +232,22 @@ def test_ppe_is_derived_from_both_frames_and_local_failures_keep_other_labels(
     ] == [True, None]
 
 
-def test_cancelled_request_keeps_gpu_lock_until_worker_finishes():
+def test_cancelled_request_does_not_wedge_the_inference_worker():
+    # The batch worker replaced the old global GPU lock: a client that cancels an
+    # in-flight request must not leave the service permanently closed. The worker
+    # finishes the orphaned score and the next request is served normally.
     _, payload, _ = client_and_request()
     entered, release = Event(), Event()
 
     class Blocking(Encoder):
+        def __init__(self):
+            self.calls = 0
+
         def scores(self, *args):
-            entered.set()
-            assert release.wait(5)
+            self.calls += 1
+            if self.calls == 1:
+                entered.set()
+                assert release.wait(5)
             return super().scores(*args)
 
     async def run():
@@ -234,8 +261,55 @@ def test_cancelled_request_keeps_gpu_lock_until_worker_finishes():
                 first.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await first
-                assert (await client.post("/predict", json=payload)).status_code == 429
             finally:
                 release.set()
+            # Service recovers: no lock is held past the orphaned request.
+            recovered = await client.post("/predict", json=payload)
+            assert recovered.status_code == 200
+
+    asyncio.run(run())
+
+
+def test_overloaded_queue_sheds_load_with_429():
+    # The pending queue is bounded: once a request is in the worker and the
+    # backlog is full, further requests are shed with 429 instead of queuing
+    # without limit. Recovery drains the backlog and serves the waiting work.
+    _, payload, _ = client_and_request()
+    entered, release = Event(), Event()
+
+    class Blocking(StubEncoder):
+        def scores(self, image, labels):
+            entered.set()
+            assert release.wait(5)
+            return [[0.9, 0.1], [0.2, 0.8]]
+
+    # max_batch_size=1 keeps the worker on one request at a time; max_queue=1
+    # means a single waiting request fills the backlog and the next is shed.
+    app = create_app(Blocking(), max_batch_size=1, max_queue=1)
+    worker = app.state.recognition_worker
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://offline.test",
+        ) as client:
+            first = asyncio.create_task(client.post("/predict", json=payload))
+            try:
+                assert await asyncio.to_thread(entered.wait, 3)  # worker busy
+                # Second request parks in the queue (depth -> 1 = full).
+                second = asyncio.create_task(client.post("/predict", json=payload))
+                for _ in range(100):
+                    if worker.pending.full():
+                        break
+                    await asyncio.sleep(0.02)
+                assert worker.pending.full()
+                # Third request is rejected while the backlog is saturated.
+                shed = await client.post("/predict", json=payload)
+                assert shed.status_code == 429
+                assert shed.json()["detail"] == "recognition service busy"
+            finally:
+                release.set()
+            assert (await first).status_code == 200
+            assert (await second).status_code == 200
 
     asyncio.run(run())
