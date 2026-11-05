@@ -197,7 +197,7 @@ from .visual_memory import (
 )
 from .vlm_admission import AdmissionSettings
 from .vlm_fusion import VLMFusion
-from .vlm_independent import IndependentVLMBranch, VLMProcessConfig
+from .vlm_independent import IndependentVLMBranch, VLMProcessConfig, _inspector
 from .vlm_rich_labeling import RICH_ANNOTATION_CAPABILITY, VLMRichLabelClient
 from .workflow_runtime import WorkflowRuntimeMixin
 
@@ -2880,6 +2880,15 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                         observation_frame_delta_seconds=0.5 if prepared_native_vlm else None,
                         vocabulary=self._event_vocabulary(),
                     )
+                    native_ppe = (
+                        next_scene is not None
+                        and process_config.output_mode == "events"
+                        and "ppe_violation" in scene_labels
+                        and model_settings.provider == "local"
+                        and model in {
+                            "ZhuYuhan/VideoJev-4B", "openai/clip-vit-large-patch14",
+                        }
+                    )
                     next_worker = IndependentVLMBranch(
                         process_config, results=self.results,
                         connection=self._video_connection if mode == STREAM_MODE else None,
@@ -2890,7 +2899,17 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                         fusion=(VLMFusion(
                             next_scene,
                             on_update=lambda: self._guarded_callback(generation, self._on_scene_update),
-                        ) if process_config.output_mode != "events" else None),
+                            ppe_inspector_factory=(
+                                lambda config=replace(
+                                    process_config, labels=("ppe_violation",),
+                                    sensitivities=tuple(
+                                        item for item in process_config.sensitivities
+                                        if item[0] == "ppe_violation"
+                                    ),
+                                    stream_session_id=session.stream_session_id + "-ppe",
+                                ): _inspector(config)
+                            ) if native_ppe else None,
+                        ) if process_config.output_mode != "events" or native_ppe else None),
                         display_fusion=(display_fusion if process_config.output_mode != "events" else None),
                         delivery=self._delivery,
                     )

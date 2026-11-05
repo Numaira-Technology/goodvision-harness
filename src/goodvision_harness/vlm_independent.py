@@ -1284,7 +1284,9 @@ class IndependentVLMBranch:
                     for item in report["evidence"]
                     if item["frame_sequence"] in self._evidence
                 )
-            if grounding and self.fusion is not None and report["state"] == "completed":
+            if self.fusion is not None and report["state"] == "completed" and (
+                grounding or self.config.output_mode == "events"
+            ):
                 self.fusion.offer(report, evidence)
             log_timing(
                 "vlm_independent_report",

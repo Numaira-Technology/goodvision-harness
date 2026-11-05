@@ -76,6 +76,30 @@ def scene_observation(state, *, source_time=None, **details):
     }
 
 
+def person_crop_frames(frames, boxes, session):
+    """Crop actual tracked source boxes without inventing frames or source times."""
+    from dataclasses import replace
+
+    cropped = []
+    for frame, box in zip(frames, boxes, strict=True):
+        with Image.open(io.BytesIO(frame.jpeg_bytes)) as image:
+            width, height = image.size
+            pixels = (
+                math.floor(box.x1 * width), math.floor(box.y1 * height),
+                math.ceil(box.x2 * width), math.ceil(box.y2 * height),
+            )
+            person = image.convert("RGB").crop(pixels)
+        person.thumbnail((720, 720), Image.Resampling.LANCZOS)
+        # Two actual crops can have different dimensions. A fixed canvas keeps
+        # the native video input rectangular without copying or retiming a frame.
+        canvas = Image.new("RGB", (720, 720), (123, 117, 104))
+        canvas.paste(person, ((720 - person.width) // 2, (720 - person.height) // 2))
+        cropped.append(replace(
+            frame, stream_session_id=session, jpeg_bytes=_jpeg(canvas),
+        ))
+    return tuple(cropped)
+
+
 def scene_questions(rows):
     """Compile presence with the scene judgment, sharing the same video encoding."""
     if not any(row["id"] == PPE_ID for row in rows):
