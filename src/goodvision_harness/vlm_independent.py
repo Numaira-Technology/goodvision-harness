@@ -208,6 +208,8 @@ class IndependentEventState:
                     "grounding_issues": list(verdict.grounding_issues),
                 }
             )
+            if verdict.event_label == "ppe_violation" and verdict.ppe_scene_state is not None:
+                observations[-1]["ppe_scene_state"] = verdict.ppe_scene_state
         reported = {v.event_label for v in verdicts}
         judgments = []
         for label in self.config.labels:

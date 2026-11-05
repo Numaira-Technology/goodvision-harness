@@ -52,7 +52,9 @@ class VideoJevRuntime(NativeVideoJevModel):
         )
 
     def compile_questions(self, rows):
-        return CompiledQuestions(self.processor, self.torch, rows)
+        from .ppe import scene_questions
+
+        return CompiledQuestions(self.processor, self.torch, scene_questions(rows))
 
     def validate_response(self, raw, rows):
         from .ppe import parse_ppe_choices
@@ -161,46 +163,15 @@ class VideoJevRuntime(NativeVideoJevModel):
         })
         if question_template is not None and frame_times is not None:
             prepared = self._bind(prepared, question_template, frame_times)
-            from .ppe import has_ppe
-
-            if has_ppe(question_template):
-                prepared = replace(prepared, source_payloads=tuple(payloads))
         prepared.timings["preprocess_seconds"] = time.perf_counter() - start
         return prepared
 
     def _append_ppe(self, raw, timings, prepared):
-        from .ppe import (
-            PPEFailure,
-            VideoJevPPE,
-            attach_observation,
-            failed_observation,
-            has_ppe,
-            shared_failure,
-        )
+        from .ppe import finish_scene_observation
 
-        if not has_ppe(prepared.question_template):
-            return raw, timings
-        started = time.perf_counter()
-        try:
-            if not prepared.source_payloads:
-                raise ValueError(
-                    "PPE source JPEGs were not retained during preparation"
-                )
-            if self._ppe is None:
-                self._ppe = VideoJevPPE(self)
-            observation = self._ppe.assess(
-                prepared.source_payloads, prepared.frame_times,
-            )
-        except Exception as error:
-            observation = getattr(error, "ppe_observation", failed_observation(error))
-            if shared_failure(error):
-                attach_observation(raw, observation)
-                raise PPEFailure(error, raw, {
-                    **timings, "ppe_seconds": time.perf_counter() - started,
-                }) from error
-        timings = {**timings, "ppe_seconds": time.perf_counter() - started}
-        attach_observation(raw, observation)
-        return raw, timings
+        return finish_scene_observation(
+            raw, prepared.question_template.rows, prepared.frame_times,
+        ), timings
 
     def _prefix_inputs(self, batch, features, prefix):
         """Embed only the suffix while retaining full-window absolute positions."""
@@ -374,8 +345,7 @@ class VideoJevRuntime(NativeVideoJevModel):
             "prefix_cache_hits": hits,
             "prefix_cache_misses": misses,
         }
-        # Native scores are already on CPU. Avoid retaining their GPU outputs
-        # while the same worker performs the additional per-person forwards.
+        # Scene PPE merges CPU choices without another model forward.
         del features, output
         return self._append_ppe(raw, timings, prepared)
 
@@ -474,25 +444,11 @@ class VideoJevRuntime(NativeVideoJevModel):
             for index, _window, _group in encoded_windows:
                 yield index, exc
             return
-        # Preserve the original native batch before running any extra PPE work.
-        # A shared CUDA failure can stop inference, but cannot erase CPU scores
-        # for other windows whose native batch has already completed.
-        for position, (index, result, prepared) in enumerate(outcomes):
+        for index, result, prepared in outcomes:
             if isinstance(result, Exception):
                 yield index, result
                 continue
             try:
                 yield index, self._append_ppe(*result, prepared)
             except Exception as exc:
-                from .ppe import attach_observation, failed_observation, has_ppe
-
-                remaining = outcomes[position + 1:]
-                for other_index, other_result, other_prepared in remaining:
-                    if (not isinstance(other_result, Exception)
-                            and has_ppe(other_prepared.question_template)):
-                        attach_observation(other_result[0], failed_observation(
-                            exc, reason="ppe_not_run_after_shared_cuda_failure",
-                        ))
-                    yield other_index, other_result
                 yield index, exc
-                return
