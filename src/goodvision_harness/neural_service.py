@@ -110,16 +110,23 @@ class Encoder:
 
 
 class _BatchWorker:
-    """Score up to four already-prepared requests without waiting to fill a batch."""
+    """Score up to four already-prepared requests without waiting to fill a batch.
 
-    def __init__(self, score_batch, max_batch_size):
+    The pending queue is bounded: once ``max_queue`` requests are waiting to be
+    scored, further submissions are rejected so the server sheds load (HTTP 429)
+    instead of growing an unbounded backlog under sustained overload.
+    """
+
+    def __init__(self, score_batch, max_batch_size, max_queue):
         self.score_batch, self.max_batch_size = score_batch, max_batch_size
-        self.pending = queue.Queue()
+        self.pending = queue.Queue(maxsize=max_queue)
         self.thread = threading.Thread(target=self.run, name="clip-inference", daemon=True)
 
     def submit(self, pixels, labels, finish):
         result = Future()
-        self.pending.put((result, pixels, labels, finish, time.perf_counter()))
+        # put_nowait raises queue.Full when the backlog is at capacity; the
+        # caller maps that to a 429 so admission closes until the worker drains.
+        self.pending.put_nowait((result, pixels, labels, finish, time.perf_counter()))
         return result
 
     def run(self):
@@ -172,7 +179,7 @@ def _valid_pair(pair):
     )
 
 
-def create_app(encoder, *, max_batch_size=4):
+def create_app(encoder, *, max_batch_size=4, max_queue=32):
     app = FastAPI()
     ppe, shared_error = None, None
 
@@ -181,11 +188,23 @@ def create_app(encoder, *, max_batch_size=4):
             raise HTTPException(503, "recognition service CUDA unavailable")
         return encoder.score_batch(pixels, labels)
 
-    worker = _BatchWorker(score_batch, max_batch_size)
+    worker = _BatchWorker(score_batch, max_batch_size, max_queue)
+    # Expose the worker so operators and tests can inspect queue depth.
+    app.state.recognition_worker = worker
+
+    def ensure_worker_started():
+        # A thread can only be started once; ``ident`` is None until it is.
+        # Start eagerly at app construction so the service also works when the
+        # app is embedded (e.g. via httpx ASGITransport) without a lifespan,
+        # and keep the startup hook as an idempotent safety net under uvicorn.
+        if worker.thread.ident is None:
+            worker.thread.start()
+
+    ensure_worker_started()
 
     @app.on_event("startup")
     def startup():
-        worker.thread.start()
+        ensure_worker_started()
 
     @app.on_event("shutdown")
     def shutdown():
@@ -372,7 +391,11 @@ def create_app(encoder, *, max_batch_size=4):
             raise HTTPException(503, "recognition service CUDA unavailable")
         if await request.is_disconnected():
             return JSONResponse(status_code=499, content={"detail": "client disconnected"})
-        pending = asyncio.wrap_future(worker.submit(pixels, labels, infer))
+        try:
+            submitted = worker.submit(pixels, labels, infer)
+        except queue.Full:
+            raise HTTPException(429, "recognition service busy") from None
+        pending = asyncio.wrap_future(submitted)
         try:
             while not pending.done():
                 await asyncio.wait({pending}, timeout=0.1)
@@ -393,12 +416,21 @@ def main():
     parser.add_argument("--port", type=int, default=8094)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--max-batch-size", type=int, choices=(1, 2, 3, 4), default=4)
+    parser.add_argument("--max-queue", type=int, default=32)
     args = parser.parse_args()
+    if args.max_queue < 1:
+        parser.error("--max-queue must be at least 1")
     import uvicorn
 
     encoder = Encoder(args.cache_dir)
     encoder.warmup()
-    uvicorn.run(create_app(encoder, max_batch_size=args.max_batch_size), host=args.host, port=args.port)
+    uvicorn.run(
+        create_app(
+            encoder, max_batch_size=args.max_batch_size, max_queue=args.max_queue
+        ),
+        host=args.host,
+        port=args.port,
+    )
 
 
 if __name__ == "__main__":
