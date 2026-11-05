@@ -208,6 +208,8 @@ class IndependentEventState:
                     "grounding_issues": list(verdict.grounding_issues),
                 }
             )
+            if verdict.event_label == "ppe_violation" and verdict.ppe_scene_state is not None:
+                observations[-1]["ppe_scene_state"] = verdict.ppe_scene_state
         reported = {v.event_label for v in verdicts}
         judgments = []
         for label in self.config.labels:
@@ -1282,7 +1284,9 @@ class IndependentVLMBranch:
                     for item in report["evidence"]
                     if item["frame_sequence"] in self._evidence
                 )
-            if grounding and self.fusion is not None and report["state"] == "completed":
+            if self.fusion is not None and report["state"] == "completed" and (
+                grounding or self.config.output_mode == "events"
+            ):
                 self.fusion.offer(report, evidence)
             log_timing(
                 "vlm_independent_report",

@@ -16,6 +16,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from PIL import Image
 
+from .ppe import SCENE_PPE_TEXTS, scene_observation
+
 MODEL = "openai/clip-vit-large-patch14"
 REVISION = "32bd64288804d66eefd0ccbe215aa642df71cc41"
 PROMPTS = {
@@ -36,14 +38,14 @@ PROMPTS = {
         "A person is holding a phone or ordinary object.",
     ),
     "ppe_violation": (
-        "A worker in a hazardous work area is missing required protective equipment.",
-        "Workers are wearing required protective equipment.",
+        SCENE_PPE_TEXTS["missing"], SCENE_PPE_TEXTS["worn"],
     ),
     "ground_litter": (
         "Discarded rubbish is lying on the ground.",
         "The floor and ground are clean.",
     ),
 }
+_BASE_LABELS = tuple(label for label in PROMPTS if label != "ppe_violation")
 
 
 class Encoder:
@@ -69,7 +71,12 @@ class Encoder:
         # processor/model interface. Do not publish ready until inference works.
         labels = list(PROMPTS)
         pairs = self.scores(Image.new("RGB", (224, 224)), labels)
-        if len(pairs) != len(labels) or not all(_valid_pair(pair) for pair in pairs):
+        if len(pairs) != len(labels) or not all(
+            isinstance(pair, dict) and pair.get("scene_state") in {
+                "missing", "worn", "unassessable", "absent"
+            } if label == "ppe_violation" else _valid_pair(pair)
+            for label, pair in zip(labels, pairs, strict=True)
+        ):
             raise ValueError("invalid model scores during warmup")
 
     def scores(self, image, labels):
@@ -83,7 +90,10 @@ class Encoder:
         with torch.inference_mode():
             if self._text_features is None:
                 inputs = self.processor(
-                    text=[text for pair in PROMPTS.values() for text in pair],
+                    text=[
+                        *[text for label in _BASE_LABELS for text in PROMPTS[label]],
+                        *SCENE_PPE_TEXTS.values(),
+                    ],
                     return_tensors="pt", padding=True, truncation=True,
                 )
                 pooled = self.model.text_model(
@@ -96,17 +106,24 @@ class Encoder:
             ).pooler_output
             images = self.model.visual_projection(pooled)
             images = images / images.norm(dim=-1, keepdim=True)
-            logits = (
-                self.model.logit_scale.exp()
-                * (self._text_features @ images.t()).t()
-            )
-            pairs = logits.reshape(len(pixels), len(PROMPTS), 2).softmax(dim=-1)
+            cosine = (self._text_features @ images.t()).t()
+            end = len(_BASE_LABELS) * 2
+            logits = self.model.logit_scale.exp() * cosine[:, :end]
+            pairs = logits.reshape(len(pixels), len(_BASE_LABELS), 2).softmax(dim=-1)
             pairs = pairs.cpu().tolist()
-        indices = {label: index for index, label in enumerate(PROMPTS)}
-        return [
-            [row[indices[label]] for label in requested]
-            for row, requested in zip(pairs, labels, strict=True)
-        ]
+            ppe_scores = cosine[:, end:].float().cpu().tolist()
+        indices = {label: index for index, label in enumerate(_BASE_LABELS)}
+        result = []
+        for row, scores, requested in zip(pairs, ppe_scores, labels, strict=True):
+            states = dict(zip(SCENE_PPE_TEXTS, scores, strict=True))
+            ordered = sorted(states, key=states.get, reverse=True)
+            state = (ordered[0] if all(math.isfinite(value) for value in scores)
+                     and states[ordered[0]] > states[ordered[1]] else "unassessable")
+            result.append([
+                scene_observation(state, cosine=states) if label == "ppe_violation"
+                else row[indices[label]] for label in requested
+            ])
+        return result
 
 
 class _BatchWorker:
@@ -174,7 +191,7 @@ def _valid_pair(pair):
 
 def create_app(encoder, *, max_batch_size=4):
     app = FastAPI()
-    ppe, shared_error = None, None
+    shared_error = None
 
     def score_batch(pixels, labels):
         if shared_error is not None:
@@ -263,34 +280,26 @@ def create_app(encoder, *, max_batch_size=4):
         prepared = time.perf_counter()
 
         def infer(pairs, error, timings):
-            nonlocal ppe, shared_error
+            nonlocal shared_error
 
             try:
                 if error is not None:
                     raise error
                 rows = []
                 for question, pair in zip(questions, pairs, strict=True):
-                    try:
-                        if not _valid_pair(pair):
-                            raise ValueError("invalid model scores")
-                    except (TypeError, ValueError) as error:
-                        if question["id"] != "scene/ppe_violation":
-                            raise
+                    if question["id"] == "scene/ppe_violation":
                         from .videojev_service import _json_safe
 
-                        rows.append(
-                            {
-                                "id": question["id"],
-                                "task": "choice",
-                                "pair_scores": _json_safe(pair),
-                                "prompts": list(PROMPTS["ppe_violation"]),
-                                "error": {
-                                    "type": type(error).__name__,
-                                    "detail": str(error),
-                                },
-                            }
-                        )
+                        observation = dict(pair)
+                        times = payload.get("frame_times")
+                        observation["source_time_seconds"] = times[-1] if times else None
+                        rows.append({
+                            "id": question["id"], "task": "choice",
+                            "derived": _json_safe(observation),
+                        })
                         continue
+                    if not _valid_pair(pair):
+                        raise ValueError("invalid model scores")
                     index = 0 if pair[0] > pair[1] else 1
                     rows.append(
                         {
@@ -310,43 +319,6 @@ def create_app(encoder, *, max_batch_size=4):
                         "server_preprocess_seconds": prepared - received,
                     },
                 }
-                if "ppe_violation" in labels:
-                    from .ppe import (
-                        ClipPPE,
-                        attach_observation,
-                        failed_observation,
-                        shared_failure,
-                    )
-
-                    started = time.perf_counter()
-                    try:
-                        if shared_error is not None:
-                            raise HTTPException(503, "recognition service CUDA unavailable")
-                        if ppe is None:
-                            ppe = ClipPPE(encoder)
-                        sources = []
-                        for encoded in images:
-                            try:
-                                sources.append(base64.b64decode(encoded, validate=True))
-                            except (ValueError, TypeError, binascii.Error) as error:
-                                sources.append(error)
-                        observation = ppe.assess(sources, payload.get("frame_times"))
-                    except Exception as error:
-                        observation = getattr(
-                            error, "ppe_observation", failed_observation(error)
-                        )
-                        if shared_failure(error):
-                            shared_error = (
-                                observation.get("error")
-                                or failed_observation(error)["error"]
-                            )
-                    attach_observation(rows, observation)
-                    response["timings"]["ppe_seconds"] = time.perf_counter() - started
-                    if shared_error is not None:
-                        response.update(
-                            error="cuda_shared_failure", detail=shared_error["detail"]
-                        )
-                        return JSONResponse(status_code=503, content=response)
                 response["timings"]["server_elapsed_seconds"] = time.perf_counter() - received
                 return response
             except (TypeError, ValueError):

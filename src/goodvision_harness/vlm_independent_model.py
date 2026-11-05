@@ -27,6 +27,7 @@ class IndependentVerdict:
     confidence: float | None
     subject_boxes: tuple[tuple[str, NormalizedBBox], ...]
     grounding_issues: tuple[str, ...] = ()
+    ppe_scene_state: str | None = None
 
 
 class IndependentVLMInspector(TemporalVLMInspector):

@@ -12,12 +12,160 @@ import io
 import math
 import os
 import time
+from copy import deepcopy
 from itertools import pairwise
 from pathlib import Path
 
 from PIL import Image
 
 PPE_ID = "scene/ppe_violation"
+PPE_PRESENCE_ID = "ppe_scene/presence"
+_PRESENCE_OPTIONS = (
+    "A. A person or human body part is clearly visible.",
+    "B. The scene clearly contains no person or human body part.",
+    "C. Human presence cannot be determined from this image.",
+)
+_SCENE_EQUIPMENT_OPTIONS = (
+    "A. At least one visible person has a clearly assessable head without a "
+    "safety helmet, or a clearly assessable chest/back without a reflective "
+    "safety vest. One missing item is sufficient.",
+    "B. Every visible person clearly wears both a safety helmet and a "
+    "reflective safety vest; both required areas are assessable.",
+    "C. No person is visible, or the image does not establish either of the "
+    "equipment observations above because a required area is not assessable.",
+)
+SCENE_PPE_TEXTS = {
+    "missing": (
+        "A person with a clearly visible uncovered head or ordinary soft cap, "
+        "or a clearly visible bare chest/back or ordinary clothing without "
+        "a reflective safety vest."
+    ),
+    "worn": (
+        "Every visible person has a clearly visible safety helmet and "
+        "a reflective safety vest."
+    ),
+    "unassessable": (
+        "People or body parts are visible, but their heads or upper bodies "
+        "are cropped, hidden, distant or too blurry to assess safety equipment."
+    ),
+    "absent": "An empty scene with no visible person or human body part.",
+}
+_SCENE_RULE = (
+    "For PPE, assess every visible person regardless of occupation or location. "
+    "Judge the last original frame; earlier frames provide context only. "
+    "Report a violation when any clearly assessable head lacks a safety helmet "
+    "or any clearly assessable chest/back lacks a reflective safety vest. "
+    "An ordinary soft cap is not a safety helmet; bright ordinary clothing "
+    "alone is not a reflective vest. Equipment is worn only when both items "
+    "are visibly worn by every visible person. If no "
+    "violation is established but any person's required area is hidden, cropped, "
+    "distant or blurred, select insufficient evidence, never assume compliance."
+)
+
+
+def scene_observation(state, *, source_time=None, **details):
+    """Keep scene status separate from person attribution and tracking IDs."""
+    return {
+        "detected": True if state == "missing" else
+        False if state in {"worn", "absent"} else None,
+        "scene_state": state,
+        "scope": "last_source_frame",
+        "source_time_seconds": source_time,
+        "frames": [],
+        **details,
+    }
+
+
+def person_crop_frames(frames, boxes, session):
+    """Crop actual tracked source boxes without inventing frames or source times."""
+    from dataclasses import replace
+
+    cropped = []
+    for frame, box in zip(frames, boxes, strict=True):
+        with Image.open(io.BytesIO(frame.jpeg_bytes)) as image:
+            width, height = image.size
+            pixels = (
+                math.floor(box.x1 * width), math.floor(box.y1 * height),
+                math.ceil(box.x2 * width), math.ceil(box.y2 * height),
+            )
+            person = image.convert("RGB").crop(pixels)
+        person.thumbnail((720, 720), Image.Resampling.LANCZOS)
+        # Two actual crops can have different dimensions. A fixed canvas keeps
+        # the native video input rectangular without copying or retiming a frame.
+        canvas = Image.new("RGB", (720, 720), (123, 117, 104))
+        canvas.paste(person, ((720 - person.width) // 2, (720 - person.height) // 2))
+        cropped.append(replace(
+            frame, stream_session_id=session, jpeg_bytes=_jpeg(canvas),
+        ))
+    return tuple(cropped)
+
+
+def scene_questions(rows):
+    """Compile presence with the scene judgment, sharing the same video encoding."""
+    if not any(row["id"] == PPE_ID for row in rows):
+        return rows
+    result = []
+    for row in rows:
+        before, after = row["query_parts"]
+        before = _SCENE_RULE + "\n" + before
+        if row["id"] == PPE_ID:
+            context = after.rpartition("\nFor ")[0]
+            result.append({
+                **row,
+                "query_parts": (
+                    before, context + "\nFor the last original frame, which "
+                    "observation of safety helmets and reflective safety "
+                    "vests is supported for the visible people?",
+                ),
+                "options": list(_SCENE_EQUIPMENT_OPTIONS),
+            })
+            result.append({
+                "id": PPE_PRESENCE_ID, "task": "choice",
+                "query_parts": (
+                    before, context +
+                    "\nFor the last original frame, is any person or human body part visible?",
+                ),
+                "options": list(_PRESENCE_OPTIONS),
+            })
+        else:
+            result.append({**row, "query_parts": (before, after)})
+    return tuple(result)
+
+
+def finish_scene_observation(raw, rows, frame_times):
+    """Retain raw choices; do not run person detection before the first report."""
+    from .videojev_contract import parse_choices
+
+    if not any(row["id"] == PPE_ID for row in rows):
+        return raw
+    flattened = native_rows(raw)
+    choices = [row for row in flattened if row.get("id") in {PPE_ID, PPE_PRESENCE_ID}]
+    expected = [
+        {**row, "options": list(_SCENE_EQUIPMENT_OPTIONS)}
+        for row in rows if row["id"] == PPE_ID
+    ] + [{"id": PPE_PRESENCE_ID, "options": list(_PRESENCE_OPTIONS)}]
+    try:
+        values = parse_choices(choices, expected)
+        violation, present = values[PPE_ID], values[PPE_PRESENCE_ID]
+        state = (
+            "missing" if violation is True and present is not False else
+            "absent" if violation is None and present is False else
+            "worn" if violation is False and present is True else "unassessable"
+        )
+        observation = scene_observation(
+            state, source_time=frame_times[-1], presence=present,
+            presence_result=next(row for row in choices if row["id"] == PPE_PRESENCE_ID),
+        )
+    except (ValueError, TypeError, KeyError, StopIteration) as error:
+        observation = scene_observation(
+            "unassessable", source_time=frame_times[-1],
+            error={"type": type(error).__name__, "detail": str(error)},
+            raw_choices=deepcopy(choices),
+        )
+    attach_observation(flattened, observation)
+    return [row for row in flattened if row.get("id") != PPE_PRESENCE_ID]
+
+
 _VALUES = {
     "presence": ("present", "absent", "unclear"),
     "helmet": ("missing", "worn", "unassessable"),

@@ -162,15 +162,20 @@ class VideoJevInspector:
         return job.frames
 
     def _decode(self, response, expected, labels):
-        from .ppe import parse_ppe_choices
+        from .ppe import PPE_ID, SCENE_PPE_TEXTS, native_rows, parse_ppe_choices
 
         values = parse_ppe_choices(response.get("raw"), expected)
+        state = next((row.get("derived", {}).get("scene_state")
+                      for row in native_rows(response["raw"])
+                      if isinstance(row, dict) and row.get("id") == PPE_ID
+                      and isinstance(row.get("derived"), dict)), None)
+        state = state if isinstance(state, str) and state in SCENE_PPE_TEXTS else None
         self.last_response_diagnostics = {
             "choices_count": len(expected), "model_match": "unreported",
         }
         return tuple(
             IndependentVerdict(label, (), values["scene/" + label], None, (),
-                               ("scene_only",))
+                               ("scene_only",), state if label == "ppe_violation" else None)
             for label in labels
         )
 

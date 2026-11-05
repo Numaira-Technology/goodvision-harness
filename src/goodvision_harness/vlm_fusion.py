@@ -1,8 +1,9 @@
-"""Optional, bounded association of already-published VLM evidence with SAM people."""
+"""Optional association of published VLM evidence with actual tracked people."""
 
 from __future__ import annotations
 
 import copy
+import math
 import time
 from collections import Counter, OrderedDict
 from threading import Event, Lock, Thread
@@ -52,8 +53,12 @@ def _unambiguous_matches(boxes, candidates):
 class VLMFusion:
     """Slow scene/archive callbacks run here, never on VLM input/output threads."""
 
-    def __init__(self, scene, on_update=None):
+    def __init__(self, scene, on_update=None, *, ppe_inspector_factory=None):
         self.scene, self.on_update = scene, on_update
+        self._ppe_inspector_factory = ppe_inspector_factory
+        self._ppe_inspector = None
+        self._ppe_latest_source = -1
+        self._active_message = None
         self._lock, self._stop, self._wake = Lock(), Event(), Event()
         self._pending, self._links = OrderedDict(), OrderedDict()
         self._stats = Counter()
@@ -73,6 +78,25 @@ class VLMFusion:
         with self._lock:
             if self._stop.is_set():
                 return
+            if self._ppe_inspector_factory is not None:
+                sequence = report["frame"]["source_frame_index"]
+                if sequence <= self._ppe_latest_source:
+                    self._stats["late_ppe_reports"] += 1
+                    return
+                self._ppe_latest_source = sequence
+                # Native first reports are already published. Keep the newest
+                # unstarted attribution instead of building a second video queue.
+                for key in tuple(self._pending):
+                    if key != self._active_message:
+                        removed = self._pending.pop(key)
+                        self._bytes -= removed[2]
+                        self._stats["superseded_ppe_reports"] += 1
+                if not any(
+                    item["event_label"] == "ppe_violation"
+                    and item.get("ppe_scene_state") in {"missing", "worn"}
+                    for item in report["observations"]
+                ):
+                    return
             self._pending[report["message_id"]] = (
                 report,
                 evidence,
@@ -113,6 +137,13 @@ class VLMFusion:
             return copy.deepcopy(tuple(self._links.values()))
 
     def _run(self):
+        try:
+            self._run_pending()
+        finally:
+            if self._ppe_inspector is not None:
+                self._ppe_inspector.close()
+
+    def _run_pending(self):
         while not self._stop.is_set():
             with self._lock:
                 rows = tuple(self._pending.items())
@@ -120,13 +151,22 @@ class VLMFusion:
             for message_id, (report, evidence, _size, done, admitted) in rows:
                 if self._stop.is_set():
                     return
+                with self._lock:
+                    if message_id not in self._pending:
+                        continue
+                    self._active_message = message_id
                 expired = time.monotonic() - admitted > 90.0
                 try:
                     if not expired:
-                        changed = self._associate(report, evidence, done) or changed
+                        changed = self._associate(
+                            report, evidence, done, deadline=admitted + 90.0,
+                        ) or changed
                 except Exception:
                     with self._lock:
                         self._stats["association_failures"] += 1
+                finally:
+                    with self._lock:
+                        self._active_message = None
                 if (
                     expired
                     or self._finishing.is_set()
@@ -151,7 +191,7 @@ class VLMFusion:
             self._wake.wait(0.1)
             self._wake.clear()
 
-    def _associate(self, report, evidence, done):
+    def _associate(self, report, evidence, done, *, deadline=None):
         scene = self.scene
         at, sequence = (
             report["frame"]["timestamp_seconds"],
@@ -162,6 +202,8 @@ class VLMFusion:
             or report["source_id"] != scene.source_id
         ):
             return False
+        if self._ppe_inspector_factory is not None:
+            return self._associate_ppe(report, evidence, done, deadline)
         changed = False
         with scene._lock:
             if scene._closed or self._stop.is_set():
@@ -291,4 +333,172 @@ class VLMFusion:
                     event_sensitivities=scene.event_sensitivities,
                     vocabulary=scene.vocabulary,
                 )
+        return changed
+
+    def _associate_ppe(self, report, evidence, done, deadline):
+        """Classify after missing; a worn scene can clear its source-aligned people."""
+        from .ppe import person_crop_frames
+
+        scene = self.scene
+        pending = [
+            item for item in report["observations"]
+            if item["evidence_id"] not in done
+            and item["event_label"] == "ppe_violation"
+            and item.get("ppe_scene_state") in {"missing", "worn"}
+        ]
+        done.update(
+            item["evidence_id"] for item in report["observations"]
+            if item not in pending
+        )
+        if not pending or len(evidence) < 2:
+            return False
+        frames = tuple(evidence[-2:])
+        if frames[-1].frame_sequence != report["frame"]["source_frame_index"]:
+            return False
+        with scene._lock:
+            if scene._closed or self._stop.is_set():
+                return False
+            snapshot = scene.scene.snapshot(include_history=True)
+            people = {}
+            frame_people = {frame.frame_sequence: {} for frame in frames}
+            for person in snapshot["entities"]:
+                history = {
+                    item["frame_sequence"]: item for item in person.get("history", ())
+                    if not item.get("identity_only") and (
+                        scene.tracking_mode == "immediate"
+                        or scene._tracking_frames.get(item["frame_sequence"])
+                        == item["timestamp_seconds"]
+                    )
+                }
+                for frame in frames:
+                    item = history.get(frame.frame_sequence)
+                    if item and item["timestamp_seconds"] == frame.timestamp_seconds:
+                        frame_people[frame.frame_sequence][person["subject_id"]] = (
+                            NormalizedBBox(*(item["bbox"][key]
+                                             for key in ("x1", "y1", "x2", "y2")))
+                        )
+                if all(
+                    frame.frame_sequence in history
+                    and history[frame.frame_sequence]["timestamp_seconds"]
+                    == frame.timestamp_seconds for frame in frames
+                ):
+                    people[person["subject_id"]] = tuple(
+                        NormalizedBBox(*(history[frame.frame_sequence]["bbox"][key]
+                                         for key in ("x1", "y1", "x2", "y2")))
+                        for frame in frames
+                    )
+        if not people:
+            return False  # Tracking may still deliver these actual source frames.
+        at, sequence = frames[-1].timestamp_seconds, frames[-1].frame_sequence
+        changed = False
+        for observation in pending:
+            subjects = []
+            for sid, boxes in people.items():
+                with self._lock:
+                    superseded = sequence < self._ppe_latest_source
+                if self._stop.is_set() or (
+                    deadline is not None and time.monotonic() >= deadline
+                ) or superseded:
+                    break
+                row = {"subject_id": sid, "state": "unassigned"}
+                if any(
+                    _overlap(box, other) > 0
+                    for frame, box in zip(frames, boxes, strict=True)
+                    for other_sid, other in frame_people[frame.frame_sequence].items()
+                    if other_sid != sid
+                ):
+                    row["reason"] = "overlapping_people"
+                    subjects.append(row)
+                    continue
+                request_id = report["request_id"] + "/ppe/" + sid
+                pinned = False
+                try:
+                    with scene._lock:
+                        if scene._closed or self._stop.is_set():
+                            break
+                        pinned = scene.scene.pin_source_observations(
+                            request_id,
+                            tuple((sid, frame.timestamp_seconds, frame.frame_sequence, box)
+                                  for frame, box in zip(frames, boxes, strict=True)),
+                        )
+                    if not pinned:
+                        row["reason"] = "source_observation_unavailable"
+                        subjects.append(row)
+                        continue
+                    state, detected = "worn", False
+                    if observation["ppe_scene_state"] == "missing":
+                        if self._ppe_inspector is None:
+                            self._ppe_inspector = self._ppe_inspector_factory()
+                        session = self._ppe_inspector.config.stream_session_id
+                        crops = person_crop_frames(frames, boxes, session)
+                        request = InspectionRequest(
+                            request_id, (),
+                            "published_ppe_person_attribution", ("ppe_violation",),
+                            frames[0].timestamp_seconds, at,
+                        )
+                        job = TemporalInspection(
+                            session, scene.source_id, request, crops,
+                            vocabulary=scene.vocabulary,
+                        )
+                        verdict = next(
+                            item for item in self._ppe_inspector.inspect(job)
+                            if item.event_label == "ppe_violation"
+                        )
+                        state, detected = verdict.ppe_scene_state, verdict.detected
+                    row.update(
+                        state=state if state in {"missing", "worn"} else "unassigned",
+                        assessment_state=state or "unassessable", detected=detected,
+                        basis="person_crop" if observation["ppe_scene_state"] == "missing"
+                        else "scene_all_visible_people_worn",
+                        request_id=request_id
+                        if observation["ppe_scene_state"] == "missing" else None,
+                        source_frames=[frame.frame_sequence for frame in frames],
+                        source_times=[frame.timestamp_seconds for frame in frames],
+                    )
+                    if state in {"missing", "worn"}:
+                        with scene._lock:
+                            if scene._closed or self._stop.is_set():
+                                return changed
+                            applied = scene.scene.observe_event(
+                                "ppe_violation", (sid,), timestamp_seconds=at,
+                                frame_sequence=sequence, detected=detected,
+                                confidence=None,
+                                evidence_id=observation["evidence_id"] + "/" + sid,
+                                allow_historical=True,
+                            )
+                        row["event_evidence_applied"] = applied
+                        changed = applied or changed
+                except Exception as error:
+                    row.update(reason="person_assessment_failed",
+                               error={"type": type(error).__name__,
+                                      "detail": str(error)[:1200]})
+                    if getattr(error, "status_code", None) == 429:
+                        try:
+                            retry_after = float(getattr(error, "retry_after", None) or 0)
+                        except (TypeError, ValueError):
+                            retry_after = 0
+                        cooldown = max(60, retry_after) if math.isfinite(retry_after) else 60
+                        row["cooldown_seconds"] = cooldown
+                        # No retry: honor the received cooldown before moving to
+                        # another crop. Explicit branch shutdown can interrupt it.
+                        self._stop.wait(cooldown)
+                finally:
+                    if pinned:
+                        with scene._lock:
+                            scene.scene.unpin_source_observations(request_id)
+                subjects.append(row)
+            with self._lock:
+                self._links[observation["evidence_id"]] = {
+                    "message_id": report["message_id"],
+                    "request_id": report["request_id"],
+                    "evidence_id": observation["evidence_id"],
+                    "event_label": "ppe_violation",
+                    "method": "source_frame_person_crop",
+                    "source_frame_sequence": sequence,
+                    "source_timestamp_seconds": at,
+                    "subjects": subjects,
+                }
+                while len(self._links) > 256:
+                    self._links.popitem(last=False)
+            done.add(observation["evidence_id"])
         return changed
