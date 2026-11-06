@@ -8,7 +8,7 @@ description: >-
 
 # Event-recognition benchmark
 
-Use `tools/event_benchmark/SPEC.md` as the authority. Current checkout: **v2**,
+Use `tools/event_benchmark/SPEC.md` as the authority. Current checkout: **v2.1**,
 with strict answers, complete frame evidence and reviewed input hashes. Historical
 v1 outputs are not v2 evidence. Inspect the current spec and runner before a run.
 These instructions do not authorize paid inference, downloads, uploads or publishing;
@@ -55,8 +55,8 @@ use the user's authorized scope and budget.
 - Clip score = maximum of **all scheduled valid frames**; `score >= 0.5` is yes.
   Any missing frame or invalid answer after three total attempts makes the clip an
   error, even if another frame was positive.
-- v2 accuracy excludes error clips: report correct/valid **and** attempted/errors,
-  per event and overall. Never compare success-only percentages without coverage.
+- Accuracy is correct/all questions, per event and overall. Errors and missing
+  answers stay in the denominator and are reported separately, never as negatives.
 - `--dense` or changed cadence is a separately labeled sensitivity experiment.
   Tuning is a separate variant; see `bench-threshold-tune`.
 - Dataset growth changes the dataset fingerprint and comparison cohort. It does not

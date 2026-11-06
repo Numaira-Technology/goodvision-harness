@@ -1,6 +1,6 @@
 # Frozen benchmark methodology
 
-Authority: `tools/event_benchmark/SPEC.md` and `run_eval.py`, currently v2.
+Authority: `tools/event_benchmark/SPEC.md` and `run_eval.py`, currently v2.1.
 `SPEC_V1.md`, `RESULTS.md` and checked-in result JSONs are historical v1 artifacts.
 They cannot establish v2 accuracy or calibrate a v2 variant without fresh evidence.
 
@@ -40,11 +40,11 @@ and require a separate versioned task/metric; the base runner filters them out.
 ## Denominators and comparison
 
 For each event: `valid=TP+FN+TN+FP`, `correct=TP+TN`,
-`attempted=valid+errors`. Report `correct/valid`, errors/attempted and coverage.
-When valid is zero, accuracy is unavailable. When negatives are absent, specificity
-is unavailable. Error clips are not true negatives. A failed model cannot appear
-better by silently dropping hard examples; disclose differing eligibility and do
-not rank incomplete runs as comparable headline results.
+`total=valid+errors`. Report `correct/total`, errors/total and coverage; use the
+same all-question denominator overall. Errors and missing answers contribute no
+correct answer and remain in the denominator. With questions but no valid answers,
+accuracy is zero; only an empty cohort has unavailable accuracy. When negatives
+are absent, specificity is unavailable. Error clips are not true negatives.
 
 CLIP unknown handling and native VideoJev window scoring may differ. Preserve
 those rules and label the cohort, unit, denominator and timing boundary. Do not
