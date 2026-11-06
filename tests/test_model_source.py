@@ -105,17 +105,28 @@ def test_pull_rejects_mismatched_manifest(tmp_path):
         ms.pull_from_r2(REPO, REV, snap, client=FakeS3(objects), bucket="b")
 
 
+def _stub_snapshot_download(monkeypatch, snapshot_download):
+    """Replace the lazy HF import. Regression CI does not install the package."""
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download=snapshot_download),
+    )
+
+
 def test_ensure_cached_hits_local_without_r2_or_hf(tmp_path, monkeypatch):
     objects, _ = _bucket(REPO, REV, FILES)
     snap = ms.snapshot_dir(tmp_path, REPO, REV)
     ms.pull_from_r2(REPO, REV, snap, client=FakeS3(objects), bucket="b")
     for k in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
         monkeypatch.delenv(k, raising=False)
-    # If it tried HF, this import target would blow up the test.
-    import huggingface_hub
-
-    monkeypatch.setattr(huggingface_hub, "snapshot_download",
-                        lambda *a, **k: pytest.fail("should not touch HF on cache hit"))
+    _stub_snapshot_download(
+        monkeypatch,
+        lambda *a, **k: pytest.fail("should not touch HF on cache hit"),
+    )
     assert ms.ensure_cached(REPO, REV, tmp_path) == snap
 
 
@@ -129,7 +140,5 @@ def test_ensure_cached_falls_back_to_hf_without_r2(tmp_path, monkeypatch):
         (snap / "config.json").write_bytes(FILES["config.json"])
         return str(snap)
 
-    import huggingface_hub
-
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_download)
+    _stub_snapshot_download(monkeypatch, fake_download)
     assert ms.ensure_cached(REPO, REV, tmp_path) == snap
