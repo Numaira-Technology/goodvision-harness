@@ -583,6 +583,9 @@ def run_vlm_process(
             "request_bytes", "response_bytes", "encoded_image_bytes",
             "prompt_tokens", "completion_tokens", "cached_prompt_tokens",
             "reasoning_tokens",
+            "neural_server_preprocess_seconds", "neural_server_queue_seconds",
+            "neural_model_pipeline_seconds", "neural_server_elapsed_seconds",
+            "neural_batch_size",
         ):
             value = measurements.get(name) if isinstance(measurements, dict) else None
             if (
