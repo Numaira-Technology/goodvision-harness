@@ -16,9 +16,6 @@ else:
     from run_eval import frozen_inputs
 
 
-DATASETS = Path(__file__).resolve().parent / "datasets"
-
-
 def download_video(sample, output, links, token):
     filename = sample["filename"]
     if Path(filename).name != filename:
@@ -54,8 +51,8 @@ def download_video(sample, output, links, token):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--samples", type=Path, default=DATASETS / "samples_robot41.json")
-    parser.add_argument("--manifest", type=Path, default=DATASETS / "manifest_robot41.json")
+    parser.add_argument("--samples", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="video directory on this machine")
     parser.add_argument("--links", type=Path,
                         help="private JSON map of filenames or Drive IDs to temporary HTTPS URLs")
