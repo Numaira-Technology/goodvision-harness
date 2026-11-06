@@ -105,9 +105,10 @@ def test_complete_run_records_frozen_provenance_and_errors(tmp_path, monkeypatch
     monkeypatch.setattr(runner, "load_key", lambda _: "offline")
     monkeypatch.setattr(runner, "eval_video", lambda backend, model, sample, *args: (sample, {"error": "offline failure"}))
     result = runner.main()
-    assert result["spec_version"] == "v2"
-    assert result["overall"] == {"correct": 0, "total": 0, "attempted": 1, "errors": 1}
+    assert result["spec_version"] == "v2.1"
+    assert result["overall"] == {"correct": 0, "total": 1, "attempted": 1, "errors": 1}
     assert result["per_event"]["fight"]["err"] == 1
+    assert result["per_event"]["fight"]["total"] == 1
     assert result["samples_json_sha256"] == runner.sha256(dataset.samples)
     assert result["per_video"][0]["sha256"] == runner.sha256(dataset.clip)
     assert result["config"]["frame_rule"].startswith("n=max(1,round(dur/interval))")
