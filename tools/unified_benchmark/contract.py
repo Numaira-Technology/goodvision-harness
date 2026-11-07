@@ -39,6 +39,28 @@ def file_hash(path):
     return h.hexdigest()
 
 
+def source_files():
+    """The execution/selection code required by every frozen bundle."""
+    root = Path(__file__).resolve().parents[2]
+    paths = list((root / "tools/unified_benchmark").glob("*.py"))
+    paths += [root / name for name in (
+        "tools/event_benchmark/run_eval.py", "tools/event_benchmark/evidence.py",
+        "tools/event_benchmark/tune_threshold.py", "tools/clip_benchmark/scoring.py",
+        "tools/clip_benchmark/runtime.py", "tools/clip_benchmark/base_timing.py",
+        "tools/clip_benchmark/protocol.py",
+    )]
+    return {str(path.relative_to(root)): path for path in sorted(paths)}
+
+
+def validate_threshold_values(thresholds, kind):
+    if (not isinstance(thresholds, dict) or set(thresholds) != set(EVENTS)
+            or any(type(t) not in (int, float) or not math.isfinite(t)
+                   for t in thresholds.values())):
+        raise ValueError("six finite thresholds required")
+    if kind == "probability" and any(not 0 <= t <= 1 for t in thresholds.values()):
+        raise ValueError("probability thresholds must be in [0, 1]")
+
+
 def write_new(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -85,9 +107,8 @@ def score(plan, evidence, kind, thresholds=None):
     if len(numbers) != len(set(numbers)):
         raise ValueError("duplicate question ID")
     default = 0 if kind == "margin" else .5
-    thresholds = thresholds or {e: default for e in EVENTS}
-    if set(thresholds) != set(EVENTS) or any(type(t) not in (int, float) or not math.isfinite(t) for t in thresholds.values()):
-        raise ValueError("six finite thresholds required")
+    thresholds = {e: default for e in EVENTS} if thresholds is None else thresholds
+    validate_threshold_values(thresholds, kind)
     rows, missing_units = [], set()
     for q in plan["questions"]:
         ids, event = q["unit_ids"], q["event"]
@@ -144,4 +165,6 @@ def select_thresholds(plan, evidence, kind, model):
             values[event], details[event] = result[0], result[1:]
     return {"thresholds": values, "details": details, "comparator": ">" if kind == "margin" else ">=",
             "validation_plan_sha256": digest(plan), "validation_evidence_sha256": digest(evidence),
+            "validation_summary": {k: baseline[k] for k in ("planned_questions", "complete_valid_questions",
+                "incomplete_questions", "final_missing_unique_units")},
             "bag_calibration": "uncalibrated_no_bag_validation", "validation_only": True}

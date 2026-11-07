@@ -24,6 +24,10 @@ training split or claim the reused test is untouched.
 Validation is 24 questions: six per base event, three positive and three negative.
 There is no bag validation. Incomplete validation stops calibration and test;
 a fixed baseline fallback needs an explicit separate experiment decision.
+The test and report entrypoints reject failed/null threshold artifacts before
+execution: successful selection, complete validation24 counts, matching frozen
+plan/evidence identity and six finite event thresholds are required. The current
+execution/selection code must also match the bundle's frozen source fingerprints.
 
 | Model | Selection and decision rule |
 |---|---|

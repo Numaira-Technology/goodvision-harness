@@ -3,6 +3,11 @@ This document covers the older base-four controlled runner and v2/v2.1 replay.
 
 # Controlled rerun: v2-provider-pinned-lossless-v1
 
+The default CLI requires the provider configuration and validation/test sidecar.
+For the separate original baseline (including robot41), explicitly pass
+`--legacy-baseline`; it uses default routing without this sidecar and cannot be
+mixed with controlled options or accepted by this threshold-tuning protocol.
+
 This is a named variant of the existing v2 sampling/scoring protocol. SPEC.md
 remains the historical fixed baseline. Questions, labels, centered 1 FPS sampling,
 720px JPEGs, independent per-frame requests, clip-max aggregation, gate 0.5,

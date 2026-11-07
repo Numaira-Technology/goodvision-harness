@@ -2,6 +2,9 @@
 
 import io
 import json
+from pathlib import Path
+import re
+import shlex
 
 import pytest
 
@@ -205,3 +208,52 @@ def test_only_endpoint_is_not_labeled_a_measured_fastest_provider():
     data["data"]["endpoints"][0]["latency_last_30m"] = None
     result = prepare_provider.select_provider(data, "model-a", "language", "a" * 64, "synthetic")
     assert result["selection"]["method"] == "only_eligible_endpoint_not_a_speed_comparison"
+
+
+def test_robot41_documented_command_runs_legacy_with_synthetic_replies(tmp_path, monkeypatch):
+    skill = Path(".claude/skills/event-benchmark/SKILL.md").read_text()
+    command = next(block for block in re.findall(r"```sh\n(.*?)```", skill, re.DOTALL)
+                   if "run_eval.py" in block and "samples_robot41.json" in block)
+    argv = shlex.split(command.replace("\\\n", ""))[1:]
+    argv[argv.index("--out") + 1] = str(tmp_path / "robot41.json")
+    samples = json.loads(Path(argv[argv.index("--samples") + 1]).read_text())["samples"]
+    assert len(samples) == 41
+    clip = tmp_path / "synthetic.mp4"
+    clip.write_bytes(b"synthetic media; not decoded")
+    monkeypatch.setattr(runner, "frozen_inputs", lambda *args:
+        (samples, {s["filename"]: clip for s in samples}, {s["filename"]: runner.sha256(clip) for s in samples}))
+    monkeypatch.setattr(runner, "probe_duration", lambda _: 1.0)
+    monkeypatch.setattr(runner, "frame_uri", lambda *args: "synthetic-image")
+    monkeypatch.setattr(runner, "load_key", lambda _: "synthetic-not-a-key")
+    requests = []
+    def post(url, body, key):
+        requests.append(body)
+        return {"id": "synthetic-id", "provider": "Synthetic", "model": runner.CANDIDATES["qwen"][0],
+                "choices": [{"finish_reason": "stop", "message": {"content": '{"answer":false}'}}]}
+    monkeypatch.setattr(runner, "_post", post)
+    monkeypatch.setattr(runner.sys, "argv", argv)
+    result = runner.main()
+    assert len(requests) == 41 and all("provider" not in body for body in requests)
+    assert result["protocol_variant"] == evidence.LEGACY_VARIANT
+    assert result["split_context"] is None and result["provider_context"] is None
+    assert result["overall"]["total"] == 41 and result["overall"]["errors"] == 0
+    assert result["per_event"]["fall"]["total"] == 18 and result["per_event"]["weapon"]["total"] == 23
+
+
+def test_controlled_entry_still_requires_provider_and_split(tmp_path, monkeypatch):
+    _, _, paths = split_fixture(tmp_path)
+    samples, manifest, media = paths["test"]
+    monkeypatch.setattr(runner, "load_key", lambda _: pytest.fail("must fail before credentials"))
+    monkeypatch.setattr(runner.sys, "argv", ["run_eval", "--candidate", "qwen", "--samples", str(samples),
+        "--manifest", str(manifest), "--media", str(media)])
+    with pytest.raises(SystemExit) as error: runner.main()
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("option", ["--provider-config", "--split-manifest", "--split"])
+def test_legacy_cannot_be_mixed_with_controlled_options(monkeypatch, option):
+    monkeypatch.setattr(runner, "frozen_inputs", lambda *args: pytest.fail("reject incompatible options first"))
+    monkeypatch.setattr(runner.sys, "argv", ["run_eval", "--legacy-baseline", "--candidate", "qwen",
+        "--samples", "unused.json", "--media", "unused", option, "test"])
+    with pytest.raises(SystemExit) as error: runner.main()
+    assert error.value.code == 2

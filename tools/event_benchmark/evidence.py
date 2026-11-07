@@ -10,6 +10,7 @@ import urllib.request
 from pathlib import Path
 
 VARIANT = "v2-provider-pinned-lossless-v1"
+LEGACY_VARIANT = "v2.1-legacy-unpinned-lossless-v1"
 
 
 def code_provenance():

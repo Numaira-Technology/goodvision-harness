@@ -9,7 +9,7 @@ import json
 import math
 from pathlib import Path
 
-from .contract import EVENTS, RULES, digest, file_hash, score, select_thresholds, write_new
+from .contract import EVENTS, RULES, digest, file_hash, score, select_thresholds, source_files, validate_threshold_values, write_new
 from .retry import Ledger
 
 
@@ -25,7 +25,52 @@ def verify_bundle(bundle):
     report = json.loads((bundle / "preflight.json").read_text())
     if not report.get("offline_passed"):
         raise ValueError("offline preflight not passed")
+    if not {"rules.json", "preflight.json", "source-hashes.json"} <= set(hashes):
+        raise ValueError("bundle is missing required integrity records")
+    sources = json.loads((bundle / "source-hashes.json").read_text())
+    active = source_files()
+    if set(sources) != set(active) or report.get("sources_sha256") != digest(sources):
+        raise ValueError("frozen source inventory differs; rebuild preflight with the intended code")
+    for name, path in active.items():
+        snapshot = "source-snapshot/" + name
+        if hashes.get(snapshot) != sources[name]:
+            raise ValueError("source snapshot fingerprint differs: " + name)
+        if file_hash(path) != sources[name]:
+            raise ValueError("active source differs from frozen bundle: " + name
+                             + "; use the retained code for replay or build a new bundle")
     return file_hash(bundle / "bundle-files-sha256.json")
+
+
+def load_threshold_artifact(path, expected_hash, *, bundle, alias, config, bundle_digest):
+    """Reject failed calibration before execution or offline test reporting."""
+    if not path or not expected_hash or file_hash(path) != expected_hash:
+        raise ValueError("test requires frozen validation thresholds and their SHA256")
+    artifact = json.loads(Path(path).read_text())
+    if (not isinstance(artifact, dict) or artifact.get("validation_only") is not True
+            or artifact.get("calibration") != "selected_on_complete_validation24"):
+        raise ValueError("successful validation-only calibration required; test blocked")
+    for field, expected in {"config_sha256": digest(config), "bundle_sha256": bundle_digest,
+                            "rules_sha256": digest(RULES), "model": config["model"]}.items():
+        if artifact.get(field) != expected:
+            raise ValueError("threshold configuration mismatch: " + field)
+    kind = config["kind"]
+    validate_threshold_values(artifact.get("thresholds"), kind)
+    expected_summary = {"planned_questions": 24, "complete_valid_questions": 24,
+                        "incomplete_questions": 0, "final_missing_unique_units": 0}
+    if artifact.get("validation_summary") != expected_summary:
+        raise ValueError("complete validation24 evidence required; test blocked")
+    plan = json.loads((Path(bundle) / "plans" / f"{alias}-validation.json").read_text())
+    evidence_hash = artifact.get("validation_evidence_sha256")
+    if (plan.get("split") != "validation" or len(plan.get("questions", [])) != 24
+            or artifact.get("validation_plan_sha256") != digest(plan)
+            or not isinstance(evidence_hash, str) or len(evidence_hash) != 64
+            or any(c not in "0123456789abcdef" for c in evidence_hash)):
+        raise ValueError("validation plan/evidence identity differs")
+    if (artifact.get("comparator") != (">" if kind == "margin" else ">=")
+            or artifact.get("bag_calibration") != "uncalibrated_no_bag_validation"
+            or any(artifact["thresholds"][e] != (0 if kind == "margin" else .5) for e in EVENTS[4:])):
+        raise ValueError("threshold decision rule or uncalibrated bag baseline differs")
+    return artifact
 
 
 def context_for(plan, config, bundle_digest):
@@ -80,6 +125,11 @@ def main(argv=None):
     split = "validation" if args.phase == "select" else "test"
     plan = json.loads((args.bundle / "plans" / f"{args.model}-{split}.json").read_text())
     config = json.loads((args.bundle / "configs" / f"{args.model}.json").read_text())
+    thresholds = {e: .5 for e in EVENTS}  # unused for native argmax / hard JSON answers
+    if args.phase == "report" and config["kind"] in ("margin", "probability"):
+        artifact = load_threshold_artifact(args.thresholds, args.thresholds_sha256,
+            bundle=args.bundle, alias=args.model, config=config, bundle_digest=bundle_digest)
+        thresholds = artifact["thresholds"]
     if not args.ledger.is_file():
         raise ValueError("existing inference ledger required; no synthetic or empty result")
     ledger = Ledger(args.ledger, context_for(plan, config, bundle_digest))
@@ -90,16 +140,6 @@ def main(argv=None):
             result.update(calibration="selected_on_complete_validation24", config_sha256=digest(config), rules_sha256=digest(RULES), bundle_sha256=bundle_digest,
                           model=config["model"], selected_at=datetime.now(timezone.utc).isoformat())
         else:
-            if config["kind"] in ("margin", "probability"):
-                if not args.thresholds or not args.thresholds_sha256 or file_hash(args.thresholds) != args.thresholds_sha256:
-                    raise ValueError("continuous model needs a verified frozen threshold artifact")
-                artifact = json.loads(args.thresholds.read_text())
-                if any(artifact.get(k) != v for k, v in {"config_sha256": digest(config), "rules_sha256": digest(RULES),
-                                                        "bundle_sha256": bundle_digest, "model": config["model"]}.items()):
-                    raise ValueError("validation/test configuration mismatch")
-                thresholds = artifact["thresholds"]
-            else:
-                thresholds = {e: .5 for e in EVENTS}  # unused for native argmax / hard JSON answers
             result = report(plan, config, ledger, thresholds)
             result["threshold_artifact_sha256"] = args.thresholds_sha256
         write_new(args.output, result)

@@ -14,7 +14,7 @@ import sys
 from tools.event_benchmark import evidence, run_eval
 from tools.clip_benchmark.protocol import PROMPTS, REVISIONS
 from .adapters import CURRENT_IMAGE_PROMPTS, question_core, request_body
-from .contract import EVENTS, RULES, VERSION, canonical, digest, file_hash, sample_times, write_new
+from .contract import EVENTS, RULES, VERSION, canonical, digest, file_hash, sample_times, source_files, write_new
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILES = Path(__file__).parent / "profiles"
@@ -147,13 +147,8 @@ def build_plan(split, rows, videos, config, bundle):
 
 
 def freeze_sources(out):
-    paths = list((ROOT / "tools/unified_benchmark").glob("*.py"))
-    paths += [ROOT / p for p in ["tools/event_benchmark/run_eval.py", "tools/event_benchmark/evidence.py",
-        "tools/event_benchmark/tune_threshold.py", "tools/clip_benchmark/scoring.py", "tools/clip_benchmark/runtime.py",
-        "tools/clip_benchmark/base_timing.py", "tools/clip_benchmark/protocol.py"]]
     result = {}
-    for path in paths:
-        rel = str(path.relative_to(ROOT))
+    for rel, path in source_files().items():
         result[rel] = file_hash(path)
         dest = out / "source-snapshot" / rel
         dest.parent.mkdir(parents=True, exist_ok=True)

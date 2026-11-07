@@ -97,6 +97,10 @@ changed datasets require a separately reviewed protocol, not relabelled hashes.
 A new output directory is required. Preflight fully decodes videos, freezes frame
 bytes and request hashes, and reports pending hardware/provider/cost authorization.
 It sends zero network/model requests. Copy a bundle intact; do not mutate a frozen one.
+Execution, offline selection and reporting also compare the current critical code
+against the frozen source fingerprints. After changing code, build a new preflight
+bundle; retain the original code with old artifacts for historical replay. Do not
+rewrite old bundle hashes to pass the check.
 
 ## API execution after cost approval
 
@@ -117,7 +121,12 @@ run concurrently, each with twelve queue slots. The process stops on balance fai
 It never writes a Sheet or creates a PR.
 
 Luna selects thresholds on complete validation24 and writes a frozen artifact.
-Incomplete validation stops calibration; no implicit fixed-0.5 fallback. For test:
+Incomplete validation stops calibration; no implicit fixed-0.5 fallback. Failed
+selection files and artifacts lacking successful calibration, full validation24
+counts, matching plan/evidence identity or six finite thresholds are rejected before
+any selected test model starts. Offline reporting applies the same check. Older
+artifacts remain untouched; replay them with their retained code, or select a new
+artifact offline from compatible complete validation evidence. For test:
 
 ```sh
 python -m tools.unified_benchmark.api_run \

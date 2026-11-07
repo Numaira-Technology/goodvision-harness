@@ -126,12 +126,19 @@ The second command uses the same input loader as the evaluator and should report
 not start a model. For an authorized accuracy run, use the explicit cohort:
 
 ```sh
-python tools/event_benchmark/run_eval.py --candidate qwen \
+python tools/event_benchmark/run_eval.py --legacy-baseline --candidate qwen \
   --samples tools/event_benchmark/datasets/samples_robot41.json \
   --manifest tools/event_benchmark/datasets/manifest_robot41.json \
   --media outputs/robot41/media --interval 1.0 --workers 12 \
   --out outputs/event-benchmark/robot41-qwen.json
 ```
+
+`--legacy-baseline` explicitly uses the original default-provider v2.1 baseline
+without the validation24/test120 sidecar. It preserves the centered sampling,
+strict parser and fixed gate, and records `v2.1-legacy-unpinned-lossless-v1`.
+Do not mix it with controlled provider/split options or use its output for
+validation threshold selection. The controlled workflow above still requires
+the provider configuration and split sidecar. Add `--preflight` for offline checks.
 
 Report this as a separate robot41 cohort with full denominators 18, 23 and 41.
 The existing Sheet's 50/100/120 blocks are not robot41 result cells. Availability

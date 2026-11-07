@@ -309,9 +309,14 @@ def main():
     ap.add_argument("--provider-config", type=Path, help="frozen single-provider configuration")
     ap.add_argument("--split-manifest", type=Path, help="frozen source-group sidecar")
     ap.add_argument("--split", choices=["validation", "test"])
+    ap.add_argument("--legacy-baseline", action="store_true",
+                    help="explicit v2.1 baseline: default provider routing, no validation/test sidecar; not eligible for controlled tuning")
     ap.add_argument("--preflight", action="store_true", help="offline input checks only; no credentials or HTTP")
     ap.add_argument("--out", type=Path, help="write full result JSON here")
     a = ap.parse_args()
+    if a.legacy_baseline and (a.provider_config or a.split_manifest or a.split):
+        ap.error("--legacy-baseline cannot be combined with controlled provider/split options")
+    variant = evidence.LEGACY_VARIANT if a.legacy_baseline else evidence.VARIANT
     if a.workers < 1 or not math.isfinite(a.interval) or a.interval <= 0:
         ap.error("workers and interval must be positive; interval must be finite")
     if a.candidate and (a.model or a.backend):
@@ -344,7 +349,7 @@ def main():
     if a.preflight:
         report = {"artifact_type": "offline-preflight", "model": model, "backend": backend,
                   **provenance,
-                  "protocol_variant": evidence.VARIANT,
+                  "protocol_variant": variant,
                   "preflight_at_utc": datetime.now(timezone.utc).isoformat(),
                   "questions": len(samples), "videos": len(hashes),
                   "samples_json_sha256": sha256(a.samples), "manifest_sha256": sha256(a.manifest),
@@ -358,15 +363,15 @@ def main():
                   "data_checks_passed": True,
                   "pending": ["paid inference authorization", "live provider receipt verification"],
                   "runtime_note": "workers are not proof of twelve-camera end-to-end throughput"}
-        if not provider_context:
+        if not provider_context and not a.legacy_baseline:
             report["pending"].append("frozen provider configuration")
-        if not split_context:
+        if not split_context and not a.legacy_baseline:
             report["pending"].append("frozen split/source-group mapping")
         if a.out:
             evidence.write_new(a.out, report)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return report
-    if not provider_context or not split_context:
+    if not a.legacy_baseline and (not provider_context or not split_context):
         ap.error("controlled inference requires --provider-config, --split-manifest and --split")
     key = load_key(a.env_file)
     run_at = datetime.now(timezone.utc).isoformat()
@@ -407,7 +412,7 @@ def main():
     out = {
         **provenance,
         "spec_version": SPEC_VERSION,
-        "protocol_variant": evidence.VARIANT,
+        "protocol_variant": variant,
         "score_precision": "lossless",
         "score_precision_scope": "Received JSON numeric value stored as Python float, without extra rounding; server rounding is unknown.",
         "provider_context": provider_context,

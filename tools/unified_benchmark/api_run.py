@@ -18,7 +18,7 @@ from tools.event_benchmark.evidence import response_metadata
 from .adapters import parse_response, request_body
 from .contract import EVENTS, RULES, canonical, digest, file_hash, score, select_thresholds, write_new
 from .retry import Ledger, PausedRun, Queue, RequestFailure
-from .workflow import collect, context_for, report, verify_bundle
+from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
 
 ALIASES = ("qwen8b", "gemini25", "gemini38", "qwen235b", "luna", "maverick")
 
@@ -145,18 +145,13 @@ def accounting(ledger):
 
 def execute_model(alias, bundle, root, key, billing_stop, bundle_digest, *, phase="both", threshold_path=None, threshold_sha256=None):
     output = root / alias
-    output.mkdir(exist_ok=False)
     config = json.loads((bundle / "configs" / f"{alias}.json").read_text())
     stage_results, thresholds, calibration = {}, {e: .5 for e in EVENTS}, "not_applicable_hard_boolean"
     if phase == "test" and config["kind"] == "probability":
-        if not threshold_path or file_hash(threshold_path) != threshold_sha256:
-            raise ValueError("test requires frozen validation thresholds and their SHA256")
-        artifact = json.loads(Path(threshold_path).read_text())
-        for field, expected in {"config_sha256": digest(config), "bundle_sha256": bundle_digest,
-                                "rules_sha256": digest(RULES), "model": config["model"]}.items():
-            if artifact.get(field) != expected:
-                raise ValueError("threshold configuration mismatch: " + field)
+        artifact = load_threshold_artifact(threshold_path, threshold_sha256,
+            bundle=bundle, alias=alias, config=config, bundle_digest=bundle_digest)
         thresholds, calibration = artifact["thresholds"], artifact["calibration"]
+    output.mkdir(exist_ok=False)
     for split in (("validation", "test") if phase == "both" else (phase,)):
         plan = json.loads((bundle / "plans" / f"{alias}-{split}.json").read_text())
         directory = output / split
@@ -231,6 +226,10 @@ def main(argv=None):
         config = json.loads((args.bundle / "configs" / (alias + ".json")).read_text())
         if config["backend"] not in ("language", "decision"):
             parser.error("this command executes API profiles only")
+        # Validate every selected calibrated model before any model can spend money.
+        if args.phase == "test" and config["kind"] == "probability":
+            load_threshold_artifact(args.thresholds, args.thresholds_sha256,
+                bundle=args.bundle, alias=alias, config=config, bundle_digest=bundle_digest)
         provider = config["provider_context"]["config"]["expected_provider_name"]
         groups.setdefault(provider, []).append(alias)
     credentials = (json.loads(args.credential_map.read_text()) if args.credential_map
