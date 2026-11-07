@@ -297,6 +297,7 @@ source "$(python -m tools.cloud_env --host H --port P --ssh-key KEY --model vide
 | 场景 | 体积（估） | 存储/月 |
 |---|---|---|
 | 视觉集单 revision（VideoJev≈9 + CLIP≈1.7 + SigLIP2≈1.5 + d3-nano≈4.5） | ≈ 16.7 GB | ≈ $0.10（扣除 10GB 免费额度后约 6.7GB 计费） |
+| 打包环境 `envs/`（VideoJev conda-pack，Ada/cu128） | ≈ 4.85 GB | ≈ $0.07/月；省掉每次租机现装 torch+flash-attn 的等待 |
 | 视觉集 ×2 revision + 一个 Qwen FP8（≈35） | ≈ 59 GB | ≈ $0.89 |
 | 宽松上限 | ≈ 100 GB | ≈ $1.50 |
 
