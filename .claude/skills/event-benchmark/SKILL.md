@@ -12,8 +12,39 @@ description: >-
 Use `tools/event_benchmark/SPEC.md` as the authority. Current checkout: **v2.1**,
 with strict answers, complete frame evidence and reviewed input hashes. Historical
 v1 outputs are not v2 evidence. Inspect the current spec and runner before a run.
+For the locally authorized controlled rerun, also read
+`tools/event_benchmark/CONTROLLED_RUN.md` (named routing/storage variant).
 These instructions do not authorize paid inference, downloads, uploads or publishing;
 use the user's authorized scope and budget.
+
+## Choose the protocol before running
+
+For this team's current 120-question rerun, use **unified-frame-120-v2** in
+[the portable handoff](../../../tools/unified_benchmark/README.md) (path relative
+from the repository root: `tools/unified_benchmark/README.md`). Its command-line
+entrypoint and recorded model profiles are included in this branch. The five frozen
+validation24/test120 JSON inputs must be supplied privately via `--inputs`; they,
+videos, keys, weights and historical results are not included.
+Start with offline preflight. Read the handoff for the exact commands and known
+native-runner limitation before promising execution on a fresh GPU.
+
+The current variant uses exact 1 FPS shared 720px JPEGs, current-image API prompts,
+explicit effort settings when supported, and exact JSON string `"true"`/`"false"`
+normalization (never general truthiness). Accuracy is correct/all planned questions
+(120 for the whole test); missing questions remain in the denominator and are
+reported separately. Every planned response must still be valid before a question
+can contribute a correct answer. Native unknown is valid but wrong against the
+binary references; a refusal or malformed answer is missing, not unknown.
+
+CLIP/SigLIP2 retain single-frame margins. VideoJev/Decision3 retain adjacent
+two-frame windows and native argmax; the proposed single-frame native experiment
+was not run. Changing prompts, effort, windows, parser, thresholds or provider
+creates a new recorded variant. Historical bundles need their retained source
+snapshot; do not relabel their protocol or silently re-score old output files.
+
+The legacy v2.1 API runner and robot41 workflow below remain separate protocols:
+centered sampling and the original strict parser do not reproduce the current
+120-question variant. Never mix their hashes or denominators in one result row.
 
 ## Workflow
 
@@ -21,15 +52,19 @@ use the user's authorized scope and budget.
    manifest, media directories and output path. Verify manifest review status,
    samples hash, question/label identities and media hashes. The runner does this
    before requests. Do not change a draft status to bypass review.
-   `manifest_50.json` is reviewed; `manifest_120.json` is currently draft and
+   Read each manifest's actual status and fingerprint; `manifest_120.json`
    includes 100 base-event questions plus 20 separate bag-search questions.
    Question count is not unique-video count. Larger sets require their own reviewed
    manifest. Never assume a colleague's Desktop path exists.
+   `--preflight` checks inputs offline without credentials or inference. Keep its
+   pending-provider/hardware/authorization items distinct from input validity.
 2. **Run accuracy from the repository root**, only after authorization for calls:
    ```sh
    python tools/event_benchmark/run_eval.py --candidate luna \
      --samples /path/to/samples.json --manifest /path/to/reviewed-manifest.json \
      --media /path/to/media1 /path/to/media2 \
+     --provider-config /path/to/frozen-provider.json \
+     --split-manifest /path/to/validation_split.json --split test \
      --interval 1.0 --workers 12 --out outputs/event-benchmark/luna-v2.json
    ```
    Repeat with qwen and gemini on identical inputs. Capture the source commit and
@@ -39,6 +74,7 @@ use the user's authorized scope and budget.
    ```sh
    python .claude/skills/event-benchmark/scripts/latency_bench.py \
      --candidate luna --video /path/to/representative-clip.mp4 \
+     --provider-config /path/to/the-same-frozen-provider.json \
      --concurrency 12 --rounds 6 --out outputs/event-benchmark/lat-luna.json
    ```
    This is single-frame, single-predicate request latency, not product latency or

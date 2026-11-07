@@ -1,4 +1,7 @@
-# Frozen benchmark methodology
+For the current-frame 120-question variant, use `tools/unified_benchmark/README.md`.
+The procedure below describes the retained legacy runner.
+
+# Legacy v2/v2.1 benchmark methodology
 
 Authority: `tools/event_benchmark/SPEC.md` and `run_eval.py`, currently v2.1.
 `SPEC_V1.md`, `RESULTS.md` and checked-in result JSONs are historical v1 artifacts.
@@ -17,7 +20,7 @@ and result-file hash. A count such as 50 or 100 is not a dataset identity. Recor
 question count and distinct-media count separately. Do not send labels or reference
 answers to the model. Private media, keys and raw outputs stay outside Git.
 
-Current manifests: 50 is reviewed; 120 is `draft_pending_user_review`, with 100
+Read the actual reviewed status and hash of each manifest. The 120 cohort has 100
 base-4 questions and 20 bag-search questions. Review status must be resolved by
 reviewers, not relabeled by an agent to enable a run. Bag questions allow unknown
 and require a separate versioned task/metric; the base runner filters them out.

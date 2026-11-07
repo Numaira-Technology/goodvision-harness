@@ -1,61 +1,53 @@
 ---
 name: bench-threshold-tune
 description: >-
-  Select per-event thresholds for continuous benchmark scores on a frozen validation
-  split, then evaluate a separately labeled fixed-threshold variant on held-out test
-  data. Use for tune/calibrate/调阈值/校准 requests. Keeps the fixed baseline and never
-  selects on test results; language booleans and native VideoJev verdicts are out of scope.
+  Select per-event thresholds for continuous benchmark scores on reviewed validation
+  data, freeze the artifact, and compare tuned versus baseline test results offline.
+  Use for tune/calibrate/调阈值/校准 requests. Does not tune hard booleans or native argmax.
 ---
 
-# Held-out threshold selection
+# Validation-only threshold selection
 
-This skill defines an **offline analysis protocol**, not permission to run models
-or publish results. Read the current `tools/event_benchmark/SPEC.md` (v2) and
-`references/protocol.md` first. The main Luna/language result remains gate 0.5;
-CLIP margins require their own fixed baseline (normally zero, never borrowed 0.5).
+Use the runner matching the saved artifact. For current120 ledgers, read
+`tools/unified_benchmark/README.md` and use `tools.unified_benchmark.workflow select`
+and `report`. For the older base-four `per_video` schema, use
+`tools/event_benchmark/tune_threshold.py` (v2 and v2.1 accepted separately; never
+mix their validation/test versions). The latter retains historical complete-only
+confusion metrics and explicitly adds all-question headline counts.
 
-## Availability and inputs
+Require reviewed data, lossless scores, full validation coverage, and compatible
+model/provider, prompts, effort, precision, sampling, preprocessing and source
+fingerprints. Validate source-video groups across splits. Training/development,
+actor/scene and prior test-use limits must remain explicit; do not invent a clean
+training split or claim the reused test is untouched.
 
-This checkout has **no** `tools/event_benchmark/tune_threshold.py` and **no**
-`datasets/validation_split.json`. Do not issue commands for them or assume a
-24-clip split exists. CLIP tooling is also a separate PR, not a dependency installed
-by this skill. Inspect any later supplied implementation before reusing it.
+Validation is 24 questions: six per base event, three positive and three negative.
+There is no bag validation. Incomplete validation stops calibration and test;
+a fixed baseline fallback needs an explicit separate experiment decision.
 
-Require a reviewed split manifest and saved score artifacts with their original
-hashes. If these are missing, report exactly which input is needed and stop tuning;
-you can still prepare the offline analysis plan. Historical v1 scores are not v2
-calibration inputs. No worked threshold or claimed accuracy gain is supplied here.
+| Model | Selection and decision rule |
+|---|---|
+| Luna | Grid 0..1 in 0.01 steps; highest validation correct count; longest contiguous optimal grid run; midpoint; equal-length runs prefer closest to 0.5 then lower midpoint. Recheck midpoint optimality; stop if worse. Predict yes at score >= threshold. |
+| CLIP / SigLIP2 | Positive-minus-contrast cosine margin; maximize validation accuracy then minimize FP and FN; midpoint of widest finite optimal interval, lower midpoint on ties. Predict yes at margin > threshold. |
+| Qwen / Gemini / Llama | Hard boolean output; no numerical threshold to tune. Validation compares prompt/effort settings. |
+| VideoJev / Decision3 | Native yes/no/unknown argmax; no scalar threshold. |
 
-## Workflow
+Bag thresholds stay Luna 0.5 and CLIP/SigLIP2 0, explicitly uncalibrated. Do not
+borrow a base-class threshold or label these bag settings validation-selected.
+See [algorithm details](references/protocol.md) for interval boundaries.
 
-1. Freeze train/development, validation and test membership before looking at scores.
-   Check media hashes and source-video groups, not just filenames or a saved
-   `disjoint_assert` flag. No overlap or near-duplicate excerpts across splits.
-2. Verify exact validation question coverage, reviewed labels, positive/negative
-   support and complete frame evidence. Missing/error clips are blockers, not
-   permission to fit a smaller successful subset. The small-sample fallback applies
-   to the planned complete split, never to an accidentally incomplete run.
-3. Select using validation scores only, following the grid/comparator/tie rule in
-   `references/protocol.md`. Keep test scores unavailable during selection.
-4. Save and hash the thresholds plus validation provenance **before** opening test
-   predictions. Freeze this artifact. Apply it unchanged; do not repick after seeing
-   test outcomes. A later selection round needs new untouched evaluation evidence.
-5. Report fixed-vs-tuned test results and coverage, validation support, threshold
-   provenance and uncertainty. The result is a variant, not a replacement baseline
-   and not evidence that the score scale is probabilistically calibrated.
+Select using validation only, save/hash thresholds before the test phase, and
+apply them unchanged. For authorized re-scoring of already available test scores,
+freeze selection before reading those scores and label the comparison retrospective.
+Do not choose a published threshold by whichever has better test accuracy.
 
-For Luna, require lossless clip-max scores for an exact threshold analysis. The
-current runner rounds saved `score` to four decimals after making its prediction;
-those scores can cross a threshold when replayed. See the precision prerequisite
-in the protocol; do not claim an exact v2 replay from rounded scores. Do not tune
-qwen/gemini hard booleans or native VideoJev
-verdicts. For margins, verify the actual backend comparator and candidate grid;
-never feed margins into a probability-grid selector.
+Preserve fixed 0.5 for Luna and zero for margin models as comparisons; a user may
+publish the labelled tuned variant in the existing row. The latest recorded Luna
+base thresholds were fight 0.21, smoking 0.505, fall 0.34, weapon 0.12. These are
+historical calibration outputs, not defaults for another model/provider/prompt run.
+The recorded comparison was validation 20/24 -> 24/24 and test 104/120 -> 106/120;
+raw evidence remains in the originating run, not bundled here as new results.
 
-## Publishing
-
-Only when requested, prepare a distinct model/protocol/variant identity through
-`bench-sheet-contribute`, e.g. `luna / v2 / val-tuned <artifact hash>` beside
-`luna / v2 / fixed 0.5`. Include fallback events and validation n/positive/negative
-counts. Do not edit the frozen manifest, spec or baseline row to store a new fit.
-Store analysis and threshold artifacts in ignored `outputs/`.
+Headline accuracy uses all planned questions, with incomplete/unknown counts
+separate. Preserve original artifacts; write new reports without model calls for
+an offline replay. Publishing is a separate requested step via bench-sheet-contribute.
