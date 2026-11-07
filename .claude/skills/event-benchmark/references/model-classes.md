@@ -3,6 +3,10 @@
 For new current-120 runs use `tools/unified_benchmark/README.md`. All adapters share
 1 FPS JPEG input, but APIs/CLIP/SigLIP2 consume one frame while VideoJev/Decision3
 consume adjacent two-frame windows. Native precision is retained and recorded.
+The four native models now have a portable deployment and execution path in
+`tools/unified_benchmark/NATIVE.md`. Use its verified deployment and `native_run`,
+not the separate paced/probe runners, for this protocol. CLIP/SigLIP2 retain
+FP32/TF32-off; VideoJev/Decision3 retain BF16 backbone and original FP32 scoring.
 The older interfaces below are retained for historical interpretation; they do
 not override the named current protocol or establish identical model inputs.
 

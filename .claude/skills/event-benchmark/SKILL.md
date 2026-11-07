@@ -29,8 +29,15 @@ Use an authorized team account, keep the original bytes and filenames in one
 private directory outside Git, and pass it as `--inputs`. Do not substitute the
 repository's legacy manifest or change hashes to bypass a mismatch. The files,
 videos, keys, weights and historical results are not included in the repository.
-Start with offline preflight. Read the handoff for the exact commands and known
-native-runner limitation before promising execution on a fresh GPU.
+Start with offline preflight. For CLIP, SigLIP2, VideoJev and Decision3 use
+[the native run guide](../../../tools/unified_benchmark/NATIVE.md): prepare and
+verify the pinned deployment, then `native_run --phase validation|test|both`.
+Without `--execute` the native CLI checks files only; approved execution runs the
+original warmup/synthetic smoke before evaluation. Offline success is not GPU
+acceptance. Preserve one/two-frame inputs, precision, prompts and three-attempt
+budget; use explicit `--resume` for an interrupted run, never a fresh ledger to
+reset that budget. The runner records deployment and threshold identities and
+keeps historical results. Shared-sheet publication remains a separate request.
 
 The current variant uses exact 1 FPS shared 720px JPEGs, current-image API prompts,
 explicit effort settings when supported, and exact JSON string `"true"`/`"false"`

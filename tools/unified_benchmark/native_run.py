@@ -1,0 +1,505 @@
+"""Portable execution of the recorded four-model native 120-question protocol.
+
+Twelve video workers; exactly one in-flight window per source. No paced drops,
+new prompt policy, single-frame conversion, or changed model precision.
+"""
+import argparse
+import base64
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+import fcntl
+import io
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+import uuid
+
+from .adapters import frame_bytes, parse_response, request_body
+from .contract import EVENTS, RULES, canonical, digest, file_hash, select_thresholds, write_new
+from .native_deploy import ALIASES, environment_for, profile, verify_deployment
+from .retry import Ledger, Queue, RequestFailure
+from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
+
+
+def stamp():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def save_status(path, value):
+    temporary = path.with_suffix(".tmp")
+    temporary.write_bytes(canonical(value) + b"\n")
+    temporary.replace(path)
+
+
+def video_groups(units, queue, after=lambda: None):
+    groups = defaultdict(list)
+    if len({u["id"] for u in units}) != len(units):
+        raise ValueError("duplicate planned units")
+    for unit in units:
+        groups[unit["source_id"]].append(unit)
+    def run(group):
+        for unit in group:
+            queue.one(unit)
+            after()
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        try:
+            list(pool.map(run, groups.values()))
+        except BaseException:
+            queue.stopped.set()
+            raise
+
+
+def service_command(alias, deployment, output, port):
+    app = deployment / alias / "app"
+    py = str(deployment / alias / "env/bin/python")
+    env = dict(os.environ, PYTHONPATH=str(app / "src"), PYTHONNOUSERSITE="1",
+               HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_XET="1",
+               PYTHONDONTWRITEBYTECODE="1")
+    if alias == "videojev":
+        args = [py, str(app / "private-eval/service.py"), "--ready-capacity", "4",
+                "--gpu-batch-size", "4", "--max-pixels", "409600", "--prefix-cache"]
+    else:
+        args = [py, "-m", "goodvision_harness.videojev_service", "--runtime", "decision3",
+                "--ready-capacity", "2", "--gpu-batch-size", "2", "--max-pixels", "200704",
+                "--no-prefix-cache", "--no-d3-shared-window-state", "--host", "127.0.0.1", "--cpu-threads", "4"]
+    args += ["--cache-dir", str(deployment / alias / "cache"), "--result-log", str(output / "service-results.jsonl"),
+             "--port", str(port), "--request-timeout", "20", "--queue-age", "19.5",
+             "--queue-capacity", "48", "--context", "32768"]
+    return args, env
+
+
+def validate_health(alias, config, health):
+    runtime = health.get("runtime", {})
+    if health.get("ready") is not True:
+        raise ValueError("native service is not ready")
+    for key in ("model", "revision"):
+        if runtime.get(key) != config[key] or health.get(key) != config[key]:
+            raise ValueError("native service identity differs")
+    if ("4090" not in runtime.get("gpu", "")
+            or not 23 * 1024**3 <= runtime.get("gpu_total_bytes", 0) <= 25 * 1024**3
+            or runtime.get("cuda_runtime") != "12.8"):
+        raise ValueError("RTX 4090 24GB / CUDA12.8 required")
+    expected = {"gpu_batch_size": 4 if alias == "videojev" else 2,
+                "max_pixels": 409600 if alias == "videojev" else 200704,
+                "queue_policy": "latest-per-stream"}
+    if any(health.get(k) != v for k, v in expected.items()):
+        raise ValueError("native service configuration differs")
+    versions = runtime.get("versions", {})
+    if (versions.get("torch") != "2.8.0+cu128"
+            or versions.get("transformers") != ("5.14.1" if alias == "videojev" else "5.17.0")
+            or runtime.get("prefix_cache") is not (alias == "videojev")
+            or runtime.get("torch_cpu_threads") != 4):
+        raise ValueError("native runtime environment differs")
+    if alias == "decision3" and (runtime.get("shared_window_state") is not False
+            or runtime.get("precision") != "BF16 backbone, FP32 readout"):
+        raise ValueError("Decision3 execution mode differs")
+    if alias == "videojev" and (runtime.get("attention") != "flash_attention_2" or runtime.get("context") != 32768):
+        raise ValueError("VideoJev attention/context differs")
+
+
+class NativeBackend:
+    def __init__(self, alias, config, bundle, deployment, output, port):
+        self.alias, self.config, self.bundle = alias, config, bundle
+        self.deployment, self.output, self.port = deployment, output, port
+        self.encoder = self.service = self.log = None
+        self.gpu_lock = threading.Lock()
+        self.stop = threading.Event()
+        self.monitor = None
+        self.peak_mib = None
+
+    def health(self):
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/", timeout=3) as r:
+            return json.load(r)
+
+    def http(self, body):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/predict", data=canonical(body),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=90) as r:
+                return r.status, json.load(r)
+        except urllib.error.HTTPError as e:
+            return e.code, {"error": e.read().decode(errors="replace")}
+
+    def telemetry(self):
+        with (self.output / "gpu-telemetry.jsonl").open("x") as f:
+            while not self.stop.is_set():
+                row = {"at": stamp()}
+                try:
+                    p = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,utilization.gpu,temperature.gpu",
+                                        "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=3)
+                    memory, usage, temperature = [int(s.strip()) for s in p.stdout.strip().split(",")]
+                    self.peak_mib = max(self.peak_mib or 0, memory)
+                    row.update(memory_mib=memory, utilization=usage, temperature=temperature)
+                except (ValueError, OSError, subprocess.TimeoutExpired):
+                    row["error"] = "GPU telemetry unavailable"
+                f.write(json.dumps(row) + "\n")
+                f.flush()
+                self.stop.wait(2)
+
+    def start(self):
+        from PIL import Image
+        env_dir = self.deployment / environment_for(self.alias) / "env"
+        packages = json.loads(subprocess.check_output([str(env_dir / "bin/python"), "-m", "pip", "list", "--format=json"], text=True))
+        recorded = json.loads((env_dir.parent / "packages.json").read_text())
+        if {p["name"].lower(): p["version"] for p in packages} != {p["name"].lower(): p["version"] for p in recorded}:
+            raise ValueError("installed packages differ from frozen deployment")
+        gpu = subprocess.check_output(["nvidia-smi", "--query-gpu=uuid,name,memory.total,driver_version", "--format=csv,noheader"], text=True)
+        if len(gpu.strip().splitlines()) != 1 or "4090" not in gpu:
+            raise ValueError("one RTX4090 required")
+        write_new(self.output / "hardware.json", {"gpu": gpu, "at": stamp(), "host": os.uname().nodename})
+        self.monitor = threading.Thread(target=self.telemetry, daemon=True)
+        self.monitor.start()
+        if self.alias in ("clip", "siglip2"):
+            if Path(sys.prefix).resolve() != env_dir.resolve():
+                raise ValueError("run contrastive evaluation using the prepared clip/env/bin/python")
+            import torch
+            from tools.clip_benchmark.runtime import ClipEncoder
+            props = torch.cuda.get_device_properties(0)
+            if not 23 * 1024**3 <= props.total_memory <= 25 * 1024**3:
+                raise ValueError("24GB GPU required")
+            torch.set_num_threads(1)
+            self.encoder = ClipEncoder(self.config["model"], env_dir.parent / "cache")
+            metadata = self.encoder.metadata
+            if (metadata["revision"] != self.config["revision"] or metadata["prompts"] != self.config["prompts"]
+                    or metadata["precision"] != "float32" or metadata["tf32"] is not False):
+                raise ValueError("contrastive encoder configuration differs")
+            torch.cuda.reset_peak_memory_stats()
+            raw = self.encoder.predict(self.encoder.prepare(Image.new("RGB", (720, 406), (127, 127, 127))))
+            parsed = parse_response(self.config, {"targets": list(EVENTS)}, raw)
+        else:
+            with socket.socket() as sock:
+                sock.bind(("127.0.0.1", self.port))
+            args, env = service_command(self.alias, self.deployment, self.output, self.port)
+            self.log = (self.output / "service.log").open("xb")
+            self.service = subprocess.Popen(args, env=env, stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True)
+            deadline = time.monotonic() + 1200
+            while True:
+                if self.service.poll() is not None:
+                    raise RuntimeError("native service exited during original warmup; see service.log")
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("native service startup deadline exceeded")
+                try:
+                    metadata = self.health()
+                    if metadata.get("ready"):
+                        break
+                except (urllib.error.URLError, TimeoutError):
+                    pass
+                time.sleep(1)
+            validate_health(self.alias, self.config, metadata)
+            jpeg = io.BytesIO()
+            Image.new("RGB", (720, 406), (127, 127, 127)).save(jpeg, format="JPEG")
+            uid = self.alias + "-unified-synthetic-smoke"
+            body = {"session": uid, "request_id": uid, "fps": 1.0, "frame_times": [0.0, 1.0],
+                    "images": [base64.b64encode(jpeg.getvalue()).decode()] * 2,
+                    "question_template": self.config["question_template"]}
+            code, raw = self.http(body)
+            if code != 200:
+                raise RuntimeError("native synthetic smoke failed")
+            parsed = parse_response(self.config, {"id": uid, "targets": list(EVENTS)}, raw)
+        if set(parsed) != set(EVENTS):
+            raise ValueError("synthetic smoke did not produce six valid choices/scores")
+        write_new(self.output / "runtime.json", metadata)
+        write_new(self.output / "smoke.json", {"passed": True, "synthetic": True, "raw": raw, "parsed": parsed})
+
+    def infer(self, unit, body):
+        if self.encoder:
+            from PIL import Image
+            started = time.monotonic()
+            with Image.open(io.BytesIO(frame_bytes(self.bundle, unit["frames"][0]))) as image:
+                prepared = self.encoder.prepare(image.convert("RGB"))
+            prepared_at = time.monotonic()
+            with self.gpu_lock:
+                acquired = time.monotonic()
+                raw = self.encoder.predict(prepared)
+            return 200, raw, {"prepare_seconds": prepared_at - started, "gpu_queue_seconds": acquired - prepared_at,
+                              "gpu_readback_seconds": time.monotonic() - acquired}
+        code, raw = self.http(body)
+        return code, raw, {}
+
+    def close(self):
+        try:
+            if self.encoder:
+                import torch
+                write_new(self.output / "memory.json", {"peak_allocated_bytes": torch.cuda.max_memory_allocated(),
+                    "peak_reserved_bytes": torch.cuda.max_memory_reserved()})
+                self.encoder.close()
+            if self.service and self.service.poll() is None:
+                try:
+                    write_new(self.output / "final-health.json", self.health())
+                except Exception:
+                    pass
+                os.killpg(self.service.pid, signal.SIGINT)
+                try:
+                    self.service.wait(timeout=40)
+                except subprocess.TimeoutExpired:
+                    os.killpg(self.service.pid, signal.SIGTERM)
+                    try:
+                        self.service.wait(timeout=20)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(self.service.pid, signal.SIGKILL)
+                        self.service.wait()
+        finally:
+            if self.log:
+                self.log.close()
+            self.stop.set()
+            if self.monitor:
+                self.monitor.join(5)
+            write_new(self.output / "gpu-peak.json", {"max_gpu_used_mib": self.peak_mib, "sampling_seconds": 2})
+
+
+def validate_inputs(bundle, alias, phase, deployment_hash, threshold_path=None, threshold_hash=None):
+    bundle_digest = verify_bundle(bundle)
+    cfg = json.loads((bundle / "configs" / (alias + ".json")).read_text())
+    if cfg != profile(alias):
+        raise ValueError("native profile differs from the recorded protocol")
+    phases = ("validation", "test") if phase == "both" else (phase,)
+    for split in phases:
+        plan = json.loads((bundle / "plans" / f"{alias}-{split}.json").read_text())
+        for unit in plan["units"]:
+            if digest(request_body(cfg, unit, bundle)[1]) != unit["request_sha256"]:
+                raise ValueError("frozen native request differs")
+    artifact = None
+    if phase == "test" and cfg["kind"] == "margin":
+        artifact = load_threshold_artifact(threshold_path, threshold_hash, bundle=bundle,
+            alias=alias, config=cfg, bundle_digest=bundle_digest)
+        if artifact.get("native_deployment_sha256") != deployment_hash:
+            raise ValueError("threshold native deployment differs")
+    return cfg, bundle_digest, artifact
+
+
+def reconcile_receipts(phase_dir, ledger, plan, cfg, output):
+    """A crash after saving a receipt must not discard its first valid answer."""
+    units = {u["id"]: u for u in plan["units"]}
+    collect(plan, cfg, ledger)  # validates the cumulative budget/context before any startup
+    results = {(r["unit"], r["attempt"]): r for r in ledger.rows if r["type"] == "result"}
+    for row in list(ledger.rows):
+        if row["type"] != "intent":
+            continue
+        unit = units[row["unit"]]
+        path = phase_dir / "receipts" / f"{digest(unit['id'])}-{row['attempt']}.json"
+        result = results.get((row["unit"], row["attempt"]))
+        if result:
+            metadata = result.get("metadata", {})
+            if metadata.get("receipt_sha256") and file_hash(output / metadata["receipt"]) != metadata["receipt_sha256"]:
+                raise ValueError("saved successful receipt differs")
+            continue
+        if not path.exists():
+            continue  # interrupted send still consumes one attempt
+        receipt = json.loads(path.read_text())
+        expected = {"unit": unit["id"], "attempt": row["attempt"], "request_sha256": unit["request_sha256"],
+                    "config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]]}
+        if any(receipt.get(k) != v for k, v in expected.items()):
+            raise ValueError("orphan receipt identity differs")
+        parsed = parse_response(cfg, unit, receipt["response"]) if receipt["http_status"] == 200 and not receipt["error"] else {}
+        if parsed != receipt["parsed"]:
+            raise ValueError("orphan receipt parsing differs")
+        previous = ledger.state(unit, cfg["kind"])[1]
+        ledger.append({"type": "result", "unit": unit["id"], "attempt": row["attempt"],
+            "request_sha256": unit["request_sha256"], "answers": parsed,
+            "complete": set(previous | parsed) == set(unit["targets"]),
+            "error": receipt["error"], "elapsed_seconds": receipt["transport_seconds"],
+            "metadata": {"actual_provider": "self-hosted", "receipt": str(path.relative_to(output)),
+                         "receipt_sha256": file_hash(path), "recovered_receipt": True}})
+
+
+def execute(alias, bundle, deployment, output, deployment_hash, *, phase, threshold_path=None,
+            threshold_hash=None, port=8093, authorization, resume=False,
+            backend_factory=NativeBackend, queue_factory=Queue):
+    cfg, bundle_digest, artifact = validate_inputs(bundle, alias, phase, deployment_hash, threshold_path, threshold_hash)
+    verify_deployment(deployment, deployment_hash, alias)
+    identity = {"model": alias, "phase": phase, "bundle_sha256": bundle_digest,
+                "deployment_sha256": deployment_hash, "initial_threshold_sha256": threshold_hash}
+    if resume:
+        recorded = json.loads((output / "run.json").read_text())
+        if any(recorded.get(k) != v for k, v in identity.items()):
+            raise ValueError("resume run identity differs")
+    else:
+        output.mkdir(parents=True, exist_ok=False)
+        write_new(output / "run.json", {**identity, "started_at": stamp(), "authorization": authorization, "slots": 12,
+            "scheduler": "12 video workers; one in-flight unit per source; ordered windows; backpressure, no planned drops",
+            "ground_truth_in_model_requests": False, "not_12_camera_throughput": True})
+    invocation = output / "invocations" / uuid.uuid4().hex
+    invocation.mkdir(parents=True)
+    write_new(invocation / "run.json", {"started_at": stamp(), "resume": resume, "authorization": authorization})
+    backend = None
+    def ensure_backend():
+        nonlocal backend
+        # Called from worker threads. Start/warm up exactly once per invocation.
+        with startup_lock:
+            if backend is None:
+                backend = backend_factory(alias, cfg, bundle, deployment, invocation, port)
+                try:
+                    backend.start()
+                except BaseException:
+                    startup_failed.set()
+                    raise
+            if startup_failed.is_set():
+                raise RequestFailure("native startup failed; see invocation logs", fatal=True)
+    startup_lock, startup_failed = threading.Lock(), threading.Event()
+    completed = []
+    try:
+        save_status(output / "status.json", {"state": "starting", "pid": os.getpid(), "at": stamp(), "invocation": str(invocation)})
+        for split in (("validation", "test") if phase == "both" else (phase,)):
+            plan = json.loads((bundle / "plans" / f"{alias}-{split}.json").read_text())
+            phase_dir = output / split
+            phase_dir.mkdir(exist_ok=True)
+            thresholds = artifact["thresholds"] if artifact else {e: 0.0 for e in EVENTS}
+            if split == "test" and cfg["kind"] == "margin" and artifact is None:
+                raise ValueError("validation calibration missing; test blocked")
+            phase_identity = {"context": context_for(plan, cfg, bundle_digest),
+                "threshold_artifact_sha256": threshold_hash if split == "test" else None,
+                "native_deployment_sha256": deployment_hash}
+            phase_record = phase_dir / "run.json"
+            if phase_record.exists():
+                existing = json.loads(phase_record.read_text())
+                if any(existing.get(k) != v for k, v in phase_identity.items()):
+                    raise ValueError("resume phase identity differs")
+            else:
+                write_new(phase_record, {**phase_identity, "started_at": stamp()})
+            ledger = Ledger(phase_dir / "attempts.jsonl", context_for(plan, cfg, bundle_digest))
+            def send(unit):
+                body = request_body(cfg, unit, bundle)[1]
+                if digest(body) != unit["request_sha256"]:
+                    raise RequestFailure("request fingerprint differs", fatal=True)
+                attempt = ledger.state(unit, cfg["kind"])[0]
+                path = phase_dir / "receipts" / f"{digest(unit['id'])}-{attempt}.json"
+                started = time.monotonic()
+                raw = None
+                code = None
+                error = None
+                timing = {}
+                parsed = {}
+                fatal = False
+                try:
+                    code, raw, timing = backend.infer(unit, body)
+                    if code == 200:
+                        parsed = parse_response(cfg, unit, raw)
+                    else:
+                        error = "HTTP " + str(code)
+                        fatal = code in (401, 403)
+                except (urllib.error.URLError, TimeoutError, ConnectionError, ValueError, KeyError, TypeError) as e:
+                    error = type(e).__name__ + ": " + str(e)
+                    fatal = "identity differs" in error
+                except Exception as e:
+                    error, fatal = type(e).__name__ + ": " + str(e), True
+                write_new(path, {"unit": unit["id"], "attempt": attempt, "request_sha256": unit["request_sha256"],
+                    "config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]],
+                    "at": stamp(), "http_status": code, "response": raw, "parsed": parsed, "error": error,
+                    "transport_seconds": time.monotonic() - started, "timings": timing})
+                if error:
+                    raise RequestFailure(error, status=code, fatal=fatal)
+                return parsed, {"actual_provider": "self-hosted", "receipt": str(path.relative_to(output)),
+                                "receipt_sha256": file_hash(path), "http_status": code}
+            try:
+                reconcile_receipts(phase_dir, ledger, plan, cfg, output)
+                completion_path = phase_dir / "completion.json"
+                if completion_path.exists():
+                    done = json.loads(completion_path.read_text())
+                    for name, expected in done["files"].items():
+                        if file_hash(output / name) != expected:
+                            raise ValueError("completed phase evidence differs")
+                else:
+                    if any(used < 3 and set(answers) != set(unit["targets"])
+                           for unit in plan["units"]
+                           for used, answers in [ledger.state(unit, cfg["kind"]) ]):
+                        ensure_backend()
+                    queue = queue_factory(ledger, cfg["kind"], send, slots=12)
+                    save_status(output / "status.json", {"state": "running", "split": split, "pid": os.getpid(), "at": stamp()})
+                    video_groups(plan["units"], queue)
+                if split == "validation" and cfg["kind"] == "margin":
+                    selected = select_thresholds(plan, collect(plan, cfg, ledger), cfg["kind"], cfg["model"])
+                    selected.update(calibration="selected_on_complete_validation24", config_sha256=digest(cfg),
+                        rules_sha256=digest(RULES), bundle_sha256=bundle_digest, model=cfg["model"],
+                        native_deployment_sha256=deployment_hash)
+                    threshold_path = output / "thresholds.json"
+                    if threshold_path.exists():
+                        artifact = json.loads(threshold_path.read_text())
+                        if any(digest(artifact.get(k)) != digest(v) for k, v in selected.items()):
+                            raise ValueError("saved calibration differs from validation ledger")
+                    else:
+                        write_new(threshold_path, {**selected, "selected_at": stamp()})
+                    threshold_hash = file_hash(threshold_path)
+                    artifact = load_threshold_artifact(threshold_path, threshold_hash, bundle=bundle, alias=alias,
+                                                      config=cfg, bundle_digest=bundle_digest)
+                if not completion_path.exists():
+                    result = report(plan, cfg, ledger, thresholds)
+                    result["native_deployment_sha256"] = deployment_hash
+                    result["threshold_artifact_sha256"] = threshold_hash if split == "test" else None
+                    # Incomplete validation still produces a report in the exception handler below.
+                    save_status(phase_dir / "report.json", result)
+                    files = [ledger.path, phase_dir / "report.json", phase_record]
+                    if split == "validation" and cfg["kind"] == "margin":
+                        files.append(threshold_path)
+                    write_new(completion_path, {"execution_finished": True,
+                        "final_missing_unique_units": result["final_missing_unique_units"],
+                        "incomplete_questions": result["incomplete_questions"],
+                        "files": {str(p.relative_to(output)): file_hash(p) for p in files}, "at": stamp()})
+                completed.append(split)
+            except BaseException:
+                # Per-invocation partial report: never overwrite completed evidence.
+                write_new(invocation / (split + "-partial-report.json"), report(plan, cfg, ledger, thresholds))
+                raise
+            finally:
+                ledger.close()
+        save_status(output / "status.json", {"state": "completed", "phases": completed, "at": stamp(),
+                                             "note": "execution finished; inspect coverage separately"})
+    except BaseException as e:
+        write_new(invocation / "failure.json", {"error": type(e).__name__ + ": " + str(e), "at": stamp()})
+        save_status(output / "status.json", {"state": "failed", "phases": completed, "error": str(e), "at": stamp()})
+        raise
+    finally:
+        try:
+            if backend is not None:
+                backend.close()
+        finally:
+            manifest = output / "result-files-sha256.json"
+            if manifest.exists():
+                write_new(invocation / "previous-result-files-sha256.json", json.loads(manifest.read_text()))
+            save_status(manifest, {str(p.relative_to(output)): file_hash(p)
+                for p in sorted(output.rglob("*")) if p.is_file() and p != manifest})
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--model", required=True, choices=ALIASES)
+    p.add_argument("--bundle", required=True, type=Path)
+    p.add_argument("--deployment", required=True, type=Path)
+    p.add_argument("--deployment-sha256", required=True)
+    p.add_argument("--output", required=True, type=Path)
+    p.add_argument("--phase", choices=("validation", "test", "both"), default="validation")
+    p.add_argument("--thresholds", type=Path)
+    p.add_argument("--thresholds-sha256")
+    p.add_argument("--port", type=int, default=8093)
+    p.add_argument("--authorization-note")
+    p.add_argument("--execute", action="store_true")
+    p.add_argument("--resume", action="store_true", help="continue the same identity/ledger within its cumulative three-attempt budget")
+    args = p.parse_args(argv)
+    if not args.execute:
+        validate_inputs(args.bundle.resolve(), args.model, args.phase, args.deployment_sha256,
+                        args.thresholds, args.thresholds_sha256)
+        verify_deployment(args.deployment.resolve(), args.deployment_sha256, args.model)
+        print(json.dumps({"offline_passed": True, "inference_calls": 0, "model": args.model}))
+        return
+    if not args.authorization_note:
+        p.error("--execute requires the approved scope in --authorization-note")
+    if not 1 <= args.port <= 65535:
+        p.error("invalid port")
+    os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_XET="1")
+    with (args.deployment / "evaluation.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        execute(args.model, args.bundle.resolve(), args.deployment.resolve(), args.output.resolve(),
+                args.deployment_sha256, phase=args.phase, threshold_path=args.thresholds,
+                threshold_hash=args.thresholds_sha256, port=args.port, authorization=args.authorization_note, resume=args.resume)
+
+
+if __name__ == "__main__":
+    main()

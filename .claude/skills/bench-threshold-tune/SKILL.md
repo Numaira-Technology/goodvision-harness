@@ -10,7 +10,13 @@ description: >-
 
 Use the runner matching the saved artifact. For current120 ledgers, read
 `tools/unified_benchmark/README.md` and use `tools.unified_benchmark.workflow select`
-and `report`. For the older base-four `per_video` schema, use
+and `report` for offline analysis. For a new CLIP/SigLIP2 GPU run, follow
+`tools/unified_benchmark/NATIVE.md`: `native_run --phase validation` (or `both`)
+selects thresholds only after complete validation and binds the artifact to the
+verified native deployment. `--phase test` requires that artifact and its hash;
+`both` freezes it before sending test requests. The generic offline selector does
+not attest a native deployment and cannot replace this execution artifact.
+For the older base-four `per_video` schema, use
 `tools/event_benchmark/tune_threshold.py` (v2 and v2.1 accepted separately; never
 mix their validation/test versions). The latter retains historical complete-only
 confusion metrics and explicitly adds all-question headline counts.

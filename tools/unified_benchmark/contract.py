@@ -43,6 +43,7 @@ def source_files():
     """The execution/selection code required by every frozen bundle."""
     root = Path(__file__).resolve().parents[2]
     paths = list((root / "tools/unified_benchmark").glob("*.py"))
+    paths += [p for p in (root / "tools/unified_benchmark/native_assets").rglob("*") if p.is_file() and p.suffix in (".py", ".json", ".patch")]
     paths += [root / name for name in (
         "tools/event_benchmark/run_eval.py", "tools/event_benchmark/evidence.py",
         "tools/event_benchmark/tune_threshold.py", "tools/clip_benchmark/scoring.py",

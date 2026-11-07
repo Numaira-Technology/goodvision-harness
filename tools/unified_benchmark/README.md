@@ -21,13 +21,12 @@ separate legacy v2.1 runner; it is not the current-frame 120-question entrypoint
   raw inference results are committed. Obtain media from the existing team dataset
   locations referenced by the private samples, and match every file hash before execution.
 
-The API runner is reusable here. The four native profiles support offline planning
-and response parsing; a **general native GPU execution CLI is not included**.
-CLIP/SigLIP2's separate paced runner is included at `tools/clip_benchmark/run.py`,
-with its own protocol in that directory's README. It is not the identical shared-JPEG
-unified run. VideoJev/Decision3 additionally need their deployed service, original
-warmup and identity/dtype checks. Do not advertise native GPU readiness from offline
-preflight or substitute the paced runner while keeping the unified label.
+The API runner and the four-model native execution CLI are included. Follow
+[the native deployment/run guide](NATIVE.md) for pinned environments and weights,
+original service warmup, identity/precision checks, validation selection, test and
+bounded continuation. Its offline tests do not establish a new GPU result.
+CLIP/SigLIP2's separate paced runner at `tools/clip_benchmark/run.py` retains its
+own protocol; do not substitute it for the shared-JPEG unified run.
 
 ## Fixed method
 
