@@ -22,9 +22,13 @@ use the user's authorized scope and budget.
 For this team's current 120-question rerun, use **unified-frame-120-v2** in
 [the portable handoff](../../../tools/unified_benchmark/README.md) (path relative
 from the repository root: `tools/unified_benchmark/README.md`). Its command-line
-entrypoint and recorded model profiles are included in this branch. The five frozen
-validation24/test120 JSON inputs must be supplied privately via `--inputs`; they,
-videos, keys, weights and historical results are not included.
+entrypoint and recorded model profiles are included in this branch. Download the
+five frozen validation24/test120 JSON files from the restricted team Drive using
+[the input acquisition and hash checks](../../../tools/unified_benchmark/README.md#get-the-frozen-inputs).
+Use an authorized team account, keep the original bytes and filenames in one
+private directory outside Git, and pass it as `--inputs`. Do not substitute the
+repository's legacy manifest or change hashes to bypass a mismatch. The files,
+videos, keys, weights and historical results are not included in the repository.
 Start with offline preflight. Read the handoff for the exact commands and known
 native-runner limitation before promising execution on a fresh GPU.
 

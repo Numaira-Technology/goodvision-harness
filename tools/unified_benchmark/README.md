@@ -10,7 +10,8 @@ separate legacy v2.1 runner; it is not the current-frame 120-question entrypoint
 
 - Mandatory byte hashes for the reviewed validation24/test120 inputs. The five
   frozen JSON files are private team inputs, not published in this public repository.
-  Obtain the original files from the evaluation owner; do not regenerate their labels.
+  Download the original files from the [restricted team Drive](#get-the-frozen-inputs)
+  below; do not regenerate their labels.
 - Eleven recorded profiles: qwen8b, qwen235b, maverick, luna, gemini25_off,
   gemini25_low, gemini38_low, clip, siglip2, videojev, decision3.
 - Offline input/media/frame/request preflight; lossless receipt/score retention;
@@ -78,11 +79,60 @@ Run from the repository root on Linux/macOS with Python3.12 and FFmpeg/ffprobe.
 Use an isolated environment (`certifi`, `Pillow`; `pytest` for offline checks).
 GPU dependencies are a separate pinned deployment. No CUDA imports/weights are
 needed for this preflight. Place media under `/data/goodvision/validation/` and
-`/data/goodvision/test/`, keeping frozen filenames. Put these five original files
-in a separate private input directory: `manifest_validation_24.json`,
-`validation-samples.json`, `manifest_120.json`, `test-samples.json`,
-`validation_split.json`. The published legacy manifest is not a substitute for
-these frozen inputs. Historical annotation paths inside them are provenance only.
+`/data/goodvision/test/`, keeping frozen filenames. Obtain and verify the five
+private JSON inputs using the steps below, then run the offline preflight.
+
+### Get the frozen inputs
+
+The frozen `unified-frame-120-v2` inputs are in the
+[team Drive folder: unified-frame-120-v2-private-inputs-20261107](https://drive.google.com/drive/folders/1bCcadb0FDLxcmnnQI_tZ1ReR0x3avsoD).
+Access is restricted to the existing benchmark team members; the link does not
+grant public access. Sign in with your authorized team account. If access is
+denied, ask Haotian Bi for access instead of changing the folder's link sharing.
+
+| Original file | Download from Drive |
+|---|---|
+| `manifest_validation_24.json` | [File](https://drive.google.com/file/d/1OZrISz2JXSaUyvGI-wV8bN3B3oQhbsUR/view?usp=drivesdk) |
+| `validation-samples.json` | [File](https://drive.google.com/file/d/1SxJYywf0HO7-aQegGCOt3gP4x6eO2Y1q/view?usp=drivesdk) |
+| `manifest_120.json` | [File](https://drive.google.com/file/d/1uvCpUGnOB9PjcPGUsD2FfhjZSf6P5JGD/view?usp=drivesdk) |
+| `test-samples.json` | [File](https://drive.google.com/file/d/1fK0kBHmqbbW59awOIAD17iyXq_72BbbD/view?usp=drivesdk) |
+| `validation_split.json` | [File](https://drive.google.com/file/d/1ULNTVNbSzWH9wdynkSt-4DcPg6xMuf2q/view?usp=drivesdk) |
+
+Use Drive's **Download** action for the folder or the five files. Extract any ZIP
+and place all five JSON files directly in one private directory outside Git, for
+example `/private/goodvision-inputs/`; pass that directory as `--inputs`, not the
+ZIP or a parent directory. Preserve filenames and original bytes: do not convert
+to Google Docs, copy text from a preview, or reformat/save the JSON. This folder
+contains only the five JSON files; obtain the videos separately from the existing
+team dataset locations. No credentials or model weights are included.
+
+From the repository root, use the prepared Python environment to check the files
+against the runner's pinned SHA-256 values (replace the example input path):
+
+```sh
+python - /private/goodvision-inputs <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+from tools.unified_benchmark.preflight import PINNED_INPUTS
+
+inputs = Path(sys.argv[1])
+for name, expected in PINNED_INPUTS.items():
+    path = inputs / name
+    if not path.is_file():
+        raise SystemExit(f"Missing frozen input: {name}")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        raise SystemExit(f"Frozen input hash mismatch: {name}; download the original again")
+print("Verified all 5 frozen inputs.")
+PY
+```
+
+The published legacy `tools/event_benchmark/datasets/manifest_120.json` is not a
+substitute for the Drive snapshot. Historical annotation paths inside the inputs
+are provenance only. Do not edit labels or pinned hashes to bypass a mismatch.
+Upload readback on 2026-11-07 verified all five original SHA-256 values.
+
+### Run the offline preflight
 
 ```sh
 python -m tools.unified_benchmark.preflight \

@@ -15,6 +15,13 @@ and `report`. For the older base-four `per_video` schema, use
 mix their validation/test versions). The latter retains historical complete-only
 confusion metrics and explicitly adds all-question headline counts.
 
+For a new current120 bundle, obtain all five original JSON files from the
+restricted team Drive via [the input acquisition guide](../../../tools/unified_benchmark/README.md#get-the-frozen-inputs).
+Download with an authorized team account into a private directory, verify the
+pinned SHA-256 values, and provide that directory to preflight with `--inputs`.
+Do not reconstruct the validation split, reformat the snapshots, or substitute
+the repository's legacy manifest. An existing frozen bundle keeps its own inputs.
+
 Require reviewed data, lossless scores, full validation coverage, and compatible
 model/provider, prompts, effort, precision, sampling, preprocessing and source
 fingerprints. Validate source-video groups across splits. Training/development,
