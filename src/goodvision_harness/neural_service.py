@@ -11,7 +11,7 @@ import time
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from PIL import Image
+from PIL import Image, ImageOps
 
 MODEL = "openai/clip-vit-large-patch14"
 REVISION = "32bd64288804d66eefd0ccbe215aa642df71cc41"
@@ -71,7 +71,10 @@ class Encoder:
     def scores(self, image, labels):
         torch = self.torch
         inputs = self.processor(
-            images=image,
+            images=ImageOps.pad(
+                image, (224, 224), method=Image.Resampling.BICUBIC,
+                color=(123, 117, 104),
+            ),
             text=[text for label in labels for text in PROMPTS[label]],
             return_tensors="pt",
             padding=True,
