@@ -203,6 +203,78 @@ python -m tools.cloud_prefetch --host H --port P --ssh-key ~/.ssh/goodvision_vas
 
 机制通用：模型什么时候进了 R2 就从 R2 拉，没进就 HF 兜底——不绑定具体模型，也不改各 renter 的现有权重流程。
 
+## 环境也打包进 R2（conda-pack，免编译起环境）
+
+权重进 R2 之后，租机还剩一半慢的：**在盒子上现装环境**——`apt` 装 python、`pip` 装
+torch（cu128，~2.5 GB），最后 `flash-attn --no-build-isolation` **从源码编译**（10–30 分钟）。
+每次租机都重来一遍，白等。
+
+做法：把环境当成第二个 R2 制品，和权重并列——**一次性构建、此后只拉**。
+
+### 注册表：`tools/models.yaml`（每个模型两个 key）
+
+```yaml
+models:
+  videojev:
+    repo: ZhuYuhan/VideoJev-4B
+    revision: 1c1a253bf90dfa66176124d25a48ffb791d517d5
+    weights:                                 # key 1：权重（沿用既有布局）
+      r2_prefix: models/ZhuYuhan/VideoJev-4B/1c1a253.../
+    env:                                     # key 2：打包好的环境
+      r2_key: envs/videojev/cu128-py312-torch280-ada.tar.gz
+      manifest_key: envs/videojev/cu128-py312-torch280-ada.json
+      unpack_to: /opt/env/videojev           # 固定前缀：在哪构建就在哪还原
+      activate_rel: bin/activate             # source {unpack_to}/{activate_rel}
+      sha256: <填>                           # 每次拉取校验
+      compat: {python: "3.12", cuda: "12.8", torch: "2.8.0", gpu_family: ada}
+```
+
+### R2 布局（在 `models/` 旁新增 `envs/`）
+
+```
+goodvision-models/
+├── models/<org>/<name>/<sha>/              # 权重（不变）
+└── envs/<name>/<compat-tag>.tar.gz         # conda-pack 产物（单个 tar.gz）
+    envs/<name>/<compat-tag>.json           # 边车 manifest：sha256 + size + compat
+```
+
+`<compat-tag>` 形如 `cu128-py312-torch280-ada`，把 CUDA / python / torch / GPU 家族写进文件名。
+
+### 一次性构建（在匹配的 GPU 上）
+
+`tools/build_env.py` 在一台**符合 `compat` 的盒子**（RTX 4090 / Ada / CUDA 12.8）上跑：
+装 Miniforge（conda-forge 默认通道，绕开 Anaconda 默认通道的 ToS 门）→ 在固定前缀建
+conda 环境 → `pip` 装 torch + requirements + flash-attn（慢的那步，只此一次）→ `conda pack`
+成单个 tar.gz → 连同边车 manifest 上传到 `env.r2_key` / `env.manifest_key`。只在换钉死版本或
+换 GPU 家族时再跑（后者是**第二个 tar.gz**，不是重建第一个）。
+
+```bash
+# 在盒子上，读写 R2_* 经 SSH stdin 注入，不进 argv/镜像：
+PYTHONPATH=. HF_HUB_DISABLE_XET=1 MAX_JOBS=4 python -m tools.build_env --model videojev
+```
+
+### 每次租机：直接从 R2 起环境（免编译）
+
+`tools/env_source.py`（`model_source` 的环境对应物）：拉 tar.gz → sha256 校验 → 解到
+固定前缀 → `conda-unpack`（修 shebang/前缀）→ 返回 activate 路径。本地可直接用；要在
+租来的盒子上起，用 `tools/cloud_env.py`（`cloud_prefetch` 的环境对应物），它把几个
+reader 文件推上去、在盒子上跑 `env_source`，**只读** R2 key 经 stdin 注入：
+
+```bash
+source "$(python -m tools.cloud_env --host H --port P --ssh-key KEY --model videojev)"
+# 然后在环境里起服务，不 apt、不 pip、不编译 flash-attn
+```
+
+把 ~15–30 分钟的现装变成 ~1–2 分钟的下载+解包（R2 出站免费）。
+
+### 唯一要注意的坑：GPU 家族必须匹配
+
+`conda-unpack` 只改 shebang 和 conda 元数据；编译出的 `.so`（flash-attn / torch）靠
+`$ORIGIN` 相对 RPATH 迁移，但 flash-attn 是**按单一 SM 架构编译**的，所以 tar.gz 只在
+同家族 GPU 上有效。`compat.gpu_family` 钉死它（默认 `ada`=sm_89=RTX 4090），launcher 只租
+匹配的 offer；要换 A100 就另出一个 `...-ampere.tar.gz`。解到**固定前缀**也顺手避开任何
+不可迁移的角落。构建环境只放 Python 包，权重仍由 `model_source` 单独拉——两者解耦。
+
 ## R2 价格与成本估算
 
 官方价格页（`developers.cloudflare.com/r2/pricing/`，页面标注 **Last updated 2026-10-30**，当天查证）：
