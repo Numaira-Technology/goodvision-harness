@@ -16,8 +16,9 @@ Chinese labels: 单次推理速度 · 12路并发 P50/P95 延迟 · 各子任务
   no retry hiding. Report success/attempt counts, failures and whether the run is
   complete. Incomplete success-only percentiles are diagnostic, not ranked headline
   speed. This measures client-to-provider round trips, not full product latency.
-- v2 accuracy: per event and overall `correct/valid`, `errors/attempted`, coverage.
-  Never silently rank different successful subsets. `valid=0` means unavailable.
+- Accuracy: per event and overall `correct/all questions`, errors/all questions,
+  coverage. Missing or failed answers stay in the denominator. With questions but
+  no valid answers, accuracy is zero; only an empty cohort is unavailable.
   No-negative events have unavailable specificity. Unknown is not false.
 - Separate other runners or label their non-equivalent cadence, cohort, denominator
   and timing. Do not put sequential probe latency in @12 cells.
