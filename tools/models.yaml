@@ -1,0 +1,51 @@
+# Model registry for the R2 fixed store (bucket: goodvision-models).
+#
+# One entry per model, with the two keys that let a rented GPU come up without
+# building anything:
+#
+#   weights  -- where the pinned weights live in R2 (pulled by tools/model_source.py)
+#   env      -- where a pre-built, conda-pack'd Python environment lives in R2
+#               (pulled + activated by tools/env_source.py)
+#
+# The env tarball is built ONCE per (model x GPU family) with tools/build_env.py
+# -- it already contains torch, flash-attn and every dep compiled for that GPU,
+# so a fresh rent just downloads it (egress-free) and `source`s it. No apt, no
+# pip, no flash-attn compile on the box.
+#
+# Credentials (R2_ENDPOINT / R2_BUCKET / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY)
+# come from the environment, never from this file. See docs/guides/model-storage-r2.md.
+
+version: 1
+
+defaults:
+  bucket: goodvision-models
+
+models:
+  videojev:
+    repo: ZhuYuhan/VideoJev-4B
+    revision: 1c1a253bf90dfa66176124d25a48ffb791d517d5
+    # key 1 -- weights (existing layout: models/<repo>/<revision>/)
+    weights:
+      r2_prefix: models/ZhuYuhan/VideoJev-4B/1c1a253bf90dfa66176124d25a48ffb791d517d5/
+    # key 2 -- a pre-built environment, pulled and `source`d as-is
+    env:
+      # filled in by tools/build_env.py after the one-time build+upload:
+      #   r2_key:  envs/videojev/<tag>.tar.gz
+      #   sha256:  <tarball digest>   (verified on every pull)
+      r2_key: envs/videojev/cu128-py312-torch280-ada.tar.gz
+      manifest_key: envs/videojev/cu128-py312-torch280-ada.json
+      unpack_to: /opt/env/videojev          # fixed prefix; built here, restored here
+      activate_rel: bin/activate            # `source {unpack_to}/{activate_rel}`
+      compat:                               # the launcher rents a box matching this
+        python: "3.12"
+        cuda: "12.8"
+        torch: "2.8.0"
+        gpu_family: ada                     # sm_89 -- RTX 4090; flash-attn built for this
+
+  clip:
+    repo: openai/clip-vit-large-patch14
+    revision: 32bd64288804d66eefd0ccbe215aa642df71cc41
+    weights:
+      r2_prefix: models/openai/clip-vit-large-patch14/32bd64288804d66eefd0ccbe215aa642df71cc41/
+    # CLIP runs in the harness's own CPU/MPS env; no packed GPU env needed yet.
+    env: null
