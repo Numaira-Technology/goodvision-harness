@@ -31,7 +31,10 @@ from pathlib import Path
 
 from tools import model_source, registry
 
-MINICONDA_URL = "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
+# Miniforge: a miniconda-family distribution defaulting to conda-forge, so the
+# build is not blocked by the Anaconda defaults' Terms-of-Service gate.
+MINICONDA_URL = ("https://github.com/conda-forge/miniforge/releases/latest/"
+                 "download/Miniforge3-Linux-x86_64.sh")
 # flash-attn is compiled for one SM; map the registry gpu_family to an arch list.
 _ARCH = {"ada": "8.9", "ampere": "8.0;8.6", "hopper": "9.0"}
 
@@ -69,7 +72,7 @@ def _build_prefix(conda, prefix, requirements, python_ver, arch):
     script = f"""
 set -euo pipefail
 source "{conda.parent.parent}/etc/profile.d/conda.sh"
-conda create -y -p "{prefix}" python={python_ver}
+conda create -y -p "{prefix}" -c conda-forge --override-channels python={python_ver}
 conda activate "{prefix}"
 python -m pip install --no-cache-dir --upgrade pip setuptools wheel packaging ninja
 python -m pip install --no-cache-dir torch==2.8.0 torchvision==0.23.0 \
