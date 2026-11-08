@@ -54,8 +54,10 @@ def test_new_models_registered_with_pinned_revisions():
     vllm_env = registry.env_of("qwen8b-vllm")
     hf_env = registry.env_of("qwen8b")
     assert vllm_env["r2_key"] != hf_env["r2_key"]
-    assert vllm_env["r2_key"] == "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz"
-    assert vllm_env.get("complete") is False
+    assert vllm_env["r2_key"] == "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz"
+    assert vllm_env["incomplete_cu130"]["r2_key"] == (
+        "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz"
+    )
     assert "vllm.entrypoints.openai.api_server" in vllm_env["build"]["verify_modules"]
     assert "cu128-py312-vllm0310" not in vllm_env["r2_key"]
     assert vllm_env["unpack_to"] != hf_env["unpack_to"]
@@ -67,10 +69,15 @@ def test_new_models_registered_with_pinned_revisions():
     assert vllm_env["superseded"]["sha256"] == (
         "2a3dcb1fc6a8d84439263512c65dae0bb576c50d4f559ae9f069407eb2e86db6"
     )
-    assert vllm_env["sha256"] == (
+    assert vllm_env["incomplete_cu130"]["sha256"] == (
         "24f1eb0cc264a9794979eb6c2225eca47d67d68025407d51db86aa171ce7ba7e"
     )
-    assert int(vllm_env["size"]) == 4252947071
+    assert int(vllm_env["incomplete_cu130"]["size"]) == 4252947071
+    assert vllm_env["sha256"] == (
+        "59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b"
+    )
+    assert int(vllm_env["size"]) == 4252375781
+    assert vllm_env.get("complete") is True
 
 
 def test_unknown_model_raises():

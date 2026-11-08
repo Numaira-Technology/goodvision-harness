@@ -76,7 +76,7 @@ def test_launcher_requires_r2_pack_and_does_not_pip_on_gpu():
     assert "_patch_setuptools" not in src
     assert "SETUPTOOLS_COMPILERS_ERRORS" not in src
     from tools.start_qwen8b_vllm import EXPECTED_R2_KEY, EXPECTED_SHA256, EXPECTED_SIZE, OLD_VLLM_KEY
-    with pytest.raises(RuntimeError, match="incomplete"):
+    with pytest.raises(RuntimeError, match="does not pip-install"):
         _require_r2_pack({"r2_key": EXPECTED_R2_KEY, "sha256": ""})
     with pytest.raises(RuntimeError, match="HF env"):
         _require_r2_pack({"r2_key": HF_ENV_KEY, "sha256": "abc"})
@@ -87,6 +87,10 @@ def test_launcher_requires_r2_pack_and_does_not_pip_on_gpu():
             {"r2_key": INCOMPLETE_VLLM_KEY, "sha256": EXPECTED_SHA256,
              "size": EXPECTED_SIZE}
         )
+    assert _require_r2_pack(
+        {"r2_key": EXPECTED_R2_KEY, "sha256": EXPECTED_SHA256,
+         "size": EXPECTED_SIZE}
+    ) == EXPECTED_SHA256
 
 
 def test_packed_python_is_beside_activate():
@@ -224,6 +228,7 @@ def test_build_env_refuses_frozen_vllm_and_hf_keys():
     assert "envs/qwen8b/cu128-py312-torch280-ada.tar.gz" in FROZEN_R2_KEYS
     assert "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz" in FROZEN_R2_KEYS
     assert "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz" in FROZEN_R2_KEYS
+    assert "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz" not in FROZEN_R2_KEYS
     with pytest.raises(SystemExit):
         _refuse_frozen_key("envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz")
     with pytest.raises(SystemExit):

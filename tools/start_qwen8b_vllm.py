@@ -31,13 +31,13 @@ from tools.qwen8b.serve_vllm import DEFAULTS, MODEL_ID, REVISION
 ENV_NAME = "qwen8b-vllm"
 HF_ENV_KEY = "envs/qwen8b/cu128-py312-torch280-ada.tar.gz"
 OLD_VLLM_KEY = "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz"
-EXPECTED_R2_KEY = "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz"
-EXPECTED_SHA256 = "24f1eb0cc264a9794979eb6c2225eca47d67d68025407d51db86aa171ce7ba7e"
-EXPECTED_SIZE = 4252947071
+EXPECTED_R2_KEY = "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz"
+EXPECTED_SHA256 = "59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b"
+EXPECTED_SIZE = 4252375781
 # Mixed conda-forge setuptools 84.2.1 + pip 80.10.2; conda-pack
 # --ignore-missing-files dropped compilers.errors / compilers.platform.
 # Do not rent a GPU against this object; do not overwrite it.
-INCOMPLETE_VLLM_KEY = EXPECTED_R2_KEY
+INCOMPLETE_VLLM_KEY = "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz"
 MAX_DPH = 1.85  # refuse silently upgrading past ~1.5x the prior $1.2296/hr
 STATUS_DEFAULT = Path("outputs/qwen8b-r2-vllm/STATUS.md")
 
