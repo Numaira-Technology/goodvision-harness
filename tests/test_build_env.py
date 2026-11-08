@@ -83,9 +83,12 @@ def test_builder_invokes_literal_argv_and_strips_credentials(tmp_path, monkeypat
     be._pack(conda, prefix, tmp_path / "out;literal.tar.gz")
     assert calls[0][0][0] == str(conda)
     assert str(prefix) in calls[0][0]
+    packed_python = str(prefix / "bin/python")
+    assert any(c[0][0] == packed_python and "-I" in c[0] for c in calls)
     assert any(str(requirements) in c[0] for c in calls)
     for argv, kw in calls:
         assert "bash" not in argv
+        assert "python" not in argv[:1]
         assert not {"R2_SECRET_ACCESS_KEY", "HF_TOKEN", "PYTHONPATH"} & kw["env"].keys()
         assert "--ignore-missing-files" not in argv and "--force" not in argv
 
@@ -118,3 +121,21 @@ def test_main_preserves_existing_prefix(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         be.main(["--model", "videojev", "--out", str(tmp_path / "new.tar.gz")])
     assert keep.read_text() == "important"
+
+
+def test_build_prefix_uses_prefix_python_and_gates_flash_attn(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(be, "_run", lambda argv, **kw: calls.append(argv))
+    prefix = tmp_path / "packed env"
+    be._build_prefix(
+        tmp_path / "conda", prefix, tmp_path / "req.txt", "3.12", "8.9", False
+    )
+    python = str(prefix / "bin/python")
+    assert all(c[0] in {str(tmp_path / "conda"), python} for c in calls)
+    assert all("flash-attn==2.8.3.post2" not in c for c in calls)
+    calls.clear()
+    be._build_prefix(
+        tmp_path / "conda", prefix, tmp_path / "req.txt", "3.12", "8.9", True
+    )
+    assert any("flash-attn==2.8.3.post2" in c for c in calls)
+    assert any(c[:3] == [python, "-I", "-c"] for c in calls)

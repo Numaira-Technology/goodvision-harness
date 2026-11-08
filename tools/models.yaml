@@ -50,5 +50,77 @@ models:
     revision: 32bd64288804d66eefd0ccbe215aa642df71cc41
     weights:
       r2_prefix: models/openai/clip-vit-large-patch14/32bd64288804d66eefd0ccbe215aa642df71cc41/
-    # CLIP runs in the harness's own CPU/MPS env; no packed GPU env needed yet.
-    env: null
+    env:
+      r2_key: envs/clip/cu128-py312-torch280-ada.tar.gz
+      manifest_key: envs/clip/cu128-py312-torch280-ada.json
+      sha256:                                # filled by build_env after upload
+      size:                                  # filled by build_env after upload
+      unpack_to: /opt/env/clip
+      activate_rel: bin/activate
+      build:
+        flash_attn: false                    # CLIP ViT -- skip the flash-attn compile
+      compat:
+        python: "3.12"
+        cuda: "12.8"
+        torch: "2.8.0"
+        gpu_family: ada
+
+  siglip2:
+    repo: google/siglip2-base-patch16-224
+    revision: 75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2
+    weights:
+      r2_prefix: models/google/siglip2-base-patch16-224/75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2/
+    env:
+      r2_key: envs/siglip2/cu128-py312-torch280-ada.tar.gz
+      manifest_key: envs/siglip2/cu128-py312-torch280-ada.json
+      sha256:                                # filled by build_env after upload
+      size:                                  # filled by build_env after upload
+      unpack_to: /opt/env/siglip2
+      activate_rel: bin/activate
+      build:
+        flash_attn: false                    # SigLIP2 ViT -- skip the flash-attn compile
+      compat:
+        python: "3.12"
+        cuda: "12.8"
+        torch: "2.8.0"
+        gpu_family: ada
+
+  d3-nano:
+    repo: vllm-sr/d3-nano
+    revision: 462efc366229ea268cf4eed3738b3fc4415e4817
+    weights:
+      r2_prefix: models/vllm-sr/d3-nano/462efc366229ea268cf4eed3738b3fc4415e4817/
+    env:
+      r2_key: envs/d3-nano/cu128-py312-torch280-ada.tar.gz
+      manifest_key: envs/d3-nano/cu128-py312-torch280-ada.json
+      sha256:                                # filled by build_env after upload
+      size:                                  # filled by build_env after upload
+      unpack_to: /opt/env/d3-nano
+      activate_rel: bin/activate
+      build:
+        flash_attn: true                     # DeltaNet needs causal-conv1d (built in this step)
+      compat:
+        python: "3.12"
+        cuda: "12.8"
+        torch: "2.8.0"
+        gpu_family: ada
+
+  qwen8b:
+    repo: Qwen/Qwen3-VL-8B-Instruct
+    revision: 0c351dd01ed87e9c1b53cbc748cba10e6187ff3b
+    weights:
+      r2_prefix: models/Qwen/Qwen3-VL-8B-Instruct/0c351dd01ed87e9c1b53cbc748cba10e6187ff3b/
+    env:
+      r2_key: envs/qwen8b/cu128-py312-torch280-ada.tar.gz
+      manifest_key: envs/qwen8b/cu128-py312-torch280-ada.json
+      sha256:                                # filled by build_env after upload
+      size:                                  # filled by build_env after upload
+      unpack_to: /opt/env/qwen8b
+      activate_rel: bin/activate
+      build:
+        flash_attn: true                     # Qwen3-VL uses flash_attention_2
+      compat:
+        python: "3.12"
+        cuda: "12.8"
+        torch: "2.8.0"
+        gpu_family: ada

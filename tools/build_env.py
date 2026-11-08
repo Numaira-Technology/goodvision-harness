@@ -38,6 +38,7 @@ def _run(cmd, **kw):
         "CC",
         "CXX",
         "MAX_JOBS",
+        "HF_HUB_DISABLE_XET",
     ):
         if key in os.environ:
             child_env[key] = os.environ[key]
@@ -74,8 +75,37 @@ def _ensure_miniconda(home, installer=None, installer_sha256=None):
     return conda
 
 
-def _build_prefix(conda, prefix, requirements, python_ver, arch):
-    """Use argv throughout: paths containing shell syntax remain literal paths."""
+def _prefix_python(prefix):
+    return str(Path(prefix) / "bin/python")
+
+
+def _verify_code(flash_attn):
+    lines = [
+        "import sys, torch",
+        "assert sys.version_info[:2] == (3, 12), 'unexpected Python'",
+        "assert torch.__version__ == '2.8.0+cu128', 'unexpected torch'",
+        "assert torch.version.cuda == '12.8', 'unexpected CUDA runtime'",
+        "assert torch.cuda.is_available(), 'CUDA unavailable'",
+    ]
+    if flash_attn:
+        lines[0] = "import sys, torch, flash_attn, causal_conv1d"
+        lines.insert(
+            4,
+            "assert flash_attn.__version__ == '2.8.3.post2', 'unexpected flash-attn'",
+        )
+    return "\n".join(lines)
+
+
+def _build_prefix(conda, prefix, requirements, python_ver, arch, flash_attn=True):
+    """Use argv throughout: paths containing shell syntax remain literal paths.
+
+    ``flash_attn`` gates the slow compile-once step: when False, flash-attn and
+    causal-conv1d are NOT installed (and the readiness check does not import
+    flash_attn). Models whose runtime never touches flash-attn (e.g. a CLIP/SigLIP
+    ViT) set ``env.build.flash_attn: false`` to skip minutes of nvcc compile.
+    Every pip/verify step uses the new prefix's ``bin/python -I``, never PATH
+    python or ``conda activate``.
+    """
     _run(
         [
             str(conda),
@@ -89,7 +119,7 @@ def _build_prefix(conda, prefix, requirements, python_ver, arch):
             f"python={python_ver}",
         ]
     )
-    python = str(Path(prefix) / "bin/python")
+    python = _prefix_python(prefix)
     pip = [python, "-I", "-m", "pip", "install", "--no-cache-dir"]
     _run([*pip, "--upgrade", "pip", "setuptools", "wheel", "packaging", "ninja"])
     _run(
@@ -102,38 +132,22 @@ def _build_prefix(conda, prefix, requirements, python_ver, arch):
         ]
     )
     _run([*pip, "-r", str(requirements)])
-    _run(
-        [
-            *pip,
-            "--no-build-isolation",
-            "flash-attn==2.8.3.post2",
-            "causal-conv1d==1.7.0",
-        ],
-        env={
-            "TORCH_CUDA_ARCH_LIST": arch,
-            "MAX_JOBS": os.environ.get("MAX_JOBS", "4"),
-            "FLASH_ATTENTION_FORCE_BUILD": "TRUE",
-            "CAUSAL_CONV1D_FORCE_BUILD": "TRUE",
-        },
-    )
-    _run(
-        [
-            python,
-            "-I",
-            "-c",
-            "\n".join(
-                [
-                    "import sys, torch, flash_attn, causal_conv1d",
-                    "assert sys.version_info[:2] == (3, 12), 'unexpected Python'",
-                    "assert torch.__version__ == '2.8.0+cu128', 'unexpected torch'",
-                    "assert torch.version.cuda == '12.8', 'unexpected CUDA runtime'",
-                    "assert flash_attn.__version__ == '2.8.3.post2', "
-                    "'unexpected flash-attn'",
-                    "assert torch.cuda.is_available(), 'CUDA unavailable'",
-                ]
-            ),
-        ]
-    )
+    if flash_attn:
+        _run(
+            [
+                *pip,
+                "--no-build-isolation",
+                "flash-attn==2.8.3.post2",
+                "causal-conv1d==1.7.0",
+            ],
+            env={
+                "TORCH_CUDA_ARCH_LIST": arch,
+                "MAX_JOBS": os.environ.get("MAX_JOBS", "4"),
+                "FLASH_ATTENTION_FORCE_BUILD": "TRUE",
+                "CAUSAL_CONV1D_FORCE_BUILD": "TRUE",
+            },
+        )
+    _run([python, "-I", "-c", _verify_code(flash_attn)])
 
 
 def _pack(conda, prefix, out):
@@ -247,6 +261,7 @@ def main(argv=None):
     if out.is_relative_to(prefix):
         ap.error("output must be outside the environment prefix")
     arch = ";".join(registry.GPU_ARCHES[compat["gpu_family"]])
+    flash_attn = bool((env_spec.get("build") or {}).get("flash_attn", True))
     with env_source.prefix_lock(prefix), env_source.interruptible():
         if prefix.exists():
             ap.error("preserving existing environment; inspect and move it aside first")
@@ -254,7 +269,12 @@ def main(argv=None):
             args.conda_home, args.miniforge_installer, args.miniforge_sha256
         )
         _build_prefix(
-            conda, prefix, args.requirements.resolve(), compat["python"], arch
+            conda,
+            prefix,
+            args.requirements.resolve(),
+            compat["python"],
+            arch,
+            flash_attn,
         )
         _pack(conda, prefix, out)
     sha = _sha256(out)
@@ -264,6 +284,7 @@ def main(argv=None):
         "sha256": sha,
         "size": out.stat().st_size,
         "arch": arch,
+        "flash_attn": flash_attn,
         "uploaded": False,
     }
     if not args.skip_upload:

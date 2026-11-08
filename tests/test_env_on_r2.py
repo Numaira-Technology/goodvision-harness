@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import env_source as es
+from tools import build_env, env_source as es
 from tools import registry
 
 
@@ -21,12 +21,43 @@ def test_registry_ships_and_parses():
         "1c1a253bf90dfa66176124d25a48ffb791d517d5",
     )
     assert registry.env_of("videojev")["compat"]["gpu_family"] == "ada"
-    assert registry.env_of("clip") is None
     assert "videojev" in registry.model_names()
     with pytest.raises(registry.RegistryError):
         registry.weights_of("does-not-exist")
+
+
+def test_env_of_clip_has_env_without_flash_attn():
+    env = registry.get_model("clip")["env"]
+    assert env["r2_key"].startswith("envs/clip/")
+    assert env["unpack_to"] == "/opt/env/clip"
+    assert env["build"]["flash_attn"] is False
+
+
+def test_new_models_registered_with_pinned_revisions():
+    names = registry.model_names()
+    for name in ("siglip2", "d3-nano", "qwen8b"):
+        assert name in names
+        registry.weights_of(name)
+        assert registry.get_model(name)["env"]["compat"]["gpu_family"] == "ada"
+    assert registry.weights_of("qwen8b") == (
+        "Qwen/Qwen3-VL-8B-Instruct",
+        "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+    )
+    assert registry.get_model("qwen8b")["env"]["build"]["flash_attn"] is True
+    assert registry.get_model("d3-nano")["env"]["build"]["flash_attn"] is True
+    assert registry.get_model("siglip2")["env"]["build"]["flash_attn"] is False
+
+
+def test_ensure_env_errors_without_packed_env(tmp_path):
+    # A model whose env is null has no packed env to restore.
+    reg = tmp_path / "models.yaml"
+    reg.write_text(
+        "version: 1\nmodels:\n  noenv:\n    repo: a/b\n"
+        "    revision: " + ("a" * 40) + "\n    env: null\n"
+        "    weights:\n      r2_prefix: models/a/b/" + ("a" * 40) + "/\n"
+    )
     with pytest.raises(registry.RegistryError):
-        es.ensure_env("clip")
+        es.ensure_env("noenv", registry_path=reg)
 
 
 @pytest.mark.parametrize(
@@ -673,3 +704,51 @@ def test_eval_subprocess_env_disables_user_site_and_drops_injection():
     assert "PYTHONPATH" not in child
     assert "PYTHONUSERBASE" not in child
     assert child["PATH"].startswith("/opt/env/videojev/bin" + os.pathsep)
+
+
+def _captured_build_prefix(tmp_path, monkeypatch, flash_attn):
+    calls = []
+    monkeypatch.setattr(build_env, "_run", lambda argv, **kw: calls.append(argv))
+    prefix = tmp_path / "env"
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("numpy\n")
+    build_env._build_prefix(
+        tmp_path / "conda",
+        prefix,
+        requirements,
+        "3.12",
+        "8.9",
+        flash_attn=flash_attn,
+    )
+    return calls, str(prefix / "bin/python")
+
+
+def test_build_prefix_includes_flash_attn_by_default(tmp_path, monkeypatch):
+    calls, python = _captured_build_prefix(tmp_path, monkeypatch, True)
+    assert all(call[0] != "python" for call in calls)
+    assert any(call[0] == python and "-I" in call for call in calls)
+    assert any("flash-attn==2.8.3.post2" in call for call in calls)
+    assert any("causal-conv1d==1.7.0" in call for call in calls)
+    assert any("flash_attn" in call[-1] for call in calls if call[-2:-1] == ["-c"])
+
+
+def test_build_prefix_skips_flash_attn_when_false(tmp_path, monkeypatch):
+    calls, python = _captured_build_prefix(tmp_path, monkeypatch, False)
+    assert all("flash-attn==2.8.3.post2" not in call for call in calls)
+    assert all("--no-build-isolation" not in call for call in calls)
+    verify = next(call[-1] for call in calls if call[:3] == [python, "-I", "-c"])
+    assert "flash_attn" not in verify
+    assert "import torch" in verify
+    assert any("torch==2.8.0" in call for call in calls)
+
+
+def test_build_prefix_always_installs_torch_and_requirements(tmp_path, monkeypatch):
+    for flash_attn in (True, False):
+        calls, python = _captured_build_prefix(tmp_path, monkeypatch, flash_attn)
+        assert any(
+            "torch==2.8.0" in call and "torchvision==0.23.0" in call for call in calls
+        )
+        assert any(
+            "-r" in call and str(tmp_path / "requirements.txt") in call for call in calls
+        )
+        assert all(call[0] in {str(tmp_path / "conda"), python} for call in calls)
