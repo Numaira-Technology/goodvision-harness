@@ -52,8 +52,8 @@ models:
     env:
       r2_key: envs/clip/cu128-py312-torch280-ada.tar.gz
       manifest_key: envs/clip/cu128-py312-torch280-ada.json
-      sha256:                                # filled by build_env after upload
-      size:                                  # filled by build_env after upload
+      sha256: 7920dbee3e4f271434936e887ad39ab05bdb760c2f31adf8fdaac6ee864b06fa
+      size: 4337329870                       # 4.34 GB conda-pack tarball
       unpack_to: /opt/env/clip
       activate_rel: bin/activate
       build:
@@ -72,8 +72,8 @@ models:
     env:
       r2_key: envs/siglip2/cu128-py312-torch280-ada.tar.gz
       manifest_key: envs/siglip2/cu128-py312-torch280-ada.json
-      sha256:                                # filled by build_env after upload
-      size:                                  # filled by build_env after upload
+      sha256: 05bf783fbd2aa108a2b0939291b9861d74ce364162f15df42486314261c73227
+      size: 4136202534                       # 4.14 GB conda-pack tarball
       unpack_to: /opt/env/siglip2
       activate_rel: bin/activate
       build:
@@ -92,8 +92,8 @@ models:
     env:
       r2_key: envs/d3-nano/cu128-py312-torch280-ada.tar.gz
       manifest_key: envs/d3-nano/cu128-py312-torch280-ada.json
-      sha256:                                # filled by build_env after upload
-      size:                                  # filled by build_env after upload
+      sha256: 2dedddfb052aaa0384403af0d997d04fdc7cdeaadaac338c116c6079f31ec0fd
+      size: 4669093127                       # 4.67 GB conda-pack tarball
       unpack_to: /opt/env/d3-nano
       activate_rel: bin/activate
       build:
