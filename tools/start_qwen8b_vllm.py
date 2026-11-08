@@ -170,20 +170,32 @@ def _require_r2_pack(env_spec: dict) -> str:
 
 
 def _verify_restored_env(ssh, activate: str) -> None:
-    """Import check only. Missing modules are a pack bug, not a GPU pip job."""
+    """Import check only. Missing modules are a pack bug, not a GPU pip job.
+
+    Do not `set -u` around conda-pack activate (it reads possibly-unset
+    ``PS1`` / ``CONDA_PREFIX``). Do not wrap a heredoc in ``bash -lc`` over
+    SSH — that hid the traceback on instance 59781901 (exit 1, no stdout).
+    """
     remote = (
-        f"set +u; source {shlex.quote(activate)}; set -u; "
-        "python - <<'PY'\n"
-        "import vllm, torch\n"
-        "print('vllm', getattr(vllm, '__version__', 'unknown'))\n"
-        "print('torch', torch.__version__, 'cuda', torch.version.cuda)\n"
-        "assert torch.version.cuda, 'restored torch is not a CUDA wheel'\n"
-        "PY"
+        f"set +u; source {shlex.quote(activate)}; "
+        "python -c " + shlex.quote(
+            "import vllm, torch\n"
+            "print('vllm', getattr(vllm, '__version__', 'unknown'))\n"
+            "print('torch', torch.__version__, 'cuda', torch.version.cuda)\n"
+            "assert torch.version.cuda, 'restored torch is not a CUDA wheel'\n"
+        )
     )
-    out = subprocess.check_output(
-        [*ssh, "bash -lc " + shlex.quote(remote)],
-        text=True, timeout=120, stderr=subprocess.STDOUT,
-    )
+    try:
+        out = subprocess.check_output(
+            [*ssh, remote],
+            text=True, timeout=120, stderr=subprocess.STDOUT,
+        )
+    except subprocess.CalledProcessError as error:
+        detail = (error.output or "").strip() or str(error)
+        raise RuntimeError(
+            f"restored env import failed (exit {error.returncode}); "
+            f"not pip-installing vLLM on the GPU:\n{detail}"
+        ) from error
     print(out, flush=True)
 
 
@@ -219,6 +231,7 @@ def main() -> int:
     vast = VastAI(api_key=api_key, retry=1)
     instance_id = None
     worker = None
+    last_error = ""
     label = f"goodvision-qwen8b-vllm-{uuid4().hex[:12]}"
     exit_code = 1
     creation_attempted = False
@@ -317,6 +330,7 @@ def main() -> int:
         print("\nStopping vLLM GPU session...", flush=True)
         exit_code = 130
     except Exception as error:
+        last_error = str(error)
         print(f"qwen8b-vllm start failed: {error}", file=sys.stderr, flush=True)
         _status(args.status_file, f"# qwen8b_r2_vllm\nPhase: failed\nError: {error}\n")
     finally:
@@ -336,9 +350,10 @@ def main() -> int:
         if instance_id is not None:
             try:
                 S.release_instance(vast, instance_id)
+                err_line = f"Error: {last_error}\n" if last_error else ""
                 _status(args.status_file,
                         f"# qwen8b_r2_vllm\nPhase: released\nInstance: {instance_id}\n"
-                        f"exit={exit_code}\n")
+                        f"exit={exit_code}\n{err_line}")
             except Exception as error:
                 print(f"RELEASE FAILED for instance {instance_id}: {error}\n"
                       "Destroy it in the Vast console to stop billing.",

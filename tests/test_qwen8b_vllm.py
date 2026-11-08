@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from tools.qwen8b import eval_local, serve_vllm
-from tools.start_qwen8b_vllm import MAX_DPH, HF_ENV_KEY, _eligible_offers, _require_r2_pack
+from tools.start_qwen8b_vllm import MAX_DPH, HF_ENV_KEY, _eligible_offers, _require_r2_pack, _verify_restored_env
 from tools.unified_benchmark.contract import RULES
 from tools.unified_benchmark.preflight import model_configs
 
@@ -70,6 +71,24 @@ def test_launcher_requires_r2_pack_and_does_not_pip_on_gpu():
     assert _require_r2_pack(
         {"r2_key": "envs/qwen8b-vllm/x.tar.gz", "sha256": "deadbeef"}
     ) == "deadbeef"
+
+
+def test_verify_restored_env_surfaces_import_output(monkeypatch):
+    captured = {}
+
+    def boom(cmd, **kwargs):
+        captured["cmd"] = cmd
+        raise subprocess.CalledProcessError(1, cmd, output="ModuleNotFoundError: vllm\n")
+
+    monkeypatch.setattr("tools.start_qwen8b_vllm.subprocess.check_output", boom)
+    with pytest.raises(RuntimeError, match="ModuleNotFoundError: vllm"):
+        _verify_restored_env(["ssh"], "/opt/env/qwen8b-vllm/bin/activate")
+    remote = captured["cmd"][-1]
+    assert "set +u" in remote
+    assert "source /opt/env/qwen8b-vllm/bin/activate" in remote
+    assert "python -c" in remote
+    assert "set -u" not in remote.split("source", 1)[1]
+    assert "bash -lc" not in remote
 
 
 def test_eligible_offers_reject_expensive_or_multi_gpu():
