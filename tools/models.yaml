@@ -113,8 +113,8 @@ models:
     env:
       r2_key: envs/qwen8b/cu128-py312-torch280-ada.tar.gz
       manifest_key: envs/qwen8b/cu128-py312-torch280-ada.json
-      sha256:                                # filled by build_env after upload
-      size:                                  # filled by build_env after upload
+      sha256: d101d333fe942887aefb29a4ff98eb1e0fcaaa0ea5e5f57ac1baeb53818c72ff
+      size: 4666450073                       # 4.67 GB conda-pack tarball
       unpack_to: /opt/env/qwen8b
       activate_rel: bin/activate
       build:
