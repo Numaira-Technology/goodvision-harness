@@ -37,6 +37,19 @@ EXPECTED_SIZE = 4252947071
 MAX_DPH = 1.85  # refuse silently upgrading past ~1.5x the prior $1.2296/hr
 STATUS_DEFAULT = Path("outputs/qwen8b-r2-vllm/STATUS.md")
 
+# The cu130 pack's setuptools 80.10.2 vendors distutils that imports this
+# module, but conda-pack omitted compilers/errors.py. Instance 59790599
+# restored the tarball, passed CUDA import, then `python -m vllm...api_server`
+# died with ModuleNotFoundError: distutils.compilers.errors. Writing this
+# file after restore is a load-path repair, not pip-installing vLLM.
+SETUPTOOLS_COMPILERS_ERRORS = (
+    '"""Exceptions shared by distutils C compilers."""\n\n'
+    "class Error(Exception):\n"
+    '    """Some compile/link operation failed."""\n\n\n'
+    "class UnknownFileType(Error):\n"
+    '    """Attempt to process an unknown file type."""\n'
+)
+
 
 def _status(path: Path | None, text: str) -> None:
     if path is None:
@@ -65,15 +78,17 @@ def _eligible_offers(offers: list[dict]) -> list[dict]:
     return usable
 
 
-def _server_process(ssh, activate: str, snapshot: str, log_path: Path | None = None):
+def _vllm_serve_remote(activate: str, snapshot: str) -> str:
+    """Packed python -s, no repo PYTHONPATH. Exam knobs stay 12 / bf16 / eager."""
     cfg = DEFAULTS
+    python = _packed_python(activate)
     limit = json.dumps(cfg["limit_mm_per_prompt"], separators=(",", ":"))
     eager = "--enforce-eager" if cfg.get("enforce_eager") else ""
-    remote = (
+    return (
         f"set -eo pipefail; set +u; source {shlex.quote(activate)}; "
-        f"cd {H.REPO} && exec env PYTHONPATH={H.REPO} HF_HUB_OFFLINE=1 "
+        f"cd /tmp && exec env PYTHONNOUSERSITE=1 HF_HUB_OFFLINE=1 "
         f"TRANSFORMERS_OFFLINE=1 VLLM_NO_USAGE_STATS=1 "
-        f"python -m vllm.entrypoints.openai.api_server "
+        f"{shlex.quote(python)} -s -m vllm.entrypoints.openai.api_server "
         f"--model {shlex.quote(snapshot)} "
         f"--served-model-name {MODEL_ID} "
         f"--host 127.0.0.1 --port 8000 --dtype bfloat16 "
@@ -84,6 +99,10 @@ def _server_process(ssh, activate: str, snapshot: str, log_path: Path | None = N
         f"--limit-mm-per-prompt {shlex.quote(limit)} "
         f"--tensor-parallel-size 1 --generation-config vllm {eager}"
     )
+
+
+def _server_process(ssh, activate: str, snapshot: str, log_path: Path | None = None):
+    remote = _vllm_serve_remote(activate, snapshot)
     print("Starting vLLM OpenAI server + SSH tunnel (12 client slots stay in eval_local)...",
           flush=True)
     logf = None
@@ -257,6 +276,51 @@ def _verify_restored_env(ssh, activate: str) -> None:
     )
 
 
+def _patch_setuptools_distutils(ssh, activate: str) -> None:
+    """Write omitted compilers/errors.py, then import api_server.
+
+    Missing modules in the tarball are pack bugs. This does not pip-install
+    vLLM; it only drops the one vendored distutils file the 59790599 traceback
+    named, then proves `vllm.entrypoints.openai.api_server` imports.
+    """
+    python = _packed_python(activate)
+    write = (
+        "from pathlib import Path\n"
+        "import sys\n"
+        f"text = {SETUPTOOLS_COMPILERS_ERRORS!r}\n"
+        "compilers = Path(sys.prefix) / 'lib' / ("
+        "'python%d.%d' % sys.version_info[:2]) / "
+        "'site-packages/setuptools/_distutils/compilers'\n"
+        "if not compilers.is_dir():\n"
+        "    raise SystemExit('missing %s' % compilers)\n"
+        "dest = compilers / 'errors.py'\n"
+        "dest.write_text(text)\n"
+        "print('patched', dest, 'bytes', dest.stat().st_size)\n"
+    )
+    probe = (
+        "from torch.utils.cpp_extension import load_inline\n"
+        "import vllm.entrypoints.openai.api_server as m\n"
+        "print('api_server_ok', m.__file__)\n"
+    )
+    for label, code, timeout in (
+        ("setuptools_compilers_errors", write, 60),
+        ("api_server_import", probe, 180),
+    ):
+        remote = f"set +u; {shlex.quote(python)} -s -c {shlex.quote(code)}"
+        try:
+            out = subprocess.check_output(
+                [*ssh, remote],
+                text=True, timeout=timeout, stderr=subprocess.STDOUT,
+            )
+        except subprocess.CalledProcessError as error:
+            detail = (error.output or "").strip() or str(error)
+            raise RuntimeError(
+                f"{label} failed (exit {error.returncode}); "
+                f"not pip-installing vLLM on the GPU:\n{detail}"
+            ) from error
+        print(out, flush=True)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--disk-gb", type=int, default=int(os.environ.get("QWEN8B_DISK_GB", "80")))
@@ -358,6 +422,9 @@ def main() -> int:
             remote_dir=H.REPO, r2_env=r2_env, python="python3",
         )
         _verify_restored_env(ssh, activate)
+        print("Patching omitted setuptools/_distutils/compilers/errors.py "
+              "(load-path repair, not GPU pip)...", flush=True)
+        _patch_setuptools_distutils(ssh, activate)
         smi_ready = subprocess.check_output(
             [*ssh, "nvidia-smi --query-gpu=driver_version,name,memory.used,memory.total "
              "--format=csv,noheader"],

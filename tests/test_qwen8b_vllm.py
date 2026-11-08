@@ -11,10 +11,13 @@ from tools.qwen8b import eval_local, serve_vllm
 from tools.start_qwen8b_vllm import (
     MAX_DPH,
     HF_ENV_KEY,
+    SETUPTOOLS_COMPILERS_ERRORS,
     _eligible_offers,
     _packed_python,
+    _patch_setuptools_distutils,
     _require_r2_pack,
     _verify_restored_env,
+    _vllm_serve_remote,
 )
 from tools.unified_benchmark.contract import RULES
 from tools.unified_benchmark.preflight import model_configs
@@ -87,6 +90,45 @@ def test_packed_python_is_beside_activate():
     assert _packed_python("/opt/env/qwen8b-vllm/bin/activate") == (
         "/opt/env/qwen8b-vllm/bin/python"
     )
+
+
+def test_vllm_serve_remote_keeps_exam_and_avoids_repo_pythonpath():
+    remote = _vllm_serve_remote("/opt/env/qwen8b-vllm/bin/activate", "/weights/snap")
+    assert "PYTHONPATH=" not in remote
+    assert "PYTHONNOUSERSITE=1" in remote
+    assert "/opt/env/qwen8b-vllm/bin/python -s -m vllm.entrypoints.openai.api_server" in remote
+    assert "--max-num-seqs 12" in remote
+    assert "--dtype bfloat16" in remote
+    assert "--enforce-eager" in remote
+    assert "pip install" not in remote
+    assert "python -m tools.build_env" not in remote
+
+
+def test_setuptools_compilers_errors_shim_defines_required_names():
+    ns: dict = {}
+    exec(SETUPTOOLS_COMPILERS_ERRORS, ns)
+    assert issubclass(ns["Error"], Exception)
+    assert issubclass(ns["UnknownFileType"], ns["Error"])
+
+
+def test_patch_setuptools_writes_compilers_errors_then_imports_api_server(monkeypatch):
+    captured = {"cmds": []}
+
+    def fake(cmd, **kwargs):
+        captured["cmds"].append(cmd[-1])
+        return "patched /opt/env/qwen8b-vllm/lib/python3.12/site-packages/" \
+               "setuptools/_distutils/compilers/errors.py bytes 204\n"
+
+    monkeypatch.setattr("tools.start_qwen8b_vllm.subprocess.check_output", fake)
+    _patch_setuptools_distutils(["ssh"], "/opt/env/qwen8b-vllm/bin/activate")
+    assert len(captured["cmds"]) == 2
+    write, probe = captured["cmds"]
+    assert "/opt/env/qwen8b-vllm/bin/python -s -c" in write
+    assert "compilers" in write and "errors.py" in write
+    assert "pip install" not in write
+    assert "vllm.entrypoints.openai.api_server" in probe
+    assert "source " not in write
+    assert "bash -lc" not in write
 
 
 def test_verify_restored_env_uses_absolute_python_and_surfaces_output(monkeypatch):
