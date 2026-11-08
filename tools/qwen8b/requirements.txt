@@ -1,0 +1,21 @@
+# qwen8b -- Qwen/Qwen3-VL-8B-Instruct self-hosted inference env.
+#
+# The heaviest, highest-priority env. Qwen3-VL needs transformers >= 4.57; we pin
+# 5.17.0 (the repo's newest pinned transformers). flash-attn IS used (load with
+# attn_implementation="flash_attention_2" for multi-image/video), so build with
+# env.build.flash_attn: true.
+#
+# Install into a NEW Python 3.12 / CUDA 12.8 env AFTER torch==2.8.0 +
+# torchvision==0.23.0 (installed from the cu128 wheel index by tools/build_env.py);
+# flash-attn==2.8.3.post2 is added by build_env's compile-once step.
+transformers==5.17.0
+tokenizers==0.23.3
+accelerate==1.10.1
+safetensors==0.8.0
+# Qwen3-VL preprocessing helpers (image/video); decord speeds up video loading.
+qwen-vl-utils==0.0.14
+numpy==2.2.6
+pillow==11.3.0
+av==17.1.0
+# R2 prefetch (tools/model_source.py); optional, HF fallback works without it.
+boto3==1.43.123

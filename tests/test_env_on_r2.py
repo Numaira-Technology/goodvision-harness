@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import env_source, registry
+from tools import build_env, env_source, registry
 
 VIDEOJEV_REV = "1c1a253bf90dfa66176124d25a48ffb791d517d5"
 
@@ -29,8 +29,27 @@ def test_env_of_videojev_has_required_keys():
     assert env["compat"]["gpu_family"] == "ada"
 
 
-def test_env_of_clip_is_none():
-    assert registry.env_of("clip") is None
+def test_env_of_clip_has_env_without_flash_attn():
+    env = registry.env_of("clip")
+    assert env["r2_key"].startswith("envs/clip/")
+    assert env["unpack_to"] == "/opt/env/clip"
+    assert env["build"]["flash_attn"] is False
+
+
+def test_new_models_registered_with_pinned_revisions():
+    names = registry.model_names()
+    for name in ("siglip2", "d3-nano", "qwen8b"):
+        assert name in names
+        registry.weights_of(name)  # also validates the 40-char sha
+        assert registry.env_of(name)["compat"]["gpu_family"] == "ada"
+    assert registry.weights_of("qwen8b") == (
+        "Qwen/Qwen3-VL-8B-Instruct",
+        "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+    )
+    # flash-attn on for the VLMs, off for the ViTs.
+    assert registry.env_of("qwen8b")["build"]["flash_attn"] is True
+    assert registry.env_of("d3-nano")["build"]["flash_attn"] is True
+    assert registry.env_of("siglip2")["build"]["flash_attn"] is False
 
 
 def test_unknown_model_raises():
@@ -124,6 +143,46 @@ def test_already_restored_short_circuits(tmp_path):
     assert env_source._already_restored(env_wrong) is False
 
 
-def test_ensure_env_errors_without_packed_env():
+def test_ensure_env_errors_without_packed_env(tmp_path):
+    # A model whose env is null has no packed env to restore.
+    reg = tmp_path / "models.yaml"
+    reg.write_text(
+        "version: 1\nmodels:\n  noenv:\n    repo: a/b\n"
+        "    revision: " + ("a" * 40) + "\n    env: null\n"
+    )
     with pytest.raises(registry.RegistryError):
-        env_source.ensure_env("clip")  # clip has env: null
+        env_source.ensure_env("noenv", registry_path=reg)
+
+
+# --- build_env flash-attn toggle -------------------------------------------
+
+def _script(flash_attn):
+    return build_env._build_script(
+        Path("/opt/miniforge3/bin/conda"), "/opt/env/x",
+        "tools/x/requirements.txt", "8.9", "3.12", flash_attn=flash_attn,
+    )
+
+
+def test_build_script_includes_flash_attn_by_default():
+    script = _script(True)
+    assert "flash-attn==2.8.3.post2 causal-conv1d==1.7.0" in script
+    assert "import torch, flash_attn" in script
+
+
+def test_build_script_skips_flash_attn_when_false():
+    script = _script(False)
+    # The compile-once pip step and the flash_attn import are both gone.
+    assert "flash-attn==2.8.3.post2" not in script
+    assert "--no-build-isolation" not in script
+    assert "flash_attn.__version__" not in script
+    assert "import torch, flash_attn" not in script
+    # torch is still installed and still verified.
+    assert "torch==2.8.0" in script
+    assert "import torch\n" in script
+
+
+def test_build_script_always_installs_torch_and_requirements():
+    for flash_attn in (True, False):
+        script = _script(flash_attn)
+        assert "torch==2.8.0 torchvision==0.23.0" in script
+        assert '-r "tools/x/requirements.txt"' in script

@@ -66,29 +66,55 @@ def _ensure_miniconda(home):
     return conda
 
 
-def _build_prefix(conda, prefix, requirements, python_ver, arch):
-    """Create the conda env at ``prefix`` and install the full stack into it."""
+def _build_script(conda, prefix, requirements, python_ver, arch, flash_attn=True):
+    """The bash recipe that creates + fills the env -- a pure, testable string.
+
+    ``flash_attn`` gates the slow compile-once step: when False, flash-attn and
+    causal-conv1d are NOT installed (and the readiness check does not import
+    flash_attn). Models whose runtime never touches flash-attn (e.g. a CLIP/SigLIP
+    ViT) set ``env.build.flash_attn: false`` to skip minutes of nvcc compile.
+    """
+    conda_sh = f'source "{Path(conda).parent.parent}/etc/profile.d/conda.sh"'
+    if flash_attn:
+        flash_step = (
+            f'export TORCH_CUDA_ARCH_LIST="{arch}"\n'
+            'export MAX_JOBS="${MAX_JOBS:-4}"\n'
+            'python -m pip install --no-cache-dir --no-build-isolation \\\n'
+            '  flash-attn==2.8.3.post2 causal-conv1d==1.7.0'
+        )
+        verify = (
+            "import torch, flash_attn\n"
+            'print("torch", torch.__version__, "cuda", torch.version.cuda)\n'
+            'print("flash_attn", flash_attn.__version__)\n'
+            'assert torch.cuda.is_available(), "CUDA not available in built env"'
+        )
+    else:
+        flash_step = "# flash-attn/causal-conv1d skipped (env.build.flash_attn: false)"
+        verify = (
+            "import torch\n"
+            'print("torch", torch.__version__, "cuda", torch.version.cuda)\n'
+            'assert torch.cuda.is_available(), "CUDA not available in built env"'
+        )
     # One bash block so `conda activate` sticks for the pip steps.
-    script = f"""
+    return f"""
 set -euo pipefail
-source "{conda.parent.parent}/etc/profile.d/conda.sh"
+{conda_sh}
 conda create -y -p "{prefix}" -c conda-forge --override-channels python={python_ver}
 conda activate "{prefix}"
 python -m pip install --no-cache-dir --upgrade pip setuptools wheel packaging ninja
-python -m pip install --no-cache-dir torch==2.8.0 torchvision==0.23.0 \
+python -m pip install --no-cache-dir torch==2.8.0 torchvision==0.23.0 \\
   --index-url https://download.pytorch.org/whl/cu128
 python -m pip install --no-cache-dir -r "{requirements}"
-export TORCH_CUDA_ARCH_LIST="{arch}"
-export MAX_JOBS="${{MAX_JOBS:-4}}"
-python -m pip install --no-cache-dir --no-build-isolation \
-  flash-attn==2.8.3.post2 causal-conv1d==1.7.0
+{flash_step}
 python - <<'PY'
-import torch, flash_attn
-print("torch", torch.__version__, "cuda", torch.version.cuda)
-print("flash_attn", flash_attn.__version__)
-assert torch.cuda.is_available(), "CUDA not available in built env"
+{verify}
 PY
 """
+
+
+def _build_prefix(conda, prefix, requirements, python_ver, arch, flash_attn=True):
+    """Create the conda env at ``prefix`` and install the full stack into it."""
+    script = _build_script(conda, prefix, requirements, python_ver, arch, flash_attn)
     _run(["bash", "-c", script], env={**os.environ, "HF_HUB_DISABLE_XET": "1"})
 
 
@@ -149,12 +175,18 @@ def main(argv=None):
     if not arch:
         sys.exit(f"unknown gpu_family {gpu_family!r}; known: {sorted(_ARCH)}")
     python_ver = compat.get("python", "3.12")
+    # env.build.flash_attn gates the flash-attn/causal-conv1d compile (default on,
+    # so videojev and anything omitting the field keep the original behaviour).
+    build = env_spec.get("build") or {}
+    flash_attn = bool(build.get("flash_attn", True))
     prefix = env_spec["unpack_to"]
     out = Path(args.out or f"/tmp/{args.model}-env.tar.gz")
     repo, rev = registry.weights_of(args.model)
 
+    _log(f"building {args.model} (python={python_ver} arch={arch} "
+         f"flash_attn={flash_attn})")
     conda = _ensure_miniconda(args.conda_home)
-    _build_prefix(conda, prefix, args.requirements, python_ver, arch)
+    _build_prefix(conda, prefix, args.requirements, python_ver, arch, flash_attn)
     _pack(conda, prefix, out)
     sha = _sha256(out)
     _log(f"packed {out} sha256={sha} size={Path(out).stat().st_size/1e9:.2f}GB")
