@@ -119,13 +119,19 @@ def _build_prefix(conda, prefix, requirements, python_ver, arch, flash_attn=True
 
 
 def _pack(conda, prefix, out):
-    """conda-pack the prefix into a single tarball at ``out``."""
+    """conda-pack the prefix into a single tarball at ``out``.
+
+    Use the standalone ``conda-pack`` entry point rather than the ``conda pack``
+    subcommand: recent conda (current Miniforge) does not always register the
+    conda-pack plugin, so ``conda pack`` fails with "invalid choice: 'pack'" while
+    the ``conda-pack`` executable (same tool, same flags) works directly.
+    """
     script = f"""
 set -euo pipefail
 source "{conda.parent.parent}/etc/profile.d/conda.sh"
 conda activate base
 python -m pip install --no-cache-dir conda-pack
-conda pack -p "{prefix}" -o "{out}" --ignore-missing-files --force
+conda-pack -p "{prefix}" -o "{out}" --ignore-missing-files --force
 """
     _run(["bash", "-c", script])
 
