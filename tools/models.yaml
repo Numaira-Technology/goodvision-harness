@@ -123,3 +123,26 @@ models:
         cuda: "12.8"
         torch: "2.8.0"
         gpu_family: ada
+
+  # Second env for the same weights. New R2 objects; never overwrite qwen8b above.
+  qwen8b-vllm:
+    repo: Qwen/Qwen3-VL-8B-Instruct
+    revision: 0c351dd01ed87e9c1b53cbc748cba10e6187ff3b
+    weights:
+      r2_prefix: models/Qwen/Qwen3-VL-8B-Instruct/0c351dd01ed87e9c1b53cbc748cba10e6187ff3b/
+    env:
+      r2_key: envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz
+      manifest_key: envs/qwen8b-vllm/cu128-py312-vllm0310-ada.json
+      sha256: ""                             # filled after first build_env upload
+      size: 0
+      unpack_to: /opt/env/qwen8b-vllm
+      activate_rel: bin/activate
+      build:
+        flash_attn: false                    # vLLM wheel ships attention kernels
+        install_default_torch: false         # let vllm==0.31.0 pull torch 2.13.x
+      compat:
+        python: "3.12"
+        cuda: "12.8"
+        torch: "2.13.0"                      # vLLM 0.31.0 in-repo lock; attested at build
+        gpu_family: ada
+        vllm: "0.31.0"

@@ -1,0 +1,13 @@
+# Independent vLLM env for Qwen3-VL-8B. Do not merge into tools/qwen8b/requirements.txt.
+#
+# vllm==0.31.0 is the in-repo pin that already serves a Qwen3-VL family model on
+# 24GB 4090-class cards (tools/vlm_benchmark). It pulls torch 2.13.x; do not
+# force the HF packed-env torch==2.8.0 here.
+vllm==0.31.0
+transformers==5.14.1
+tokenizers==0.22.2
+qwen-vl-utils==0.0.14
+pillow==11.3.0
+numpy==2.2.6
+boto3==1.43.123
+PyYAML==6.0.2

@@ -66,13 +66,18 @@ def _ensure_miniconda(home):
     return conda
 
 
-def _build_script(conda, prefix, requirements, python_ver, arch, flash_attn=True):
+def _build_script(conda, prefix, requirements, python_ver, arch, flash_attn=True,
+                  install_default_torch=True):
     """The bash recipe that creates + fills the env -- a pure, testable string.
 
     ``flash_attn`` gates the slow compile-once step: when False, flash-attn and
     causal-conv1d are NOT installed (and the readiness check does not import
     flash_attn). Models whose runtime never touches flash-attn (e.g. a CLIP/SigLIP
     ViT) set ``env.build.flash_attn: false`` to skip minutes of nvcc compile.
+
+    ``install_default_torch`` installs the HF-pack pin ``torch==2.8.0`` (cu128).
+    vLLM envs set it false so ``vllm==0.31.0`` can pull its own torch. Never
+    reuse this to overwrite the existing qwen8b HF tarball key.
     """
     conda_sh = f'source "{Path(conda).parent.parent}/etc/profile.d/conda.sh"'
     if flash_attn:
@@ -95,6 +100,16 @@ def _build_script(conda, prefix, requirements, python_ver, arch, flash_attn=True
             'print("torch", torch.__version__, "cuda", torch.version.cuda)\n'
             'assert torch.cuda.is_available(), "CUDA not available in built env"'
         )
+    if install_default_torch:
+        torch_step = (
+            "python -m pip install --no-cache-dir torch==2.8.0 torchvision==0.23.0 \\\n"
+            "  --index-url https://download.pytorch.org/whl/cu128"
+        )
+    else:
+        torch_step = (
+            "# default torch==2.8.0 pin skipped "
+            "(env.build.install_default_torch: false)"
+        )
     # One bash block so `conda activate` sticks for the pip steps.
     return f"""
 set -euo pipefail
@@ -102,8 +117,7 @@ set -euo pipefail
 conda create -y -p "{prefix}" -c conda-forge --override-channels python={python_ver}
 conda activate "{prefix}"
 python -m pip install --no-cache-dir --upgrade pip setuptools wheel packaging ninja
-python -m pip install --no-cache-dir torch==2.8.0 torchvision==0.23.0 \\
-  --index-url https://download.pytorch.org/whl/cu128
+{torch_step}
 python -m pip install --no-cache-dir -r "{requirements}"
 {flash_step}
 python - <<'PY'
@@ -112,9 +126,11 @@ PY
 """
 
 
-def _build_prefix(conda, prefix, requirements, python_ver, arch, flash_attn=True):
+def _build_prefix(conda, prefix, requirements, python_ver, arch, flash_attn=True,
+                  install_default_torch=True):
     """Create the conda env at ``prefix`` and install the full stack into it."""
-    script = _build_script(conda, prefix, requirements, python_ver, arch, flash_attn)
+    script = _build_script(conda, prefix, requirements, python_ver, arch, flash_attn,
+                           install_default_torch)
     _run(["bash", "-c", script], env={**os.environ, "HF_HUB_DISABLE_XET": "1"})
 
 
@@ -171,6 +187,10 @@ def main(argv=None):
     ap.add_argument("--skip-upload", action="store_true",
                     help="build + pack only; keep the tarball at --out and print its "
                          "path + sha256 + size (upload it later with --upload-only)")
+    ap.add_argument("--skip-pack", action="store_true",
+                    help="build the prefix only; skip conda-pack (eval first, pack later)")
+    ap.add_argument("--pack-only", action="store_true",
+                    help="conda-pack an already-built prefix; do not recreate the env")
     ap.add_argument("--upload-only", action="store_true",
                     help="skip build + pack; upload an already-built tarball at --out "
                          "to R2 (so an interrupted/credential-blocked upload needs no "
@@ -178,6 +198,12 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.skip_upload and args.upload_only:
         ap.error("--skip-upload and --upload-only are mutually exclusive")
+    if args.skip_pack and args.upload_only:
+        ap.error("--skip-pack and --upload-only are mutually exclusive")
+    if args.pack_only and args.skip_pack:
+        ap.error("--pack-only and --skip-pack are mutually exclusive")
+    if args.pack_only and args.upload_only:
+        ap.error("--pack-only and --upload-only are mutually exclusive")
 
     env_spec = registry.env_of(args.model)
     if env_spec is None:
@@ -192,20 +218,35 @@ def main(argv=None):
     # so videojev and anything omitting the field keep the original behaviour).
     build = env_spec.get("build") or {}
     flash_attn = bool(build.get("flash_attn", True))
+    install_default_torch = bool(build.get("install_default_torch", True))
     prefix = env_spec["unpack_to"]
     out = Path(args.out or f"/tmp/{args.model}-env.tar.gz")
     repo, rev = registry.weights_of(args.model)
+    # Refuse to clobber the published HF qwen8b pack even if someone retargets --model.
+    if env_spec.get("r2_key") == "envs/qwen8b/cu128-py312-torch280-ada.tar.gz" and args.model != "qwen8b":
+        sys.exit("refusing to upload over the frozen HF qwen8b env key")
 
     if args.upload_only:
         if not out.is_file():
             sys.exit(f"--upload-only: no tarball at {out}; build it first "
                      f"(e.g. with --skip-upload)")
         _log(f"upload-only {args.model}: reusing existing {out}")
+    elif args.pack_only:
+        if not Path(prefix).is_dir():
+            sys.exit(f"--pack-only: missing prefix {prefix}; build it first")
+        conda = _ensure_miniconda(args.conda_home)
+        _log(f"pack-only {args.model} from {prefix}")
+        _pack(conda, prefix, out)
     else:
         _log(f"building {args.model} (python={python_ver} arch={arch} "
-             f"flash_attn={flash_attn})")
+             f"flash_attn={flash_attn} install_default_torch={install_default_torch})")
         conda = _ensure_miniconda(args.conda_home)
-        _build_prefix(conda, prefix, args.requirements, python_ver, arch, flash_attn)
+        _build_prefix(conda, prefix, args.requirements, python_ver, arch, flash_attn,
+                      install_default_torch)
+        if args.skip_pack:
+            print(json.dumps({"model": args.model, "prefix": prefix, "packed": False,
+                              "uploaded": False, "arch": arch}))
+            return
         _pack(conda, prefix, out)
     sha = _sha256(out)
     size = out.stat().st_size
@@ -215,6 +256,8 @@ def main(argv=None):
         print(json.dumps({"model": args.model, "tarball": str(out), "sha256": sha,
                           "size": size, "arch": arch, "uploaded": False}))
         return
+    if env_spec.get("r2_key") == "envs/qwen8b/cu128-py312-torch280-ada.tar.gz" and args.model == "qwen8b-vllm":
+        sys.exit("refusing to upload qwen8b-vllm over the frozen HF qwen8b env key")
     manifest = _upload(env_spec, args.model, out, compat, f"{repo}@{rev}")
     print(json.dumps({"model": args.model, "r2_key": manifest["r2_key"],
                       "sha256": manifest["sha256"], "size": manifest["size"],

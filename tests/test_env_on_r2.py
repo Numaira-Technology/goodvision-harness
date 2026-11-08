@@ -38,7 +38,7 @@ def test_env_of_clip_has_env_without_flash_attn():
 
 def test_new_models_registered_with_pinned_revisions():
     names = registry.model_names()
-    for name in ("siglip2", "d3-nano", "qwen8b"):
+    for name in ("siglip2", "d3-nano", "qwen8b", "qwen8b-vllm"):
         assert name in names
         registry.weights_of(name)  # also validates the 40-char sha
         assert registry.env_of(name)["compat"]["gpu_family"] == "ada"
@@ -46,10 +46,18 @@ def test_new_models_registered_with_pinned_revisions():
         "Qwen/Qwen3-VL-8B-Instruct",
         "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
     )
+    assert registry.weights_of("qwen8b-vllm") == registry.weights_of("qwen8b")
     # flash-attn on for the VLMs, off for the ViTs.
     assert registry.env_of("qwen8b")["build"]["flash_attn"] is True
     assert registry.env_of("d3-nano")["build"]["flash_attn"] is True
     assert registry.env_of("siglip2")["build"]["flash_attn"] is False
+    vllm_env = registry.env_of("qwen8b-vllm")
+    hf_env = registry.env_of("qwen8b")
+    assert vllm_env["r2_key"] != hf_env["r2_key"]
+    assert vllm_env["r2_key"].startswith("envs/qwen8b-vllm/")
+    assert vllm_env["unpack_to"] != hf_env["unpack_to"]
+    assert vllm_env["build"]["flash_attn"] is False
+    assert vllm_env["build"]["install_default_torch"] is False
 
 
 def test_unknown_model_raises():
@@ -186,6 +194,17 @@ def test_build_script_always_installs_torch_and_requirements():
         script = _script(flash_attn)
         assert "torch==2.8.0 torchvision==0.23.0" in script
         assert '-r "tools/x/requirements.txt"' in script
+
+
+def test_build_script_skips_default_torch_when_disabled():
+    script = build_env._build_script(
+        Path("/opt/miniforge3/bin/conda"), "/opt/env/x",
+        "tools/qwen8b_vllm/requirements.txt", "8.9", "3.12",
+        flash_attn=False, install_default_torch=False,
+    )
+    assert "pip install --no-cache-dir torch==2.8.0" not in script
+    assert "install_default_torch: false" in script
+    assert '-r "tools/qwen8b_vllm/requirements.txt"' in script
 
 
 # --- build_env --upload-only / --skip-upload -------------------------------

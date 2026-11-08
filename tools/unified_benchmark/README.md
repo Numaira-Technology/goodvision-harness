@@ -186,8 +186,11 @@ python -m tools.unified_benchmark.api_run \
   --authorization-note 'Approved test scope and cost' --execute
 ```
 
-Self-hosted Qwen3-VL-8B on a rented 4090 uses `qwen8b_r2_host`, not the OpenRouter
-`qwen8b` profile and not a vLLM `qwen8b_selfhost` alias. After a verified
+Self-hosted Qwen3-VL-8B on a rented 4090 uses `qwen8b_r2_host` (HF generate +
+FA2) or the independent engine profile `qwen8b_r2_vllm` (vLLM), not the
+OpenRouter `qwen8b` profile and not a `qwen8b_selfhost` alias. Both keep the
+same frozen JPEGs, prompts, parser, temperature, max_tokens=30, and **12 client
+slots**. Do not relabel the completed HF run as vLLM. After a verified
 preflight bundle:
 
 ```sh
@@ -204,6 +207,19 @@ That launcher restores the packed env and pinned weights from R2, serves
 keys `VAST_API_KEY`, `SAM_SSH_KEY`, `R2_ENDPOINT`, `R2_BUCKET`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`. Attach SSH immediately after create;
 always release the labelled instance. Headline scoring remains correct/all.
+
+vLLM (independent engine, same exam):
+
+```sh
+PYTHONPATH=. python -m tools.start_qwen8b_vllm \
+  --eval-bundle <bundle-with-qwen8b_r2_vllm-plans> \
+  --eval-output outputs/qwen8b-r2-vllm \
+  --eval-phase both \
+  --authorization-note 'Approved self-hosted qwen8b R2 vLLM 4090 run'
+```
+
+`eval_local` still uses 12 slots. vLLM may batch those 12 internally. Do not
+change JPEG size, prompts, max_tokens, or client concurrency to fit VRAM.
 
 Hard-answer profiles omit the threshold flags. Use a fresh output path per phase;
 the public CLI refuses an existing run. The ledger supports bounded continuation,

@@ -39,11 +39,18 @@ budget; use explicit `--resume` for an interrupted run, never a fresh ledger to
 reset that budget. The runner records deployment and threshold identities and
 keeps historical results. Shared-sheet publication remains a separate request.
 
-This branch's self-hosted Qwen3-VL-8B path is profile `qwen8b_r2_host`
+This branch's self-hosted Qwen3-VL-8B HF path is profile `qwen8b_r2_host`
 (`execution=self_hosted_r2`): restore the packed env and pinned weights from R2,
 serve with `tools.qwen8b.serve`, and score with `tools.qwen8b.eval_local` through
 `tools.start_qwen8b_r2`. Do not use a vLLM `qwen8b_selfhost` profile or the
 OpenRouter `qwen8b` Parasail cell for that comparison.
+
+An independently authorized serving engine is profile `qwen8b_r2_vllm` via
+`tools.start_qwen8b_vllm` (vLLM OpenAI server, same R2 weights revision, bf16).
+It does not replace or relabel the HF run. Unified-frame-120-v2 exam rules stay
+exactly as below: frozen JPEGs, prompts, parser, temperature, max_tokens=30,
+thresholds, retries, and **12 queue slots**. Do not lower client concurrency,
+shrink images, truncate context, or shorten outputs to fit a GPU.
 
 The current variant uses exact 1 FPS shared 720px JPEGs, current-image API prompts,
 explicit effort settings when supported, and exact JSON string `"true"`/`"false"`

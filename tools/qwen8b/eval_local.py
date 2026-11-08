@@ -137,11 +137,14 @@ def main(argv=None):
         parser.error("no inference without explicit --execute")
     bundle_digest = verify_bundle(args.bundle)
     args.output.mkdir(parents=True, exist_ok=False)
+    config = json.loads((args.bundle / "configs" / (args.model + ".json")).read_text())
     write_new(args.output / "run-manifest.json", {
         "bundle_sha256": bundle_digest, "runner_sha256": file_hash(__file__),
         "alias": args.model, "endpoint": args.endpoint, "phase": args.phase,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "authorization": args.authorization_note, "execution": "self_hosted_r2",
+        "engine": config.get("engine", "transformers"),
+        "engine_version": config.get("engine_version"),
         "slots_per_model": 12})
     execute(args.model, args.bundle, args.output, args.endpoint, bundle_digest, args.phase)
     status = json.loads((args.output / args.model / "status.json").read_text())
