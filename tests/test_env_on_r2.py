@@ -55,6 +55,8 @@ def test_new_models_registered_with_pinned_revisions():
     hf_env = registry.env_of("qwen8b")
     assert vllm_env["r2_key"] != hf_env["r2_key"]
     assert vllm_env["r2_key"] == "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz"
+    assert vllm_env.get("complete") is False
+    assert "vllm.entrypoints.openai.api_server" in vllm_env["build"]["verify_modules"]
     assert "cu128-py312-vllm0310" not in vllm_env["r2_key"]
     assert vllm_env["unpack_to"] != hf_env["unpack_to"]
     assert vllm_env["build"]["flash_attn"] is False
@@ -189,6 +191,8 @@ def test_build_script_includes_flash_attn_by_default():
     assert "PYTHONNOUSERSITE=1" in script
     assert "python -s -m pip" in script
     assert "sys.flags.no_user_site" in script
+    assert "upgrade pip wheel packaging ninja" in script
+    assert "upgrade pip setuptools wheel" not in script
 
 
 def test_build_script_skips_flash_attn_when_false():
@@ -292,3 +296,20 @@ def test_upload_only_uploads_without_building(tmp_path, monkeypatch, capsys):
     assert fake.uploaded[0][0] == str(tarball)
     # the side-manifest was written too
     assert any(k.endswith(".json") for (_b, k) in fake.objects)
+
+
+def test_pack_fails_closed_on_missing_conda_files():
+    pack_src = Path(build_env.__file__).read_text()
+    line = [ln for ln in pack_src.splitlines() if "conda-pack -p" in ln][0]
+    assert "--ignore-missing-files" not in line
+
+
+def test_assert_prefix_files_detects_conda_meta_holes(tmp_path):
+    prefix = tmp_path / "env"
+    (prefix / "conda-meta").mkdir(parents=True)
+    (prefix / "conda-meta" / "setuptools-84.2.1-py.json").write_text(json.dumps({
+        "name": "setuptools", "version": "84.2.1",
+        "files": ["lib/python3.12/site-packages/setuptools/_distutils/compilers/errors.py"],
+    }))
+    with pytest.raises(RuntimeError, match="conda-meta lists files missing"):
+        build_env._assert_prefix_files(prefix)

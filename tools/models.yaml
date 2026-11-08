@@ -135,6 +135,7 @@ models:
       manifest_key: envs/qwen8b-vllm/cu130-py312-vllm0310-ada.json
       sha256: 24f1eb0cc264a9794979eb6c2225eca47d67d68025407d51db86aa171ce7ba7e
       size: 4252947071                       # 4.25 GB; HEAD+GET sha verified 2026-11-08
+      complete: false                        # mixed conda 84.2.1 + pip 80.10.2 setuptools
       unpack_to: /opt/env/qwen8b-vllm
       activate_rel: bin/activate
       build:
@@ -142,6 +143,9 @@ models:
         install_default_torch: false         # let vllm==0.31.0 pull torch 2.13.x
         require_cuda: false                  # pack CUDA wheels on a CPU VM; GPU only restores
         verify_imports: [vllm, filelock, tqdm]
+        verify_modules:
+          - vllm.entrypoints.openai.api_server
+          - torch.utils.cpp_extension
       compat:
         python: "3.12"
         cuda: "13.0"                         # torch 2.13.0+cu130; not the CUDA 12.8 image label

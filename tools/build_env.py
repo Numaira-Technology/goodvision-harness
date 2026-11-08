@@ -35,6 +35,8 @@ from tools import model_source, registry
 FROZEN_R2_KEYS = (
     "envs/qwen8b/cu128-py312-torch280-ada.tar.gz",
     "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz",
+    # Mixed conda setuptools 84.2.1 + pip 80.10.2; tarball files != RECORD.
+    "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz",
 )
 
 # Miniforge: a miniconda-family distribution defaulting to conda-forge, so the
@@ -139,7 +141,10 @@ rm -rf "{prefix}"
 conda create -y -p "{prefix}" -c conda-forge --override-channels python={python_ver}
 conda activate "{prefix}"
 export PYTHONNOUSERSITE=1
-python -s -m pip install --no-user --no-cache-dir --upgrade pip setuptools wheel packaging ninja
+python -s -m pip install --no-user --no-cache-dir --upgrade pip wheel packaging ninja
+# Do not `pip install --upgrade setuptools` on top of conda-forge setuptools:
+# that clobbers a subset of files, leaves conda-meta listing the rest, and
+# conda-pack --ignore-missing-files will silently drop the holes.
 {torch_step}
 python -s -m pip install --no-user --no-cache-dir -r "{requirements}"
 {flash_step}
@@ -180,9 +185,95 @@ set -euo pipefail
 source "{conda.parent.parent}/etc/profile.d/conda.sh"
 conda activate base
 python -m pip install --no-cache-dir conda-pack
-conda-pack -p "{prefix}" -o "{out}" --ignore-missing-files --force
+conda-pack -p "{prefix}" -o "{out}" --force
+# Fail closed if pip deleted conda-managed files. --ignore-missing-files
+# packed a mixed setuptools tree that imported modules the tarball omitted.
 """
     _run(["bash", "-c", script])
+
+
+def _assert_prefix_files(prefix: Path) -> dict:
+    """Fail closed on conda/pip file holes before conda-pack.
+
+    Checks: conda-meta listed files exist; pip RECORD hashes match on-disk
+    .py/.so (skip __pycache__ and foreign-python .pyc). Does not prove a
+    delayed serve import; call _isolated_smoke for that.
+    """
+    import base64
+    import csv
+    import hashlib
+    from collections import defaultdict
+
+    prefix = Path(prefix)
+    conda_meta = prefix / "conda-meta"
+    missing_conda = defaultdict(list)
+    if conda_meta.is_dir():
+        for spec in sorted(conda_meta.glob("*.json")):
+            try:
+                info = json.loads(spec.read_text())
+            except (OSError, ValueError):
+                continue
+            pkg = f"{info.get('name')}=={info.get('version')}"
+            for rel in info.get("files") or []:
+                rel = str(rel).lstrip("./")
+                if not rel or rel.endswith("/") or "__pycache__" in rel.split("/"):
+                    continue
+                if not (prefix / rel).is_file():
+                    missing_conda[pkg].append(rel)
+    if missing_conda:
+        preview = {k: v[:8] for k, v in list(missing_conda.items())[:6]}
+        raise RuntimeError(
+            "conda-meta lists files missing from the prefix (pip likely "
+            f"clobbered a conda package). conda-pack would drop them if "
+            f"ignore-missing-files were set: {preview}"
+        )
+
+    site = None
+    for cand in sorted(prefix.glob("lib/python*/site-packages")):
+        if cand.is_dir():
+            site = cand
+            break
+    record_mismatch = []
+    record_missing = []
+    checked = 0
+    if site is not None:
+        for dist in sorted(site.glob("*.dist-info")):
+            rec = dist / "RECORD"
+            if not rec.is_file():
+                continue
+            with rec.open(newline="") as fh:
+                for row in csv.reader(fh):
+                    if not row:
+                        continue
+                    rel, digest = row[0], row[1] if len(row) > 1 else ""
+                    if not rel or rel.endswith("/") or "__pycache__" in rel.split("/"):
+                        continue
+                    if rel.endswith(".pyc"):
+                        continue
+                    path = site / rel
+                    if not path.is_file():
+                        if rel.endswith((".py", ".so")):
+                            record_missing.append(f"{dist.name}:{rel}")
+                        continue
+                    if not digest.startswith("sha256=") or not rel.endswith((".py", ".so")):
+                        continue
+                    checked += 1
+                    got = base64.urlsafe_b64encode(
+                        hashlib.sha256(path.read_bytes()).digest()
+                    ).decode().rstrip("=")
+                    if f"sha256={got}" != digest:
+                        record_mismatch.append(f"{dist.name}:{rel}")
+    if record_missing or record_mismatch:
+        raise RuntimeError(
+            "pip RECORD does not match prefix files "
+            f"(missing={record_missing[:12]} mismatch={record_mismatch[:12]})"
+        )
+    return {
+        "conda_missing": 0,
+        "record_py_so_checked": checked,
+        "record_missing": 0,
+        "record_mismatch": 0,
+    }
 
 
 def _isolated_smoke(python: Path, prefix: Path, modules: tuple[str, ...]) -> dict:
@@ -196,7 +287,7 @@ def _isolated_smoke(python: Path, prefix: Path, modules: tuple[str, ...]) -> dic
         f"for name in {list(names)!r}:\n"
         "    mod = importlib.import_module(name)\n"
         "    path = os.path.realpath(getattr(mod, '__file__', '') or '')\n"
-        "    if not path.startswith(prefix + os.sep):\n"
+        "    if path and not path.startswith(prefix + os.sep):\n"
         "        raise SystemExit(f'import {name} resolved outside prefix: {path}')\n"
         "    loaded[name] = {'file': path, 'version': getattr(mod, '__version__', None)}\n"
         "import torch\n"
@@ -311,6 +402,10 @@ def main(argv=None):
         name for name in (build.get("verify_imports") or ())
         if str(name).isidentifier()
     )
+    serve_imports = tuple(
+        str(name) for name in (build.get("verify_modules") or ())
+        if str(name).strip()
+    )
     prefix = env_spec["unpack_to"]
     out = Path(args.out or f"/tmp/{args.model}-env.tar.gz")
     repo, rev = registry.weights_of(args.model)
@@ -327,6 +422,7 @@ def main(argv=None):
             sys.exit(f"--pack-only: missing prefix {prefix}; build it first")
         conda = _ensure_miniconda(args.conda_home)
         _log(f"pack-only {args.model} from {prefix}")
+        _assert_prefix_files(Path(prefix))
         _pack(conda, prefix, out)
     else:
         _log(f"building {args.model} (python={python_ver} arch={arch} "
@@ -335,6 +431,7 @@ def main(argv=None):
         conda = _ensure_miniconda(args.conda_home)
         _build_prefix(conda, prefix, args.requirements, python_ver, arch, flash_attn,
                       install_default_torch, require_cuda, extra_imports)
+        _assert_prefix_files(Path(prefix))
         if args.skip_pack:
             print(json.dumps({"model": args.model, "prefix": prefix, "packed": False,
                               "uploaded": False, "arch": arch}))
@@ -343,15 +440,16 @@ def main(argv=None):
     sha = _sha256(out)
     size = out.stat().st_size
     _log(f"packed {out} sha256={sha} size={size/1e9:.2f}GB")
-    isolate_modules = ("torch", "typing_extensions") + extra_imports
+    isolate_modules = ("torch", "typing_extensions") + extra_imports + serve_imports
     if not args.upload_only and out.is_file():
         _log(f"isolated restore check -> /tmp/{args.model}-isolated-restore")
-        _restore_tarball_isolated(
-            out, Path(f"/tmp/{args.model}-isolated-restore"), isolate_modules,
-        )
+        restored = Path(f"/tmp/{args.model}-isolated-restore")
+        _restore_tarball_isolated(out, restored, isolate_modules)
+        _assert_prefix_files(restored)
         prefix_py = Path(prefix) / "bin" / "python"
         if prefix_py.is_file():
             _isolated_smoke(prefix_py, Path(prefix), isolate_modules)
+            _assert_prefix_files(Path(prefix))
 
     if args.skip_upload:
         print(json.dumps({"model": args.model, "tarball": str(out), "sha256": sha,

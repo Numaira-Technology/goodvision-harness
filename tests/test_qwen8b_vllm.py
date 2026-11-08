@@ -11,10 +11,9 @@ from tools.qwen8b import eval_local, serve_vllm
 from tools.start_qwen8b_vllm import (
     MAX_DPH,
     HF_ENV_KEY,
-    SETUPTOOLS_COMPILERS_ERRORS,
+    INCOMPLETE_VLLM_KEY,
     _eligible_offers,
     _packed_python,
-    _patch_setuptools_distutils,
     _require_r2_pack,
     _verify_restored_env,
     _vllm_serve_remote,
@@ -74,16 +73,20 @@ def test_launcher_requires_r2_pack_and_does_not_pip_on_gpu():
     assert "python3 -m tools.build_env" not in src
     assert "_build_env" not in src
     assert "restore_env" in src
+    assert "_patch_setuptools" not in src
+    assert "SETUPTOOLS_COMPILERS_ERRORS" not in src
     from tools.start_qwen8b_vllm import EXPECTED_R2_KEY, EXPECTED_SHA256, EXPECTED_SIZE, OLD_VLLM_KEY
-    with pytest.raises(RuntimeError, match="does not pip-install"):
+    with pytest.raises(RuntimeError, match="incomplete"):
         _require_r2_pack({"r2_key": EXPECTED_R2_KEY, "sha256": ""})
     with pytest.raises(RuntimeError, match="HF env"):
         _require_r2_pack({"r2_key": HF_ENV_KEY, "sha256": "abc"})
     with pytest.raises(RuntimeError, match="superseded cu128"):
         _require_r2_pack({"r2_key": OLD_VLLM_KEY, "sha256": "abc"})
-    assert _require_r2_pack(
-        {"r2_key": EXPECTED_R2_KEY, "sha256": EXPECTED_SHA256, "size": EXPECTED_SIZE}
-    ) == EXPECTED_SHA256
+    with pytest.raises(RuntimeError, match="incomplete"):
+        _require_r2_pack(
+            {"r2_key": INCOMPLETE_VLLM_KEY, "sha256": EXPECTED_SHA256,
+             "size": EXPECTED_SIZE}
+        )
 
 
 def test_packed_python_is_beside_activate():
@@ -102,33 +105,6 @@ def test_vllm_serve_remote_keeps_exam_and_avoids_repo_pythonpath():
     assert "--enforce-eager" in remote
     assert "pip install" not in remote
     assert "python -m tools.build_env" not in remote
-
-
-def test_setuptools_compilers_errors_shim_defines_required_names():
-    ns: dict = {}
-    exec(SETUPTOOLS_COMPILERS_ERRORS, ns)
-    assert issubclass(ns["Error"], Exception)
-    assert issubclass(ns["UnknownFileType"], ns["Error"])
-
-
-def test_patch_setuptools_writes_compilers_errors_then_imports_api_server(monkeypatch):
-    captured = {"cmds": []}
-
-    def fake(cmd, **kwargs):
-        captured["cmds"].append(cmd[-1])
-        return "patched /opt/env/qwen8b-vllm/lib/python3.12/site-packages/" \
-               "setuptools/_distutils/compilers/errors.py bytes 204\n"
-
-    monkeypatch.setattr("tools.start_qwen8b_vllm.subprocess.check_output", fake)
-    _patch_setuptools_distutils(["ssh"], "/opt/env/qwen8b-vllm/bin/activate")
-    assert len(captured["cmds"]) == 2
-    write, probe = captured["cmds"]
-    assert "/opt/env/qwen8b-vllm/bin/python -s -c" in write
-    assert "compilers" in write and "errors.py" in write
-    assert "pip install" not in write
-    assert "vllm.entrypoints.openai.api_server" in probe
-    assert "source " not in write
-    assert "bash -lc" not in write
 
 
 def test_verify_restored_env_uses_absolute_python_and_surfaces_output(monkeypatch):
@@ -151,6 +127,8 @@ def test_verify_restored_env_uses_absolute_python_and_surfaces_output(monkeypatc
     assert "set -u" not in first
     assert "nvidia-smi" in first
     assert "torch.cuda.is_available" in first
+    assert "vllm.entrypoints.openai.api_server" in first
+    assert "torch.utils.cpp_extension" in first
 
 
 def test_calledprocesserror_str_hides_output_like_59781901():
@@ -245,5 +223,8 @@ def test_build_env_refuses_frozen_vllm_and_hf_keys():
     from tools.build_env import FROZEN_R2_KEYS, _refuse_frozen_key
     assert "envs/qwen8b/cu128-py312-torch280-ada.tar.gz" in FROZEN_R2_KEYS
     assert "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz" in FROZEN_R2_KEYS
+    assert "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz" in FROZEN_R2_KEYS
     with pytest.raises(SystemExit):
         _refuse_frozen_key("envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz")
+    with pytest.raises(SystemExit):
+        _refuse_frozen_key("envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz")
