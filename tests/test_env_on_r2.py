@@ -54,13 +54,21 @@ def test_new_models_registered_with_pinned_revisions():
     vllm_env = registry.env_of("qwen8b-vllm")
     hf_env = registry.env_of("qwen8b")
     assert vllm_env["r2_key"] != hf_env["r2_key"]
-    assert vllm_env["r2_key"].startswith("envs/qwen8b-vllm/")
+    assert vllm_env["r2_key"] == "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz"
+    assert "cu128-py312-vllm0310" not in vllm_env["r2_key"]
     assert vllm_env["unpack_to"] != hf_env["unpack_to"]
     assert vllm_env["build"]["flash_attn"] is False
     assert vllm_env["build"]["install_default_torch"] is False
     assert vllm_env["build"]["require_cuda"] is False
-    assert len(vllm_env["sha256"]) == 64
-    assert int(vllm_env["size"]) == 4236991211
+    assert vllm_env["compat"]["cuda"] == "13.0"
+    assert vllm_env["superseded"]["r2_key"] == "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz"
+    assert vllm_env["superseded"]["sha256"] == (
+        "2a3dcb1fc6a8d84439263512c65dae0bb576c50d4f559ae9f069407eb2e86db6"
+    )
+    assert vllm_env["sha256"] == (
+        "24f1eb0cc264a9794979eb6c2225eca47d67d68025407d51db86aa171ce7ba7e"
+    )
+    assert int(vllm_env["size"]) == 4252947071
 
 
 def test_unknown_model_raises():
@@ -179,6 +187,8 @@ def test_build_script_includes_flash_attn_by_default():
     assert "flash-attn==2.8.3.post2 causal-conv1d==1.7.0" in script
     assert "import torch, flash_attn, typing_extensions" in script
     assert "PYTHONNOUSERSITE=1" in script
+    assert "python -s -m pip" in script
+    assert "sys.flags.no_user_site" in script
 
 
 def test_build_script_skips_flash_attn_when_false():
@@ -192,6 +202,7 @@ def test_build_script_skips_flash_attn_when_false():
     assert "torch==2.8.0" in script
     assert "import torch, typing_extensions" in script
     assert "PYTHONNOUSERSITE=1" in script
+    assert "python -s -m pip" in script
 
 
 def test_build_script_always_installs_torch_and_requirements():
@@ -220,6 +231,13 @@ def test_build_script_cpu_pack_skips_cuda_device_assert():
     )
     assert "torch.cuda.is_available()" not in script
     assert "cpu-pack: CUDA wheels installed" in script
+    vllm = build_env._build_script(
+        Path("/opt/miniforge3/bin/conda"), "/opt/env/x",
+        "tools/qwen8b_vllm/requirements.txt", "8.9", "3.12",
+        flash_attn=False, install_default_torch=False, require_cuda=False,
+        extra_imports=("vllm", "filelock", "tqdm"),
+    )
+    assert "import torch, typing_extensions, vllm, filelock, tqdm" in vllm
     gpu = build_env._build_script(
         Path("/opt/miniforge3/bin/conda"), "/opt/env/x",
         "tools/x/requirements.txt", "8.9", "3.12",

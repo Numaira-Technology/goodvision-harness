@@ -40,10 +40,22 @@ PYTHONPATH=. python -m tools.build_env \
 ships its kernels. After upload, fill `env.sha256` / `env.size` in
 `tools/models.yaml` so later 4090 boots skip pip.
 
-R2 keys (versioned, new objects):
+R2 keys (versioned, new objects). CUDA in the name matches the torch
+wheel (`2.13.0+cu130`). Do not overwrite the first vLLM pack
+`envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz` (sha256 `2a3dcb1f…`;
+it omitted `typing_extensions` from the prefix) or the HF pack.
 
-- `envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz`
-- `envs/qwen8b-vllm/cu128-py312-vllm0310-ada.json`
+- `envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz`
+  sha256 `24f1eb0cc264a9794979eb6c2225eca47d67d68025407d51db86aa171ce7ba7e`
+  size `4252947071` (HEAD ContentLength and a full GET digest both match)
+- `envs/qwen8b-vllm/cu130-py312-vllm0310-ada.json`
+
+Pack with `PYTHONNOUSERSITE=1` / `python -s` so pip cannot satisfy deps
+from `~/.local`. After conda-pack, restore into a fresh directory and
+import torch/vllm with `python -s` before upload. Isolated CPU restore
+imported `torch 2.13.0+cu130` / `vllm 0.31.0` / `typing_extensions` from
+the prefix only. That is **not** a GPU serve: 4090 restore and vLLM
+startup remain unverified.
 
 Unpack prefix: `/opt/env/qwen8b-vllm` (not `/opt/env/qwen8b`).
 

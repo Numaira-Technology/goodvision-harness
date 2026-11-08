@@ -182,6 +182,22 @@ def test_diag_eligible_refuses_price_jump():
     assert ok[0]["id"] == 1
 
 
-def test_vllm_requirements_pin_typing_extensions():
+def test_vllm_requirements_pin_user_site_leaks():
     text = (ROOT / "tools/qwen8b_vllm/requirements.txt").read_text()
     assert "typing_extensions==4.16.0" in text
+    assert "filelock==4.2.9" in text
+    assert "tqdm==4.70.1" in text
+    lock = (ROOT / "tools/qwen8b_vllm/requirements.lock").read_text()
+    assert "typing_extensions==4.16.0" in lock
+    assert "filelock==4.2.9" in lock
+    assert "tqdm==4.70.1" in lock
+    assert "vllm==0.31.0" in lock
+    assert "torch==2.13.0" in lock
+
+
+def test_build_env_refuses_frozen_vllm_and_hf_keys():
+    from tools.build_env import FROZEN_R2_KEYS, _refuse_frozen_key
+    assert "envs/qwen8b/cu128-py312-torch280-ada.tar.gz" in FROZEN_R2_KEYS
+    assert "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz" in FROZEN_R2_KEYS
+    with pytest.raises(SystemExit):
+        _refuse_frozen_key("envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz")

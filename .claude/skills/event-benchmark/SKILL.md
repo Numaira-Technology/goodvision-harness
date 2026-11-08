@@ -47,8 +47,9 @@ OpenRouter `qwen8b` Parasail cell for that comparison.
 
 An independently authorized serving engine is profile `qwen8b_r2_vllm` via
 `tools.start_qwen8b_vllm` (vLLM OpenAI server, same R2 weights revision, bf16).
-Pack that env on a CPU VM onto `envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz`;
-the 4090 only restores it. Do not overwrite the HF qwen8b pack. It does not
+Pack that env on a CPU VM onto `envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz`
+(torch `+cu130`; keep the earlier `cu128-…vllm0310` object). The 4090 only
+restores it. Do not overwrite the HF qwen8b pack. CPU import ≠ GPU serve. It does not
 replace or relabel the HF run. Unified-frame-120-v2 exam rules stay
 exactly as below: frozen JPEGs, prompts, parser, temperature, max_tokens=30,
 thresholds, retries, and **12 queue slots**. Do not lower client concurrency,

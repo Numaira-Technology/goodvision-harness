@@ -221,8 +221,10 @@ PYTHONPATH=. python -m tools.start_qwen8b_vllm \
 `eval_local` still uses 12 slots. vLLM may batch those 12 internally. Do not
 change JPEG size, prompts, max_tokens, or client concurrency to fit VRAM.
 Pack the vLLM conda env on a CPU VM and store it at
-`envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz`; the 4090 only restores that
-object plus the existing weight prefix. Do not overwrite the HF qwen8b pack.
+`envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz` (torch `2.13.0+cu130`;
+the previous `cu128-…vllm0310` object is kept for provenance). The 4090
+only restores that object plus the existing weight prefix. Do not
+overwrite the HF qwen8b pack. A CPU import check is not a GPU serve.
 
 Hard-answer profiles omit the threshold flags. Use a fresh output path per phase;
 the public CLI refuses an existing run. The ledger supports bounded continuation,

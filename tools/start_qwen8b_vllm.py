@@ -163,7 +163,7 @@ def _require_r2_pack(env_spec: dict) -> str:
             "`PYTHONPATH=. python -m tools.build_env --model qwen8b-vllm "
             "--requirements tools/qwen8b_vllm/requirements.txt` "
             "and fill env.sha256/size. The 4090 only restores "
-            "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz; "
+            f"{env_spec.get('r2_key') or 'the versioned qwen8b-vllm R2 key'}; "
             "it does not pip-install vLLM."
         )
     return sha

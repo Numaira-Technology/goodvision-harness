@@ -31,6 +31,12 @@ from pathlib import Path
 
 from tools import model_source, registry
 
+# Never overwrite these published objects. New packs get a new r2_key.
+FROZEN_R2_KEYS = (
+    "envs/qwen8b/cu128-py312-torch280-ada.tar.gz",
+    "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz",
+)
+
 # Miniforge: a miniconda-family distribution defaulting to conda-forge, so the
 # build is not blocked by the Anaconda defaults' Terms-of-Service gate.
 MINICONDA_URL = ("https://github.com/conda-forge/miniforge/releases/latest/"
@@ -67,7 +73,8 @@ def _ensure_miniconda(home):
 
 
 def _build_script(conda, prefix, requirements, python_ver, arch, flash_attn=True,
-                  install_default_torch=True, require_cuda=True):
+                  install_default_torch=True, require_cuda=True,
+                  extra_imports=()):
     """The bash recipe that creates + fills the env -- a pure, testable string.
 
     ``flash_attn`` gates the slow compile-once step: when False, flash-attn and
@@ -84,7 +91,7 @@ def _build_script(conda, prefix, requirements, python_ver, arch, flash_attn=True
         flash_step = (
             f'export TORCH_CUDA_ARCH_LIST="{arch}"\n'
             'export MAX_JOBS="${MAX_JOBS:-4}"\n'
-            'python -m pip install --no-cache-dir --no-build-isolation \\\n'
+            'python -s -m pip install --no-user --no-cache-dir --no-build-isolation \\\n'
             '  flash-attn==2.8.3.post2 causal-conv1d==1.7.0'
         )
         cuda_check = (
@@ -93,8 +100,9 @@ def _build_script(conda, prefix, requirements, python_ver, arch, flash_attn=True
             'assert torch.version.cuda, "packed torch is not a CUDA wheel"\n'
             'print("cpu-pack: CUDA wheels installed; device check deferred to GPU restore")'
         )
+        extra = (", " + ", ".join(extra_imports)) if extra_imports else ""
         verify = (
-            "import torch, flash_attn, typing_extensions\n"
+            f"import torch, flash_attn, typing_extensions{extra}\n"
             'print("torch", torch.__version__, "cuda", torch.version.cuda)\n'
             'print("flash_attn", flash_attn.__version__)\n'
             f"{cuda_check}"
@@ -107,14 +115,15 @@ def _build_script(conda, prefix, requirements, python_ver, arch, flash_attn=True
             'assert torch.version.cuda, "packed torch is not a CUDA wheel"\n'
             'print("cpu-pack: CUDA wheels installed; device check deferred to GPU restore")'
         )
+        extra = (", " + ", ".join(extra_imports)) if extra_imports else ""
         verify = (
-            "import torch, typing_extensions\n"
+            f"import torch, typing_extensions{extra}\n"
             'print("torch", torch.__version__, "cuda", torch.version.cuda)\n'
             f"{cuda_check}"
         )
     if install_default_torch:
         torch_step = (
-            "python -m pip install --no-cache-dir torch==2.8.0 torchvision==0.23.0 \\\n"
+            "python -s -m pip install --no-user --no-cache-dir torch==2.8.0 torchvision==0.23.0 \\\n"
             "  --index-url https://download.pytorch.org/whl/cu128"
         )
     else:
@@ -126,25 +135,36 @@ def _build_script(conda, prefix, requirements, python_ver, arch, flash_attn=True
     return f"""
 set -euo pipefail
 {conda_sh}
+rm -rf "{prefix}"
 conda create -y -p "{prefix}" -c conda-forge --override-channels python={python_ver}
 conda activate "{prefix}"
 export PYTHONNOUSERSITE=1
-python -m pip install --no-cache-dir --upgrade pip setuptools wheel packaging ninja
+python -s -m pip install --no-user --no-cache-dir --upgrade pip setuptools wheel packaging ninja
 {torch_step}
-python -m pip install --no-cache-dir -r "{requirements}"
+python -s -m pip install --no-user --no-cache-dir -r "{requirements}"
 {flash_step}
-python - <<'PY'
+python -s - <<'PY'
+import sys
+assert sys.flags.no_user_site, "verify must run with python -s"
 {verify}
+for _name, _mod in list(sys.modules.items()):
+    _f = getattr(_mod, "__file__", None)
+    if not _f:
+        continue
+    if ".local/lib/python" in _f:
+        raise SystemExit(f"user-site leak: {{_name}} from {{_f}}")
+print("isolated prefix ok", sys.executable)
 PY
 """
 
 
 def _build_prefix(conda, prefix, requirements, python_ver, arch, flash_attn=True,
-                  install_default_torch=True, require_cuda=True):
+                  install_default_torch=True, require_cuda=True, extra_imports=()):
     """Create the conda env at ``prefix`` and install the full stack into it."""
     script = _build_script(conda, prefix, requirements, python_ver, arch, flash_attn,
-                           install_default_torch, require_cuda)
-    _run(["bash", "-c", script], env={**os.environ, "HF_HUB_DISABLE_XET": "1"})
+                           install_default_torch, require_cuda, extra_imports)
+    _run(["bash", "-c", script], env={**os.environ, "HF_HUB_DISABLE_XET": "1",
+                                      "PYTHONNOUSERSITE": "1"})
 
 
 def _pack(conda, prefix, out):
@@ -165,7 +185,59 @@ conda-pack -p "{prefix}" -o "{out}" --ignore-missing-files --force
     _run(["bash", "-c", script])
 
 
+def _isolated_smoke(python: Path, prefix: Path, modules: tuple[str, ...]) -> dict:
+    """Import modules with python -s and require every file to live under prefix."""
+    names = tuple(modules) or ("torch", "typing_extensions")
+    script = (
+        "import importlib, os, sys\n"
+        "assert sys.flags.no_user_site, 'need python -s'\n"
+        f"prefix = os.path.realpath({str(prefix)!r})\n"
+        "loaded = {}\n"
+        f"for name in {list(names)!r}:\n"
+        "    mod = importlib.import_module(name)\n"
+        "    path = os.path.realpath(getattr(mod, '__file__', '') or '')\n"
+        "    if not path.startswith(prefix + os.sep):\n"
+        "        raise SystemExit(f'import {name} resolved outside prefix: {path}')\n"
+        "    loaded[name] = {'file': path, 'version': getattr(mod, '__version__', None)}\n"
+        "import torch\n"
+        "print('torch', torch.__version__, 'cuda', torch.version.cuda)\n"
+        "print('loaded', loaded)\n"
+    )
+    env = {**os.environ, "PYTHONNOUSERSITE": "1", "PYTHONPATH": ""}
+    env.pop("PYTHONHOME", None)
+    proc = subprocess.run(
+        [str(python), "-s", "-c", script],
+        check=True, env=env, capture_output=True, text=True,
+    )
+    _log(proc.stdout.strip())
+    if proc.stderr.strip():
+        _log(proc.stderr.strip())
+    return {"stdout": proc.stdout, "modules": list(names)}
+
+
+def _restore_tarball_isolated(tarball: Path, dest: Path, modules: tuple[str, ...]) -> dict:
+    """Extract + conda-unpack into a fresh directory and smoke-import in isolation."""
+    import shutil
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    _run(["tar", "-xzf", str(tarball), "-C", str(dest)])
+    unpacker = dest / "bin" / "conda-unpack"
+    python = dest / "bin" / "python"
+    if unpacker.is_file():
+        _run([str(python), str(unpacker)] if python.is_file() else [str(unpacker)])
+    if not python.is_file():
+        raise RuntimeError(f"packed python missing after restore: {python}")
+    return _isolated_smoke(python, dest, modules)
+
+
+def _refuse_frozen_key(r2_key: str) -> None:
+    if r2_key in FROZEN_R2_KEYS:
+        sys.exit(f"refusing to upload over frozen env key {r2_key}")
+
+
 def _upload(env_spec, name, tarball, compat, repo_rev):
+    _refuse_frozen_key(env_spec["r2_key"])
     client = model_source.r2_client()
     if client is None:
         sys.exit("no R2 client: export read-write R2_* first")
@@ -235,12 +307,15 @@ def main(argv=None):
     # Wheel-only stacks (vLLM) may be conda-packed on a CPU VM; GPU restore
     # still uses the CUDA wheels. flash-attn compiles keep require_cuda.
     require_cuda = bool(build.get("require_cuda", True)) or flash_attn
+    extra_imports = tuple(
+        name for name in (build.get("verify_imports") or ())
+        if str(name).isidentifier()
+    )
     prefix = env_spec["unpack_to"]
     out = Path(args.out or f"/tmp/{args.model}-env.tar.gz")
     repo, rev = registry.weights_of(args.model)
-    # Refuse to clobber the published HF qwen8b pack even if someone retargets --model.
-    if env_spec.get("r2_key") == "envs/qwen8b/cu128-py312-torch280-ada.tar.gz" and args.model != "qwen8b":
-        sys.exit("refusing to upload over the frozen HF qwen8b env key")
+    if not args.skip_upload:
+        _refuse_frozen_key(env_spec["r2_key"])
 
     if args.upload_only:
         if not out.is_file():
@@ -259,7 +334,7 @@ def main(argv=None):
              f"require_cuda={require_cuda})")
         conda = _ensure_miniconda(args.conda_home)
         _build_prefix(conda, prefix, args.requirements, python_ver, arch, flash_attn,
-                      install_default_torch, require_cuda)
+                      install_default_torch, require_cuda, extra_imports)
         if args.skip_pack:
             print(json.dumps({"model": args.model, "prefix": prefix, "packed": False,
                               "uploaded": False, "arch": arch}))
@@ -268,13 +343,20 @@ def main(argv=None):
     sha = _sha256(out)
     size = out.stat().st_size
     _log(f"packed {out} sha256={sha} size={size/1e9:.2f}GB")
+    isolate_modules = ("torch", "typing_extensions") + extra_imports
+    if not args.upload_only and out.is_file():
+        _log(f"isolated restore check -> /tmp/{args.model}-isolated-restore")
+        _restore_tarball_isolated(
+            out, Path(f"/tmp/{args.model}-isolated-restore"), isolate_modules,
+        )
+        prefix_py = Path(prefix) / "bin" / "python"
+        if prefix_py.is_file():
+            _isolated_smoke(prefix_py, Path(prefix), isolate_modules)
 
     if args.skip_upload:
         print(json.dumps({"model": args.model, "tarball": str(out), "sha256": sha,
                           "size": size, "arch": arch, "uploaded": False}))
         return
-    if env_spec.get("r2_key") == "envs/qwen8b/cu128-py312-torch280-ada.tar.gz" and args.model == "qwen8b-vllm":
-        sys.exit("refusing to upload qwen8b-vllm over the frozen HF qwen8b env key")
     manifest = _upload(env_spec, args.model, out, compat, f"{repo}@{rev}")
     print(json.dumps({"model": args.model, "r2_key": manifest["r2_key"],
                       "sha256": manifest["sha256"], "size": manifest["size"],

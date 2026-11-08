@@ -140,7 +140,9 @@ def pull_env(env, *, client=None, bucket=None, scratch=None):
     unpacker = unpack_to / "bin" / "conda-unpack"
     if unpacker.is_file():
         _log("running conda-unpack")
-        subprocess.run([str(unpacker)], check=True)
+        py = unpack_to / "bin" / "python"
+        cmd = [str(py), str(unpacker)] if py.is_file() else [str(unpacker)]
+        subprocess.run(cmd, check=True)
 
     activate = Path(_activate_path(env))
     if not activate.is_file():
