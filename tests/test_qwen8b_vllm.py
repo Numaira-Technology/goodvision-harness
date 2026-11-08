@@ -15,6 +15,7 @@ from tools.start_qwen8b_vllm import (
     _eligible_offers,
     _packed_python,
     _require_r2_pack,
+    _smoke,
     _verify_restored_env,
     _vllm_serve_remote,
 )
@@ -142,6 +143,27 @@ def test_calledprocesserror_str_hides_output_like_59781901():
     )
     assert "ModuleNotFoundError" not in str(err)
     assert err.output == "ModuleNotFoundError: vllm\n"
+
+
+def test_smoke_uses_frozen_jpeg_and_surfaces_http_body(monkeypatch, tmp_path):
+    import tools.start_qwen8b_vllm as launcher
+    from io import BytesIO
+    from urllib.error import HTTPError
+
+    src = Path(launcher.__file__).read_text()
+    assert "/9j/4AAQSkZJRgABAQAAAQABAAD" not in src
+    assert "_smoke(opener, args.eval_bundle)" in src
+    monkeypatch.setattr(launcher, "_smoke_body", lambda bundle: {"model": "x"})
+
+    class Boom:
+        def open(self, req, timeout=0):
+            raise HTTPError(
+                "http://127.0.0.1/v1/chat/completions", 400, "Bad Request",
+                hdrs=None, fp=BytesIO(b'{"error":{"message":"image too small"}}'),
+            )
+
+    with pytest.raises(RuntimeError, match="image too small"):
+        _smoke(Boom(), tmp_path)
 
 
 def test_eligible_offers_reject_expensive_or_multi_gpu():

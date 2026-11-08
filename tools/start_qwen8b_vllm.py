@@ -129,30 +129,39 @@ def _wait_ready(process, timeout=25 * 60):
     raise RuntimeError("vLLM did not become ready in time")
 
 
-def _smoke(opener):
-    """One official-shaped request (JPEG data URI, max_tokens=30, temperature 0)."""
+def _smoke_body(bundle: Path) -> dict:
+    """First frozen validation unit; 1x1 JPEGs 400 on Qwen3-VL (instance 59801094)."""
+    from tools.unified_benchmark.adapters import request_body
+
+    config = json.loads((bundle / "configs" / "qwen8b_r2_vllm.json").read_text())
+    plan = json.loads((bundle / "plans" / "qwen8b_r2_vllm-validation.json").read_text())
+    units = plan.get("units") or []
+    if not units:
+        raise RuntimeError("no validation units for vLLM smoke")
+    _url, body = request_body(config, units[0], bundle)
+    body["model"] = MODEL_ID
+    return body
+
+
+def _smoke(opener, bundle: Path):
+    """One official-shaped request (frozen 720px JPEG, max_tokens=30, temperature 0)."""
     url = f"http://127.0.0.1:{H.LOCAL_PORT}/v1/chat/completions"
-    # 1x1 JPEG is only connectivity; official eval uses frozen 720px frames.
-    tiny = (
-        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBwgHBgkIBwgKCgkLDRYPDQwMDRsUFRAWIB0iIiAd"
-        "Hx8kKDQsJCYxJx8fLT0tMTU3Ojo6Iys/RD84QzQ5OjcBCgoKDQwNGg8PGjclHyU3Nzc3Nzc3Nzc3"
-        "Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3N//AABEIAAEAAQMBEQACEQEDEQH/"
-        "xAAbAAABBQEBAAAAAAAAAAAAAAADAAIEBQYBB//EABQBAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEA"
-        "AhEDEQA/AKpAAf/Z"
-    )
-    body = {
-        "model": MODEL_ID,
-        "temperature": 0,
-        "max_tokens": 30,
-        "messages": [{"role": "user", "content": [
-            {"type": "text", "text": "Is any fighting visible in the current image?"},
-            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + tiny}},
-        ]}],
-    }
+    body = _smoke_body(bundle)
     req = Request(url, data=json.dumps(body).encode(),
                   headers={"Content-Type": "application/json"})
-    with opener.open(req, timeout=120) as resp:
-        payload = json.load(resp)
+    try:
+        with opener.open(req, timeout=120) as resp:
+            payload = json.load(resp)
+    except URLError as error:
+        detail = ""
+        raw = getattr(error, "read", None)
+        if callable(raw):
+            try:
+                detail = raw().decode("utf-8", "replace")[:2000]
+            except OSError:
+                detail = ""
+        code = getattr(error, "code", None)
+        raise RuntimeError(f"smoke HTTP {code}: {detail or error}") from error
     model = payload.get("model")
     if model and model != MODEL_ID:
         raise RuntimeError(f"smoke served model mismatch: {model}")
@@ -388,7 +397,7 @@ def main() -> int:
 
         snapshot = _remote_snapshot(ssh)
         args.eval_output.parent.mkdir(parents=True, exist_ok=True)
-        vllm_log = args.eval_output.parent / "vllm-server.log"
+        vllm_log = args.eval_output.parent / f"vllm-server-{instance_id}.log"
         worker = _server_process(ssh, activate, snapshot, vllm_log)
         _wait_ready(worker)
         smi_serve = subprocess.check_output(
@@ -397,7 +406,7 @@ def main() -> int:
         )
         print("nvidia-smi after vLLM ready:\n" + smi_serve, flush=True)
         opener = build_opener(ProxyHandler({}))
-        _smoke(opener)
+        _smoke(opener, args.eval_bundle)
 
         _status(args.status_file,
                 f"# qwen8b_r2_vllm\nPhase: official-eval @12 slots\nInstance: {instance_id}\n"
