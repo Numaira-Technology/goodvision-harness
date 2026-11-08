@@ -169,21 +169,35 @@ def _require_r2_pack(env_spec: dict) -> str:
     return sha
 
 
+def _packed_python(activate: str) -> str:
+    """Interpreter next to conda-pack's activate script (bin/python)."""
+    return str(Path(activate).parent / "python")
+
+
 def _verify_restored_env(ssh, activate: str) -> None:
     """Import check only. Missing modules are a pack bug, not a GPU pip job.
 
-    Do not `set -u` around conda-pack activate (it reads possibly-unset
-    ``PS1`` / ``CONDA_PREFIX``). Do not wrap a heredoc in ``bash -lc`` over
-    SSH — that hid the traceback on instance 59781901 (exit 1, no stdout).
+    Instance 59781901 ran ``bash -lc`` + ``source activate`` + ``set -u`` + a
+    heredoc, then printed ``CalledProcessError`` without stdout. The GPU is
+    gone, so that traceback cannot be recovered. Call the packed interpreter
+    by absolute path (do not depend on PATH after conda-pack activate), use
+    ``python -c`` (no heredoc / ``bash -lc``), and keep the remote output.
     """
+    python = _packed_python(activate)
+    probe = (
+        "import sys\n"
+        "print('executable', sys.executable)\n"
+        "import vllm, torch\n"
+        "print('vllm', getattr(vllm, '__version__', 'unknown'))\n"
+        "print('torch', torch.__version__, 'cuda', torch.version.cuda)\n"
+        "assert torch.version.cuda, 'restored torch is not a CUDA wheel'\n"
+    )
     remote = (
-        f"set +u; source {shlex.quote(activate)}; "
-        "python -c " + shlex.quote(
-            "import vllm, torch\n"
-            "print('vllm', getattr(vllm, '__version__', 'unknown'))\n"
-            "print('torch', torch.__version__, 'cuda', torch.version.cuda)\n"
-            "assert torch.version.cuda, 'restored torch is not a CUDA wheel'\n"
-        )
+        "set +u; "
+        "(command -v nvidia-smi >/dev/null && "
+        "nvidia-smi --query-gpu=driver_version,name --format=csv,noheader) "
+        "|| echo nvidia-smi=n/a; "
+        f"{shlex.quote(python)} -c {shlex.quote(probe)}"
     )
     try:
         out = subprocess.check_output(
