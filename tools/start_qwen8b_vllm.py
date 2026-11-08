@@ -1,8 +1,9 @@
-"""Rent one 4090, build/restore the vLLM env, serve, official @12 eval, release.
+"""Rent one 4090, restore the vLLM env from R2, serve, official @12 eval, release.
 
-Exam protocol is unchanged: 12 client slots via tools.qwen8b.eval_local,
-frozen JPEGs, prompts, parser, temperature 0, max_tokens 30. Only the serving
-engine and packed env differ from qwen8b_r2_host. Always release the instance.
+The conda-pack is built on a CPU VM and uploaded to a versioned R2 key first.
+This launcher does not pip-install vLLM on the GPU. Exam protocol is unchanged:
+12 client slots via tools.qwen8b.eval_local, frozen JPEGs, prompts, parser,
+temperature 0, max_tokens 30. Always release the instance.
 """
 from __future__ import annotations
 
@@ -31,12 +32,6 @@ ENV_NAME = "qwen8b-vllm"
 HF_ENV_KEY = "envs/qwen8b/cu128-py312-torch280-ada.tar.gz"
 MAX_DPH = 1.85  # refuse silently upgrading past ~1.5x the prior $1.2296/hr
 STATUS_DEFAULT = Path("outputs/qwen8b-r2-vllm/STATUS.md")
-PACKED = "/tmp/qwen8b-vllm-env.tar.gz"
-BUILD_LOG = "/tmp/qwen8b-vllm-build.log"
-BUILD_OK = "/tmp/qwen8b-vllm-build.ok"
-BUILD_PID = "/tmp/qwen8b-vllm-build.pid"
-# First-time vLLM pip (torch + kernels) can exceed an hour on a slow PyPI path.
-BUILD_DEADLINE_SEC = 6 * 60 * 60
 
 
 def _status(path: Path | None, text: str) -> None:
@@ -156,77 +151,40 @@ def _remote_snapshot(ssh) -> str:
     return out.strip().splitlines()[-1]
 
 
-def _build_recipe() -> str:
-    return (
-        f"cd {H.REPO} && PYTHONPATH={H.REPO} python3 -m tools.build_env "
-        f"--model {ENV_NAME} --requirements tools/qwen8b_vllm/requirements.txt "
-        f"--skip-pack --skip-upload && touch {BUILD_OK}"
-    )
+def _require_r2_pack(env_spec: dict) -> str:
+    """Refuse to rent a GPU until the versioned vLLM tarball is on R2."""
+    if env_spec.get("r2_key") == HF_ENV_KEY:
+        raise RuntimeError("qwen8b-vllm must not reuse the HF env R2 key")
+    sha = str(env_spec.get("sha256") or "").strip()
+    if not sha:
+        raise RuntimeError(
+            "qwen8b-vllm R2 pack is missing (env.sha256 empty). "
+            "Pack CUDA wheels on the CPU VM with "
+            "`PYTHONPATH=. python -m tools.build_env --model qwen8b-vllm "
+            "--requirements tools/qwen8b_vllm/requirements.txt` "
+            "and fill env.sha256/size. The 4090 only restores "
+            "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz; "
+            "it does not pip-install vLLM."
+        )
+    return sha
 
 
-def _poll_build(ssh) -> str:
+def _verify_restored_env(ssh, activate: str) -> None:
+    """Import check only. Missing modules are a pack bug, not a GPU pip job."""
     remote = (
-        f"test -f {BUILD_OK} && echo BUILD_OK; "
-        f"if test -f {BUILD_PID}; then pid=$(cat {BUILD_PID}); "
-        f"if kill -0 $pid 2>/dev/null; then echo BUILD_RUNNING $pid; "
-        f"else echo BUILD_DEAD $pid; fi; fi; "
-        f"tr '\\r' '\\n' < {BUILD_LOG} 2>/dev/null | tail -n 6"
+        f"set +u; source {shlex.quote(activate)}; set -u; "
+        "python - <<'PY'\n"
+        "import vllm, torch\n"
+        "print('vllm', getattr(vllm, '__version__', 'unknown'))\n"
+        "print('torch', torch.__version__, 'cuda', torch.version.cuda)\n"
+        "assert torch.version.cuda, 'restored torch is not a CUDA wheel'\n"
+        "PY"
     )
-    return subprocess.check_output(
+    out = subprocess.check_output(
         [*ssh, "bash -lc " + shlex.quote(remote)],
-        text=True, timeout=45, stderr=subprocess.STDOUT,
+        text=True, timeout=120, stderr=subprocess.STDOUT,
     )
-
-
-def _build_env(ssh):
-    """Run pip/conda on the GPU box detached from the SSH stream.
-
-    Streaming a multi-GB pip download over the same SSH session previously
-    stalled keepalives ('Timeout, server not responding') and destroyed the
-    box mid-wheel. The exam is unchanged; this is only deploy-process isolation.
-    """
-    print("Building qwen8b-vllm prefix on the GPU (new R2 key; HF pack untouched)...",
-          flush=True)
-    start = (
-        f"rm -f {BUILD_OK}; "
-        f"nohup setsid bash -lc {shlex.quote(_build_recipe())} "
-        f"> {BUILD_LOG} 2>&1 < /dev/null & echo $! > {BUILD_PID}"
-    )
-    S.run([*ssh, "bash -lc " + shlex.quote(start)], timeout=60)
-    deadline = time.monotonic() + BUILD_DEADLINE_SEC
-    last = ""
-    while time.monotonic() < deadline:
-        try:
-            out = _poll_build(ssh)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
-            print(f"build poll ssh retry: {error}", flush=True)
-            time.sleep(20)
-            continue
-        if "BUILD_OK" in out.splitlines():
-            print(out, flush=True)
-            return
-        if any(line.startswith("BUILD_DEAD") for line in out.splitlines()):
-            raise RuntimeError(f"remote vLLM env build exited early:\n{out}")
-        tail = "\n".join(out.strip().splitlines()[-4:])
-        if tail != last:
-            print(tail, flush=True)
-            last = tail
-        time.sleep(30)
-    raise RuntimeError("vLLM env build did not finish in time")
-
-
-def _pack_and_upload(ssh, r2_env: dict):
-    env = registry.env_of(ENV_NAME)
-    if env["r2_key"] == HF_ENV_KEY:
-        raise RuntimeError("refusing to upload over the frozen HF qwen8b env")
-    print("Packing vLLM env and uploading to the versioned R2 key...", flush=True)
-    creds = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in r2_env.items())
-    inner = (
-        f"cd {H.REPO} && PYTHONPATH={H.REPO} python3 -m tools.build_env "
-        f"--model {ENV_NAME} --requirements tools/qwen8b_vllm/requirements.txt "
-        f"--pack-only --out {PACKED}"
-    )
-    S.run([*ssh, "bash -s"], input=creds + inner + "\n", timeout=60 * 60)
+    print(out, flush=True)
 
 
 def main() -> int:
@@ -256,9 +214,7 @@ def main() -> int:
         raise RuntimeError("Set R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY")
 
     env_spec = registry.env_of(ENV_NAME)
-    if env_spec["r2_key"] == HF_ENV_KEY:
-        raise RuntimeError("qwen8b-vllm must not reuse the HF env R2 key")
-    packed = bool(env_spec.get("sha256"))
+    _require_r2_pack(env_spec)
 
     vast = VastAI(api_key=api_key, retry=1)
     instance_id = None
@@ -323,17 +279,12 @@ def main() -> int:
             ssh_options=options, host=host, port=port, remote_dir=H.REPO,
             models=[(repo, rev)], cache_dir=H.CACHE, r2_env=r2_env, python="python3",
         )
-        if packed:
-            print("Restoring versioned vLLM packed env from R2...", flush=True)
-            activate = restore_env(
-                ssh_options=options, host=host, port=port, name=ENV_NAME,
-                remote_dir=H.REPO, r2_env=r2_env, python="python3",
-            )
-        else:
-            _status(args.status_file,
-                    f"# qwen8b_r2_vllm\nPhase: build-env\nInstance: {instance_id}\n")
-            _build_env(ssh)
-            activate = env_spec["unpack_to"].rstrip("/") + "/" + env_spec["activate_rel"]
+        print("Restoring versioned vLLM packed env from R2 (no GPU pip)...", flush=True)
+        activate = restore_env(
+            ssh_options=options, host=host, port=port, name=ENV_NAME,
+            remote_dir=H.REPO, r2_env=r2_env, python="python3",
+        )
+        _verify_restored_env(ssh, activate)
 
         snapshot = _remote_snapshot(ssh)
         worker = _server_process(ssh, activate, snapshot)
@@ -361,16 +312,6 @@ def main() -> int:
             raise RuntimeError(
                 f"official @12 eval_local exited {eval_code}; not retrying with fewer clients"
             )
-
-        if not packed and not args.skip_upload:
-            try:
-                S.stop_process(worker)
-            except OSError:
-                pass
-            worker = None
-            _status(args.status_file,
-                    f"# qwen8b_r2_vllm\nPhase: pack-upload\nInstance: {instance_id}\n")
-            _pack_and_upload(ssh, r2_env)
         exit_code = 0
     except KeyboardInterrupt:
         print("\nStopping vLLM GPU session...", flush=True)

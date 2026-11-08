@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from tools.qwen8b import eval_local, serve_vllm
-from tools.start_qwen8b_vllm import MAX_DPH, _build_recipe, _eligible_offers
+from tools.start_qwen8b_vllm import MAX_DPH, HF_ENV_KEY, _eligible_offers, _require_r2_pack
 from tools.unified_benchmark.contract import RULES
 from tools.unified_benchmark.preflight import model_configs
 
@@ -57,15 +57,19 @@ def test_serve_vllm_does_not_shrink_exam_inputs(tmp_path, monkeypatch):
     assert cfg["limit_mm_per_prompt"]["image"] == 1
 
 
-def test_vllm_env_build_is_detached_from_ssh_stream():
+def test_launcher_requires_r2_pack_and_does_not_pip_on_gpu():
     import tools.start_qwen8b_vllm as launcher
     src = Path(launcher.__file__).read_text()
-    assert "nohup setsid" in src
-    assert "90 * 60" not in src
-    recipe = _build_recipe()
-    assert "--skip-pack --skip-upload" in recipe
-    assert "tools/qwen8b_vllm/requirements.txt" in recipe
-    assert "ServerAliveCountMax=20" in src
+    assert "python3 -m tools.build_env" not in src
+    assert "_build_env" not in src
+    assert "restore_env" in src
+    with pytest.raises(RuntimeError, match="does not pip-install"):
+        _require_r2_pack({"r2_key": "envs/qwen8b-vllm/x.tar.gz", "sha256": ""})
+    with pytest.raises(RuntimeError, match="HF env"):
+        _require_r2_pack({"r2_key": HF_ENV_KEY, "sha256": "abc"})
+    assert _require_r2_pack(
+        {"r2_key": "envs/qwen8b-vllm/x.tar.gz", "sha256": "deadbeef"}
+    ) == "deadbeef"
 
 
 def test_eligible_offers_reject_expensive_or_multi_gpu():
