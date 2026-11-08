@@ -59,6 +59,8 @@ def test_new_models_registered_with_pinned_revisions():
     assert vllm_env["build"]["flash_attn"] is False
     assert vllm_env["build"]["install_default_torch"] is False
     assert vllm_env["build"]["require_cuda"] is False
+    assert len(vllm_env["sha256"]) == 64
+    assert int(vllm_env["size"]) == 4236991211
 
 
 def test_unknown_model_raises():

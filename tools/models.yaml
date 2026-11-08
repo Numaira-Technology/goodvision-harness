@@ -133,8 +133,8 @@ models:
     env:
       r2_key: envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz
       manifest_key: envs/qwen8b-vllm/cu128-py312-vllm0310-ada.json
-      sha256: ""                             # filled after first build_env upload
-      size: 0
+      sha256: 2a3dcb1fc6a8d84439263512c65dae0bb576c50d4f559ae9f069407eb2e86db6
+      size: 4236991211                       # 4.24 GB conda-pack tarball
       unpack_to: /opt/env/qwen8b-vllm
       activate_rel: bin/activate
       build:
