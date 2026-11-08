@@ -94,7 +94,7 @@ def _build_script(conda, prefix, requirements, python_ver, arch, flash_attn=True
             'print("cpu-pack: CUDA wheels installed; device check deferred to GPU restore")'
         )
         verify = (
-            "import torch, flash_attn\n"
+            "import torch, flash_attn, typing_extensions\n"
             'print("torch", torch.__version__, "cuda", torch.version.cuda)\n'
             'print("flash_attn", flash_attn.__version__)\n'
             f"{cuda_check}"
@@ -108,7 +108,7 @@ def _build_script(conda, prefix, requirements, python_ver, arch, flash_attn=True
             'print("cpu-pack: CUDA wheels installed; device check deferred to GPU restore")'
         )
         verify = (
-            "import torch\n"
+            "import torch, typing_extensions\n"
             'print("torch", torch.__version__, "cuda", torch.version.cuda)\n'
             f"{cuda_check}"
         )
@@ -128,6 +128,7 @@ set -euo pipefail
 {conda_sh}
 conda create -y -p "{prefix}" -c conda-forge --override-channels python={python_ver}
 conda activate "{prefix}"
+export PYTHONNOUSERSITE=1
 python -m pip install --no-cache-dir --upgrade pip setuptools wheel packaging ninja
 {torch_step}
 python -m pip install --no-cache-dir -r "{requirements}"

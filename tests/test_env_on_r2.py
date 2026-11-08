@@ -177,7 +177,8 @@ def _script(flash_attn):
 def test_build_script_includes_flash_attn_by_default():
     script = _script(True)
     assert "flash-attn==2.8.3.post2 causal-conv1d==1.7.0" in script
-    assert "import torch, flash_attn" in script
+    assert "import torch, flash_attn, typing_extensions" in script
+    assert "PYTHONNOUSERSITE=1" in script
 
 
 def test_build_script_skips_flash_attn_when_false():
@@ -189,7 +190,8 @@ def test_build_script_skips_flash_attn_when_false():
     assert "import torch, flash_attn" not in script
     # torch is still installed and still verified.
     assert "torch==2.8.0" in script
-    assert "import torch\n" in script
+    assert "import torch, typing_extensions" in script
+    assert "PYTHONNOUSERSITE=1" in script
 
 
 def test_build_script_always_installs_torch_and_requirements():

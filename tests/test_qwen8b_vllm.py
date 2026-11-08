@@ -154,3 +154,34 @@ def test_prepare_vllm_bundle_preserves_request_hashes(tmp_path):
     assert plan["units"][0]["frames"][0]["sha256"] == "0" * 64
     assert info["exam_unchanged"] is True
     assert (dest / "configs" / "qwen8b_r2_vllm.json").is_file()
+
+
+def test_diag_import_does_not_eval_or_prefetch():
+    from tools import diag_qwen8b_vllm_import as diag
+    src = Path(diag.__file__).read_text()
+    assert "from tools.qwen8b.eval_local" not in src
+    assert "prefetch_models" not in src
+    assert "serve_vllm" not in src
+    assert "eval_main" not in src
+    assert diag.MAX_DPH <= 1.50
+    inner = diag._old_verify_remote("/opt/env/qwen8b-vllm/bin/activate")
+    assert inner.startswith("bash -lc ")
+    assert "set -u" in inner
+    new = diag._new_verify_remote("/opt/env/qwen8b-vllm/bin/activate")
+    assert "/opt/env/qwen8b-vllm/bin/python" in new
+    assert "source " not in new
+
+
+def test_diag_eligible_refuses_price_jump():
+    from tools.diag_qwen8b_vllm_import import _eligible
+    with pytest.raises(RuntimeError, match="more expensive|authorization"):
+        _eligible([{"num_gpus": 1, "gpu_ram": 24564, "dph_total": 1.80}])
+    with pytest.raises(RuntimeError, match="more expensive|authorization"):
+        _eligible([{"num_gpus": 1, "gpu_ram": 49140, "dph_total": 1.21}])
+    ok = _eligible([{"num_gpus": 1, "gpu_ram": 24564, "dph_total": 1.21, "id": 1}])
+    assert ok[0]["id"] == 1
+
+
+def test_vllm_requirements_pin_typing_extensions():
+    text = (ROOT / "tools/qwen8b_vllm/requirements.txt").read_text()
+    assert "typing_extensions==4.16.0" in text
