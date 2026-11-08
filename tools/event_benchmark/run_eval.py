@@ -10,6 +10,7 @@ import base64
 import hashlib
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -118,6 +119,31 @@ def _post(url, body, key):
     if len(encoded) > 1024 * 1024:
         raise ValueError("oversized response")
     return json.loads(encoded, object_pairs_hook=_unique)
+
+
+def build_request(backend, model, qcore, uri, provider_context=None):
+    """Preserve the frozen envelopes; routing is a separately recorded variant."""
+    if backend == "language":
+        prompt = (f'{qcore} Answer only with compact JSON: '
+                  '{"answer": true} or {"answer": false}.')
+        body = {"model": model, "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": uri}}]}],
+            "max_tokens": CHAT_MAX_TOKENS, "temperature": TEMPERATURE}
+        url = os.environ.get("GOODVISION_CHAT_URL", CHAT_URL)
+    elif backend == "decision":
+        body = {"model": model,
+                "state": ["Surveillance video frame.",
+                          {"type": "image_url", "image_url": {"url": uri}}],
+                "questions": {"answer": {"type": "noul", "instructions": qcore,
+                    "criteria": {"true": "Yes — " + qcore, "false": "No — " + qcore}}}}
+        url = LUNA_URL
+    else:
+        raise ValueError("unknown backend " + backend)
+    if provider_context:
+        from tools.event_benchmark import evidence
+        body["provider"] = evidence.provider_body(provider_context)
+    return url, body
 
 
 def frame_score(backend, model, qcore, uri, key):

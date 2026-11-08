@@ -1,0 +1,15 @@
+--- a/src/goodvision_harness/videojev_service.py
++++ b/src/goodvision_harness/videojev_service.py
+@@ -775,10 +775,10 @@
+             Image.new("RGB", size, (127, 127, 127)).save(jpeg, format="JPEG")
+             windows.append({
+                 "prepared": runtime.prepare(
+-                    [jpeg.getvalue()] * 2, 2.0,
++                    [jpeg.getvalue()] * 2, 1.0,
+                     context=args.context, max_pixels=args.max_pixels,
+                 ),
+-                "question_template": template, "frame_times": [0.0, 0.5],
++                "question_template": template, "frame_times": [0.0, 1.0],
+             })
+         # Initialize native kernels and fixed text before accepting camera windows.
+         # These predictions are discarded, not published as event observations.
