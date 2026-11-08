@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from tools.qwen8b import eval_local, serve_vllm
-from tools.start_qwen8b_vllm import MAX_DPH, _eligible_offers
+from tools.start_qwen8b_vllm import MAX_DPH, _build_recipe, _eligible_offers
 from tools.unified_benchmark.contract import RULES
 from tools.unified_benchmark.preflight import model_configs
 
@@ -55,6 +55,17 @@ def test_serve_vllm_does_not_shrink_exam_inputs(tmp_path, monkeypatch):
     assert "mm-processor-kwargs" not in joined
     assert cfg["max_model_len"] >= 8192
     assert cfg["limit_mm_per_prompt"]["image"] == 1
+
+
+def test_vllm_env_build_is_detached_from_ssh_stream():
+    import tools.start_qwen8b_vllm as launcher
+    src = Path(launcher.__file__).read_text()
+    assert "nohup setsid" in src
+    assert "90 * 60" not in src
+    recipe = _build_recipe()
+    assert "--skip-pack --skip-upload" in recipe
+    assert "tools/qwen8b_vllm/requirements.txt" in recipe
+    assert "ServerAliveCountMax=20" in src
 
 
 def test_eligible_offers_reject_expensive_or_multi_gpu():

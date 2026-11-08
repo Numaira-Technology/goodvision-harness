@@ -32,6 +32,11 @@ HF_ENV_KEY = "envs/qwen8b/cu128-py312-torch280-ada.tar.gz"
 MAX_DPH = 1.85  # refuse silently upgrading past ~1.5x the prior $1.2296/hr
 STATUS_DEFAULT = Path("outputs/qwen8b-r2-vllm/STATUS.md")
 PACKED = "/tmp/qwen8b-vllm-env.tar.gz"
+BUILD_LOG = "/tmp/qwen8b-vllm-build.log"
+BUILD_OK = "/tmp/qwen8b-vllm-build.ok"
+BUILD_PID = "/tmp/qwen8b-vllm-build.pid"
+# First-time vLLM pip (torch + kernels) can exceed an hour on a slow PyPI path.
+BUILD_DEADLINE_SEC = 6 * 60 * 60
 
 
 def _status(path: Path | None, text: str) -> None:
@@ -151,15 +156,63 @@ def _remote_snapshot(ssh) -> str:
     return out.strip().splitlines()[-1]
 
 
-def _build_env(ssh):
-    print("Building qwen8b-vllm prefix on the GPU (new R2 key; HF pack untouched)...",
-          flush=True)
-    inner = (
+def _build_recipe() -> str:
+    return (
         f"cd {H.REPO} && PYTHONPATH={H.REPO} python3 -m tools.build_env "
         f"--model {ENV_NAME} --requirements tools/qwen8b_vllm/requirements.txt "
-        f"--skip-pack --skip-upload"
+        f"--skip-pack --skip-upload && touch {BUILD_OK}"
     )
-    S.run([*ssh, "bash -lc " + shlex.quote(inner)], timeout=90 * 60)
+
+
+def _poll_build(ssh) -> str:
+    remote = (
+        f"test -f {BUILD_OK} && echo BUILD_OK; "
+        f"if test -f {BUILD_PID}; then pid=$(cat {BUILD_PID}); "
+        f"if kill -0 $pid 2>/dev/null; then echo BUILD_RUNNING $pid; "
+        f"else echo BUILD_DEAD $pid; fi; fi; "
+        f"tr '\\r' '\\n' < {BUILD_LOG} 2>/dev/null | tail -n 6"
+    )
+    return subprocess.check_output(
+        [*ssh, "bash -lc " + shlex.quote(remote)],
+        text=True, timeout=45, stderr=subprocess.STDOUT,
+    )
+
+
+def _build_env(ssh):
+    """Run pip/conda on the GPU box detached from the SSH stream.
+
+    Streaming a multi-GB pip download over the same SSH session previously
+    stalled keepalives ('Timeout, server not responding') and destroyed the
+    box mid-wheel. The exam is unchanged; this is only deploy-process isolation.
+    """
+    print("Building qwen8b-vllm prefix on the GPU (new R2 key; HF pack untouched)...",
+          flush=True)
+    start = (
+        f"rm -f {BUILD_OK}; "
+        f"nohup setsid bash -lc {shlex.quote(_build_recipe())} "
+        f"> {BUILD_LOG} 2>&1 < /dev/null & echo $! > {BUILD_PID}"
+    )
+    S.run([*ssh, "bash -lc " + shlex.quote(start)], timeout=60)
+    deadline = time.monotonic() + BUILD_DEADLINE_SEC
+    last = ""
+    while time.monotonic() < deadline:
+        try:
+            out = _poll_build(ssh)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
+            print(f"build poll ssh retry: {error}", flush=True)
+            time.sleep(20)
+            continue
+        if "BUILD_OK" in out.splitlines():
+            print(out, flush=True)
+            return
+        if any(line.startswith("BUILD_DEAD") for line in out.splitlines()):
+            raise RuntimeError(f"remote vLLM env build exited early:\n{out}")
+        tail = "\n".join(out.strip().splitlines()[-4:])
+        if tail != last:
+            print(tail, flush=True)
+            last = tail
+        time.sleep(30)
+    raise RuntimeError("vLLM env build did not finish in time")
 
 
 def _pack_and_upload(ssh, r2_env: dict):
@@ -229,7 +282,8 @@ def main() -> int:
             "-i", str(key), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
             "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10",
             "-o", f"UserKnownHostsFile={Path(ssh_dir.name) / 'known_hosts'}",
-            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+            "-o", "TCPKeepAlive=yes",
+            "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=20",
         ]
         if args.resume_instance_id:
             inst = vast.show_instance(id=args.resume_instance_id) or {}
