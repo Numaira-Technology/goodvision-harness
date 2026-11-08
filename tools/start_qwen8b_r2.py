@@ -126,14 +126,19 @@ def _upload_repo(ssh):
         raise RuntimeError("repo upload failed")
 
 
-def _server_process(ssh, activate: str):
-    repo, rev = registry.weights_of("qwen8b")
-    remote = (
-        f"set -euo pipefail; source {shlex.quote(activate)}; "
+def _serve_remote(activate: str) -> str:
+    # conda-pack's activate reads $CONDA_PREFIX; `set -u` aborts before PATH is rewritten.
+    return (
+        f"set -eo pipefail; set +u; source {shlex.quote(activate)}; "
         f"cd {REPO} && exec env PYTHONPATH={REPO} HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 "
         f"python -m tools.qwen8b.serve --cache-dir {shlex.quote(CACHE)} "
         f"--host 127.0.0.1 --port 8000"
     )
+
+
+def _server_process(ssh, activate: str):
+    repo, rev = registry.weights_of("qwen8b")
+    remote = _serve_remote(activate)
     print(f"Starting qwen8b serve + SSH tunnel on :{LOCAL_PORT} ({repo}@{rev[:12]})...", flush=True)
     return subprocess.Popen(
         [*ssh[:-1], "-o", "ExitOnForwardFailure=yes",

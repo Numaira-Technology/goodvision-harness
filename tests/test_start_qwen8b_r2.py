@@ -9,7 +9,7 @@ import pytest
 
 from tools import registry
 from tools.qwen8b.eval_local import LocalTransport
-from tools.start_qwen8b_r2 import attach_key, wait_for_ssh
+from tools.start_qwen8b_r2 import _serve_remote, attach_key, wait_for_ssh
 from tools.unified_benchmark.preflight import model_configs
 
 
@@ -20,6 +20,14 @@ def test_qwen8b_registry_pins():
     env = registry.env_of("qwen8b")
     assert env["r2_key"] == "envs/qwen8b/cu128-py312-torch280-ada.tar.gz"
     assert env["build"]["flash_attn"] is True
+
+
+def test_serve_remote_disables_nounset_before_conda_activate():
+    remote = _serve_remote("/opt/env/qwen8b/bin/activate")
+    assert "set -u" not in remote.split("source", 1)[0]
+    assert "set +u" in remote
+    assert "source /opt/env/qwen8b/bin/activate" in remote
+    assert "python -m tools.qwen8b.serve" in remote
 
 
 def test_self_hosted_profile_skips_openrouter_pin():
