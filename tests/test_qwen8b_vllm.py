@@ -71,13 +71,16 @@ def test_launcher_requires_r2_pack_and_does_not_pip_on_gpu():
     assert "python3 -m tools.build_env" not in src
     assert "_build_env" not in src
     assert "restore_env" in src
+    from tools.start_qwen8b_vllm import EXPECTED_R2_KEY, EXPECTED_SHA256, EXPECTED_SIZE, OLD_VLLM_KEY
     with pytest.raises(RuntimeError, match="does not pip-install"):
-        _require_r2_pack({"r2_key": "envs/qwen8b-vllm/x.tar.gz", "sha256": ""})
+        _require_r2_pack({"r2_key": EXPECTED_R2_KEY, "sha256": ""})
     with pytest.raises(RuntimeError, match="HF env"):
         _require_r2_pack({"r2_key": HF_ENV_KEY, "sha256": "abc"})
+    with pytest.raises(RuntimeError, match="superseded cu128"):
+        _require_r2_pack({"r2_key": OLD_VLLM_KEY, "sha256": "abc"})
     assert _require_r2_pack(
-        {"r2_key": "envs/qwen8b-vllm/x.tar.gz", "sha256": "deadbeef"}
-    ) == "deadbeef"
+        {"r2_key": EXPECTED_R2_KEY, "sha256": EXPECTED_SHA256, "size": EXPECTED_SIZE}
+    ) == EXPECTED_SHA256
 
 
 def test_packed_python_is_beside_activate():
@@ -87,10 +90,10 @@ def test_packed_python_is_beside_activate():
 
 
 def test_verify_restored_env_uses_absolute_python_and_surfaces_output(monkeypatch):
-    captured = {}
+    captured = {"cmds": []}
 
     def boom(cmd, **kwargs):
-        captured["cmd"] = cmd
+        captured["cmds"].append(cmd)
         raise subprocess.CalledProcessError(
             1, cmd, output="OSError: libcuda.so.1: cannot open shared object file\n"
         )
@@ -98,13 +101,14 @@ def test_verify_restored_env_uses_absolute_python_and_surfaces_output(monkeypatc
     monkeypatch.setattr("tools.start_qwen8b_vllm.subprocess.check_output", boom)
     with pytest.raises(RuntimeError, match="libcuda.so.1"):
         _verify_restored_env(["ssh"], "/opt/env/qwen8b-vllm/bin/activate")
-    remote = captured["cmd"][-1]
-    assert "/opt/env/qwen8b-vllm/bin/python" in remote
-    assert "python -c" in remote
-    assert "source " not in remote
-    assert "bash -lc" not in remote
-    assert "set -u" not in remote
-    assert "nvidia-smi" in remote
+    first = captured["cmds"][0][-1]
+    assert "/opt/env/qwen8b-vllm/bin/python" in first
+    assert "python -c" in first
+    assert "source " not in first
+    assert "bash -lc" not in first
+    assert "set -u" not in first
+    assert "nvidia-smi" in first
+    assert "torch.cuda.is_available" in first
 
 
 def test_calledprocesserror_str_hides_output_like_59781901():

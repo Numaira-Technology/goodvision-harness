@@ -30,6 +30,10 @@ from tools.qwen8b.serve_vllm import DEFAULTS, MODEL_ID, REVISION
 
 ENV_NAME = "qwen8b-vllm"
 HF_ENV_KEY = "envs/qwen8b/cu128-py312-torch280-ada.tar.gz"
+OLD_VLLM_KEY = "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz"
+EXPECTED_R2_KEY = "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz"
+EXPECTED_SHA256 = "24f1eb0cc264a9794979eb6c2225eca47d67d68025407d51db86aa171ce7ba7e"
+EXPECTED_SIZE = 4252947071
 MAX_DPH = 1.85  # refuse silently upgrading past ~1.5x the prior $1.2296/hr
 STATUS_DEFAULT = Path("outputs/qwen8b-r2-vllm/STATUS.md")
 
@@ -61,7 +65,7 @@ def _eligible_offers(offers: list[dict]) -> list[dict]:
     return usable
 
 
-def _server_process(ssh, activate: str, snapshot: str):
+def _server_process(ssh, activate: str, snapshot: str, log_path: Path | None = None):
     cfg = DEFAULTS
     limit = json.dumps(cfg["limit_mm_per_prompt"], separators=(",", ":"))
     eager = "--enforce-eager" if cfg.get("enforce_eager") else ""
@@ -82,11 +86,18 @@ def _server_process(ssh, activate: str, snapshot: str):
     )
     print("Starting vLLM OpenAI server + SSH tunnel (12 client slots stay in eval_local)...",
           flush=True)
-    return subprocess.Popen(
+    logf = None
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        logf = open(log_path, "w", buffering=1)
+    proc = subprocess.Popen(
         [*ssh[:-1], "-o", "ExitOnForwardFailure=yes",
          "-L", f"127.0.0.1:{H.LOCAL_PORT}:127.0.0.1:8000", ssh[-1], remote],
-        stdin=subprocess.DEVNULL, start_new_session=True,
+        stdin=subprocess.DEVNULL, stdout=logf or None, stderr=subprocess.STDOUT if logf else None,
+        start_new_session=True,
     )
+    proc._log_file = logf  # type: ignore[attr-defined]
+    return proc
 
 
 def _wait_ready(process, timeout=25 * 60):
@@ -153,8 +164,16 @@ def _remote_snapshot(ssh) -> str:
 
 def _require_r2_pack(env_spec: dict) -> str:
     """Refuse to rent a GPU until the versioned vLLM tarball is on R2."""
-    if env_spec.get("r2_key") == HF_ENV_KEY:
+    key = env_spec.get("r2_key")
+    if key == HF_ENV_KEY:
         raise RuntimeError("qwen8b-vllm must not reuse the HF env R2 key")
+    if key == OLD_VLLM_KEY:
+        raise RuntimeError(
+            "qwen8b-vllm must not restore the superseded cu128 pack "
+            f"{OLD_VLLM_KEY}; use {EXPECTED_R2_KEY}"
+        )
+    if key != EXPECTED_R2_KEY:
+        raise RuntimeError(f"qwen8b-vllm r2_key must be {EXPECTED_R2_KEY}, got {key}")
     sha = str(env_spec.get("sha256") or "").strip()
     if not sha:
         raise RuntimeError(
@@ -165,6 +184,14 @@ def _require_r2_pack(env_spec: dict) -> str:
             "and fill env.sha256/size. The 4090 only restores "
             f"{env_spec.get('r2_key') or 'the versioned qwen8b-vllm R2 key'}; "
             "it does not pip-install vLLM."
+        )
+    if sha != EXPECTED_SHA256:
+        raise RuntimeError(
+            f"qwen8b-vllm sha256 mismatch: registry {sha} != {EXPECTED_SHA256}"
+        )
+    if int(env_spec.get("size") or 0) != EXPECTED_SIZE:
+        raise RuntimeError(
+            f"qwen8b-vllm size mismatch: registry {env_spec.get('size')} != {EXPECTED_SIZE}"
         )
     return sha
 
@@ -187,30 +214,47 @@ def _verify_restored_env(ssh, activate: str) -> None:
     probe = (
         "import sys\n"
         "print('executable', sys.executable)\n"
-        "import vllm, torch\n"
+        "import vllm, torch, typing_extensions, filelock, tqdm\n"
         "print('vllm', getattr(vllm, '__version__', 'unknown'))\n"
         "print('torch', torch.__version__, 'cuda', torch.version.cuda)\n"
         "assert torch.version.cuda, 'restored torch is not a CUDA wheel'\n"
+        "print('cuda_available', torch.cuda.is_available())\n"
+        "assert torch.cuda.is_available(), 'CUDA not available after restore'\n"
+        "print('device', torch.cuda.get_device_name(0))\n"
     )
-    remote = (
-        "set +u; "
+    smi = (
         "(command -v nvidia-smi >/dev/null && "
-        "nvidia-smi --query-gpu=driver_version,name --format=csv,noheader) "
-        "|| echo nvidia-smi=n/a; "
-        f"{shlex.quote(python)} -c {shlex.quote(probe)}"
+        "nvidia-smi --query-gpu=driver_version,name,memory.used,memory.total "
+        "--format=csv,noheader) || echo nvidia-smi=n/a"
     )
-    try:
-        out = subprocess.check_output(
-            [*ssh, remote],
-            text=True, timeout=120, stderr=subprocess.STDOUT,
-        )
-    except subprocess.CalledProcessError as error:
-        detail = (error.output or "").strip() or str(error)
-        raise RuntimeError(
-            f"restored env import failed (exit {error.returncode}); "
-            f"not pip-installing vLLM on the GPU:\n{detail}"
-        ) from error
-    print(out, flush=True)
+    remotes = [
+        "set +u; " + smi + f"; {shlex.quote(python)} -c {shlex.quote(probe)}",
+        "set +u; " + smi + f"; source {shlex.quote(activate)}; "
+        f"{shlex.quote(python)} -c {shlex.quote(probe)}",
+    ]
+    last_detail = ""
+    for i, remote in enumerate(remotes):
+        try:
+            out = subprocess.check_output(
+                [*ssh, remote],
+                text=True, timeout=180, stderr=subprocess.STDOUT,
+            )
+        except subprocess.CalledProcessError as error:
+            detail = (error.output or "").strip() or str(error)
+            last_detail = detail
+            print(f"verify attempt {i + 1} failed:\n{detail}", flush=True)
+            if "No module named" in detail:
+                raise RuntimeError(
+                    f"restored env import failed (exit {error.returncode}); "
+                    f"not pip-installing vLLM on the GPU:\n{detail}"
+                ) from error
+            continue
+        print(out, flush=True)
+        return
+    raise RuntimeError(
+        "restored env import/CUDA failed; not pip-installing vLLM on the GPU:\n"
+        + last_detail
+    )
 
 
 def main() -> int:
@@ -240,7 +284,9 @@ def main() -> int:
         raise RuntimeError("Set R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY")
 
     env_spec = registry.env_of(ENV_NAME)
-    _require_r2_pack(env_spec)
+    pack_sha = _require_r2_pack(env_spec)
+    print(f"Restoring R2 pack {env_spec['r2_key']} sha256={pack_sha} "
+          f"size={env_spec.get('size')} (old cu128 pack forbidden)", flush=True)
 
     vast = VastAI(api_key=api_key, retry=1)
     instance_id = None
@@ -312,10 +358,23 @@ def main() -> int:
             remote_dir=H.REPO, r2_env=r2_env, python="python3",
         )
         _verify_restored_env(ssh, activate)
+        smi_ready = subprocess.check_output(
+            [*ssh, "nvidia-smi --query-gpu=driver_version,name,memory.used,memory.total "
+             "--format=csv,noheader"],
+            text=True, timeout=30, stderr=subprocess.STDOUT,
+        )
+        print("nvidia-smi after restore:\n" + smi_ready, flush=True)
 
         snapshot = _remote_snapshot(ssh)
-        worker = _server_process(ssh, activate, snapshot)
+        args.eval_output.parent.mkdir(parents=True, exist_ok=True)
+        vllm_log = args.eval_output.parent / "vllm-server.log"
+        worker = _server_process(ssh, activate, snapshot, vllm_log)
         _wait_ready(worker)
+        smi_serve = subprocess.check_output(
+            [*ssh, "nvidia-smi"],
+            text=True, timeout=30, stderr=subprocess.STDOUT,
+        )
+        print("nvidia-smi after vLLM ready:\n" + smi_serve, flush=True)
         opener = build_opener(ProxyHandler({}))
         _smoke(opener)
 
@@ -354,6 +413,12 @@ def main() -> int:
             S.stop_process(worker)
         except OSError:
             pass
+        logf = getattr(worker, "_log_file", None) if worker is not None else None
+        if logf is not None:
+            try:
+                logf.close()
+            except OSError:
+                pass
         if creation_attempted and instance_id is None:
             try:
                 matches = [i for i in vast.show_instances() if i.get("label") == label]
