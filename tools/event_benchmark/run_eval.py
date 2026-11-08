@@ -142,7 +142,9 @@ def build_request(backend, model, qcore, uri, provider_context=None):
         raise ValueError("unknown backend " + backend)
     if provider_context:
         from tools.event_benchmark import evidence
-        body["provider"] = evidence.provider_body(provider_context)
+        pb = evidence.provider_body(provider_context)
+        if pb is not None:
+            body["provider"] = pb
     return url, body
 
 

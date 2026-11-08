@@ -28,6 +28,11 @@ def test_self_hosted_profile_skips_openrouter_pin():
     assert cfg["execution"] == "self_hosted_r2"
     assert cfg["weight_revision"] == "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b"
     assert cfg["prompt_policy"] == "current-image-v1"
+    env = registry.env_of("qwen8b")
+    assert env["sha256"] in cfg["env_source"]
+    assert cfg["serving"].startswith("tools.qwen8b.serve")
+    assert "flash_attention_2" in cfg["serving"]
+    assert not Path("tools/unified_benchmark/profiles/qwen8b_selfhost.json").exists()
 
 
 def test_attach_key_sends_public_material(tmp_path, monkeypatch):
@@ -112,3 +117,23 @@ def test_local_transport_rejects_fingerprint_mismatch(tmp_path):
     from tools.unified_benchmark.retry import RequestFailure
     with pytest.raises(RequestFailure, match="fingerprint"):
         transport(unit)
+
+
+def test_provider_body_skips_selfhost_routing():
+    from tools.event_benchmark.evidence import provider_body
+    from tools.event_benchmark.run_eval import build_request
+
+    assert provider_body(None) is None
+    assert provider_body({"config": {"transport": "selfhost", "provider": {"only": ["x"]}}}) is None
+    url, body = build_request(
+        "language", "qwen/qwen3-vl-8b-instruct", "Is fighting visible?",
+        "data:image/jpeg;base64,xx",
+        {"config": {"transport": "selfhost", "provider": {"only": ["x"]}}},
+    )
+    assert "provider" not in body
+    _, routed = build_request(
+        "language", "qwen/qwen3-vl-8b-instruct", "Is fighting visible?",
+        "data:image/jpeg;base64,xx",
+        {"config": {"transport": "openrouter", "provider": {"only": ["parasail"], "allow_fallbacks": False}}},
+    )
+    assert routed["provider"]["only"] == ["parasail"]

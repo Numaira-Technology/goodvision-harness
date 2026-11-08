@@ -12,8 +12,9 @@ separate legacy v2.1 runner; it is not the current-frame 120-question entrypoint
   frozen JSON files are private team inputs, not published in this public repository.
   Download the original files from the [restricted team Drive](#get-the-frozen-inputs)
   below; do not regenerate their labels.
-- Eleven recorded profiles: qwen8b, qwen235b, maverick, luna, gemini25_off,
-  gemini25_low, gemini38_low, clip, siglip2, videojev, decision3.
+- Twelve recorded profiles: qwen8b, qwen235b, maverick, luna, gemini25_off,
+  gemini25_low, gemini38_low, clip, siglip2, videojev, decision3, plus
+  `qwen8b_r2_host` (self-hosted R2 packed env on one 4090; not OpenRouter).
 - Offline input/media/frame/request preflight; lossless receipt/score retention;
   cumulative three-attempt queue; validation threshold selection and test reporting.
 - API execution with an explicit selected credential file or per-model file mapping.
@@ -184,6 +185,25 @@ python -m tools.unified_benchmark.api_run \
   --env-file /private/openrouter.env --output outputs/new-test \
   --authorization-note 'Approved test scope and cost' --execute
 ```
+
+Self-hosted Qwen3-VL-8B on a rented 4090 uses `qwen8b_r2_host`, not the OpenRouter
+`qwen8b` profile and not a vLLM `qwen8b_selfhost` alias. After a verified
+preflight bundle:
+
+```sh
+PYTHONPATH=. python -m tools.start_qwen8b_r2 \
+  --eval-bundle outputs/new-current-frame-bundle \
+  --eval-output outputs/qwen8b-r2-host \
+  --eval-phase both \
+  --authorization-note 'Approved self-hosted qwen8b R2 4090 run'
+```
+
+That launcher restores the packed env and pinned weights from R2, serves
+`tools.qwen8b.serve` (transformers + flash_attention_2), and runs
+`tools.qwen8b.eval_local` against the SSH tunnel. Requires gitignored `.env`
+keys `VAST_API_KEY`, `SAM_SSH_KEY`, `R2_ENDPOINT`, `R2_BUCKET`,
+`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`. Attach SSH immediately after create;
+always release the labelled instance. Headline scoring remains correct/all.
 
 Hard-answer profiles omit the threshold flags. Use a fresh output path per phase;
 the public CLI refuses an existing run. The ledger supports bounded continuation,

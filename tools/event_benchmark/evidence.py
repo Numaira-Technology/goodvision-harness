@@ -63,7 +63,15 @@ def load_provider(path, model, backend):
 
 
 def provider_body(context):
-    return dict(context["config"]["provider"]) if context else None
+    # A self-hosted OpenAI-compatible endpoint has no OpenRouter routing block.
+    # Keep the frozen chat body provider-free; OpenRouter contexts still inject
+    # the pinned provider object unchanged.
+    if not context:
+        return None
+    config = context["config"]
+    if config.get("transport") == "selfhost":
+        return None
+    return dict(config["provider"])
 
 
 def response_metadata(payload):

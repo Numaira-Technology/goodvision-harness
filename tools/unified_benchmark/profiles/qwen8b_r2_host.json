@@ -11,9 +11,12 @@
   "execution": "self_hosted_r2",
   "weight_repo": "Qwen/Qwen3-VL-8B-Instruct",
   "weight_revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+  "weights_source": "Cloudflare R2 goodvision-models: models/Qwen/Qwen3-VL-8B-Instruct/0c351dd01ed87e9c1b53cbc748cba10e6187ff3b/",
+  "env_source": "Cloudflare R2 goodvision-models: envs/qwen8b/cu128-py312-torch280-ada.tar.gz (conda-pack, sha256 d101d333fe942887aefb29a4ff98eb1e0fcaaa0ea5e5f57ac1baeb53818c72ff; transformers + flash-attn, torch 2.8.0/cu128, ada)",
   "precision": "bf16 flash_attention_2; packed env envs/qwen8b/cu128-py312-torch280-ada.tar.gz",
+  "serving": "tools.qwen8b.serve OpenAI-compatible /v1/chat/completions over the R2 packed env (transformers + flash_attention_2). Not vLLM and not OpenRouter.",
   "hardware": "one RTX 4090 24GB",
   "current_access_verified": false,
   "selection": "self-hosted R2 packed env + pinned weights; not an OpenRouter provider",
-  "profile_origin": "Continuation of the qwen8b R2 host GPU eval; distinct from the Parasail API profile."
+  "profile_origin": "Continuation of the qwen8b R2 host GPU eval; distinct from the Parasail API profile and from the unused local vLLM qwen8b_selfhost draft."
 }
