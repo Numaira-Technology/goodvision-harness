@@ -752,3 +752,56 @@ def test_build_prefix_always_installs_torch_and_requirements(tmp_path, monkeypat
             "-r" in call and str(tmp_path / "requirements.txt") in call for call in calls
         )
         assert all(call[0] in {str(tmp_path / "conda"), python} for call in calls)
+
+
+def test_skip_and_upload_only_are_mutually_exclusive(tmp_path):
+    with pytest.raises(SystemExit):
+        build_env.main(
+            [
+                "--model",
+                "videojev",
+                "--skip-upload",
+                "--upload-only",
+                "--out",
+                str(tmp_path / "x.tar.gz"),
+            ]
+        )
+
+
+def test_upload_only_requires_existing_tarball(tmp_path):
+    missing = tmp_path / "nope.tar.gz"
+    with pytest.raises(SystemExit):
+        build_env.main(
+            ["--model", "videojev", "--upload-only", "--out", str(missing)]
+        )
+
+
+def test_upload_only_uploads_without_building(tmp_path, monkeypatch, capsys):
+    tarball = tmp_path / "videojev-env.tar.gz"
+    tarball.write_bytes(b"packed-env-bytes")
+    calls = []
+
+    class FakeR2:
+        def put_object(self, **kw):
+            calls.append(kw)
+            if hasattr(kw["Body"], "read"):
+                kw["Body"].read()
+
+    monkeypatch.setattr(build_env.model_source, "r2_client", lambda: FakeR2())
+    monkeypatch.setenv("R2_BUCKET", "goodvision-models")
+
+    def boom(*a, **k):
+        raise AssertionError("upload-only must not build/pack")
+
+    monkeypatch.setattr(build_env, "_ensure_miniconda", boom)
+    monkeypatch.setattr(build_env, "_build_prefix", boom)
+    monkeypatch.setattr(build_env, "_pack", boom)
+    monkeypatch.setattr(build_env.env_source, "check_compatibility", boom)
+
+    build_env.main(["--model", "videojev", "--upload-only", "--out", str(tarball)])
+
+    result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert result["uploaded"] is True
+    assert result["r2_key"].startswith("envs/videojev/")
+    assert [c["Key"] for c in calls] == [result["r2_key"], result["manifest_key"]]
+    assert all(c["IfNoneMatch"] == "*" for c in calls)

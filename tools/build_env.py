@@ -232,15 +232,29 @@ def main(argv=None):
     ap.add_argument("--miniforge-installer", type=Path)
     ap.add_argument("--miniforge-sha256")
     ap.add_argument(
-        "--out", type=Path, required=True, help="new tarball path (must not exist)"
+        "--out",
+        type=Path,
+        required=True,
+        help="tarball path (must not exist for build; must exist for --upload-only)",
     )
     ap.add_argument(
         "--requirements",
         type=Path,
         default=Path(__file__).parent / "videojev_probe/requirements.txt",
     )
-    ap.add_argument("--skip-upload", action="store_true")
+    ap.add_argument(
+        "--skip-upload",
+        action="store_true",
+        help="build + pack only; keep the tarball at --out",
+    )
+    ap.add_argument(
+        "--upload-only",
+        action="store_true",
+        help="upload an already-built tarball at --out; do not rebuild",
+    )
     args = ap.parse_args(argv)
+    if args.skip_upload and args.upload_only:
+        ap.error("--skip-upload and --upload-only are mutually exclusive")
     env_spec = registry.env_of(args.model)
     if env_spec is None:
         ap.error("model has no env block")
@@ -250,33 +264,43 @@ def main(argv=None):
         for k, v in {"python": "3.12", "torch": "2.8.0", "cuda": "12.8"}.items()
     ):
         ap.error("this builder supports only Python 3.12 / torch 2.8.0 / CUDA 12.8")
-    env_source.check_compatibility(env_spec)
     repo, rev = registry.weights_of(args.model)
     prefix = Path(env_spec["unpack_to"])
     out = args.out.absolute()
-    if out.exists() or out.is_symlink():
-        ap.error("output already exists; choose a new path")
-    if not args.requirements.is_file():
-        ap.error("requirements file does not exist")
-    if out.is_relative_to(prefix):
-        ap.error("output must be outside the environment prefix")
     arch = ";".join(registry.GPU_ARCHES[compat["gpu_family"]])
     flash_attn = bool((env_spec.get("build") or {}).get("flash_attn", True))
-    with env_source.prefix_lock(prefix), env_source.interruptible():
-        if prefix.exists():
-            ap.error("preserving existing environment; inspect and move it aside first")
-        conda = _ensure_miniconda(
-            args.conda_home, args.miniforge_installer, args.miniforge_sha256
-        )
-        _build_prefix(
-            conda,
-            prefix,
-            args.requirements.resolve(),
-            compat["python"],
-            arch,
-            flash_attn,
-        )
-        _pack(conda, prefix, out)
+    if args.upload_only:
+        if not out.is_file():
+            ap.error(
+                f"--upload-only: no tarball at {out}; build it first "
+                "(e.g. with --skip-upload)"
+            )
+        _log(f"upload-only {args.model}: reusing existing {out}")
+    else:
+        env_source.check_compatibility(env_spec)
+        if out.exists() or out.is_symlink():
+            ap.error("output already exists; choose a new path")
+        if not args.requirements.is_file():
+            ap.error("requirements file does not exist")
+        if out.is_relative_to(prefix):
+            ap.error("output must be outside the environment prefix")
+        with env_source.prefix_lock(prefix), env_source.interruptible():
+            if prefix.exists():
+                ap.error(
+                    "preserving existing environment; inspect and move it aside first"
+                )
+            conda = _ensure_miniconda(
+                args.conda_home, args.miniforge_installer, args.miniforge_sha256
+            )
+            _build_prefix(
+                conda,
+                prefix,
+                args.requirements.resolve(),
+                compat["python"],
+                arch,
+                flash_attn,
+            )
+            _pack(conda, prefix, out)
     sha = _sha256(out)
     result = {
         "model": args.model,
