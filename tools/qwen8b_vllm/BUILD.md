@@ -20,9 +20,15 @@ record of the previous HF run. Never upload to that key.
 - FlashAttention: vLLM may select `FLASH_ATTN` (FA2 on Ada sm_89). That is an
   attention backend inside the engine, not a reason to skip vLLM.
 
-## Build (on one Ada 4090, CUDA driver ≥ 12.8)
+## Build (CPU VM pack → R2; GPU only restores)
+
+Do **not** pip-install vLLM on the rented 4090. Pack CUDA wheels on a CPU
+builder (this cloud VM is fine: `require_cuda: false` checks `torch.version.cuda`,
+not `torch.cuda.is_available()`), upload the new R2 key, then the GPU launcher
+`restore_env`s that tarball. Never upload over `envs/qwen8b/cu128-py312-torch280-ada.tar.gz`.
 
 ```sh
+sudo mkdir -p /opt/env && sudo chown "$USER" /opt/env
 PYTHONPATH=. python -m tools.build_env \
   --model qwen8b-vllm \
   --requirements tools/qwen8b_vllm/requirements.txt
@@ -31,7 +37,8 @@ PYTHONPATH=. python -m tools.build_env \
 `env.build.install_default_torch: false` skips the HF env's `torch==2.8.0` pin so
 `vllm==0.31.0` can pull its own torch (2.13.x in the in-repo lock).
 `env.build.flash_attn: false` skips a second flash-attn compile; the vLLM wheel
-ships its kernels.
+ships its kernels. After upload, fill `env.sha256` / `env.size` in
+`tools/models.yaml` so later 4090 boots skip pip.
 
 R2 keys (versioned, new objects):
 

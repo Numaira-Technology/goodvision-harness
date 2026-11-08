@@ -67,7 +67,7 @@ def _ensure_miniconda(home):
 
 
 def _build_script(conda, prefix, requirements, python_ver, arch, flash_attn=True,
-                  install_default_torch=True):
+                  install_default_torch=True, require_cuda=True):
     """The bash recipe that creates + fills the env -- a pure, testable string.
 
     ``flash_attn`` gates the slow compile-once step: when False, flash-attn and
@@ -87,18 +87,30 @@ def _build_script(conda, prefix, requirements, python_ver, arch, flash_attn=True
             'python -m pip install --no-cache-dir --no-build-isolation \\\n'
             '  flash-attn==2.8.3.post2 causal-conv1d==1.7.0'
         )
+        cuda_check = (
+            'assert torch.cuda.is_available(), "CUDA not available in built env"'
+            if require_cuda else
+            'assert torch.version.cuda, "packed torch is not a CUDA wheel"\n'
+            'print("cpu-pack: CUDA wheels installed; device check deferred to GPU restore")'
+        )
         verify = (
             "import torch, flash_attn\n"
             'print("torch", torch.__version__, "cuda", torch.version.cuda)\n'
             'print("flash_attn", flash_attn.__version__)\n'
-            'assert torch.cuda.is_available(), "CUDA not available in built env"'
+            f"{cuda_check}"
         )
     else:
         flash_step = "# flash-attn/causal-conv1d skipped (env.build.flash_attn: false)"
+        cuda_check = (
+            'assert torch.cuda.is_available(), "CUDA not available in built env"'
+            if require_cuda else
+            'assert torch.version.cuda, "packed torch is not a CUDA wheel"\n'
+            'print("cpu-pack: CUDA wheels installed; device check deferred to GPU restore")'
+        )
         verify = (
             "import torch\n"
             'print("torch", torch.__version__, "cuda", torch.version.cuda)\n'
-            'assert torch.cuda.is_available(), "CUDA not available in built env"'
+            f"{cuda_check}"
         )
     if install_default_torch:
         torch_step = (
@@ -127,10 +139,10 @@ PY
 
 
 def _build_prefix(conda, prefix, requirements, python_ver, arch, flash_attn=True,
-                  install_default_torch=True):
+                  install_default_torch=True, require_cuda=True):
     """Create the conda env at ``prefix`` and install the full stack into it."""
     script = _build_script(conda, prefix, requirements, python_ver, arch, flash_attn,
-                           install_default_torch)
+                           install_default_torch, require_cuda)
     _run(["bash", "-c", script], env={**os.environ, "HF_HUB_DISABLE_XET": "1"})
 
 
@@ -219,6 +231,9 @@ def main(argv=None):
     build = env_spec.get("build") or {}
     flash_attn = bool(build.get("flash_attn", True))
     install_default_torch = bool(build.get("install_default_torch", True))
+    # Wheel-only stacks (vLLM) may be conda-packed on a CPU VM; GPU restore
+    # still uses the CUDA wheels. flash-attn compiles keep require_cuda.
+    require_cuda = bool(build.get("require_cuda", True)) or flash_attn
     prefix = env_spec["unpack_to"]
     out = Path(args.out or f"/tmp/{args.model}-env.tar.gz")
     repo, rev = registry.weights_of(args.model)
@@ -239,10 +254,11 @@ def main(argv=None):
         _pack(conda, prefix, out)
     else:
         _log(f"building {args.model} (python={python_ver} arch={arch} "
-             f"flash_attn={flash_attn} install_default_torch={install_default_torch})")
+             f"flash_attn={flash_attn} install_default_torch={install_default_torch} "
+             f"require_cuda={require_cuda})")
         conda = _ensure_miniconda(args.conda_home)
         _build_prefix(conda, prefix, args.requirements, python_ver, arch, flash_attn,
-                      install_default_torch)
+                      install_default_torch, require_cuda)
         if args.skip_pack:
             print(json.dumps({"model": args.model, "prefix": prefix, "packed": False,
                               "uploaded": False, "arch": arch}))

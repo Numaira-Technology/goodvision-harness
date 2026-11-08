@@ -58,6 +58,7 @@ def test_new_models_registered_with_pinned_revisions():
     assert vllm_env["unpack_to"] != hf_env["unpack_to"]
     assert vllm_env["build"]["flash_attn"] is False
     assert vllm_env["build"]["install_default_torch"] is False
+    assert vllm_env["build"]["require_cuda"] is False
 
 
 def test_unknown_model_raises():
@@ -205,6 +206,22 @@ def test_build_script_skips_default_torch_when_disabled():
     assert "pip install --no-cache-dir torch==2.8.0" not in script
     assert "install_default_torch: false" in script
     assert '-r "tools/qwen8b_vllm/requirements.txt"' in script
+
+
+def test_build_script_cpu_pack_skips_cuda_device_assert():
+    script = build_env._build_script(
+        Path("/opt/miniforge3/bin/conda"), "/opt/env/x",
+        "tools/qwen8b_vllm/requirements.txt", "8.9", "3.12",
+        flash_attn=False, install_default_torch=False, require_cuda=False,
+    )
+    assert "torch.cuda.is_available()" not in script
+    assert "cpu-pack: CUDA wheels installed" in script
+    gpu = build_env._build_script(
+        Path("/opt/miniforge3/bin/conda"), "/opt/env/x",
+        "tools/x/requirements.txt", "8.9", "3.12",
+        flash_attn=True, require_cuda=True,
+    )
+    assert "torch.cuda.is_available()" in gpu
 
 
 # --- build_env --upload-only / --skip-upload -------------------------------

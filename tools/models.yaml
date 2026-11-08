@@ -140,6 +140,7 @@ models:
       build:
         flash_attn: false                    # vLLM wheel ships attention kernels
         install_default_torch: false         # let vllm==0.31.0 pull torch 2.13.x
+        require_cuda: false                  # pack CUDA wheels on a CPU VM; GPU only restores
       compat:
         python: "3.12"
         cuda: "12.8"
