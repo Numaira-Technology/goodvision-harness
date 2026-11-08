@@ -186,3 +186,51 @@ def test_build_script_always_installs_torch_and_requirements():
         script = _script(flash_attn)
         assert "torch==2.8.0 torchvision==0.23.0" in script
         assert '-r "tools/x/requirements.txt"' in script
+
+
+# --- build_env --upload-only / --skip-upload -------------------------------
+
+class _FakeUploadClient:
+    def __init__(self):
+        self.uploaded = []
+        self.objects = {}
+
+    def upload_file(self, path, bucket, key):
+        self.uploaded.append((path, bucket, key))
+
+    def put_object(self, Bucket, Key, Body):
+        self.objects[(Bucket, Key)] = Body
+
+
+def test_skip_and_upload_only_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        build_env.main(["--model", "videojev", "--skip-upload", "--upload-only"])
+
+
+def test_upload_only_requires_existing_tarball(tmp_path):
+    missing = tmp_path / "nope.tar.gz"
+    with pytest.raises(SystemExit):
+        build_env.main(["--model", "videojev", "--upload-only", "--out", str(missing)])
+
+
+def test_upload_only_uploads_without_building(tmp_path, monkeypatch, capsys):
+    tarball = tmp_path / "videojev-env.tar.gz"
+    tarball.write_bytes(b"packed-env-bytes")
+    fake = _FakeUploadClient()
+    monkeypatch.setattr(build_env.model_source, "r2_client", lambda: fake)
+    monkeypatch.setenv("R2_BUCKET", "goodvision-models")
+    # Building must NOT happen in upload-only mode.
+    def _boom(*a, **k):
+        raise AssertionError("upload-only must not build/pack")
+    monkeypatch.setattr(build_env, "_ensure_miniconda", _boom)
+    monkeypatch.setattr(build_env, "_pack", _boom)
+
+    build_env.main(["--model", "videojev", "--upload-only", "--out", str(tarball)])
+
+    result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert result["uploaded"] is True
+    assert result["r2_key"].startswith("envs/videojev/")
+    assert len(fake.uploaded) == 1
+    assert fake.uploaded[0][0] == str(tarball)
+    # the side-manifest was written too
+    assert any(k.endswith(".json") for (_b, k) in fake.objects)

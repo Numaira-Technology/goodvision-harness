@@ -169,8 +169,15 @@ def main(argv=None):
                     default="tools/videojev_probe/requirements.txt",
                     help="pip requirements installed into the env")
     ap.add_argument("--skip-upload", action="store_true",
-                    help="build + pack only; print the tarball path and sha256")
+                    help="build + pack only; keep the tarball at --out and print its "
+                         "path + sha256 + size (upload it later with --upload-only)")
+    ap.add_argument("--upload-only", action="store_true",
+                    help="skip build + pack; upload an already-built tarball at --out "
+                         "to R2 (so an interrupted/credential-blocked upload needs no "
+                         "rebuild). Fails if the tarball is missing")
     args = ap.parse_args(argv)
+    if args.skip_upload and args.upload_only:
+        ap.error("--skip-upload and --upload-only are mutually exclusive")
 
     env_spec = registry.env_of(args.model)
     if env_spec is None:
@@ -189,17 +196,24 @@ def main(argv=None):
     out = Path(args.out or f"/tmp/{args.model}-env.tar.gz")
     repo, rev = registry.weights_of(args.model)
 
-    _log(f"building {args.model} (python={python_ver} arch={arch} "
-         f"flash_attn={flash_attn})")
-    conda = _ensure_miniconda(args.conda_home)
-    _build_prefix(conda, prefix, args.requirements, python_ver, arch, flash_attn)
-    _pack(conda, prefix, out)
+    if args.upload_only:
+        if not out.is_file():
+            sys.exit(f"--upload-only: no tarball at {out}; build it first "
+                     f"(e.g. with --skip-upload)")
+        _log(f"upload-only {args.model}: reusing existing {out}")
+    else:
+        _log(f"building {args.model} (python={python_ver} arch={arch} "
+             f"flash_attn={flash_attn})")
+        conda = _ensure_miniconda(args.conda_home)
+        _build_prefix(conda, prefix, args.requirements, python_ver, arch, flash_attn)
+        _pack(conda, prefix, out)
     sha = _sha256(out)
-    _log(f"packed {out} sha256={sha} size={Path(out).stat().st_size/1e9:.2f}GB")
+    size = out.stat().st_size
+    _log(f"packed {out} sha256={sha} size={size/1e9:.2f}GB")
 
     if args.skip_upload:
         print(json.dumps({"model": args.model, "tarball": str(out), "sha256": sha,
-                          "arch": arch, "uploaded": False}))
+                          "size": size, "arch": arch, "uploaded": False}))
         return
     manifest = _upload(env_spec, args.model, out, compat, f"{repo}@{rev}")
     print(json.dumps({"model": args.model, "r2_key": manifest["r2_key"],
