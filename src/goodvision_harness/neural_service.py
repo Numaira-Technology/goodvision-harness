@@ -7,6 +7,7 @@ import binascii
 import io
 import json
 import math
+import os
 import queue
 import threading
 import time
@@ -21,12 +22,12 @@ MODEL = "openai/clip-vit-large-patch14"
 REVISION = "32bd64288804d66eefd0ccbe215aa642df71cc41"
 PROMPTS = {
     "fight": (
-        "People are physically fighting, punching or kicking each other.",
-        "People are walking or talking peacefully.",
+        "Two people are physically fighting, punching or kicking each other.",
+        "People are walking, standing or talking peacefully.",
     ),
     "smoking": (
-        "A person is smoking a cigarette or vaping.",
-        "A person is eating, drinking or touching their face.",
+        "A person is smoking a cigarette.",
+        "A person is eating food or drinking from a cup.",
     ),
     "fall": (
         "A person is losing balance and falling to the ground.",
@@ -34,7 +35,7 @@ PROMPTS = {
     ),
     "weapon": (
         "A person is holding a gun or a knife.",
-        "A person is holding a phone or ordinary object.",
+        "A person is holding an ordinary object such as a phone.",
     ),
     "ppe_violation": (
         "A worker in a hazardous work area is missing required protective equipment.",
@@ -48,7 +49,7 @@ PROMPTS = {
 
 
 class Encoder:
-    def __init__(self, cache_dir):
+    def __init__(self, cache_dir, thresholds=None):
         import torch
         from transformers import AutoModel, AutoProcessor
 
@@ -64,13 +65,20 @@ class Encoder:
             .to("cuda")
         )
         self._text_features = None
+        self.thresholds = thresholds or {}
+        if any(label not in tuple(PROMPTS)[:4] or value is not None and (
+               type(value) not in (int, float) or not math.isfinite(value))
+               for label, value in self.thresholds.items()):
+            raise ValueError("thresholds must contain finite core-event margins or null")
 
     def warmup(self):
         # Loading weights alone does not prove compatible CUDA kernels or the
         # processor/model interface. Do not publish ready until inference works.
         labels = list(PROMPTS)
         pairs = self.scores(Image.new("RGB", (224, 224)), labels)
-        if len(pairs) != len(labels) or not all(_valid_pair(pair) for pair in pairs):
+        if len(pairs) != len(labels) or not all(
+            isinstance(pair, dict) or _valid_pair(pair) for pair in pairs
+        ):
             raise ValueError("invalid model scores during warmup")
 
     def scores(self, image, labels):
@@ -106,17 +114,31 @@ class Encoder:
             ).pooler_output
             images = self.model.visual_projection(pooled)
             images = images / images.norm(dim=-1, keepdim=True)
-            logits = (
-                self.model.logit_scale.exp()
-                * (self._text_features @ images.t()).t()
-            )
+            cosine = (self._text_features @ images.t()).t()
+            logits = self.model.logit_scale.exp() * cosine
             pairs = logits.reshape(-1, len(PROMPTS), 2).softmax(dim=-1)
             pairs = pairs.cpu().tolist()
+            margins = None
+            if self.thresholds:
+                scores = cosine.reshape(-1, len(PROMPTS), 2)
+                margins = (scores[:, :, 0] - scores[:, :, 1]).cpu().tolist()
         indices = {label: index for index, label in enumerate(PROMPTS)}
         result, offset = [], 0
         for count, requested in zip(counts, labels, strict=True):
             window = _window_pairs(pairs[offset:offset + count])
-            result.append([window[indices[label]] for label in requested])
+            selected = []
+            for label in requested:
+                index = indices[label]
+                if label not in self.thresholds:
+                    selected.append(window[index])
+                    continue
+                values = [row[index] for row in margins[offset:offset + count]]
+                winner = max(range(count), key=values.__getitem__)
+                selected.append({"score_kind": "cosine_margin", "score": values[winner],
+                                 "threshold": self.thresholds[label], "image_index": winner,
+                                 "frame_scores": values,
+                                 "probabilities": [*window[index], 0.0]})
+            result.append(selected)
             offset += count
         return result
 
@@ -307,6 +329,15 @@ def create_app(encoder, *, max_batch_size=4):
                     raise error
                 rows = []
                 for question, pair in zip(questions, pairs, strict=True):
+                    if isinstance(pair, dict) and pair.get("score_kind") == "cosine_margin":
+                        threshold = pair["threshold"]
+                        if not math.isfinite(pair["score"]) or threshold is not None and not math.isfinite(threshold):
+                            raise ValueError("invalid calibrated scores")
+                        index = 2 if threshold is None else 0 if pair["score"] > threshold else 1
+                        rows.append({"id": question["id"], "task": "choice",
+                                     "answer_index": index, "answer": question["options"][index],
+                                     **pair})
+                        continue
                     try:
                         if not _valid_pair(pair):
                             raise ValueError("invalid model scores")
@@ -440,10 +471,18 @@ def main():
     parser.add_argument("--port", type=int, default=8094)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--max-batch-size", type=int, choices=(1, 2, 3, 4), default=4)
+    parser.add_argument("--thresholds", default=os.environ.get("NEURAL_THRESHOLDS_FILE"),
+                        help="JSON object of validation-frozen core-event cosine margins")
     args = parser.parse_args()
     import uvicorn
 
-    encoder = Encoder(args.cache_dir)
+    thresholds = None
+    if args.thresholds:
+        with open(args.thresholds) as source:
+            thresholds = json.load(source)
+        if not isinstance(thresholds, dict) or set(thresholds) != set(tuple(PROMPTS)[:4]):
+            raise ValueError("provide one frozen threshold for each of the four core events")
+    encoder = Encoder(args.cache_dir, thresholds)
     encoder.warmup()
     uvicorn.run(
         create_app(encoder, max_batch_size=args.max_batch_size),
