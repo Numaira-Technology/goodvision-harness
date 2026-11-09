@@ -59,6 +59,8 @@ def test_serve_vllm_does_not_shrink_exam_inputs(tmp_path, monkeypatch):
     snap.mkdir()
     monkeypatch.setattr(serve_vllm, "snapshot", lambda _cache: snap)
     argv, cfg = serve_vllm.serve_argv(tmp_path)
+    assert argv[0] == __import__("sys").executable
+    assert argv[1:3] == ["-s", "-m"]
     joined = " ".join(argv)
     assert "--max-num-seqs" in argv and argv[argv.index("--max-num-seqs") + 1] == "12"
     assert "--dtype" in argv and argv[argv.index("--dtype") + 1] == "bfloat16"
@@ -103,13 +105,18 @@ def test_packed_python_is_beside_activate():
 def test_vllm_serve_remote_keeps_exam_and_avoids_repo_pythonpath():
     remote = _vllm_serve_remote("/opt/env/qwen8b-vllm/bin/activate", "/weights/snap")
     assert "PYTHONPATH=" not in remote
+    assert "source " not in remote
+    assert "conda activate" not in remote
     assert "PYTHONNOUSERSITE=1" in remote
-    assert "/opt/env/qwen8b-vllm/bin/python -s -m vllm.entrypoints.openai.api_server" in remote
-    assert "--max-num-seqs 12" in remote
-    assert "--dtype bfloat16" in remote
+    assert "/opt/env/qwen8b-vllm/bin/python -s -c" in remote
+    assert "sys.prefix" in remote
+    assert "vllm.entrypoints.openai.api_server" in remote
+    assert "--max-num-seqs" in remote
+    assert "bfloat16" in remote
     assert "--enforce-eager" in remote
     assert "pip install" not in remote
     assert "python -m tools.build_env" not in remote
+    assert "packed interpreter missing" in remote
 
 
 def test_verify_restored_env_uses_absolute_python_and_surfaces_output(monkeypatch):
@@ -126,7 +133,9 @@ def test_verify_restored_env_uses_absolute_python_and_surfaces_output(monkeypatc
         _verify_restored_env(["ssh"], "/opt/env/qwen8b-vllm/bin/activate")
     first = captured["cmds"][0][-1]
     assert "/opt/env/qwen8b-vllm/bin/python" in first
-    assert "python -c" in first
+    assert " -s -c " in first
+    assert "PYTHONNOUSERSITE=1" in first
+    assert "sys.prefix" in first
     assert "source " not in first
     assert "bash -lc" not in first
     assert "set -u" not in first
@@ -134,6 +143,7 @@ def test_verify_restored_env_uses_absolute_python_and_surfaces_output(monkeypatc
     assert "torch.cuda.is_available" in first
     assert "vllm.entrypoints.openai.api_server" in first
     assert "torch.utils.cpp_extension" in first
+    assert len(captured["cmds"]) == 1
 
 
 def test_calledprocesserror_str_hides_output_like_59781901():

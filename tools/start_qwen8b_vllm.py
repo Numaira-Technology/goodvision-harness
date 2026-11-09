@@ -69,26 +69,57 @@ def _eligible_offers(offers: list[dict]) -> list[dict]:
     return usable
 
 
+def _unpack_to(activate: str) -> str:
+    return str(Path(activate).parent.parent)
+
+
+def _prefix_guard(unpack_to: str) -> str:
+    return (
+        "import os, sys, site\n"
+        f"want = os.path.realpath({unpack_to!r})\n"
+        "got = os.path.realpath(sys.prefix)\n"
+        "if got != want:\n"
+        "    raise SystemExit(f'sys.prefix {got!r} != restored env {want!r}')\n"
+        "if site.ENABLE_USER_SITE:\n"
+        "    raise SystemExit('user site must be disabled (PYTHONNOUSERSITE)')\n"
+    )
+
+
 def _vllm_serve_remote(activate: str, snapshot: str) -> str:
     """Packed python -s, no repo PYTHONPATH. Exam knobs stay 12 / bf16 / eager."""
     cfg = DEFAULTS
     python = _packed_python(activate)
+    unpack = _unpack_to(activate)
     limit = json.dumps(cfg["limit_mm_per_prompt"], separators=(",", ":"))
-    eager = "--enforce-eager" if cfg.get("enforce_eager") else ""
+    module_argv = [
+        "vllm.entrypoints.openai.api_server",
+        "--model", snapshot,
+        "--served-model-name", MODEL_ID,
+        "--host", "127.0.0.1",
+        "--port", "8000",
+        "--dtype", "bfloat16",
+        "--max-model-len", str(int(cfg["max_model_len"])),
+        "--max-num-seqs", "12",
+        "--max-num-batched-tokens", str(int(cfg["max_num_batched_tokens"])),
+        "--gpu-memory-utilization", str(cfg["gpu_memory_utilization"]),
+        "--limit-mm-per-prompt", limit,
+        "--tensor-parallel-size", "1",
+        "--generation-config", "vllm",
+    ]
+    if cfg.get("enforce_eager"):
+        module_argv.append("--enforce-eager")
+    code = _prefix_guard(unpack) + (
+        "import runpy, sys\n"
+        f"sys.argv = {module_argv!r}\n"
+        "runpy.run_module('vllm.entrypoints.openai.api_server', run_name='__main__')\n"
+    )
     return (
-        f"set -eo pipefail; set +u; source {shlex.quote(activate)}; "
+        f"set -eo pipefail; "
+        f"if [ ! -x {shlex.quote(python)} ]; then "
+        f"echo packed interpreter missing: {shlex.quote(python)} >&2; exit 1; fi; "
         f"cd /tmp && exec env PYTHONNOUSERSITE=1 HF_HUB_OFFLINE=1 "
         f"TRANSFORMERS_OFFLINE=1 VLLM_NO_USAGE_STATS=1 "
-        f"{shlex.quote(python)} -s -m vllm.entrypoints.openai.api_server "
-        f"--model {shlex.quote(snapshot)} "
-        f"--served-model-name {MODEL_ID} "
-        f"--host 127.0.0.1 --port 8000 --dtype bfloat16 "
-        f"--max-model-len {int(cfg['max_model_len'])} "
-        f"--max-num-seqs 12 "
-        f"--max-num-batched-tokens {int(cfg['max_num_batched_tokens'])} "
-        f"--gpu-memory-utilization {cfg['gpu_memory_utilization']} "
-        f"--limit-mm-per-prompt {shlex.quote(limit)} "
-        f"--tensor-parallel-size 1 --generation-config vllm {eager}"
+        f"{shlex.quote(python)} -s -c {shlex.quote(code)}"
     )
 
 
@@ -224,23 +255,25 @@ def _require_r2_pack(env_spec: dict) -> str:
 
 
 def _packed_python(activate: str) -> str:
-    """Interpreter next to conda-pack's activate script (bin/python)."""
-    return str(Path(activate).parent / "python")
+    """Absolute packed interpreter. Never PATH python or `source activate`."""
+    python = Path(activate).parent / "python"
+    if python.name != "python":
+        raise RuntimeError(f"packed interpreter path is unsafe: {python}")
+    return str(python)
 
 
 def _verify_restored_env(ssh, activate: str) -> None:
     """Import check only. Missing modules are a pack bug, not a GPU pip job.
 
-    Instance 59781901 ran ``bash -lc`` + ``source activate`` + ``set -u`` + a
-    heredoc, then printed ``CalledProcessError`` without stdout. The GPU is
-    gone, so that traceback cannot be recovered. Call the packed interpreter
-    by absolute path (do not depend on PATH after conda-pack activate), use
-    ``python -c`` (no heredoc / ``bash -lc``), and keep the remote output.
+    Call the packed interpreter by absolute path with -s and PYTHONNOUSERSITE=1.
+    The launched process itself rejects a mismatched sys.prefix. No conda
+    activate, no PATH python, no second-chance source fallback.
     """
     python = _packed_python(activate)
-    probe = (
-        "import sys\n"
+    unpack = _unpack_to(activate)
+    probe = _prefix_guard(unpack) + (
         "print('executable', sys.executable)\n"
+        "print('prefix', sys.prefix)\n"
         "import vllm, torch, typing_extensions, filelock, tqdm\n"
         "print('vllm', getattr(vllm, '__version__', 'unknown'))\n"
         "print('torch', torch.__version__, 'cuda', torch.version.cuda)\n"
@@ -257,34 +290,30 @@ def _verify_restored_env(ssh, activate: str) -> None:
         "nvidia-smi --query-gpu=driver_version,name,memory.used,memory.total "
         "--format=csv,noheader) || echo nvidia-smi=n/a"
     )
-    remotes = [
-        "set +u; " + smi + f"; {shlex.quote(python)} -c {shlex.quote(probe)}",
-        "set +u; " + smi + f"; source {shlex.quote(activate)}; "
-        f"{shlex.quote(python)} -c {shlex.quote(probe)}",
-    ]
-    last_detail = ""
-    for i, remote in enumerate(remotes):
-        try:
-            out = subprocess.check_output(
-                [*ssh, remote],
-                text=True, timeout=180, stderr=subprocess.STDOUT,
-            )
-        except subprocess.CalledProcessError as error:
-            detail = (error.output or "").strip() or str(error)
-            last_detail = detail
-            print(f"verify attempt {i + 1} failed:\n{detail}", flush=True)
-            if "No module named" in detail:
-                raise RuntimeError(
-                    f"restored env import failed (exit {error.returncode}); "
-                    f"not pip-installing vLLM on the GPU:\n{detail}"
-                ) from error
-            continue
-        print(out, flush=True)
-        return
-    raise RuntimeError(
-        "restored env import/CUDA failed; not pip-installing vLLM on the GPU:\n"
-        + last_detail
+    remote = (
+        f"set -eo pipefail; "
+        f"if [ ! -x {shlex.quote(python)} ]; then "
+        f"echo packed interpreter missing: {shlex.quote(python)} >&2; exit 1; fi; "
+        f"{smi}; PYTHONNOUSERSITE=1 {shlex.quote(python)} -s -c {shlex.quote(probe)}"
     )
+    try:
+        out = subprocess.check_output(
+            [*ssh, remote],
+            text=True, timeout=180, stderr=subprocess.STDOUT,
+        )
+    except subprocess.CalledProcessError as error:
+        detail = (error.output or "").strip() or str(error)
+        print(f"verify failed:\n{detail}", flush=True)
+        if "No module named" in detail:
+            raise RuntimeError(
+                f"restored env import failed (exit {error.returncode}); "
+                f"not pip-installing vLLM on the GPU:\n{detail}"
+            ) from error
+        raise RuntimeError(
+            "restored env import/CUDA failed; not pip-installing vLLM on the GPU:\n"
+            + detail
+        ) from error
+    print(out, flush=True)
 
 
 def main() -> int:
