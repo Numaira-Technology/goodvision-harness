@@ -126,13 +126,46 @@ def _upload_repo(ssh):
         raise RuntimeError("repo upload failed")
 
 
-def _serve_remote(activate: str) -> str:
-    # conda-pack's activate reads $CONDA_PREFIX; `set -u` aborts before PATH is rewritten.
+def _packed_python(activate: str) -> str:
+    """Absolute packed interpreter. Never PATH python or `source activate`."""
+    python = Path(activate).parent / "python"
+    if python.name != "python":
+        raise RuntimeError(f"packed interpreter path is unsafe: {python}")
+    return str(python)
+
+
+def _unpack_to(activate: str) -> str:
+    return str(Path(activate).parent.parent)
+
+
+def _prefix_guard(unpack_to: str) -> str:
     return (
-        f"set -eo pipefail; set +u; source {shlex.quote(activate)}; "
-        f"cd {REPO} && exec env PYTHONPATH={REPO} HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 "
-        f"python -m tools.qwen8b.serve --cache-dir {shlex.quote(CACHE)} "
-        f"--host 127.0.0.1 --port 8000"
+        "import os, sys, site\n"
+        f"want = os.path.realpath({unpack_to!r})\n"
+        "got = os.path.realpath(sys.prefix)\n"
+        "if got != want:\n"
+        "    raise SystemExit(f'sys.prefix {got!r} != restored env {want!r}')\n"
+        "if site.ENABLE_USER_SITE:\n"
+        "    raise SystemExit('user site must be disabled (PYTHONNOUSERSITE)')\n"
+    )
+
+
+def _serve_remote(activate: str) -> str:
+    python = _packed_python(activate)
+    unpack = _unpack_to(activate)
+    code = _prefix_guard(unpack) + (
+        "import runpy, sys\n"
+        "sys.argv = ['tools.qwen8b.serve', '--cache-dir', "
+        f"{CACHE!r}, '--host', '127.0.0.1', '--port', '8000']\n"
+        "runpy.run_module('tools.qwen8b.serve', run_name='__main__')\n"
+    )
+    return (
+        f"set -eo pipefail; "
+        f"if [ ! -x {shlex.quote(python)} ]; then "
+        f"echo packed interpreter missing: {shlex.quote(python)} >&2; exit 1; fi; "
+        f"cd {shlex.quote(REPO)} && exec env PYTHONNOUSERSITE=1 "
+        f"PYTHONPATH={shlex.quote(REPO)} HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 "
+        f"{shlex.quote(python)} -s -c {shlex.quote(code)}"
     )
 
 
@@ -246,7 +279,7 @@ def main() -> int:
             ssh_options=options, host=host, port=port, name="qwen8b",
             remote_dir=REPO, r2_env=r2_env, python="python3",
         )
-        print(f"env activate: {activate}", flush=True)
+        print(f"env python: {_packed_python(activate)}", flush=True)
         print("Prefetching qwen8b weights from R2...", flush=True)
         prefetch_models(
             ssh_options=options, host=host, port=port, remote_dir=REPO,

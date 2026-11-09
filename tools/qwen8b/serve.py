@@ -143,7 +143,25 @@ def make_handler(processor, model, ready):
     return Handler
 
 
+def require_packed_prefix(name="qwen8b"):
+    import site
+    import sys
+
+    from tools import registry
+
+    env = registry.env_of(name)
+    if env is None:
+        raise SystemExit(f"model {name!r} has no packed env")
+    want = os.path.realpath(env["unpack_to"])
+    got = os.path.realpath(sys.prefix)
+    if got != want:
+        raise SystemExit(f"sys.prefix {got!r} != restored env {want!r}")
+    if site.ENABLE_USER_SITE:
+        raise SystemExit("user site must be disabled (PYTHONNOUSERSITE)")
+
+
 def main(argv=None):
+    require_packed_prefix("qwen8b")
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cache-dir", type=Path, required=True)
     ap.add_argument("--host", default="127.0.0.1")
