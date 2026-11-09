@@ -3,8 +3,16 @@
 Protocol: **unified-frame-120-v2**. This packages the previously local workflow for
 another checkout. It does not modify the original videos, questions or references,
 re-run models, or reinterpret old bundles. Keep historical source snapshots with
-historical artifacts. The original `tools/event_benchmark/run_eval.py` remains the
-separate legacy v2.1 runner; it is not the current-frame 120-question entrypoint.
+historical artifacts. The historical `tools/event_benchmark/run_eval.py` included
+here is not the current-frame 120-question entrypoint; archived v2.1 instructions
+require their own matching implementation as described below.
+
+Default sequence: **preflight → environment checks → validation → threshold
+selection when applicable → test → local report**. Sheet publication follows only
+the requested target/version/scope. Historical [v2.1](../../.claude/skills/event-benchmark/references/legacy-v2.1.md)
+and [robot41](../../.claude/skills/event-benchmark/references/robot41.md) have separate
+references requiring their matching retained code/data snapshots. Their archived
+commands are not executable from this checkout and are not the current120 route.
 
 ## What is included
 
@@ -12,9 +20,10 @@ separate legacy v2.1 runner; it is not the current-frame 120-question entrypoint
   frozen JSON files are private team inputs, not published in this public repository.
   Download the original files from the [restricted team Drive](#get-the-frozen-inputs)
   below; do not regenerate their labels.
-- Twelve recorded profiles: qwen8b, qwen235b, maverick, luna, gemini25_off,
+- Thirteen recorded profiles: qwen8b, qwen235b, maverick, luna, gemini25_off,
   gemini25_low, gemini38_low, clip, siglip2, videojev, decision3, plus
-  `qwen8b_r2_host` (self-hosted R2 packed env on one 4090; not OpenRouter).
+  `qwen8b_r2_host` and `qwen8b_r2_vllm` (separate self-hosted R2 engines on one
+  4090; not OpenRouter).
 - Offline input/media/frame/request preflight; lossless receipt/score retention;
   cumulative three-attempt queue; validation threshold selection and test reporting.
 - API execution with an explicit selected credential file or per-model file mapping.
@@ -28,6 +37,33 @@ original service warmup, identity/precision checks, validation selection, test a
 bounded continuation. Its offline tests do not establish a new GPU result.
 CLIP/SigLIP2's separate paced runner at `tools/clip_benchmark/run.py` retains its
 own protocol; do not substitute it for the shared-JPEG unified run.
+
+## Handoff checklist
+
+These instructions extend the PR #98 code baseline
+`d4fea6bfdab077cae37b207540922513b7a2cc82`; that revision contains the corrected
+vLLM `ada2` launcher. Pass the complete checkout and its matching instructions to
+the agent, not an isolated SKILL.md copied onto main. Record the actual
+`git rev-parse HEAD`, working-tree changes and preflight source fingerprints for
+the run. Preserve existing changes; do not reset a checkout to match this note.
+
+| Required material | Ready when |
+|---|---|
+| Code and instructions | Selected profiles and execution entrypoints exist in the same checkout; revision/local changes are recorded. The agent reads `.claude/skills/event-benchmark/SKILL.md` and the selected route's guide explicitly. |
+| Five private JSON files | `manifest_validation_24.json`, `validation-samples.json`, `manifest_120.json`, `test-samples.json`, `validation_split.json` are together under `--inputs`; all five pass the [pinned-hash check](#get-the-frozen-inputs). |
+| Original videos | 24 validation videos and 110 test videos (120 test questions), obtained from the private samples' team links, pass media fingerprints and full decoding. Do not substitute re-encoded copies. |
+| Offline environment | Python 3.12, Pillow, certifi, FFmpeg/ffprobe; run the [offline preflight](#run-the-offline-preflight) for the selected aliases and retain the new bundle. |
+| API route | Private key file or per-model key-file mapping, account access/balance and selected provider support are checked; model/provider identity must match actual receipts. No keys in Git or command arguments. |
+| Four-model native route | Linux x86_64 RTX 4090 24GB, SSH access, enough disk, fixed model revisions and the Python/CUDA environments in [NATIVE.md](NATIVE.md#2-prepare-the-gpu-deployment-no-evaluation-inference). Deployment verification must pass. R2 is optional for this route. |
+| Qwen R2 route | Complete the [control-machine check](#prepare-the-control-machine), then provide R2 read-only credentials, pinned weights/environment and private launcher credentials. Transformers uses its cu128 pack; vLLM uses the verified cu130 `ada2` pack and a compatible driver. A CUDA image label alone is not driver verification. |
+| Authorization and costs | Record chosen models, validation/test scope, hardware use or rental, the cost estimate and applicable user approval. Offline preflight is not permission to rent or make paid requests. |
+| Output and recovery locations | New local output/bundle paths and retained logs/receipts; retain old results. Resume only through the selected route's supported procedure with its original identities and remaining attempt budget. |
+
+Passing offline preflight means the inputs and request plan are ready. Execution
+readiness additionally requires the route's runtime identity checks and authorized
+warmup/smoke. The native guide's synthetic tests do not establish a fresh GPU run.
+PR #98 records a completed Qwen vLLM run with `ada2`; a new machine still needs its
+own runtime checks. Stop at a failed prerequisite and report the missing item.
 
 ## Fixed method
 
@@ -186,16 +222,84 @@ python -m tools.unified_benchmark.api_run \
   --authorization-note 'Approved test scope and cost' --execute
 ```
 
+Hard-answer profiles omit the threshold flags. Use a fresh output path per phase;
+the API CLI refuses an existing run. Its ledger supports bounded continuation,
+but there is no automatic API restart/recovery command here: inspect stopped
+records, then use a reviewed wrapper retaining contexts and remaining attempt
+budget. The four-model native CLI has its own explicit `--resume` procedure.
+
+## Self-hosted Qwen8B from R2
+
+### Prepare the control machine
+
+The control machine runs the launcher, SSH tunnel and evaluator. Restoring an R2
+environment on the GPU does not install this machine's dependencies. In the
+isolated Python 3.12 preflight environment, install the additional controller
+packages below. The Vast SDK pin matches this repository's controller Dockerfile;
+keep GPU/model environments separate.
+
+```sh
+python -m pip install 'vastai==1.5.6' 'python-dotenv>=1,<2' 'PyYAML>=6,<7'
+python -m pip check
+```
+
+Local tools required on PATH: Git, OpenSSH (`ssh`, `scp`, `ssh-keygen`), `tar`,
+FFmpeg and ffprobe. Then check imports and tools **offline**, without loading
+credentials, constructing a Vast client, contacting R2 or starting a launcher:
+
+```sh
+python - <<'PY'
+import importlib
+from importlib.metadata import version
+import shutil
+import sys
+
+if sys.version_info[:2] != (3, 12):
+    raise SystemExit("Use the Python 3.12 preflight environment")
+for distribution, module in [("vastai", "vastai"), ("python-dotenv", "dotenv"),
+                              ("PyYAML", "yaml"), ("Pillow", "PIL"), ("certifi", "certifi")]:
+    loaded = importlib.import_module(module)
+    installed = version(distribution)
+    if distribution == "vastai" and (installed != "1.5.6" or not hasattr(loaded, "VastAI")):
+        raise SystemExit("Install the documented vastai==1.5.6 controller SDK")
+    print(distribution, installed)
+missing = [name for name in ("git", "ssh", "scp", "ssh-keygen", "tar", "ffmpeg", "ffprobe")
+           if shutil.which(name) is None]
+if missing:
+    raise SystemExit("Missing local tools: " + ", ".join(missing))
+print("Controller imports/tools ready; credentials, R2 access and GPU remain unchecked.")
+PY
+```
+
+Retain installed package versions with the run record. Missing imports/tools must
+be resolved before using either launcher. This check is not rental authorization.
+
+### Prepare the bundle and run the selected engine
+
 Self-hosted Qwen3-VL-8B on a rented 4090 uses `qwen8b_r2_host` (HF generate +
 FA2) or the independent engine profile `qwen8b_r2_vllm` (vLLM), not the
 OpenRouter `qwen8b` profile and not a `qwen8b_selfhost` alias. Both keep the
 same frozen JPEGs, prompts, parser, temperature, max_tokens=30, and **12 client
-slots**. Do not relabel the completed HF run as vLLM. After a verified
-preflight bundle:
+slots**. Do not relabel the completed HF run as vLLM. First create an offline
+bundle containing the selected self-hosted aliases (omit an alias if not needed):
+
+```sh
+python -m tools.unified_benchmark.preflight \
+  --inputs /private/goodvision-inputs --media /data/goodvision \
+  --models qwen8b_r2_host qwen8b_r2_vllm \
+  --output outputs/new-qwen-r2-bundle
+```
+
+After preflight passes, use the corresponding launcher below only within the
+approved rental/run scope. The launcher commands can create a billed Vast
+instance; they are not dry runs and do not use the four-model native CLI's
+`--execute` gate.
+
+Transformers:
 
 ```sh
 PYTHONPATH=. python -m tools.start_qwen8b_r2 \
-  --eval-bundle outputs/new-current-frame-bundle \
+  --eval-bundle outputs/new-qwen-r2-bundle \
   --eval-output outputs/qwen8b-r2-host \
   --eval-phase both \
   --authorization-note 'Approved self-hosted qwen8b R2 4090 run'
@@ -212,7 +316,7 @@ vLLM (independent engine, same exam):
 
 ```sh
 PYTHONPATH=. python -m tools.start_qwen8b_vllm \
-  --eval-bundle <bundle-with-qwen8b_r2_vllm-plans> \
+  --eval-bundle outputs/new-qwen-r2-bundle \
   --eval-output outputs/qwen8b-r2-vllm \
   --eval-phase both \
   --authorization-note 'Approved self-hosted qwen8b R2 vLLM 4090 run'
@@ -220,16 +324,21 @@ PYTHONPATH=. python -m tools.start_qwen8b_vllm \
 
 `eval_local` still uses 12 slots. vLLM may batch those 12 internally. Do not
 change JPEG size, prompts, max_tokens, or client concurrency to fit VRAM.
-Pack the vLLM conda env on a CPU VM and store it at
-`envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz` (torch `2.13.0+cu130`;
-the previous `cu128-…vllm0310` object is kept for provenance). The 4090
-only restores that object plus the existing weight prefix. Do not
-overwrite the HF qwen8b pack. A CPU import check is not a GPU serve.
+Restore the existing package; ordinary reruns do not build/upload an environment.
+The authoritative `tools/models.yaml` entry and launcher pin:
 
-Hard-answer profiles omit the threshold flags. Use a fresh output path per phase;
-the public CLI refuses an existing run. The ledger supports bounded continuation,
-but there is no automatic restart/recovery command here: inspect stopped records,
-then use a reviewed wrapper retaining their contexts and remaining attempt budget.
+- R2 object: `envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz`
+- Manifest: `envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.json`
+- SHA-256: `59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b`
+- Size: `4252375781` bytes; Python 3.12, torch `2.13.0+cu130`, vLLM `0.31.0`, Ada.
+
+The R2 restore path verifies the downloaded archive before unpacking. See the
+[package acquisition and verification guide](../qwen8b_vllm/BUILD.md#restore-the-current-package).
+Both previous vLLM `…ada.tar.gz` objects are historical and refused as launch
+fallbacks; preserve them and the independent HF pack. `pack_provenance.json`
+describes the old incomplete cu130 object, not `ada2`. A CPU import check alone
+does not prove GPU serving. Preserve old bundles after this metadata correction;
+create a new preflight bundle for a new run rather than editing old fingerprints.
 
 ## Thresholds, reports and publication
 
@@ -256,7 +365,32 @@ rate and duration. Test P50/P95 are successful complete transport attempt times,
 including parsing/metadata lookup, excluding queue/backoff; report n and missing.
 They are not independent-probe latency or end-to-end twelve-camera throughput.
 
-Publish only when requested via bench-sheet-contribute, reading live headers and
-preserving previous local artifacts. Model names include chosen effort, Hardware
+An agent can prepare a local publication preview and carry out an authorized
+update using [bench-sheet-contribute](../../.claude/skills/bench-sheet-contribute/SKILL.md).
+The user chooses the result version, target tabs and overwrite/append scope; an
+evaluation request alone is not publication authorization. The publication flow
+reads live headers, matches exact model/variant rows, saves before-values and a
+sparse proposed diff, writes only the agreed cells, and verifies the readback.
+Keep a requested review step pending until the user approves; an existing explicit
+write authorization does not need to be requested again. Preserve previous local
+artifacts and styles. Model names include chosen effort, Hardware
 may combine VRAM, Price is actual spend; thresholds and sources go in notes. Do not
 add tabs/columns by default or replace old timing with a mismatched variant.
+
+## Offline regression checks
+
+In the prepared lightweight environment with pytest, run:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python -m pytest \
+  tests/test_unified_benchmark.py tests/test_unified_luna_adapter.py \
+  tests/test_native_workflow.py tests/test_start_qwen8b_r2.py tests/test_qwen8b_vllm.py \
+  -o addopts='' -q -p no:cacheprovider
+```
+
+The Luna checks use synthetic receipts through the real parser, transport and
+queue into validation threshold selection, including invalid-answer retries and
+missing counts. No model calls are made. Native source-export tests require the
+public pinned commits described in [NATIVE.md](NATIVE.md#offline-regression-checks)
+to be present locally. Test success does not verify credentials, live R2 access
+or a new GPU deployment.

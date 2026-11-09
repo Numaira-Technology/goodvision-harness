@@ -204,7 +204,7 @@ In the lightweight preflight environment (Pillow and pytest; no torch required):
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python -m pytest \
   tests/test_native_workflow.py tests/test_unified_benchmark.py \
-  tests/test_eval_review_regressions.py -o addopts='' -q -p no:cacheprovider
+  -o addopts='' -q -p no:cacheprovider
 ```
 
 Source-export tests need the two public Git commits locally. A shallow checkout

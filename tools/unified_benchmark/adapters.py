@@ -96,8 +96,18 @@ def parse_response(config, unit, response):
             if type(v) is not bool and not (event.startswith("bag_") and v == "unknown"):
                 raise ValueError("only explicit boolean or unknown is valid; null/refusal is not unknown")
             return {event: {"answer": "yes" if v is True else "no" if v is False else "unknown"}}
-        score = original.parse_answer(response, backend)
-        return {event: {"score": score} if backend == "decision" else {"answer": "yes" if score else "no"}}
+        # Preserve the original Luna probability contract without depending on
+        # a helper absent from this checkout's historical runner.
+        answers = response.get("answers")
+        answer = answers.get("answer") if isinstance(answers, dict) else None
+        if not isinstance(answer, dict):
+            raise ValueError("decision response must contain an answer object")
+        score = answer.get("noul")
+        if (answer.get("type") != "noul" or answer.get("error") is not None
+                or type(score) not in (int, float) or not 0 <= score <= 1
+                or not math.isfinite(score)):
+            raise ValueError("decision answer must be a probability in [0, 1]")
+        return {event: {"score": score}}
     if backend == "contrastive":
         result = {}
         for event in unit["targets"]:
