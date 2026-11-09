@@ -5,7 +5,9 @@ import base64
 import json
 import sys
 from dataclasses import replace
+from io import BytesIO
 from threading import Event
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -75,10 +77,42 @@ def client_and_request():
 
 
 class Encoder:
-    def scores(self, image, labels):
-        assert image.mode == "RGB"
+    def scores(self, images, labels):
+        assert all(image.mode == "RGB" for image in images)
         assert labels == ["smoking", "fall"]
         return [[0.9, 0.1], [0.2, 0.8]]
+
+
+def test_window_pairs_keep_each_events_strongest_frame():
+    from goodvision_harness.neural_service import _window_pairs
+
+    assert _window_pairs([
+        [[0.9, 0.1], [0.2, 0.8]],
+        [[0.3, 0.7], [0.8, 0.2]],
+    ]) == [[0.9, 0.1], [0.8, 0.2]]
+    assert _window_pairs([[[0.4, 0.6]]]) == [[0.4, 0.6]]
+
+
+def test_window_pairs_do_not_hide_an_invalid_earlier_frame():
+    from goodvision_harness.neural_service import _valid_pair, _window_pairs
+
+    pair = _window_pairs([[[float("nan"), 0]], [[0.9, 0.1]]])[0]
+    assert not _valid_pair(pair)
+
+
+def test_encoder_uses_logits_from_both_frames():
+    torch = pytest.importorskip("torch")
+    from goodvision_harness.neural_service import Encoder as ModelEncoder
+
+    encoder = object.__new__(ModelEncoder)
+    encoder.torch = torch
+    encoder.processor = lambda **kwargs: {}
+    encoder.model = lambda **kwargs: SimpleNamespace(
+        logits_per_image=torch.tensor([[2.0, 0.0, 0.0, 2.0], [0.0, 2.0, 3.0, 0.0]])
+    )
+    pairs = encoder.scores([object(), object()], ["smoking", "fall"])
+    assert pairs[0] == pytest.approx([0.88079708, 0.11920292])
+    assert pairs[1] == pytest.approx([0.95257413, 0.04742587])
 
 
 def test_real_http_payload_decodes_scene_verdicts_and_sends_template_each_time():
@@ -100,6 +134,33 @@ def test_real_http_payload_decodes_scene_verdicts_and_sends_template_each_time()
 
 
 @pytest.mark.parametrize(
+    "values,detected",
+    [([255, 0], True), ([0, 255], True), ([0, 0], False), ([0, 255, 0, 0], True)],
+)
+def test_window_detects_evidence_in_either_input_frame(values, detected):
+    from PIL import Image
+
+    inspector, payload, expected = client_and_request()
+    payload["images"] = []
+    for value in values:
+        encoded = BytesIO()
+        Image.new("RGB", (8, 8), (value, value, value)).save(encoded, "JPEG")
+        payload["images"].append(base64.b64encode(encoded.getvalue()).decode())
+
+    class FrameEncoder:
+        def scores(self, images, labels):
+            frames = images if isinstance(images, list) else [images]
+            present = any(image.getpixel((0, 0))[0] > 200 for image in frames)
+            return [[0.9, 0.1] if present else [0.1, 0.9] for _ in labels]
+
+    with TestClient(create_app(FrameEncoder())) as client:
+        response = client.post("/predict", json=payload)
+    assert response.status_code == 200
+    verdicts = inspector._decode(response.json(), expected, ("smoking", "fall"))
+    assert [verdict.detected for verdict in verdicts] == [detected, detected]
+
+
+@pytest.mark.parametrize(
     "mutation",
     [
         lambda p: p.update(question_template=[None]),
@@ -109,6 +170,9 @@ def test_real_http_payload_decodes_scene_verdicts_and_sends_template_each_time()
         lambda p: p["question_template"][0].update(options=["yes", "no", "maybe"]),
         lambda p: p.update(images=[]),
         lambda p: p.update(images=[base64.b64encode(b"not an image").decode()]),
+        lambda p: p.update(
+            images=[base64.b64encode(b"bad first frame").decode(), p["images"][-1]]
+        ),
         lambda p: p.update(request_id=1),
     ],
 )

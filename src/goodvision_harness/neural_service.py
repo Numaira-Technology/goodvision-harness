@@ -81,13 +81,14 @@ class Encoder:
             result = self.model(
                 **{key: value.to("cuda") for key, value in inputs.items()}
             )
-        return (
-            result.logits_per_image[0]
-            .reshape(len(labels), 2)
+        frame_pairs = (
+            result.logits_per_image
+            .reshape(-1, len(labels), 2)
             .softmax(dim=-1)
             .cpu()
             .tolist()
         )
+        return _window_pairs(frame_pairs)
 
 
 def _valid_pair(pair):
@@ -96,6 +97,17 @@ def _valid_pair(pair):
         and all(math.isfinite(p) and 0 <= p <= 1 for p in pair)
         and abs(sum(pair) - 1) <= 1e-5
     )
+
+
+def _window_pairs(frame_pairs):
+    """An event is present if any supplied frame supports it."""
+    result = []
+    for pairs in zip(*frame_pairs, strict=True):
+        invalid = next((pair for pair in pairs if not _valid_pair(pair)), None)
+        result.append(
+            invalid if invalid is not None else max(pairs, key=lambda p: p[0])
+        )
+    return result
 
 
 def create_app(encoder):
@@ -148,12 +160,14 @@ def create_app(encoder):
                 or not 1 <= len(payload["request_id"]) <= 256
             ):
                 raise ValueError("invalid request id")
-            with Image.open(
-                io.BytesIO(base64.b64decode(images[-1], validate=True))
-            ) as source:
-                if source.format != "JPEG" or source.width * source.height > 16_000_000:
-                    raise ValueError("invalid JPEG")
-                image = source.convert("RGB")
+            decoded = []
+            for encoded in images:
+                with Image.open(
+                    io.BytesIO(base64.b64decode(encoded, validate=True))
+                ) as source:
+                    if source.format != "JPEG" or source.width * source.height > 16_000_000:
+                        raise ValueError("invalid JPEG")
+                    decoded.append(source.convert("RGB"))
         except (KeyError, TypeError, ValueError, OSError, binascii.Error):
             raise HTTPException(400, "invalid recognition request") from None
 
@@ -167,7 +181,7 @@ def create_app(encoder):
             try:
                 if shared_error is not None:
                     raise HTTPException(503, "recognition service CUDA unavailable")
-                pairs = encoder.scores(image, labels)
+                pairs = encoder.scores(decoded, labels)
                 rows = []
                 for question, pair in zip(questions, pairs, strict=True):
                     try:
