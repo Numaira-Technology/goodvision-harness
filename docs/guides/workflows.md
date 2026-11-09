@@ -153,11 +153,18 @@ python -m pip install '.[neural]'
 goodvision-neural --cache-dir /path/to/persistent/model-cache --port 8094
 ```
 
-This classifier compares fixed positive/negative visual prompts on the latest
-frame. Similarity scores are not calibrated confidence and are not returned as
-event confidence. It does not reason over a video window or apply VLM instruction
-policies. The existing event confirmation pipeline still consumes its observations.
+This classifier compares fixed positive/negative visual prompts on every supplied
+image (one to four per window), retaining the strongest evidence for each event.
+It preserves the entire image with proportional 224-pixel padding. Similarity
+scores are not calibrated confidence and are not returned as event confidence.
+It does not reason about temporal motion or apply VLM instruction policies.
+The existing event confirmation pipeline still consumes its observations.
 GPU accuracy, throughput and capacity require validation on the target deployment.
+
+Optional [frozen CLIP thresholds](neural-thresholds.md) require a versioned,
+externally reviewed validation artifact supplied through `--thresholds` or
+`NEURAL_THRESHOLDS_FILE`. Without one, the original prompts and pair-probability
+choices remain in use. No production threshold values are bundled.
 
 Each Bbox, System 1 and neural block selects its own execution location: local,
 independent server or cloud server. Local mode reuses the repository's existing
