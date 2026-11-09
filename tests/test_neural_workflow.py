@@ -8,6 +8,7 @@ from dataclasses import replace
 from io import BytesIO
 from threading import Event
 from types import SimpleNamespace
+from concurrent.futures import CancelledError
 
 import httpx
 import pytest
@@ -77,10 +78,72 @@ def client_and_request():
 
 
 class Encoder:
+    def prepare(self, images):
+        return images
+
+    def score_batch(self, windows, labels):
+        return [self.scores(frames, requested)
+                for frames, requested in zip(windows, labels, strict=True)]
+
     def scores(self, images, labels):
         assert all(image.mode == "RGB" for image in images)
         assert labels == ["smoking", "fall"]
         return [[0.9, 0.1], [0.2, 0.8]]
+
+
+def test_ready_requests_keep_frame_groups_and_cancel_only_queued_work():
+    from goodvision_harness.neural_service import _BatchWorker
+
+    observed = []
+
+    def score(windows, labels):
+        observed.append((windows, labels))
+        return [[(frames[0], label) for label in requested]
+                for frames, requested in zip(windows, labels, strict=True)]
+
+    worker = _BatchWorker(score, 4)
+    finish = lambda scores, error, timings: (scores, error, timings)
+    first = worker.submit([1, 2], ['fall', 'smoking'], finish)
+    cancelled = worker.submit([99], ['fight'], finish)
+    last = worker.submit([3, 4, 5, 6], ['weapon'], finish)
+    assert cancelled.cancel()
+    worker.thread.start()
+    try:
+        a, error_a, timing_a = first.result(3)
+        b, error_b, timing_b = last.result(3)
+        assert a == [(1, 'fall'), (1, 'smoking')]
+        assert b == [(3, 'weapon')]
+        assert error_a is error_b is None
+        assert timing_a['batch_size'] == timing_b['batch_size'] == 2
+        assert observed == [([[1, 2], [3, 4, 5, 6]],
+                             [['fall', 'smoking'], ['weapon']])]
+        with pytest.raises(CancelledError):
+            cancelled.result()
+        single = worker.submit([7], ['fight'], finish)
+        assert single.result(3)[0] == [(7, 'fight')]
+    finally:
+        worker.pending.put(None)
+        worker.thread.join(3)
+    assert not worker.thread.is_alive()
+
+
+def test_missing_batch_member_does_not_leave_later_requests_waiting():
+    from goodvision_harness.neural_service import _BatchWorker
+
+    worker = _BatchWorker(lambda windows, labels: [['saved result']], 4)
+    finish = lambda scores, error, timings: scores
+    first = worker.submit([1], ['fall'], finish)
+    missing = worker.submit([2], ['fall'], finish)
+    worker.thread.start()
+    try:
+        assert first.result(3) == ['saved result']
+        with pytest.raises(IndexError):
+            missing.result(3)
+        later = worker.submit([3], ['fall'], finish)
+        assert later.result(3) == ['saved result']
+    finally:
+        worker.pending.put(None)
+        worker.thread.join(3)
 
 
 def test_window_pairs_keep_each_events_strongest_frame():
@@ -100,19 +163,46 @@ def test_window_pairs_do_not_hide_an_invalid_earlier_frame():
     assert not _valid_pair(pair)
 
 
-def test_encoder_uses_logits_from_both_frames():
+def test_encoder_keeps_mixed_window_frames_and_reuses_fixed_text(monkeypatch):
     torch = pytest.importorskip("torch")
     from goodvision_harness.neural_service import Encoder as ModelEncoder
 
+    original_to = torch.Tensor.to
+
+    def cpu_transfer(value, *args, **kwargs):
+        return value if args == ('cuda',) else original_to(value, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, 'to', cpu_transfer)
+
     encoder = object.__new__(ModelEncoder)
     encoder.torch = torch
+    encoder._text_features = None
+    text_calls = []
+
+    def text_model(**kwargs):
+        text_calls.append(True)
+        return SimpleNamespace(pooler_output=torch.eye(12))
+
     encoder.processor = lambda **kwargs: {}
-    encoder.model = lambda **kwargs: SimpleNamespace(
-        logits_per_image=torch.tensor([[2.0, 0.0, 0.0, 2.0], [0.0, 2.0, 3.0, 0.0]])
+    encoder.model = SimpleNamespace(
+        text_model=text_model,
+        text_projection=lambda value: value,
+        vision_model=lambda **kwargs: SimpleNamespace(
+            pooler_output=torch.eye(12)[kwargs['pixel_values']]),
+        visual_projection=lambda value: value,
+        logit_scale=torch.tensor(2.0).log(),
     )
-    pairs = encoder.scores([object(), object()], ["smoking", "fall"])
-    assert pairs[0] == pytest.approx([0.88079708, 0.11920292])
-    assert pairs[1] == pytest.approx([0.95257413, 0.04742587])
+    pairs = encoder.score_batch(
+        [torch.tensor([2, 4]), torch.tensor([6]), torch.tensor([0, 0, 0, 0])],
+        [['smoking', 'fall'], ['weapon', 'fall'], ['fight']],
+    )
+    assert pairs[0][0] == pytest.approx([0.88079708, 0.11920292])
+    assert pairs[0][1] == pytest.approx([0.88079708, 0.11920292])
+    assert pairs[1][0] == pytest.approx([0.88079708, 0.11920292])
+    assert pairs[1][1] == pytest.approx([0.5, 0.5])
+    assert pairs[2][0] == pytest.approx([0.88079708, 0.11920292])
+    encoder.score_batch([torch.tensor([2])], [['smoking']])
+    assert text_calls == [True]
 
 
 def test_real_http_payload_decodes_scene_verdicts_and_sends_template_each_time():
@@ -147,7 +237,7 @@ def test_window_detects_evidence_in_either_input_frame(values, detected):
         Image.new("RGB", (8, 8), (value, value, value)).save(encoded, "JPEG")
         payload["images"].append(base64.b64encode(encoded.getvalue()).decode())
 
-    class FrameEncoder:
+    class FrameEncoder(Encoder):
         def scores(self, images, labels):
             frames = images if isinstance(images, list) else [images]
             present = any(image.getpixel((0, 0))[0] > 200 for image in frames)
@@ -191,7 +281,7 @@ def test_malformed_requests_fail_without_model_calls(mutation):
 def test_invalid_model_scores_do_not_publish_negative_detection():
     _, payload, _ = client_and_request()
 
-    class Invalid:
+    class Invalid(Encoder):
         def scores(self, *args):
             return [[float("nan"), 0], [0.2, 0.8]]
 
@@ -205,22 +295,24 @@ def test_inspector_performs_real_asgi_inference_with_exact_predict_endpoint():
         inspector.settings, endpoint="http://model.test/predict"
     )
     inspector._loop = asyncio.new_event_loop()
-    inspector._http = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app(Encoder()))
-    )
-    try:
-        verdicts = inspector.inspect(job(inspector.config, 1, 2))
-        assert [v.detected for v in verdicts] == [True, False]
-        assert inspector.last_http_timing["http_status"] == 200
-    finally:
-        inspector.close()
+    app = create_app(Encoder())
+    with TestClient(app):
+        inspector._http = httpx.AsyncClient(transport=httpx.ASGITransport(app=app))
+        try:
+            verdicts = inspector.inspect(job(inspector.config, 1, 2))
+            assert [v.detected for v in verdicts] == [True, False]
+            assert inspector.last_http_timing["http_status"] == 200
+            assert inspector.last_http_timing['neural_batch_size'] == 1
+            assert inspector.last_http_timing['neural_model_pipeline_seconds'] >= 0
+        finally:
+            inspector.close()
 
 
 def test_base_cuda_failure_closes_shared_admission():
     _, payload, _ = client_and_request()
     calls = []
 
-    class Failed:
+    class Failed(Encoder):
         def scores(self, *args):
             calls.append(True)
             raise RuntimeError("CUDA error: illegal memory access")
@@ -244,7 +336,7 @@ def test_ppe_is_derived_from_both_frames_and_local_failures_keep_other_labels(
     expected[1]["id"] = "scene/ppe_violation"
     observed = []
 
-    class Scores:
+    class Scores(Encoder):
         def scores(self, image, labels):
             return [[0.9, 0.1], [float("nan"), 0.1]]
 
@@ -277,19 +369,26 @@ def test_ppe_is_derived_from_both_frames_and_local_failures_keep_other_labels(
     ] == [True, None]
 
 
-def test_cancelled_request_keeps_gpu_lock_until_worker_finishes():
+def test_cancelled_request_keeps_gpu_serial_and_next_request_completes():
     _, payload, _ = client_and_request()
-    entered, release = Event(), Event()
+    entered, release, prepared = Event(), Event(), Event()
+    calls = []
 
     class Blocking(Encoder):
+        def prepare(self, images):
+            if entered.is_set():
+                prepared.set()
+            return images
+
         def scores(self, *args):
+            calls.append(True)
             entered.set()
             assert release.wait(5)
             return super().scores(*args)
 
     async def run():
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=create_app(Blocking())),
+            transport=httpx.ASGITransport(app=app),
             base_url="http://offline.test",
         ) as client:
             first = asyncio.create_task(client.post("/predict", json=payload))
@@ -298,8 +397,14 @@ def test_cancelled_request_keeps_gpu_lock_until_worker_finishes():
                 first.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await first
-                assert (await client.post("/predict", json=payload)).status_code == 429
+                second = asyncio.create_task(client.post("/predict", json=payload))
+                assert await asyncio.to_thread(prepared.wait, 3)
+                assert calls == [True]
+                release.set()
+                assert (await second).status_code == 200
             finally:
                 release.set()
 
-    asyncio.run(run())
+    app = create_app(Blocking())
+    with TestClient(app):
+        asyncio.run(run())
