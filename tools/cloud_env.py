@@ -106,7 +106,7 @@ def restore_env(
     cleaner=_default_cleaner,
     timeout=1800,
 ):
-    """Return the remote activate path only after a matching successful restore."""
+    """Return the remote packed python path only after a matching successful restore."""
     env = registry.env_of(name)
     if env is None:
         raise registry.RegistryError(f"model {name!r} has no packed environment")
@@ -123,7 +123,8 @@ def restore_env(
         cmd = remote_command(name, python=python, remote_dir=reader_dir)
         ssh = ["ssh", *ssh_options, "-p", str(port), f"root@{host}", cmd]
         out = runner(ssh, input=blob, timeout=timeout)
-        expected = f"{env['unpack_to']}/{env['activate_rel']}"
+        expected_activate = f"{env['unpack_to']}/{env['activate_rel']}"
+        expected_python = f"{env['unpack_to']}/bin/python"
         for line in reversed((out or "").splitlines()):
             try:
                 info = json.loads(line)
@@ -133,10 +134,11 @@ def restore_env(
                 isinstance(info, dict)
                 and info.get("name") == name
                 and info.get("source") in ("local", "r2")
-                and info.get("activate") == expected
+                and info.get("activate") == expected_activate
+                and info.get("python") == expected_python
             ):
-                return expected
-        raise RuntimeError("env_source did not report the expected activate path")
+                return expected_python
+        raise RuntimeError("env_source did not report the expected packed python path")
     finally:
         try:
             cleaner(ssh_options, host, port, reader_dir)
@@ -161,12 +163,16 @@ def main(argv=None):
     ap.add_argument("--ssh-key", type=Path)
     ap.add_argument("--model", required=True)
     ap.add_argument("--remote-dir", default="/workspace/goodvision-models")
-    ap.add_argument("--python", default="python3", help="remote host Python executable")
+    ap.add_argument(
+        "--python",
+        default="python3",
+        help="host Python used only to run env_source before the packed env exists",
+    )
     args = ap.parse_args(argv)
     opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new"]
     if args.ssh_key:
         opts += ["-i", str(args.ssh_key), "-o", "IdentitiesOnly=yes"]
-    activate = restore_env(
+    python = restore_env(
         ssh_options=opts,
         host=args.host,
         port=args.port,
@@ -175,7 +181,7 @@ def main(argv=None):
         python=args.python,
         r2_env={k: os.environ.get(k) for k in R2_KEYS},
     )
-    print(activate)
+    print(python)
 
 
 if __name__ == "__main__":

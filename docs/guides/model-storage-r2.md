@@ -254,26 +254,26 @@ python -m tools.build_env --model videojev \
 构建/解包子进程不继承 R2/HF/cloud 凭据或 `PYTHONPATH`。路径通过 argv 传递；
 `conda-pack` 不使用 `--ignore-missing-files` 或 `--force`。
 
-### 每次使用：在远端恢复，再在远端激活
+### 每次使用：在远端恢复，再用包内解释器启动
 
 远端需有 Python（带 `tarfile.data_filter` 的受维护版本）、`boto3`、`PyYAML`、
 `tar`（仅用于上传小型 reader 文件）和 `nvidia-smi`。大包解压不调用系统 tar。
 `cloud_env` 将 reader 文件上传到独立临时目录，R2 **只读** key 仅经 SSH stdin
-传入，结束后清理 reader。返回的激活路径属于远端，不能在本机 `source`：
+传入，结束后清理 reader。返回的是远端 `{unpack_to}/bin/python`，不能在本机执行：
 
 ```bash
 # 在控制机运行；先通过安全的既有方式导出四个只读 R2_* 变量。
 python -m tools.cloud_env --host H --port P --ssh-key KEY --model videojev
-# 成功后会输出远端 /opt/env/videojev/bin/activate。
+# 成功后会输出远端 /opt/env/videojev/bin/python。
 # 另开远端 shell：
 ssh -p P -i KEY root@H
-# 以下命令只在远端 shell 中运行：
-source /opt/env/videojev/bin/activate
+# 以下命令只在远端 shell 中运行；不要 source activate，也不要用 PATH 上的 python：
+PYTHONNOUSERSITE=1 /opt/env/videojev/bin/python -s -c 'import sys; assert sys.prefix == "/opt/env/videojev"'
 ```
 
 恢复流程：校验注册表和主机 → 加前缀锁 → 核对 manifest → 私有目录下载 →
 SHA256/size 校验 → 安全临时解包 → 放到固定前缀 → 用包内 `bin/python -I`
-运行 `bin/conda-unpack` → 写完成标记 → 返回激活路径。允许安全内部软/硬链接；
+运行 `bin/conda-unpack` → 写完成标记 → 返回包内 `bin/python`。允许安全内部软/硬链接；
 拒绝路径逃逸、链接父目录、设备/FIFO、重复路径和包内伪造的完成标记。
 
 匹配的完成标记和必要文件允许本地复用；这不是对整个已使用环境的重新取证校验。

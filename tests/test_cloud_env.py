@@ -18,6 +18,7 @@ R2_ENV = {
     "R2_SECRET_ACCESS_KEY": "fake-secret",
 }
 ACTIVATE = "/opt/env/videojev/bin/activate"
+PYTHON = "/opt/env/videojev/bin/python"
 
 
 def test_restore_env_carries_secret_only_on_stdin_and_cleans():
@@ -27,7 +28,14 @@ def test_restore_env_carries_secret_only_on_stdin_and_cleans():
         assert all(value not in " ".join(command) for value in R2_ENV.values())
         assert "export R2_SECRET_ACCESS_KEY=" in input
         assert "fake-secret" in input
-        return json.dumps({"name": "videojev", "source": "r2", "activate": ACTIVATE})
+        return json.dumps(
+            {
+                "name": "videojev",
+                "source": "r2",
+                "activate": ACTIVATE,
+                "python": PYTHON,
+            }
+        )
 
     result = ce.restore_env(
         ssh_options=["-i", "key"],
@@ -40,7 +48,7 @@ def test_restore_env_carries_secret_only_on_stdin_and_cleans():
         uploader=lambda *a: uploads.append(a),
         cleaner=lambda *a: cleanups.append(a),
     )
-    assert result == ACTIVATE
+    assert result == PYTHON
     assert uploads == cleanups
     assert uploads[0][-1].startswith("/w/.env-reader-")
 
@@ -51,14 +59,50 @@ def test_restore_env_carries_secret_only_on_stdin_and_cleans():
         "no json",
         "[]",
         '{"activate":123}',
-        json.dumps({"name": "other", "source": "r2", "activate": ACTIVATE}),
-        json.dumps({"name": "videojev", "source": "r2", "activate": "/tmp/wrong"}),
-        json.dumps({"name": "videojev", "source": "failed", "activate": ACTIVATE}),
+        json.dumps(
+            {
+                "name": "other",
+                "source": "r2",
+                "activate": ACTIVATE,
+                "python": PYTHON,
+            }
+        ),
+        json.dumps(
+            {
+                "name": "videojev",
+                "source": "r2",
+                "activate": "/tmp/wrong",
+                "python": PYTHON,
+            }
+        ),
+        json.dumps(
+            {
+                "name": "videojev",
+                "source": "failed",
+                "activate": ACTIVATE,
+                "python": PYTHON,
+            }
+        ),
+        json.dumps(
+            {
+                "name": "videojev",
+                "source": "r2",
+                "activate": ACTIVATE,
+            }
+        ),
+        json.dumps(
+            {
+                "name": "videojev",
+                "source": "r2",
+                "activate": ACTIVATE,
+                "python": "/usr/bin/python3",
+            }
+        ),
     ],
 )
 def test_restore_env_requires_matching_result_and_cleans(output):
     cleanup = []
-    with pytest.raises(RuntimeError, match="activate path"):
+    with pytest.raises(RuntimeError, match="packed python path"):
         ce.restore_env(
             ssh_options=[],
             host="h",

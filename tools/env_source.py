@@ -48,6 +48,79 @@ def _activate_path(env):
     return str(Path(env["unpack_to"]) / env["activate_rel"])
 
 
+def packed_python(env):
+    """Absolute packed interpreter. Never PATH python, conda activate, or user site.
+
+    Fail-closed: missing, non-executable, or escaped ``bin/python`` aborts.
+    """
+    registry.validate_env(env)
+    prefix = Path(env["unpack_to"])
+    _check_prefix(prefix)
+    python = prefix / "bin/python"
+    if not python.is_file() or not os.access(python, os.X_OK):
+        raise RuntimeError(
+            f"packed interpreter missing or not executable: {python}; "
+            "refusing PATH python/python3"
+        )
+    return str(python)
+
+
+def eval_subprocess_env(prefix=None):
+    """Child env for eval/serve: packed bin first, no user site or PYTHONPATH."""
+    result = subprocess_env(prefix)
+    result["PYTHONNOUSERSITE"] = "1"
+    return result
+
+
+_PREFIX_PROBE = "\n".join(
+    [
+        "import os, sys, site",
+        "want = os.path.realpath(os.environ['GOODVISION_ENV_PREFIX'])",
+        "got = os.path.realpath(sys.prefix)",
+        "if got != want:",
+        "    raise SystemExit(f'sys.prefix {got!r} != restored env {want!r}')",
+        "exe = os.path.realpath(sys.executable)",
+        "if not (exe == os.path.realpath(os.path.join(want, 'bin', 'python'))",
+        "        or exe.startswith(want + os.sep)):",
+        "    raise SystemExit(f'sys.executable {exe!r} is outside {want!r}')",
+        "if site.ENABLE_USER_SITE:",
+        "    raise SystemExit('user site must be disabled (PYTHONNOUSERSITE)')",
+    ]
+)
+
+
+def verify_packed_interpreter(env, *, runner=subprocess.run):
+    """Run the packed interpreter and require sys.prefix == unpack_to."""
+    python = packed_python(env)
+    prefix = str(Path(env["unpack_to"]).resolve())
+    child = eval_subprocess_env(prefix)
+    child["GOODVISION_ENV_PREFIX"] = prefix
+    proc = runner(
+        [python, "-I", "-c", _PREFIX_PROBE],
+        env=child,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        stdin=subprocess.DEVNULL,
+    )
+    if proc.returncode:
+        detail = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
+        raise RuntimeError(
+            f"packed interpreter {python} did not match restored env {prefix}: {detail}"
+        )
+    return python
+
+
+def launch_argv(env, *args):
+    """Eval/serve argv whose argv[0] is the restored env's absolute python.
+
+    Isolation is PYTHONNOUSERSITE=1 plus python -s. Callers must not prepend
+    ``python``/``python3`` from PATH or ``source`` the activate script.
+    """
+    python = verify_packed_interpreter(env)
+    return [python, "-s", *args], eval_subprocess_env(env["unpack_to"])
+
+
 def _identity(env):
     return {key: env[key] for key in IDENTITY_FIELDS}
 
@@ -60,6 +133,7 @@ def subprocess_env(prefix=None):
     result["PATH"] = (
         str(Path(prefix) / "bin") + os.pathsep if prefix else ""
     ) + os.defpath
+    result["PYTHONNOUSERSITE"] = "1"
     return result
 
 
@@ -301,6 +375,7 @@ def _restore(env, *, prefer_local, client=None, bucket=None, scratch=None):
     prefix = Path(env["unpack_to"])
     with prefix_lock(prefix):
         if prefer_local and _already_restored(env):
+            packed_python(env)
             return _activate_path(env), "local"
         if prefix.exists():
             raise FileExistsError(
@@ -361,6 +436,7 @@ def _restore(env, *, prefer_local, client=None, bucket=None, scratch=None):
                             except OSError:
                                 pass
                     raise
+    packed_python(env)
     return _activate_path(env), "r2"
 
 
@@ -376,8 +452,10 @@ def ensure_env(name, *, prefer_local=True, scratch=None, registry_path=None):
     if env is None:
         raise registry.RegistryError(f"model {name!r} has no packed env registered")
     activate, source = _restore(env, prefer_local=prefer_local, scratch=scratch)
+    python = packed_python(env)
     return {
         "name": name,
+        "python": python,
         "activate": activate,
         "unpack_to": env["unpack_to"],
         "compat": env["compat"],

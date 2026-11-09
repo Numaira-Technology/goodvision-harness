@@ -267,7 +267,10 @@ def test_matching_local_env_needs_no_credentials(pack, tmp_path, monkeypatch):
     monkeypatch.setattr(
         es.model_source, "r2_client", lambda: pytest.fail("network client")
     )
-    assert es.ensure_env("videojev")["source"] == "local"
+    info = es.ensure_env("videojev")
+    assert info["source"] == "local"
+    assert info["python"] == env["unpack_to"] + "/bin/python"
+    assert info["python"] == es.packed_python(env)
     for key, value in [
         ("r2_key", "envs/new/pack.tar.gz"),
         ("compat", {**env["compat"], "gpu_family": "hopper"}),
@@ -421,6 +424,7 @@ def test_unpack_uses_packed_python_at_final_prefix_without_credentials(
         not {"R2_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY", "HF_TOKEN", "PYTHONPATH"}
         & captured["env"].keys()
     )
+    assert captured["env"]["PYTHONNOUSERSITE"] == "1"
     assert captured["timeout"] == 300
 
 
@@ -604,3 +608,66 @@ def test_valid_link_target_semantics_survive_filter_normalization(
     monkeypatch.setattr(tarfile, "data_filter", normalizing_filter)
     pull(pack, tmp_path)
     assert (Path(env["unpack_to"]) / "link").read_bytes() == b"correct"
+
+
+def _launch_spec(prefix):
+    env = copy.deepcopy(registry.env_of("videojev"))
+    env["unpack_to"] = str(prefix)
+    return env
+
+
+def test_packed_python_missing_aborts(tmp_path):
+    prefix = tmp_path / "opt/env"
+    prefix.mkdir(parents=True)
+    env = _launch_spec(prefix)
+    with pytest.raises(RuntimeError, match="packed interpreter missing"):
+        es.packed_python(env)
+
+
+def test_packed_python_path_stays_under_unpack_to_even_if_symlink(tmp_path):
+    prefix = tmp_path / "opt/env"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "bin/python").symlink_to(sys.executable)
+    env = _launch_spec(prefix)
+    assert es.packed_python(env) == str(prefix / "bin/python")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="venv layout is POSIX for packed envs")
+def test_launch_argv_uses_restored_venv_python_and_matching_prefix(tmp_path):
+    prefix = tmp_path / "opt/env"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(prefix)],
+        check=True,
+    )
+    env = _launch_spec(prefix)
+    argv, child = es.launch_argv(env, "-c", "import sys; print(sys.prefix)")
+    python = str(prefix / "bin/python")
+    assert argv[0] == python
+    assert argv[1] == "-s"
+    assert "python3" not in argv[0]
+    assert child["PYTHONNOUSERSITE"] == "1"
+    assert "PYTHONPATH" not in child
+    proc = subprocess.run(argv, env=child, capture_output=True, text=True, check=True)
+    assert Path(proc.stdout.strip()).resolve() == prefix.resolve()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="known synthetic POSIX interpreter shim")
+def test_launch_argv_aborts_when_sys_prefix_does_not_match(tmp_path):
+    import shlex
+
+    prefix = tmp_path / "opt/env"
+    (prefix / "bin").mkdir(parents=True)
+    python = prefix / "bin/python"
+    python.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n")
+    python.chmod(0o755)
+    env = _launch_spec(prefix)
+    with pytest.raises(RuntimeError, match="sys.prefix"):
+        es.launch_argv(env)
+
+
+def test_eval_subprocess_env_disables_user_site_and_drops_injection():
+    child = es.eval_subprocess_env("/opt/env/videojev")
+    assert child["PYTHONNOUSERSITE"] == "1"
+    assert "PYTHONPATH" not in child
+    assert "PYTHONUSERBASE" not in child
+    assert child["PATH"].startswith("/opt/env/videojev/bin" + os.pathsep)

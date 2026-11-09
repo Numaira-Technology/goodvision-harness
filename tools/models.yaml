@@ -5,12 +5,13 @@
 #
 #   weights  -- where the pinned weights live in R2 (pulled by tools/model_source.py)
 #   env      -- where a pre-built, conda-pack'd Python environment lives in R2
-#               (pulled + activated by tools/env_source.py)
+#               (pulled by tools/env_source.py; eval/serve exec {unpack_to}/bin/python)
 #
 # The env tarball is built ONCE per (model x GPU family) with tools/build_env.py
 # -- it already contains torch, flash-attn and every dep compiled for that GPU,
-# so a fresh rent just downloads it (egress-free) and `source`s it. No apt, no
-# pip, no flash-attn compile on the box.
+# so a fresh rent just downloads it (egress-free) and launches
+# `{unpack_to}/bin/python` (never PATH python/python3 or `conda activate`).
+# No apt, no pip, no flash-attn compile on the box.
 #
 # Credentials (R2_ENDPOINT / R2_BUCKET / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY)
 # come from the environment, never from this file. See docs/guides/model-storage-r2.md.
@@ -27,7 +28,7 @@ models:
     # key 1 -- weights (existing layout: models/<repo>/<revision>/)
     weights:
       r2_prefix: models/ZhuYuhan/VideoJev-4B/1c1a253bf90dfa66176124d25a48ffb791d517d5/
-    # key 2 -- a pre-built environment, pulled and `source`d as-is
+    # key 2 -- a pre-built environment; eval launches {unpack_to}/bin/python
     env:
       # Existing immutable artifact: do not overwrite it when rebuilding.
       # build_env prints new envs/videojev/<sha256> keys for manual pin review.
@@ -37,7 +38,7 @@ models:
       sha256: 44ac889e4c3a23803099a46c76b9917ecd8c30a7b1bb391031d7b95a572cf594
       size: 4846542699                      # 4.85 GB conda-pack tarball
       unpack_to: /opt/env/videojev          # fixed prefix; built here, restored here
-      activate_rel: bin/activate            # `source {unpack_to}/{activate_rel}`
+      activate_rel: bin/activate            # conda-pack identity; eval uses bin/python
       compat:                               # checked before download/execution
         python: "3.12"
         cuda: "12.8"
