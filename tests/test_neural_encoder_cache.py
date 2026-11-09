@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from goodvision_harness.neural_service import Encoder, PROMPTS
 
@@ -46,8 +47,10 @@ def encoder_fixture():
         if text is not None:
             calls.append(("text", tuple(text)))
             return {"input_ids": tensor([vectors[texts.index(t)] for t in text])}
-        calls.append(("image", tuple(images)))
-        return {"pixel_values": tensor([images])}
+        assert images.mode == "RGB" and images.size == (224, 224)
+        color = images.getpixel((112, 112))
+        calls.append(("image", color))
+        return {"pixel_values": tensor([color])}
 
     encoder = Encoder.__new__(Encoder)
     encoder.torch = SimpleNamespace(
@@ -70,7 +73,7 @@ def encoder_fixture():
     def reference(image, labels):
         # Independent full-forward formula: project each requested prompt, then
         # score and normalize only its own positive/negative pair.
-        projected_image = np.asarray(image) @ image_projection
+        projected_image = np.asarray(image.getpixel((112, 112)), dtype=float) @ image_projection
         projected_image /= np.linalg.norm(projected_image)
         result = []
         for label in labels:
@@ -87,11 +90,12 @@ def encoder_fixture():
 
 def test_cached_scores_match_full_forward_for_reordered_subsets_and_new_images():
     encoder, calls, reference = encoder_fixture()
-    for image, labels in [
+    for color, labels in [
         ([3.0, 1.0, 2.0], ["smoking", "fall"]),
         ([1.0, 4.0, 2.0], ["weapon", "fight", "smoking"]),
         ([2.0, 3.0, 1.0], list(reversed(PROMPTS))),
     ]:
+        image = Image.new("RGB", (224, 224), tuple(int(value) for value in color))
         actual = encoder.scores(image, labels)
         np.testing.assert_allclose(actual, reference(image, labels), rtol=1e-12)
     assert [kind for kind, _ in calls] == ["text", "image", "image", "image"]
@@ -104,11 +108,12 @@ def test_failed_text_encoding_does_not_publish_a_partial_cache():
     encoder.model.text_projection = lambda _: (_ for _ in ()).throw(
         RuntimeError("text projection failed")
     )
+    image = Image.new("RGB", (224, 224), (1, 2, 3))
     with pytest.raises(RuntimeError, match="text projection failed"):
-        encoder.scores([1.0, 2.0, 3.0], ["fight"])
+        encoder.scores(image, ["fight"])
     assert encoder._text_features is None
     assert [kind for kind, _ in calls] == ["text"]
     encoder.model.text_projection = projection
-    actual = encoder.scores([1.0, 2.0, 3.0], ["fight"])
-    np.testing.assert_allclose(actual, reference([1.0, 2.0, 3.0], ["fight"]))
+    actual = encoder.scores(image, ["fight"])
+    np.testing.assert_allclose(actual, reference(image, ["fight"]))
     assert [kind for kind, _ in calls] == ["text", "text", "image"]

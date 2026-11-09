@@ -8,14 +8,106 @@ from dataclasses import replace
 from threading import Event
 
 import httpx
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image, ImageDraw
 from test_vlm_independent import config, job
 
 from goodvision_harness.model_api import ModelAPISettings
 from goodvision_harness.neural_model import NeuralInspector
 from goodvision_harness.neural_service import MODEL, create_app
 from goodvision_harness.vlm_independent import _inspector
+
+
+def scene_processor_input(image):
+    """Stop at the real encoder's processor boundary, without loading a model."""
+    from goodvision_harness.neural_service import Encoder as ModelEncoder
+
+    class ReachedProcessor(Exception):
+        pass
+
+    observed = []
+
+    def processor(*, images, **kwargs):
+        observed.append(images)
+        assert kwargs == {"return_tensors": "pt"}
+        raise ReachedProcessor
+
+    encoder = object.__new__(ModelEncoder)
+    encoder.torch = None
+    encoder.processor = processor
+    encoder._text_features = {"smoking": object()}  # Text-cache math has separate tests.
+    with pytest.raises(ReachedProcessor):
+        encoder.scores(image, ["smoking"])
+    return observed[0]
+
+
+@pytest.mark.parametrize("size,bounds", [
+    ((640, 360), (0, 49, 224, 175)),
+    ((360, 640), (49, 0, 175, 224)),
+    ((641, 359), (0, 50, 224, 175)),
+    ((80, 45), (0, 49, 224, 175)),
+    ((224, 224), (0, 0, 224, 224)),
+    ((448, 448), (0, 0, 224, 224)),
+])
+def test_scene_encoder_preserves_edges_and_proportions(size, bounds):
+    width, height = size
+    image = Image.new("RGB", size)
+    draw = ImageDraw.Draw(image)
+    colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
+    for (x, y), color in zip(
+        [(0, 0), (7 * width // 8, 0),
+         (0, 7 * height // 8), (7 * width // 8, 7 * height // 8)],
+        colors, strict=True,
+    ):
+        draw.rectangle((x, y, x + width // 8, y + height // 8), fill=color)
+    radius = min(size) // 8
+    draw.rectangle(
+        (width // 2 - radius, height // 2 - radius,
+         width // 2 + radius, height // 2 + radius), fill="white",
+    )
+    original = image.tobytes()
+
+    processed = scene_processor_input(image)
+
+    assert processed.mode == "RGB"
+    assert processed.size == (224, 224)
+    assert image.size == size and image.tobytes() == original
+    pixels = np.asarray(processed)
+    content = np.any(pixels != (123, 117, 104), axis=-1)
+    ys, xs = np.nonzero(content)
+    assert (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1) == bounds
+    left, top, right, bottom = bounds
+    for (x, y), color in zip(
+        [(left + 2, top + 2), (right - 3, top + 2),
+         (left + 2, bottom - 3), (right - 3, bottom - 3)],
+        colors, strict=True,
+    ):
+        assert processed.getpixel((x, y)) == color
+    # A square landmark must remain square, including on portrait inputs.
+    ys, xs = np.nonzero(np.all(pixels > 245, axis=-1))
+    assert abs((xs.max() - xs.min()) - (ys.max() - ys.min())) <= 1
+
+
+def test_scene_padding_keeps_the_manually_selected_stereo_view():
+    from goodvision_harness.frame_crop import FrameCropSelector
+    from goodvision_harness.video_to_stream import LiveFrame
+
+    stereo = np.zeros((360, 1280, 3), dtype=np.uint8)
+    stereo[:, :320] = (0, 0, 255)  # Left edge of the chosen view, in BGR.
+    stereo[:, 320:640] = (0, 255, 0)  # Right edge of the same view.
+    stereo[:, 640:] = (255, 0, 0)  # Other camera; must not reach CLIP.
+    frame, = FrameCropSelector("left_half").frames(
+        iter([LiveFrame(7, 1.5, stereo)]), stopped=lambda: False,
+    )
+    processed = scene_processor_input(Image.fromarray(frame.bgr[:, :, ::-1]))
+
+    assert (frame.index, frame.timestamp_seconds) == (7, 1.5)
+    assert processed.size == (224, 224)
+    assert processed.getpixel((0, 112)) == (255, 0, 0)
+    assert processed.getpixel((223, 112)) == (0, 255, 0)
+    assert not np.any(np.all(np.asarray(processed) == (0, 0, 255), axis=-1))
 
 
 @pytest.mark.parametrize("failure", [False, True])
