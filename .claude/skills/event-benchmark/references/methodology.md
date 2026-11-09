@@ -17,10 +17,11 @@ and result-file hash. A count such as 50 or 100 is not a dataset identity. Recor
 question count and distinct-media count separately. Do not send labels or reference
 answers to the model. Private media, keys and raw outputs stay outside Git.
 
-Current manifests: 50 is reviewed; 120 is `draft_pending_user_review`, with 100
-base-4 questions and 20 bag-search questions. Review status must be resolved by
-reviewers, not relabeled by an agent to enable a run. Bag questions allow unknown
-and require a separate versioned task/metric; the base runner filters them out.
+Read review status from the selected manifest: the committed 50 and 120 manifests
+are reviewed; 120 contains 100 base-4 questions and 20 bag-search questions. Any
+draft status must be resolved by reviewers, not relabeled by an agent to enable a
+run. Bag questions allow unknown and require a separate versioned task/metric;
+the base runner filters them out.
 
 ## Frozen v2 procedure
 
