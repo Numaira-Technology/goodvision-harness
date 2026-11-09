@@ -738,7 +738,7 @@ def test_build_prefix_skips_flash_attn_when_false(tmp_path, monkeypatch):
     assert all("--no-build-isolation" not in call for call in calls)
     verify = next(call[-1] for call in calls if call[:3] == [python, "-I", "-c"])
     assert "flash_attn" not in verify
-    assert "import torch" in verify
+    assert "import sys, torch" in verify
     assert any("torch==2.8.0" in call for call in calls)
 
 
@@ -805,3 +805,20 @@ def test_upload_only_uploads_without_building(tmp_path, monkeypatch, capsys):
     assert result["r2_key"].startswith("envs/videojev/")
     assert [c["Key"] for c in calls] == [result["r2_key"], result["manifest_key"]]
     assert all(c["IfNoneMatch"] == "*" for c in calls)
+
+
+@pytest.mark.parametrize("name", ["videojev", "clip", "siglip2", "d3-nano", "qwen8b"])
+def test_each_registry_env_launch_path_is_absolute_packed_python(name, tmp_path):
+    env = copy.deepcopy(registry.env_of(name))
+    prefix = tmp_path / "opt" / name
+    (prefix / "bin").mkdir(parents=True)
+    python = prefix / "bin/python"
+    python.write_text("#!/bin/sh\nexit 0\n")
+    python.chmod(0o755)
+    env["unpack_to"] = str(prefix)
+    assert es.packed_python(env) == str(python)
+    absent = copy.deepcopy(env)
+    absent["unpack_to"] = str(tmp_path / "missing" / name)
+    Path(absent["unpack_to"]).mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="packed interpreter missing"):
+        es.packed_python(absent)
