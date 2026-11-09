@@ -5,7 +5,7 @@ description: >-
   store, locally or onto a rented GPU. Use for 从 R2 拉模型 / 下载 videojev / clip 权重 /
   模型从 R2 调取 / prefetch model weights / pull pinned weights / model_source / cloud_prefetch /
   R2 fallback to HF. Covers env setup, the pull command, loading with local_files_only, and the
-  remote-over-SSH path. Only models uploaded to bucket goodvision-models (today: videojev, clip);
+  remote-over-SSH path. Only models uploaded to bucket goodvision-models;
   not API models (qwen/gemini/luna); credentials never in the repo. Companion: vast-gpu-rent
   (renting the GPU), docs/guides/model-storage-r2.md.
 ---
@@ -13,7 +13,7 @@ description: >-
 # r2-model-pull
 
 Fetch revision-pinned vision weights from the R2 `goodvision-models` bucket instead of
-HuggingFace. R2 is egress-free, the download resumes, and every file is sha256-verified
+HuggingFace. R2 downloads are staged, and every file is sha256-verified
 against the bucket `MANIFEST.json`. HF is the automatic fallback when R2 creds are absent
 or a file is missing.
 
@@ -69,6 +69,11 @@ and `docs/guides/model-storage-r2.md`.
 - `boto3` must be importable or the R2 client silently falls back to HF. It is pinned in
   `tools/videojev_probe/requirements.txt`; install with `python -m pip` (the venv's `pip`
   script can carry a stale shebang if the repo moved).
-- Only `videojev` and `clip` are in R2 today; d3-nano / Qwen / SigLIP2 are not yet uploaded.
+- The storage guide records VideoJev, CLIP, SigLIP2 and d3-nano as uploaded;
+  Qwen is not yet mirrored. Use explicit repo+revision for d3-nano.
 - HF fallback on large weights can hit the Xet CDN — set `HF_HUB_DISABLE_XET=1` for it.
+- A damaged local R2 snapshot fails verification instead of being passed to HF's
+  cache fast path. Inspect it and move that revision directory aside before retrying.
+- Interrupted R2 attempts are discarded before HF fallback; they do not publish a
+  partial HF snapshot. Fetching a pinned revision does not change HF `refs/main`.
 - The read-write upload key is maintainers-only; the repo/CI uses the read-only token.

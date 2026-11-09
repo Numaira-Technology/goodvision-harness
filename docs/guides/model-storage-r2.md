@@ -149,6 +149,7 @@ acl = private
 **设计原则：核心加载代码不动，只在 runner 预取阶段把数据源从 HF 换成 R2。** 模型服务（`videojev_core` / `neural_service`）仍按 repo id + revision 从 `cache_dir` 的 HF 缓存布局加载（`local_files_only`），我们只是先把缓存填好。无 R2 凭据时自动退化为纯 HF，所以可安全合并、增量迁移。
 
 - **新模块 `tools/model_source.py`**：`ensure_cached(repo, revision, cache_dir)`，顺序 **本地已校验 → R2（有凭据时）→ HF 兜底**；把 `models/<repo>/<rev>/` 按 HF 缓存布局（`models--org--name/snapshots/<rev>/`）填进 `cache_dir`，并按 bucket 的 `MANIFEST.json` 逐文件校验 sha256。也可当 CLI 用。
+- **完整性边界**：R2 下载先写临时目录，全部校验通过后才发布 HF snapshot；失败的临时目录会丢弃，避免 HF 兜底复用半成品。固定 revision 不改写 HF `refs/main`。已有 R2 snapshot 若校验失败（文件损坏、manifest 无效或身份不符），会直接报错；检查并移走该 revision 目录后再重试，不把已知损坏的文件交给 HF 缓存快路径。
 - **凭据**：从环境读 `R2_ENDPOINT/R2_BUCKET/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY`，controller 经 SSH 带到 GPU（和 `HF_TOKEN` 一套，不进 repo/镜像）。服务启动前 `tools/vast_vlm/runtime.py` 会把 `R2_*` / `HF_TOKEN` / `*API_KEY*` 从服务进程环境抹除。
 - **VideoJev**：`videojev_probe download` 已改为走 `ensure_cached`；随后 `run` / `server` 用同一 `--cache-dir` 原样加载。
 - **CLIP**：无需改核心——controller 先跑预取 CLI，再照常起 `neural_service`（同一 `--cache-dir`，设 `HF_HUB_OFFLINE=1`）。

@@ -17,9 +17,12 @@ so nothing breaks for models not yet mirrored to R2.
 import hashlib
 import json
 import os
+import shutil
 import sys
 import time
+from contextlib import ExitStack
 from pathlib import Path
+from tempfile import TemporaryDirectory, mkdtemp
 
 # R2 keys mirror the bucket layout written by the upload step:
 #   models/<repo>/<revision>/<original HF relative path>  (+ MANIFEST.json)
@@ -28,7 +31,7 @@ MANIFEST_NAME = "MANIFEST.json"
 
 
 def repo_cache_folder(repo):
-    """HF cache folder name, e.g. ZhuYuhan/VideoJev-4B -> models--ZhuYuhan--VideoJev-4B."""
+    """HF cache folder name: org/name becomes models--org--name."""
     if "/" not in repo or repo.startswith("/") or ".." in repo.split("/"):
         raise ValueError(f"unexpected repo id: {repo!r}")
     return "models--" + repo.replace("/", "--")
@@ -38,7 +41,12 @@ def snapshot_dir(cache_dir, repo, revision):
     """The directory from_pretrained(repo, revision, cache_dir) resolves to."""
     if len(revision) != 40 or not all(c in "0123456789abcdef" for c in revision):
         raise ValueError("revision must be a full 40-char commit sha")
-    return Path(cache_dir) / repo_cache_folder(repo) / "snapshots" / revision
+    return (
+        Path(cache_dir).expanduser().resolve()
+        / repo_cache_folder(repo)
+        / "snapshots"
+        / revision
+    )
 
 
 def _sha256(path):
@@ -54,16 +62,45 @@ def read_manifest(snap):
     if not p.is_file():
         return None
     try:
-        return json.loads(p.read_text())
+        return json.loads(p.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return None
+
+
+def _manifest_files(manifest):
+    """Validate the complete manifest before touching any of its paths."""
+    if not isinstance(manifest, dict):
+        raise ValueError("manifest must be an object")
+    files = manifest.get("files")
+    if not isinstance(files, dict) or not files:
+        raise ValueError("manifest must list at least one file")
+    for rel, meta in files.items():
+        if (
+            not isinstance(rel, str)
+            or any(part in {"", ".", ".."} for part in rel.split("/"))
+            or "\\" in rel
+            or ":" in rel
+            or rel.split("/")[0] == MANIFEST_NAME
+        ):
+            raise ValueError(f"unsafe path in manifest: {rel!r}")
+        if (
+            not isinstance(meta, dict)
+            or type(meta.get("size")) is not int
+            or meta["size"] < 0
+            or not isinstance(meta.get("sha256"), str)
+            or len(meta["sha256"]) != 64
+            or any(c not in "0123456789abcdef" for c in meta["sha256"])
+        ):
+            raise ValueError(f"invalid file metadata: {rel!r}")
+    return files
 
 
 def verify_snapshot(snap, manifest):
     """True iff every file in the manifest is present with matching size + sha256."""
     snap = Path(snap)
-    files = (manifest or {}).get("files") or {}
-    if not files:
+    try:
+        files = _manifest_files(manifest)
+    except ValueError:
         return False
     for rel, meta in files.items():
         p = snap / rel
@@ -96,7 +133,9 @@ def r2_client():
 
 
 def _log(*a):
-    print(f"[model_source {time.strftime('%H:%M:%S')}]", *a, flush=True, file=sys.stderr)
+    print(
+        f"[model_source {time.strftime('%H:%M:%S')}]", *a, flush=True, file=sys.stderr
+    )
 
 
 def pull_from_r2(repo, revision, snap, *, client=None, bucket=None):
@@ -113,16 +152,28 @@ def pull_from_r2(repo, revision, snap, *, client=None, bucket=None):
     prefix = f"{R2_PREFIX}/{repo}/{revision}/"
 
     manifest_key = prefix + MANIFEST_NAME
-    manifest = json.loads(client.get_object(Bucket=bucket, Key=manifest_key)["Body"].read())
+    manifest = json.loads(
+        client.get_object(Bucket=bucket, Key=manifest_key)["Body"].read()
+    )
+    files = _manifest_files(manifest)
     if (manifest.get("model"), manifest.get("revision")) != (repo, revision):
         raise ValueError("R2 manifest repo/revision mismatch")
 
+    if snap.is_symlink():
+        raise ValueError("snapshot directory must not be a symlink")
     snap.mkdir(parents=True, exist_ok=True)
-    for rel, meta in manifest["files"].items():
+    marker = snap / MANIFEST_NAME
+    if marker.is_symlink():
+        raise ValueError("manifest must not be a symlink")
+    for rel, meta in files.items():
         dest = snap / rel
         if dest.is_symlink() or not dest.resolve().is_relative_to(snap.resolve()):
             raise ValueError(f"unsafe path in manifest: {rel!r}")
-        if dest.is_file() and dest.stat().st_size == meta["size"] and _sha256(dest) == meta["sha256"]:
+        if (
+            dest.is_file()
+            and dest.stat().st_size == meta["size"]
+            and _sha256(dest) == meta["sha256"]
+        ):
             continue  # resume: keep already-correct files
         dest.parent.mkdir(parents=True, exist_ok=True)
         client.download_file(bucket, prefix + rel, str(dest))
@@ -130,11 +181,8 @@ def pull_from_r2(repo, revision, snap, *, client=None, bucket=None):
             raise ValueError(f"checksum/size mismatch after R2 download: {rel}")
         _log(f"pulled {rel} ({meta['size'] / 1e6:.1f} MB)")
 
-    (snap / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2, sort_keys=True))
-    # Belt-and-suspenders for tools that resolve a branch ref instead of a sha.
-    refs = snap.parent.parent / "refs"
-    refs.mkdir(parents=True, exist_ok=True)
-    (refs / "main").write_text(revision)
+    marker.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    # A pinned historical revision does not establish the current HF main ref.
     return manifest
 
 
@@ -145,21 +193,67 @@ def ensure_cached(repo, revision, cache_dir, *, prefer_r2=True):
     Returns the snapshot directory that from_pretrained(repo, revision, cache_dir)
     will resolve to.
     """
-    cache_dir = Path(cache_dir)
+    cache_dir = Path(cache_dir).expanduser().resolve()
     snap = snapshot_dir(cache_dir, repo, revision)
 
     local = read_manifest(snap)
-    if local and verify_snapshot(snap, local):
-        _log(f"cache hit {repo}@{revision[:10]}")
-        return snap
-
-    if prefer_r2 and r2_client() is not None:
-        try:
-            pull_from_r2(repo, revision, snap)
-            _log(f"ready from R2 {repo}@{revision[:10]}")
+    marker = snap / MANIFEST_NAME
+    if marker.exists() or marker.is_symlink():
+        if (
+            not marker.is_symlink()
+            and not snap.is_symlink()
+            and isinstance(local, dict)
+            and (local.get("model"), local.get("revision")) == (repo, revision)
+            and verify_snapshot(snap, local)
+        ):
+            _log(f"cache hit {repo}@{revision[:10]}")
             return snap
-        except Exception as e:  # noqa: BLE001 - fall back to HF on any R2 failure
-            _log(f"R2 pull failed ({type(e).__name__}: {e}); falling back to HF")
+        # HF can reuse snapshot files without hashing them, even on fallback.
+        # Do not silently load a snapshot we already know has lost integrity.
+        raise ValueError(f"cached R2 snapshot failed verification: {snap}")
+
+    if prefer_r2:
+        # Never expose partial R2 downloads to HF's existing-file fast path.
+        # Publish only after every object and the full manifest are verified.
+        with ExitStack() as staging:
+            ready = False
+            try:
+                client = r2_client()
+                if client is not None:
+                    cache_dir.mkdir(parents=True, exist_ok=True)
+                    temporary = staging.enter_context(
+                        TemporaryDirectory(prefix=".r2-", dir=cache_dir)
+                    )
+                    staged = Path(temporary) / "snapshot"
+                    pull_from_r2(repo, revision, staged, client=client)
+                    ready = True
+            except Exception as e:
+                # SDK exception text can contain endpoint credentials or tokens.
+                _log(f"R2 pull failed ({type(e).__name__}); falling back to HF")
+            if ready:
+                # Keep publication errors visible rather than falling back to a
+                # possibly incomplete snapshot after a filesystem failure.
+                snap.parent.mkdir(parents=True, exist_ok=True)
+                if snap.is_symlink():
+                    raise ValueError("snapshot directory must not be a symlink")
+                backup = None
+                if snap.exists():
+                    # The old cache must survive even if publication and its
+                    # rollback both fail. Keep it outside staging's cleanup.
+                    backup = Path(mkdtemp(prefix=".r2-previous-", dir=snap.parent))
+                    previous = backup / "snapshot"
+                    snap.rename(previous)
+                try:
+                    staged.rename(snap)
+                except BaseException:
+                    if backup is not None and not snap.exists():
+                        previous.rename(snap)
+                        backup.rmdir()
+                    raise
+                if backup is not None:
+                    shutil.rmtree(backup)
+                _log(f"ready from R2 {repo}@{revision[:10]}")
+                return snap
 
     from huggingface_hub import snapshot_download
 
@@ -175,7 +269,10 @@ _KNOWN = {
     "clip": "goodvision_harness.neural_service",
     # SigLIP2 is pinned here (no service imports it yet); move to a runtime
     # module's MODEL/REVISION once it is wired in.
-    "siglip2": ("google/siglip2-base-patch16-224", "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2"),
+    "siglip2": (
+        "google/siglip2-base-patch16-224",
+        "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2",
+    ),
 }
 
 
@@ -192,9 +289,13 @@ def _resolve_known(name):
 def main(argv=None):
     import argparse
 
-    ap = argparse.ArgumentParser(description="Prefetch a pinned model into the HF cache (R2 first, HF fallback).")
+    ap = argparse.ArgumentParser(
+        description="Prefetch a pinned model into the HF cache (R2 first, HF fallback)."
+    )
     ap.add_argument("--cache-dir", type=Path, required=True)
-    ap.add_argument("--model", choices=sorted(_KNOWN), help="use the pinned repo+revision from code")
+    ap.add_argument(
+        "--model", choices=sorted(_KNOWN), help="use the pinned repo+revision from code"
+    )
     ap.add_argument("--repo", help="explicit HF repo id (with --revision)")
     ap.add_argument("--revision", help="explicit 40-char commit sha (with --repo)")
     ap.add_argument("--no-r2", action="store_true", help="skip R2, use HF only")

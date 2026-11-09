@@ -12,8 +12,12 @@ The pinned repo+revision for `--model videojev|clip` come from code (`videojev_c
 ## What `model_source.ensure_cached(repo, revision, cache_dir)` does
 1. If a verified local snapshot already exists in `cache_dir`, use it (no network).
 2. Else, with R2 creds present, pull from R2: download each file in `MANIFEST.json`,
-   resume partials, verify size + sha256, reject symlink/path-escape, write `refs/main`.
+   verify size + sha256 in a temporary staging directory, reject symlink/path-escape,
+   then publish the complete snapshot. Existing HF branch refs are preserved.
 3. Else fall back to `huggingface_hub.snapshot_download`.
+An existing R2 snapshot with a malformed/mismatched manifest or damaged files fails
+closed. Inspect and move that revision directory aside before retrying; HF must not
+reuse files already known to be corrupt. Failed R2 staging directories are discarded.
 The result fills a standard HF cache (`models--<org>--<name>/snapshots/<rev>/`), so any
 `from_pretrained(..., cache_dir=..., local_files_only=True)` loads it offline.
 
