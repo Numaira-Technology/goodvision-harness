@@ -146,10 +146,10 @@ def _pack(conda, prefix, out):
             "pip",
             "install",
             "--no-cache-dir",
-            "conda-pack==0.8.1",
+            "conda-pack==0.9.2",
         ]
     )
-    _run([base_python, "-I", "-m", "conda_pack", "-p", str(prefix), "-o", str(out)])
+    _run([base_python, "-I", "-m", "conda_pack.cli", "-p", str(prefix), "-o", str(out)])
 
 
 def _upload(env_spec, name, tarball, compat, repo_rev):
