@@ -55,12 +55,15 @@ def main():
             person_run=args.person_run,
         )
     elif args.command == "download":
-        from huggingface_hub import snapshot_download
+        # Prefetch from the R2 fixed store (egress-free) with HF as fallback;
+        # the cache layout is what run/server load with local_files_only.
+        try:
+            from tools.model_source import ensure_cached
+        except ImportError:
+            from ..model_source import ensure_cached
 
-        path = snapshot_download(
-            MODEL, revision=REVISION, cache_dir=str(args.cache_dir)
-        )
-        result = {"model": MODEL, "revision": REVISION, "path": path}
+        path = ensure_cached(MODEL, REVISION, args.cache_dir)
+        result = {"model": MODEL, "revision": REVISION, "path": str(path)}
     else:
         from .run import execute
 
