@@ -18,6 +18,7 @@ import sys
 import tarfile
 import tempfile
 import time
+from collections import deque
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
@@ -179,6 +180,33 @@ def prefix_lock(prefix):
         os.close(fd)
 
 
+def _validate_archive_links(paths):
+    """Resolve original symlink targets in the archive before filters rewrite them."""
+    for name, member in paths.items():
+        if not member.issym():
+            continue
+        pending = deque(name.split("/"))
+        resolved = []
+        hops = 0
+        while pending:
+            part = pending.popleft()
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                if not resolved:
+                    raise ValueError("archive link escapes the environment")
+                resolved.pop()
+                continue
+            target = paths.get("/".join([*resolved, part]))
+            if target is not None and target.issym():
+                hops += 1
+                if hops > 40:
+                    raise ValueError("archive link cycle or excessive indirection")
+                pending.extendleft(reversed(target.linkname.split("/")))
+            else:
+                resolved.append(part)
+
+
 def _safe_extract(tarball, dest):
     """Validate every header, extract with the data filter, then validate link targets.
 
@@ -227,12 +255,19 @@ def _safe_extract(tarball, dest):
                         raise ValueError(
                             "archive hardlink must target a regular member"
                         )
+        _validate_archive_links(paths)
         ordered = sorted(paths.values(), key=lambda m: m.issym() or m.islnk())
 
         def data_filter(member, destination):
             filtered = tarfile.data_filter(member, destination)
             # chmod on a hardlink would also change the original file's mode.
-            return filtered.replace(mode=None) if filtered.islnk() else filtered
+            if filtered.islnk():
+                return filtered.replace(mode=None)
+            if filtered.issym():
+                # Retain the validated target: normalization can change semantics
+                # when a target traverses another symlink before '..'.
+                return filtered.replace(linkname=member.linkname)
+            return filtered
 
         tf.extractall(dest, members=ordered, filter=data_filter)
         for name, member in paths.items():

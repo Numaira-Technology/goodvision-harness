@@ -545,3 +545,62 @@ def test_main_never_prints_backend_secret(monkeypatch, capsys):
         es.main(["--model", "videojev"])
     assert exc.value.code == 1
     assert "SECRET" not in capsys.readouterr().err
+
+
+def test_link_escape_rejected_before_newer_tar_filter_normalization(
+    pack, tmp_path, monkeypatch
+):
+    import posixpath
+
+    env, client = pack
+    archive(
+        client.tarball,
+        [
+            member("a", tarfile.SYMTYPE, "."),
+            member("b", tarfile.SYMTYPE, "a/../escape"),
+        ],
+    )
+    env.update(sha256=es._sha256(client.tarball), size=client.tarball.stat().st_size)
+    client.manifest = {**es._identity(env), "format": "conda-pack"}
+    original_filter = tarfile.data_filter
+
+    def normalizing_filter(item, dest):
+        if item.issym() or item.islnk():
+            item = item.replace(linkname=posixpath.normpath(item.linkname))
+        return original_filter(item, dest)
+
+    monkeypatch.setattr(tarfile, "data_filter", normalizing_filter)
+    monkeypatch.setattr(es, "_run_unpack", lambda *a: pytest.fail("pack executed"))
+    with pytest.raises(ValueError, match="link"):
+        pull(pack, tmp_path)
+    assert_clean(tmp_path, env)
+
+
+def test_valid_link_target_semantics_survive_filter_normalization(
+    pack, tmp_path, monkeypatch
+):
+    import posixpath
+
+    env, client = pack
+    archive(
+        client.tarball,
+        [
+            member("deep/dir", tarfile.DIRTYPE),
+            member("deep/file", data=b"correct"),
+            member("file", data=b"wrong"),
+            member("alias", tarfile.SYMTYPE, "deep/dir"),
+            member("link", tarfile.SYMTYPE, "alias/../file"),
+        ],
+    )
+    env.update(sha256=es._sha256(client.tarball), size=client.tarball.stat().st_size)
+    client.manifest = {**es._identity(env), "format": "conda-pack"}
+    original_filter = tarfile.data_filter
+
+    def normalizing_filter(item, dest):
+        if item.issym() or item.islnk():
+            item = item.replace(linkname=posixpath.normpath(item.linkname))
+        return original_filter(item, dest)
+
+    monkeypatch.setattr(tarfile, "data_filter", normalizing_filter)
+    pull(pack, tmp_path)
+    assert (Path(env["unpack_to"]) / "link").read_bytes() == b"correct"
