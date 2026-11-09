@@ -41,6 +41,7 @@ def _default_runner(command, *, input=None, timeout=1800):
 
 
 def remote_command(name, *, python="python3", remote_dir="."):
+    # Host python3 is only the restore bootstrap. Eval uses {unpack_to}/bin/python.
     # -I excludes cwd/site PYTHONPATH injection. Insert only the uploaded reader root.
     program = (
         f"import runpy,sys; sys.path.insert(0, {remote_dir!r}); "

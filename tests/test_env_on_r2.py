@@ -643,9 +643,11 @@ def test_launch_argv_uses_restored_venv_python_and_matching_prefix(tmp_path):
     argv, child = es.launch_argv(env, "-c", "import sys; print(sys.prefix)")
     python = str(prefix / "bin/python")
     assert argv[0] == python
-    assert argv[1] == "-s"
+    assert argv[1:3] == ["-s", "-c"]
+    assert "sys.prefix" in argv[3]
     assert "python3" not in argv[0]
     assert child["PYTHONNOUSERSITE"] == "1"
+    assert child["GOODVISION_ENV_PREFIX"] == str(prefix.resolve())
     assert "PYTHONPATH" not in child
     proc = subprocess.run(argv, env=child, capture_output=True, text=True, check=True)
     assert Path(proc.stdout.strip()).resolve() == prefix.resolve()

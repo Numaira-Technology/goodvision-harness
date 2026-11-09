@@ -89,14 +89,37 @@ _PREFIX_PROBE = "\n".join(
 )
 
 
+_LAUNCH_WRAPPER = _PREFIX_PROBE + "\n" + "\n".join(
+    [
+        "import runpy",
+        "argv = sys.argv[1:]",
+        "if not argv:",
+        "    raise SystemExit('missing eval/serve arguments')",
+        "if argv[0] == '-m':",
+        "    if len(argv) < 2:",
+        "        raise SystemExit('missing module name')",
+        "    sys.argv = argv[1:]",
+        "    runpy.run_module(argv[1], run_name='__main__')",
+        "elif argv[0] == '-c':",
+        "    if len(argv) < 2:",
+        "        raise SystemExit('missing -c command')",
+        "    sys.argv = ['-c', *argv[2:]]",
+        "    exec(compile(argv[1], '<string>', 'exec'), {'__name__': '__main__'})",
+        "else:",
+        "    sys.argv = argv",
+        "    runpy.run_path(argv[0], run_name='__main__')",
+    ]
+)
+
+
 def verify_packed_interpreter(env, *, runner=subprocess.run):
-    """Run the packed interpreter and require sys.prefix == unpack_to."""
+    """Run the packed interpreter with -s and require sys.prefix == unpack_to."""
     python = packed_python(env)
     prefix = str(Path(env["unpack_to"]).resolve())
     child = eval_subprocess_env(prefix)
     child["GOODVISION_ENV_PREFIX"] = prefix
     proc = runner(
-        [python, "-I", "-c", _PREFIX_PROBE],
+        [python, "-s", "-c", _PREFIX_PROBE],
         env=child,
         capture_output=True,
         text=True,
@@ -114,11 +137,14 @@ def verify_packed_interpreter(env, *, runner=subprocess.run):
 def launch_argv(env, *args):
     """Eval/serve argv whose argv[0] is the restored env's absolute python.
 
-    Isolation is PYTHONNOUSERSITE=1 plus python -s. Callers must not prepend
-    ``python``/``python3`` from PATH or ``source`` the activate script.
+    Isolation is PYTHONNOUSERSITE=1 plus python -s. The launched process itself
+    checks sys.prefix before running the eval/serve module. Callers must not
+    prepend ``python``/``python3`` from PATH or ``source`` the activate script.
     """
     python = verify_packed_interpreter(env)
-    return [python, "-s", *args], eval_subprocess_env(env["unpack_to"])
+    child = eval_subprocess_env(env["unpack_to"])
+    child["GOODVISION_ENV_PREFIX"] = str(Path(env["unpack_to"]).resolve())
+    return [python, "-s", "-c", _LAUNCH_WRAPPER, *args], child
 
 
 def _identity(env):
