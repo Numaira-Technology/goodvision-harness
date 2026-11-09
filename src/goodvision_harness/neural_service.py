@@ -1,13 +1,17 @@
 """Standalone CUDA classifier. Install transformers/torch separately to serve it."""
 
 import argparse
+import asyncio
 import base64
 import binascii
 import io
 import json
 import math
+import queue
 import threading
 import time
+from concurrent.futures import Future
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -59,6 +63,7 @@ class Encoder:
             .eval()
             .to("cuda")
         )
+        self._text_features = None
 
     def warmup(self):
         # Loading weights alone does not prove compatible CUDA kernels or the
@@ -69,28 +74,108 @@ class Encoder:
             raise ValueError("invalid model scores during warmup")
 
     def scores(self, image, labels):
-        torch = self.torch
-        inputs = self.processor(
-            images=ImageOps.pad(
-                image, (224, 224), method=Image.Resampling.BICUBIC,
+        return self.score_batch([self.prepare(image)], [labels])[0]
+
+    def prepare(self, image):
+        images = [image] if isinstance(image, Image.Image) else image
+        padded = [
+            ImageOps.pad(
+                frame, (224, 224), method=Image.Resampling.BICUBIC,
                 color=(123, 117, 104),
-            ),
-            text=[text for label in labels for text in PROMPTS[label]],
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-        )
-        with torch.inference_mode():
-            result = self.model(
-                **{key: value.to("cuda") for key, value in inputs.items()}
             )
-        return (
-            result.logits_per_image[0]
-            .reshape(len(labels), 2)
-            .softmax(dim=-1)
-            .cpu()
-            .tolist()
+            for frame in images
+        ]
+        return self.processor(images=padded, return_tensors="pt")["pixel_values"]
+
+    def score_batch(self, pixels, labels):
+        torch = self.torch
+        counts = [item.shape[0] for item in pixels]
+        with torch.inference_mode():
+            if self._text_features is None:
+                inputs = self.processor(
+                    text=[text for pair in PROMPTS.values() for text in pair],
+                    return_tensors="pt", padding=True, truncation=True,
+                )
+                pooled = self.model.text_model(
+                    **{key: value.to("cuda") for key, value in inputs.items()}
+                ).pooler_output
+                text = self.model.text_projection(pooled)
+                self._text_features = text / text.norm(dim=-1, keepdim=True)
+            pooled = self.model.vision_model(
+                pixel_values=torch.cat(pixels).to("cuda")
+            ).pooler_output
+            images = self.model.visual_projection(pooled)
+            images = images / images.norm(dim=-1, keepdim=True)
+            logits = (
+                self.model.logit_scale.exp()
+                * (self._text_features @ images.t()).t()
+            )
+            pairs = logits.reshape(-1, len(PROMPTS), 2).softmax(dim=-1)
+            pairs = pairs.cpu().tolist()
+        indices = {label: index for index, label in enumerate(PROMPTS)}
+        result, offset = [], 0
+        for count, requested in zip(counts, labels, strict=True):
+            window = _window_pairs(pairs[offset:offset + count])
+            result.append([window[indices[label]] for label in requested])
+            offset += count
+        return result
+
+
+class _BatchWorker:
+    """Score up to four already-prepared requests without waiting to fill a batch."""
+
+    def __init__(self, score_batch, max_batch_size):
+        self.score_batch, self.max_batch_size = score_batch, max_batch_size
+        self.pending = queue.Queue()
+        self.thread = threading.Thread(
+            target=self.run, name="clip-inference", daemon=True
         )
+
+    def submit(self, pixels, labels, finish):
+        result = Future()
+        self.pending.put((result, pixels, labels, finish, time.perf_counter()))
+        return result
+
+    def run(self):
+        while True:
+            first = self.pending.get()
+            if first is None:
+                return
+            batch = [first]
+            stopping = False
+            while len(batch) < self.max_batch_size:
+                try:
+                    item = self.pending.get_nowait()
+                except queue.Empty:
+                    break
+                if item is None:
+                    stopping = True
+                    break
+                batch.append(item)
+            batch = [item for item in batch if item[0].set_running_or_notify_cancel()]
+            if batch:
+                started = time.perf_counter()
+                error, pairs = None, [None] * len(batch)
+                try:
+                    pairs = self.score_batch(
+                        [item[1] for item in batch], [item[2] for item in batch]
+                    )
+                except Exception as failure:
+                    error = failure
+                elapsed = time.perf_counter() - started
+                for index, item in enumerate(batch):
+                    future, _pixels, _labels, finish, queued = item
+                    try:
+                        response = finish(pairs[index], error, {
+                            "server_queue_seconds": started - queued,
+                            "model_pipeline_seconds": elapsed,
+                            "batch_size": len(batch),
+                        })
+                        future.set_result(response)
+                    except Exception as failure:
+                        future.set_exception(failure)
+            if stopping:
+                return
 
 
 def _valid_pair(pair):
@@ -101,16 +186,57 @@ def _valid_pair(pair):
     )
 
 
-def create_app(encoder):
-    app, lock = FastAPI(), threading.Lock()
+def _window_pairs(frame_pairs):
+    """An event is present if any supplied frame supports it."""
+    result = []
+    for pairs in zip(*frame_pairs, strict=True):
+        invalid = next((pair for pair in pairs if not _valid_pair(pair)), None)
+        result.append(
+            invalid if invalid is not None else max(pairs, key=lambda p: p[0])
+        )
+    return result
+
+
+def create_app(encoder, *, max_batch_size=4):
     ppe, shared_error = None, None
+
+    def score_batch(pixels, labels):
+        if shared_error is not None:
+            raise HTTPException(503, "recognition service CUDA unavailable")
+        return encoder.score_batch(pixels, labels)
+
+    worker = None
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        nonlocal worker
+
+        active = _BatchWorker(score_batch, max_batch_size)
+        active.thread.start()
+        worker = active
+        try:
+            yield
+        finally:
+            worker = None
+            while True:
+                try:
+                    item = active.pending.get_nowait()
+                except queue.Empty:
+                    break
+                if item is not None:
+                    item[0].cancel()
+            active.pending.put(None)
+            active.thread.join()
+
+    app = FastAPI(lifespan=lifespan)
 
     @app.get("/health")
     def health():
-        return {"ready": shared_error is None, "model": MODEL}
+        return {"ready": worker is not None and shared_error is None, "model": MODEL}
 
     @app.post("/predict")
     async def predict(request: Request):
+        received = time.perf_counter()
         body = bytearray()
         async for chunk in request.stream():
             body.extend(chunk)
@@ -151,26 +277,34 @@ def create_app(encoder):
                 or not 1 <= len(payload["request_id"]) <= 256
             ):
                 raise ValueError("invalid request id")
-            with Image.open(
-                io.BytesIO(base64.b64decode(images[-1], validate=True))
-            ) as source:
-                if source.format != "JPEG" or source.width * source.height > 16_000_000:
-                    raise ValueError("invalid JPEG")
-                image = source.convert("RGB")
+            def prepare():
+                decoded = []
+                for encoded in images:
+                    with Image.open(
+                        io.BytesIO(base64.b64decode(encoded, validate=True))
+                    ) as source:
+                        if (
+                            source.format != "JPEG"
+                            or source.width * source.height > 16_000_000
+                        ):
+                            raise ValueError("invalid JPEG")
+                        decoded.append(source.convert("RGB"))
+                return encoder.prepare(decoded)
+
+            from starlette.concurrency import run_in_threadpool
+
+            pixels = await run_in_threadpool(prepare)
         except (KeyError, TypeError, ValueError, OSError, binascii.Error):
             raise HTTPException(400, "invalid recognition request") from None
 
-        def infer():
+        prepared = time.perf_counter()
+
+        def infer(pairs, error, timings):
             nonlocal ppe, shared_error
 
-            # Own the lock in the worker: disconnect/cancellation must not admit
-            # another GPU operation while this one is still running.
-            if not lock.acquire(blocking=False):
-                raise HTTPException(429, "recognition service busy")
             try:
-                if shared_error is not None:
-                    raise HTTPException(503, "recognition service CUDA unavailable")
-                pairs = encoder.scores(image, labels)
+                if error is not None:
+                    raise error
                 rows = []
                 for question, pair in zip(questions, pairs, strict=True):
                     try:
@@ -208,7 +342,10 @@ def create_app(encoder):
                     "request_id": payload["request_id"],
                     "model": MODEL,
                     "raw": rows,
-                    "timings": {},
+                    "timings": {
+                        **timings,
+                        "server_preprocess_seconds": prepared - received,
+                    },
                 }
                 if "ppe_violation" in labels:
                     from .ppe import (
@@ -220,6 +357,10 @@ def create_app(encoder):
 
                     started = time.perf_counter()
                     try:
+                        if shared_error is not None:
+                            raise HTTPException(
+                                503, "recognition service CUDA unavailable"
+                            )
                         if ppe is None:
                             ppe = ClipPPE(encoder)
                         sources = []
@@ -245,6 +386,9 @@ def create_app(encoder):
                             error="cuda_shared_failure", detail=shared_error["detail"]
                         )
                         return JSONResponse(status_code=503, content=response)
+                response["timings"]["server_elapsed_seconds"] = (
+                    time.perf_counter() - received
+                )
                 return response
             except (TypeError, ValueError):
                 raise HTTPException(503, "recognition could not complete") from None
@@ -265,12 +409,27 @@ def create_app(encoder):
                         },
                     )
                 raise
-            finally:
-                lock.release()
-
-        from starlette.concurrency import run_in_threadpool
-
-        return await run_in_threadpool(infer)
+        if shared_error is not None:
+            raise HTTPException(503, "recognition service CUDA unavailable")
+        if await request.is_disconnected():
+            return JSONResponse(
+                status_code=499, content={"detail": "client disconnected"}
+            )
+        if worker is None:
+            raise HTTPException(503, "recognition service unavailable")
+        pending = asyncio.wrap_future(worker.submit(pixels, labels, infer))
+        try:
+            while not pending.done():
+                await asyncio.wait({pending}, timeout=0.1)
+                if not pending.done() and await request.is_disconnected():
+                    pending.cancel()
+                    return JSONResponse(
+                        status_code=499, content={"detail": "client disconnected"}
+                    )
+            return await pending
+        except asyncio.CancelledError:
+            pending.cancel()
+            raise
 
     return app
 
@@ -280,12 +439,16 @@ def main():
     parser.add_argument("--cache-dir", required=True)
     parser.add_argument("--port", type=int, default=8094)
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--max-batch-size", type=int, choices=(1, 2, 3, 4), default=4)
     args = parser.parse_args()
     import uvicorn
 
     encoder = Encoder(args.cache_dir)
     encoder.warmup()
-    uvicorn.run(create_app(encoder), host=args.host, port=args.port)
+    uvicorn.run(
+        create_app(encoder, max_batch_size=args.max_batch_size),
+        host=args.host, port=args.port,
+    )
 
 
 if __name__ == "__main__":
