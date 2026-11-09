@@ -315,7 +315,7 @@ def test_cache_path_matches_hf_tilde_expansion(tmp_path, monkeypatch, use_r2):
     monkeypatch.setattr(
         Path,
         "expanduser",
-        lambda path: cache if str(path) == "~/cache" else expanduser(path),
+        lambda path: cache if path == Path("~/cache") else expanduser(path),
     )
     objects, manifest = _bucket(REPO, REV, FILES)
     monkeypatch.setattr(ms, "r2_client", lambda: FakeS3(objects) if use_r2 else None)
