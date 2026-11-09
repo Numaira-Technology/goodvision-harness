@@ -10,7 +10,7 @@
 - **run_eval.py**:v2 跑分前强制校验 manifest、samples.json 与每片 SHA，并将指纹写入结果。`--checksums` 仅保留为兼容参数。待审 draft manifest 不能用于正式跑分。
 
 `--provisional` 仅提供 base-4 二值诊断，使用独立的
-[`base4-provisional-v1`](../PROVISIONAL.md) 协议；可用 `--events` 筛选 base-4 事件。
+[`base4-provisional-v2`](../PROVISIONAL.md) 协议；可用 `--events` 筛选 base-4 事件。
 此模式只记录输入指纹，不验证已审阅 manifest，不能与 `--manifest` 同用，也不能用于 v2
 调阈或正式比较。bag 的 yes/no/unknown 任务仍不支持；不得把 unknown 改成 no 来绕过。
 
@@ -50,7 +50,7 @@
 `disjoint_assert` 是当时记录的文件名检查声明，当前工具不会将它视为内容不重叠的证明。
 
 后续需要：审阅完整答案与媒体、生成哈希 manifest、完整验证集重跑，再在未参与选阈的测试集评估。
-`tune_threshold.py` 强制 v2 decision 概率、完整验证集、每类正负例、相同模型/采样，以及
+`tune_threshold.py` 强制 v2/v2.1 decision 概率、完整验证集、每类正负例、相同版本/模型/采样，以及
 validation/test 的文件名和媒体 SHA-256 均不重叠；测试错误单列，主表保留 gate=0.5。
 language 和未定义分数契约的 threshold backend 不能输入此工具。
 
