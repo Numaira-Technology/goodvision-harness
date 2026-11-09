@@ -10,7 +10,7 @@ description: >-
 # Held-out threshold selection
 
 This skill defines an **offline analysis protocol**, not permission to run models
-or publish results. Read the current `tools/event_benchmark/SPEC.md` (v2) and
+or publish results. Read the current `tools/event_benchmark/SPEC.md` (v2.1) and
 `references/protocol.md` first. The main Luna/language result remains gate 0.5;
 CLIP margins require their own fixed baseline (normally zero, never borrowed 0.5).
 
@@ -61,11 +61,15 @@ run `evaluate --thresholds ... --thresholds-sha256 ... --test ...
 --test-manifest ... --out ...`. Both manifests need reviewed `source_video_group`
 values. Exact question coverage, labels, hashes, prompts and group disjointness
 are checked; training/development membership still requires independent review.
+Validation and test must use the same protocol version. Current v2.1 accuracy uses
+all attempted test questions; eligible legacy v2 retains correct/scored accuracy.
+Reports label the denominator and record attempted/scored/error counts. Neither
+version permits missing validation scores or provisional inputs.
 
 ## Publishing
 
 Only when requested, prepare a distinct model/protocol/variant identity through
-`bench-sheet-contribute`, e.g. `luna / v2 / val-tuned <artifact hash>` beside
-`luna / v2 / fixed 0.5`. Include fallback events and validation n/positive/negative
+`bench-sheet-contribute`, e.g. `luna / v2.1 / val-tuned <artifact hash>` beside
+`luna / v2.1 / fixed 0.5`. Include fallback events and validation n/positive/negative
 counts. Do not edit the frozen manifest, spec or baseline row to store a new fit.
 Store analysis and threshold artifacts in ignored `outputs/`.

@@ -18,8 +18,9 @@ Usage:
       --test-manifest /reviewed/test.json --out outputs/threshold-report.json
 
 Historical v1 archives are deliberately rejected. Validation requires a complete
-reviewed lossless v2 run with six questions and both classes per event; test errors
-are explicitly counted. Manifests must include reviewed source_video_group values.
+reviewed lossless v2/v2.1 run with six questions and both classes per event. Test
+accuracy uses scored questions for v2 and all attempts for v2.1; errors never enter
+the confusion matrix. Manifests must include reviewed source_video_group values.
 Selection cannot read test predictions; evaluation requires the frozen artifact hash.
 Only decision probabilities are supported until a threshold backend defines its
 score range and compatibility contract.
@@ -57,9 +58,10 @@ def _digest(value):
 
 
 def validate_run(per_video, metadata, *, validation=False):
-    """Only compatible, complete v2 evidence can enter threshold selection."""
-    if metadata.get("spec_version") != "v2":
-        raise ValueError("v2 run output required; historical/provisional experiments are not eligible")
+    """Keep each frozen protocol's denominator and evidence requirements explicit."""
+    version = metadata.get("spec_version")
+    if version not in ("v2", "v2.1"):
+        raise ValueError("v2/v2.1 run output required; historical/provisional experiments are not eligible")
     if metadata.get("frozen", True) is not True or metadata.get("provisional", False) is not False:
         raise ValueError("frozen, non-provisional evidence required")
     if "scored_events" in metadata and metadata["scored_events"] != EVENTS:
@@ -115,11 +117,18 @@ def validate_run(per_video, metadata, *, validation=False):
                 or type(row.get("frames_failed")) is not int or row["frames_failed"] != 0):
             raise ValueError("scored questions require complete frame evidence")
     scored = len(per_video) - errors
-    expected = {"attempted": len(per_video), "total": scored, "errors": errors}
+    expected = {"attempted": len(per_video),
+                "total": len(per_video) if version == "v2.1" else scored, "errors": errors}
     overall = metadata.get("overall", {})
-    if not isinstance(overall, dict) or any(overall.get(key) != value for key, value in expected.items()):
+    if not isinstance(overall, dict) or any(
+            type(overall.get(key)) is not int or overall[key] != value
+            for key, value in expected.items()):
         raise ValueError("run attempted/scored/error totals disagree with its questions")
-    if not scored:
+    # Earlier eligible outputs did not save this redundant count; derive it from
+    # rows, but reject a contradictory explicit count without rewriting inputs.
+    if "scored" in overall and (type(overall["scored"]) is not int or overall["scored"] != scored):
+        raise ValueError("run scored total disagrees with its questions")
+    if not scored and version == "v2":
         raise ValueError("run has no eligible scored questions")
     if validation:
         for event in EVENTS:
@@ -127,7 +136,7 @@ def validate_run(per_video, metadata, *, validation=False):
                 raise ValueError(f"validation requires positive and negative examples for {event}")
             if sum(row["event"] == event for row in per_video) < 6:
                 raise ValueError(f"validation requires six complete questions for {event}")
-    return expected
+    return {**expected, "scored": scored}
 
 
 def validate_manifest(per_video, metadata, path):
@@ -186,7 +195,7 @@ def validate_manifest(per_video, metadata, path):
 
 
 def validate_pair(val_rows, val_meta, test_rows, test_meta):
-    for key in ("backend", "model", "runner_sha256", "spec_sha256"):
+    for key in ("spec_version", "backend", "model", "runner_sha256", "spec_sha256"):
         if val_meta[key] != test_meta[key]:
             raise ValueError(f"validation/test {key} differs")
     # Concurrency does not change the frozen scoring contract.
@@ -203,8 +212,8 @@ def validate_pair(val_rows, val_meta, test_rows, test_meta):
         raise ValueError("validation/test question text differs")
 
 
-def confusion(items, tau):
-    """items: list of (score, gt_yes). pred_yes = score >= tau."""
+def confusion(items, tau, *, errors=0):
+    """Score valid predictions; v2.1 errors affect accuracy only, never TP/FN/TN/FP."""
     tp = fn = tn = fp = 0
     for score, gt in items:
         pred = (score is not None) and (score >= tau)
@@ -216,7 +225,7 @@ def confusion(items, tau):
             fp += 1
         else:
             tn += 1
-    n = tp + fn + tn + fp
+    n = tp + fn + tn + fp + errors
     acc = (tp + tn) / n if n else 0.0
     prec = tp / (tp + fp) if (tp + fp) else None
     rec = tp / (tp + fn) if (tp + fn) else None
@@ -344,6 +353,7 @@ def evaluate_thresholds(artifact_path, expected_digest, test_paths, manifest_pat
         identities = validate_manifest(test_pv, test_meta, manifest_path)
         validate_pair(artifact["validation_questions"], artifact["validation_run"],
                       identities, test_meta)
+        all_attempts = test_meta["spec_version"] == "v2.1"
         events = {}
         all_tuned, all_fixed = [], []
         for event in EVENTS:
@@ -352,21 +362,25 @@ def evaluate_thresholds(artifact_path, expected_digest, test_paths, manifest_pat
             if not attempted:
                 continue
             tau = thresholds[event]
+            errors = attempted - len(items)
             events[event] = {
-                "tau": tau, "at_tau": confusion(items, tau),
-                "at_0.5": confusion(items, 0.5),
-                "counts": {"attempted": attempted, "total": len(items),
-                           "errors": attempted - len(items)},
+                "tau": tau, "at_tau": confusion(items, tau, errors=errors if all_attempts else 0),
+                "at_0.5": confusion(items, 0.5, errors=errors if all_attempts else 0),
+                "counts": {"attempted": attempted, "scored": len(items),
+                           "total": attempted if all_attempts else len(items), "errors": errors},
             }
             # Confusion over hard predictions combines per-event gates without
             # introducing a second score threshold or rounding the original score.
             all_tuned.extend((float(score >= tau), gt) for score, gt in items)
             all_fixed.extend(items)
         report["test"][str(test_path)] = {
+            "spec_version": test_meta["spec_version"],
+            "accuracy_denominator": "attempted" if all_attempts else "scored",
             "n_total": counts["total"], "counts": counts,
             "result_sha256": result_digest, "manifest_sha256": test_meta["manifest_sha256"],
-            "overall_at_tau": confusion(all_tuned, 0.5),
-            "overall_at_0.5": confusion(all_fixed, 0.5), "per_event": events,
+            "overall_at_tau": confusion(all_tuned, 0.5, errors=counts["errors"] if all_attempts else 0),
+            "overall_at_0.5": confusion(all_fixed, 0.5, errors=counts["errors"] if all_attempts else 0),
+            "per_event": events,
         }
     return report
 

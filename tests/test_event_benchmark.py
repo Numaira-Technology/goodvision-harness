@@ -107,7 +107,7 @@ def test_complete_run_records_frozen_provenance_and_errors(tmp_path, monkeypatch
     result = runner.main()
     assert result["spec_version"] == "v2.1"
     assert result["score_precision"] == "lossless"
-    assert result["overall"] == {"correct": 0, "total": 1, "attempted": 1, "errors": 1}
+    assert result["overall"] == {"correct": 0, "total": 1, "attempted": 1, "scored": 0, "errors": 1}
     assert result["per_event"]["fight"]["err"] == 1
     assert result["per_event"]["fight"]["total"] == 1
     assert result["samples_json_sha256"] == runner.sha256(dataset.samples)
@@ -169,14 +169,14 @@ def test_provisional_report_has_separate_protocol_and_recorded_not_verified_hash
     monkeypatch.setattr(runner, "load_key", lambda _: "offline")
     monkeypatch.setattr(runner, "eval_video", lambda backend, model, sample, *args: (sample, {"error": "offline failure"}))
     result = runner.main()
-    assert result["spec_version"] == "base4-provisional-v1"
+    assert result["spec_version"] == "base4-provisional-v2"
     assert result["frozen"] is False and result["provisional"] is True
     assert result["manifest_sha256"] is None
     assert result["scored_events"] == ["fight"]
     assert result["spec_sha256"] == runner.sha256(runner.Path(runner.__file__).with_name("PROVISIONAL.md"))
     assert result["samples_json_sha256"] == runner.sha256(dataset.samples)
     assert result["per_video"][0]["sha256"] == runner.sha256(dataset.clip)
-    assert result["overall"] == {"correct": 0, "total": 1, "attempted": 1, "errors": 1}
+    assert result["overall"] == {"correct": 0, "total": 1, "attempted": 1, "scored": 0, "errors": 1}
     assert result["config"]["retries"] == 3
     assert "PROVISIONAL" in capsys.readouterr().out
     assert json.loads(output.read_text()) == result

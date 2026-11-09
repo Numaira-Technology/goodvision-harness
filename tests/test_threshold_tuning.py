@@ -37,9 +37,51 @@ def check(data, **kwargs):
     return tuner.validate_run(data["per_video"], data, **kwargs)
 
 
+@pytest.mark.parametrize("version", ["v2", "v2.1"])
+def test_versioned_totals_and_optional_scored_count_are_checked(version):
+    data = run("test")
+    data["spec_version"] = version
+    data["per_video"][0].pop("score")
+    data["per_video"][0]["error"] = "offline failure"
+    data["overall"].update(total=24 if version == "v2.1" else 23, errors=1)
+    assert check(data)["scored"] == 23  # Compatible saved outputs may omit scored.
+    data["overall"]["scored"] = 23
+    assert check(data)["scored"] == 23
+    data["overall"]["scored"] = 24
+    with pytest.raises(ValueError, match="scored total"):
+        check(data)
+    data["overall"].pop("scored")
+    data["overall"]["total"] = 23 if version == "v2.1" else 24
+    with pytest.raises(ValueError, match="totals disagree"):
+        check(data)
+
+
+@pytest.mark.parametrize(("val_version", "test_version"), [("v2", "v2.1"), ("v2.1", "v2")])
+def test_selection_cannot_mix_protocol_versions(tmp_path, val_version, test_version):
+    val = run("val")
+    val["spec_version"] = val_version
+    artifact, digest = freeze(tmp_path, val)
+    test = run("test")
+    test["spec_version"] = test_version
+    source, manifest = save_run(tmp_path, test)
+    with pytest.raises(ValueError, match="spec_version differs"):
+        tuner.evaluate_thresholds(artifact, digest, [source], [manifest])
+
+
+def test_v21_does_not_allow_errors_during_validation():
+    data = run("val")
+    data["spec_version"] = "v2.1"
+    data["per_video"][0].pop("score")
+    data["per_video"][0]["error"] = "offline failure"
+    data["overall"]["errors"] = 1
+    with pytest.raises(ValueError, match="validation must be complete"):
+        check(data, validation=True)
+
+
 @pytest.mark.parametrize(("field", "value"), [
     ("frozen", False), ("frozen", "true"), ("provisional", True), ("provisional", None),
-    ("spec_version", "base4-provisional-v1"), ("scored_events", ["fight"]),
+    ("spec_version", "base4-provisional-v1"), ("spec_version", "base4-provisional-v2"),
+    ("spec_version", "v2.2"), ("scored_events", ["fight"]),
 ])
 def test_unfrozen_metadata_cannot_enter_calibration_even_with_valid_hashes(field, value):
     data = run("val")
@@ -158,11 +200,14 @@ def test_cli_reports_test_errors_and_keeps_fixed_gate_comparison(tmp_path, monke
     tuner.main()
     report = json.loads(output.read_text())
     result = report["test"][str(test_source)]
-    assert result["counts"] == {"attempted": 24, "total": 23, "errors": 1}
+    assert result["counts"] == {"attempted": 24, "total": 23, "scored": 23, "errors": 1}
+    assert result["spec_version"] == "v2"
+    assert result["accuracy_denominator"] == "scored"
+    assert result["overall_at_0.5"]["accuracy"] == 100.0
     assert result["overall_at_tau"]["n"] == result["overall_at_0.5"]["n"] == 23
     assert report["val_counts"]["total"] == 24
     assert report["threshold_artifact_sha256"] == digest
-    assert result["per_event"]["fight"]["counts"] == {"attempted": 6, "total": 5, "errors": 1}
+    assert result["per_event"]["fight"]["counts"] == {"attempted": 6, "total": 5, "scored": 5, "errors": 1}
 
 
 def test_cli_rejects_identical_val_and_test_before_writing_report(tmp_path, monkeypatch):
@@ -336,7 +381,7 @@ def test_all_error_event_remains_visible_without_an_accuracy(tmp_path):
     source, manifest = save_run(tmp_path, data)
     report = tuner.evaluate_thresholds(artifact, digest, [source], [manifest])
     fight = report["test"][str(source)]["per_event"]["fight"]
-    assert fight["counts"] == {"attempted": 6, "total": 0, "errors": 6}
+    assert fight["counts"] == {"attempted": 6, "total": 0, "scored": 0, "errors": 6}
     assert fight["at_tau"]["accuracy"] is None
     assert fight["at_0.5"]["accuracy"] is None
 

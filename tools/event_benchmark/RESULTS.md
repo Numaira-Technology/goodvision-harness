@@ -73,7 +73,7 @@
 
 当前 runner 对 bag/unknown 评分关闭，等待单独审阅的三值回答、聚合与指标协议。
 新的 `--provisional` 只支持 base-4 诊断，输出独立的
-[`base4-provisional-v1`](PROVISIONAL.md) 版本和显式未冻结标记；仍不能解除已审阅
+[`base4-provisional-v2`](PROVISIONAL.md) 版本和显式未冻结标记；仍不能解除已审阅
 validation/media/source-group 清单与新鲜兼容 lossless v2 证据的验收阻塞。
 
 ## luna 阈值调参（held-out 24 验证集，SPEC §5/§8 脚注）
@@ -107,7 +107,7 @@ validation/media/source-group 清单与新鲜兼容 lossless v2 证据的验收�
 
 ## 当前工具与后续 v2 验证
 
-`tune_threshold.py` 现在只接受带媒体/答案/runner/spec 指纹的 v2 decision 输出，拒绝
+`tune_threshold.py` 现在只接受带媒体/答案/runner/spec 指纹的 v2 或 v2.1 decision 输出，拒绝
 validation/test 交集（文件名与媒体 SHA-256）、模型或采样不一致、无效概率和部分帧分数。
 新 runner 原样保存用于判定的完整精度分数，并记录 `score_precision=lossless`；
 调阈工具拒绝缺少该标记的旧 v2 输出及与分数不一致的基线判定。不得给旧存档补标记。
@@ -116,7 +116,9 @@ validation/test 交集（文件名与媒体 SHA-256）、模型或采样不一�
 报告保存全部候选正确题数、所选区间与回退情况；历史阈值不是这一新规则的输出。
 验证集必须与审阅 manifest 完全一致，且每类至少六题、同时有正负例；不足时本 CLI
 直接拒绝运行，不把缺失题目当成小样本回退。测试集错误单列 attempted/scored/errors，
-不进入分数分母；全错误事件仍展示覆盖数，准确率为 null。
+v2.1 准确率为正确数/全部题目数，错误保留在准确率分母中，但不进入 TP/FN/TN/FP；
+非空的全错误事件准确率为 0。合格的旧 v2 仍按正确数/scored 计算，无 scored 的事件
+准确率为 null。报告明确标注版本和分母；验证与测试必须使用相同版本，不得改写旧存档。
 历史 v1 文件保留原样，不能输入当前工具来生成声称有效的 v2 校准报告。
 
 本仓库尚无留出集的已审阅 v2 manifest；`validation_split.json` 只是历史候选清单。

@@ -1,6 +1,6 @@
 # Validation-only threshold protocol
 
-This is a separately labeled analysis protocol, not a change to the v2 fixed exam.
+This is a separately labeled analysis protocol, not a change to the v2.1 fixed exam.
 The tuning CLI implements separate selection/evaluation phases; a complete reviewed
 validation split is still missing. Missing artifacts block real calibration, not
 offline synthetic regressions or documentation.
@@ -95,8 +95,14 @@ selection. Never label bag-search thresholds calibrated without validation data.
 
 Apply the frozen artifact to test results once. Publish the fixed and tuned variants
 with the same test cohort, v2 eligibility policy and errors/attempted counts.
-Report correct/valid and coverage, per-event validation n/positives/negatives,
-fallbacks, threshold hash and comparator. Show no accuracy when valid=0. For other
-runners preserve unknown/error denominators; do not silently switch to v2 math.
+For current v2.1, report correct/all attempted questions, including errors in the
+accuracy denominator but never in TP/FN/TN/FP. A nonempty all-error cohort has 0%
+accuracy; no questions means no accuracy. Eligible legacy v2 retains correct/scored
+accuracy and no accuracy for an event with no scored questions. Record the protocol
+version, explicit denominator, attempted/scored/error counts, per-event validation
+n/positives/negatives, fallbacks, threshold hash and comparator. The CLI checks totals
+against rows and forbids mixing v2 and v2.1 validation/test artifacts, even if their
+other metadata match. Do not relabel old archives to make them compatible. For other
+runners preserve their unknown/error denominators.
 Repeatedly adjusting the threshold/protocol after inspecting test outcomes consumes
 the test set as development data; obtain a new untouched test set for the next claim.

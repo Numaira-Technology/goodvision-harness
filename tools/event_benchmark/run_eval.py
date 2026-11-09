@@ -313,7 +313,7 @@ def main():
                     help="base-4 event filter for provisional diagnostics; bag/unknown scoring is unsupported")
     ap.add_argument("--provisional", action="store_true",
                     help="draft/unfrozen run: skip the manifest+checksum freeze (GT under review). "
-                         "Uses the separate base4-provisional-v1 protocol, ineligible for v2 calibration.")
+                         "Uses the separate base4-provisional-v2 protocol, ineligible for v2 calibration.")
     a = ap.parse_args()
     if a.workers < 1 or not math.isfinite(a.interval) or a.interval <= 0:
         ap.error("workers and interval must be positive; interval must be finite")
@@ -354,7 +354,7 @@ def main():
             results.append(f.result())
 
     # ---- score (§7)
-    cnt = defaultdict(lambda: {"TP": 0, "FN": 0, "TN": 0, "FP": 0, "err": 0, "total": 0})
+    cnt = defaultdict(lambda: {"TP": 0, "FN": 0, "TN": 0, "FP": 0, "err": 0, "total": 0, "scored": 0})
     for s in samples:
         cnt[s["event"]]["total"] += 1
     oc, ot = 0, len(samples)
@@ -366,6 +366,7 @@ def main():
         gt, pred = s["proposed_answer"], r["pred"]
         key_ = ("TP" if pred == "yes" else "FN") if gt == "yes" else ("FP" if pred == "yes" else "TN")
         cnt[ev][key_] += 1
+        cnt[ev]["scored"] += 1
         oc += r["correct"]
 
     samp = "dense(≤14)" if interval is None else f"{interval}s (~{1/interval:.3g}fps)"
@@ -381,7 +382,7 @@ def main():
     print(f"OVERALL {oc}/{ot} = {100*oc/ot:.1f}%" if ot else "OVERALL n/a")
 
     out = {
-        "spec_version": "base4-provisional-v1" if a.provisional else SPEC_VERSION,
+        "spec_version": "base4-provisional-v2" if a.provisional else SPEC_VERSION,
         "score_precision": "lossless",
         "frozen": not a.provisional,
         "provisional": a.provisional,
@@ -399,6 +400,7 @@ def main():
                    "frame_width": FRAME_WIDTH, "temperature": TEMPERATURE,
                    "retries": RETRIES, "timeout": TIMEOUT, "decision": "max-frame-score >= gate"},
         "overall": {"correct": oc, "total": ot, "attempted": ot,
+                    "scored": sum(c["scored"] for c in cnt.values()),
                     "errors": sum(c["err"] for c in cnt.values())},
         "per_event": {ev: dict(cnt[ev]) for ev in scored},
         "per_video": [{"number": s["number"], "filename": s["filename"], "event": s["event"],

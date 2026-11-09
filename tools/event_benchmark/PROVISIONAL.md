@@ -1,4 +1,4 @@
-# Provisional base-4 diagnostics — base4-provisional-v1
+# Provisional base-4 diagnostics — base4-provisional-v2
 
 `run_eval.py --provisional` is an explicitly unreviewed diagnostic mode. It accepts
 draft binary labels for fight, smoking, fall and weapon, optionally filtered with
@@ -12,14 +12,24 @@ the inputs and do not establish human review or agreement with a frozen source.
 
 Frame sampling, backend response parsing, three total attempts with one-second
 failure delays, 90-second request timeout, complete-frame requirement, clip-max
-aggregation and the 0.5 gate follow the v2 runner mechanics. Default cadence is
+aggregation and the 0.5 gate follow the v2.1 runner mechanics. Default cadence is
 1 fps; a changed interval or dense sampling must be reported separately. Scores
-are lossless. Errors are excluded from accuracy and counted alongside attempted
-and scored questions; the console marks the entire report PROVISIONAL.
+are lossless. Accuracy is correct/all attempted questions, per event and overall.
+Errors stay in that denominator but never enter TP/FN/TN/FP. Attempted, scored and
+error counts are reported separately (`overall.attempted`, `overall.scored`,
+`overall.errors`; per-event `total`, `scored`, `err`). An all-error nonempty cohort
+has 0% accuracy; an empty cohort has no accuracy. The console marks the report
+PROVISIONAL.
 
-Output uses `spec_version=base4-provisional-v1`, `frozen=false`, `provisional=true`,
+This v2 label distinguishes the all-attempt denominator from the original
+provisional-v1 documented correct/scored rule. Some v1-labeled outputs produced
+after the frozen v2.1 runner merge already used all attempts; inspect their runner
+hash, rows and counts rather than assuming a denominator from that label alone.
+Do not rewrite or relabel those archives.
+
+Output uses `spec_version=base4-provisional-v2`, `frozen=false`, `provisional=true`,
 `manifest_sha256=null`, the selected `scored_events`, and this document's hash.
-These outputs cannot enter v2 threshold selection/evaluation or a reviewed v2
+These outputs cannot enter v2/v2.1 threshold selection/evaluation or a reviewed
 comparison table. Completing review later does not retroactively qualify a run:
 freeze reviewed manifests and collect fresh compatible evidence.
 
