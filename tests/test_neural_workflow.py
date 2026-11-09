@@ -4,11 +4,11 @@ import asyncio
 import base64
 import json
 import sys
+from concurrent.futures import CancelledError
 from dataclasses import replace
 from io import BytesIO
-from threading import Event
+from threading import Event, Thread
 from types import SimpleNamespace
-from concurrent.futures import CancelledError
 
 import httpx
 import pytest
@@ -102,7 +102,9 @@ def test_ready_requests_keep_frame_groups_and_cancel_only_queued_work():
                 for frames, requested in zip(windows, labels, strict=True)]
 
     worker = _BatchWorker(score, 4)
-    finish = lambda scores, error, timings: (scores, error, timings)
+    def finish(scores, error, timings):
+        return scores, error, timings
+
     first = worker.submit([1, 2], ['fall', 'smoking'], finish)
     cancelled = worker.submit([99], ['fight'], finish)
     last = worker.submit([3, 4, 5, 6], ['weapon'], finish)
@@ -131,7 +133,9 @@ def test_missing_batch_member_does_not_leave_later_requests_waiting():
     from goodvision_harness.neural_service import _BatchWorker
 
     worker = _BatchWorker(lambda windows, labels: [['saved result']], 4)
-    finish = lambda scores, error, timings: scores
+    def finish(scores, error, timings):
+        return scores
+
     first = worker.submit([1], ['fall'], finish)
     missing = worker.submit([2], ['fall'], finish)
     worker.thread.start()
@@ -144,6 +148,161 @@ def test_missing_batch_member_does_not_leave_later_requests_waiting():
     finally:
         worker.pending.put(None)
         worker.thread.join(3)
+
+
+@pytest.mark.parametrize("cap", [1, 2, 3, 4])
+def test_ready_requests_respect_batch_cap_without_waiting_to_fill(cap):
+    from goodvision_harness.neural_service import _BatchWorker
+
+    batches = []
+
+    def score(windows, labels):
+        batches.append(windows)
+        return windows
+
+    def finish(scores, error, timings):
+        assert error is None
+        return scores
+
+    worker = _BatchWorker(score, cap)
+    futures = [worker.submit([i], ["fall"], finish) for i in range(9)]
+    worker.thread.start()
+    try:
+        assert [future.result(3) for future in futures] == [[i] for i in range(9)]
+        assert batches == [
+            [[i] for i in range(start, min(start + cap, 9))]
+            for start in range(0, 9, cap)
+        ]
+    finally:
+        worker.pending.put(None)
+        worker.thread.join(3)
+    assert not worker.thread.is_alive()
+
+
+@pytest.fixture
+def submitted_requests(monkeypatch):
+    """Observe admission after async preprocessing, without timing sleeps."""
+    from goodvision_harness.neural_service import _BatchWorker
+
+    submitted = asyncio.Queue()
+    original_submit = _BatchWorker.submit
+
+    def submit(self, *args):
+        future = original_submit(self, *args)
+        submitted.put_nowait(future)
+        return future
+
+    monkeypatch.setattr(_BatchWorker, "submit", submit)
+    return submitted
+
+
+def test_cancelled_queued_http_request_never_reaches_encoder(submitted_requests):
+    _, payload, _ = client_and_request()
+    entered, release = Event(), Event()
+    batch_sizes = []
+
+    class Blocking(Encoder):
+        def score_batch(self, windows, labels):
+            batch_sizes.append(len(windows))
+            if len(batch_sizes) == 1:
+                entered.set()
+                assert release.wait(5)
+            return super().score_batch(windows, labels)
+
+    async def run():
+        app = create_app(Blocking())
+        async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://offline.test"
+        ) as client:
+            running = asyncio.create_task(client.post("/predict", json=payload))
+            await asyncio.wait_for(submitted_requests.get(), 3)
+            try:
+                assert await asyncio.to_thread(entered.wait, 3)
+                cancelled = asyncio.create_task(client.post("/predict", json=payload))
+                queued = await asyncio.wait_for(submitted_requests.get(), 3)
+                cancelled.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await cancelled
+                assert queued.cancelled()
+                later = asyncio.create_task(client.post("/predict", json=payload))
+                await asyncio.wait_for(submitted_requests.get(), 3)
+                release.set()
+                responses = await asyncio.wait_for(asyncio.gather(running, later), 3)
+                assert [response.status_code for response in responses] == [200, 200]
+            finally:
+                release.set()
+
+    asyncio.run(run())
+    assert batch_sizes == [1, 1]
+
+
+def test_batched_ppe_cuda_failure_preserves_scores_and_closes_queued_admission(
+    monkeypatch, submitted_requests,
+):
+    from goodvision_harness import ppe
+
+    _, payload, _ = client_and_request()
+    ppe_payload = json.loads(json.dumps(payload))
+    ppe_payload["question_template"][1]["id"] = "scene/ppe_violation"
+    entered, release = Event(), Event()
+    batch_sizes, ppe_calls = [], []
+    partial = {"detected": True, "frames": [{"detected": True}]}
+
+    class Blocking(Encoder):
+        def score_batch(self, windows, labels):
+            batch_sizes.append(len(windows))
+            if len(batch_sizes) == 1:
+                entered.set()
+                assert release.wait(5)
+            return [[[0.9, 0.1] for _ in requested] for requested in labels]
+
+    class PPE:
+        def __init__(self, encoder):
+            pass
+
+        def assess(self, sources, times):
+            ppe_calls.append(True)
+            error = RuntimeError("CUDA error: illegal memory access")
+            error.ppe_observation = partial
+            raise error
+
+    monkeypatch.setattr(ppe, "ClipPPE", PPE)
+
+    async def run():
+        app = create_app(Blocking(), max_batch_size=3)
+        async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://offline.test"
+        ) as client:
+            first = asyncio.create_task(client.post("/predict", json=payload))
+            await asyncio.wait_for(submitted_requests.get(), 3)
+            try:
+                assert await asyncio.to_thread(entered.wait, 3)
+                requests = []
+                for body in [ppe_payload, ppe_payload, payload, payload]:
+                    requests.append(
+                        asyncio.create_task(client.post("/predict", json=body))
+                    )
+                    # Preprocessing can reorder arrivals; wait for each admission.
+                    await asyncio.wait_for(submitted_requests.get(), 3)
+                release.set()
+                responses = await asyncio.wait_for(
+                    asyncio.gather(first, *requests), 3
+                )
+                assert [r.status_code for r in responses] == [200, 503, 503, 200, 503]
+                for response in responses[1:4]:
+                    row = response.json()["raw"][0]
+                    assert row["id"] == "scene/smoking"
+                    assert row["answer_index"] == 0
+                assert responses[1].json()["raw"][1]["derived"] == partial
+                assert responses[2].json()["raw"][1]["derived"]["detected"] is None
+                assert (await client.get("/health")).json()["ready"] is False
+                assert (await client.post("/predict", json=payload)).status_code == 503
+            finally:
+                release.set()
+
+    asyncio.run(run())
+    assert batch_sizes == [1, 3]
+    assert ppe_calls == [True]
 
 
 def test_window_pairs_keep_each_events_strongest_frame():
@@ -221,6 +380,86 @@ def test_real_http_payload_decodes_scene_verdicts_and_sends_template_each_time()
         inspector._decode(
             {**response.json(), "model": "wrong"}, expected, ("smoking", "fall")
         )
+
+
+def test_app_can_start_a_new_worker_after_a_completed_lifespan():
+    _, payload, _ = client_and_request()
+    app = create_app(Encoder())
+    for _ in range(2):
+        with TestClient(app) as client:
+            assert client.post("/predict", json=payload).status_code == 200
+
+
+def test_stopped_app_reports_unready_and_rejects_admission():
+    _, payload, _ = client_and_request()
+    app = create_app(Encoder())
+
+    async def run():
+        async with app.router.lifespan_context(app):
+            pass
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://offline.test"
+        ) as client:
+            assert (await client.get("/health")).json()["ready"] is False
+            response = await asyncio.wait_for(client.post("/predict", json=payload), 3)
+            assert response.status_code == 503
+
+    asyncio.run(run())
+
+
+def test_shutdown_cancels_queued_work_and_waits_for_running_batch(monkeypatch):
+    from goodvision_harness import neural_service
+
+    entered, release, queued_cancelled, shutdown_done = (
+        Event(), Event(), Event(), Event()
+    )
+    calls, errors = [], []
+
+    def score(windows, labels):
+        calls.append(windows)
+        entered.set()
+        assert release.wait(5)
+        return windows
+
+    def finish(scores, error, timings):
+        assert error is None
+        return scores
+
+    worker = neural_service._BatchWorker(score, 4)
+    monkeypatch.setattr(neural_service, "_BatchWorker", lambda *args: worker)
+    client = TestClient(create_app(Encoder()))
+    client.__enter__()
+
+    def shutdown():
+        try:
+            client.__exit__(None, None, None)
+        except Exception as error:
+            errors.append(error)
+        finally:
+            shutdown_done.set()
+
+    closing = Thread(target=shutdown)
+    try:
+        running = worker.submit([1], ["fall"], finish)
+        assert entered.wait(3)
+        queued = worker.submit([2], ["fall"], finish)
+        queued.add_done_callback(lambda future: queued_cancelled.set())
+        closing.start()
+        assert queued_cancelled.wait(3)
+        assert queued.cancelled()
+        assert not shutdown_done.wait(0.05)
+        assert worker.thread.is_alive()
+        release.set()
+        assert shutdown_done.wait(3)
+        assert running.result(3) == [1]
+        assert calls == [[[1]]]
+        assert not worker.thread.is_alive()
+        assert not errors
+    finally:
+        release.set()
+        if closing.ident is None:
+            closing.start()
+        closing.join(3)
 
 
 @pytest.mark.parametrize(

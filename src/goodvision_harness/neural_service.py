@@ -119,7 +119,9 @@ class _BatchWorker:
     def __init__(self, score_batch, max_batch_size):
         self.score_batch, self.max_batch_size = score_batch, max_batch_size
         self.pending = queue.Queue()
-        self.thread = threading.Thread(target=self.run, name="clip-inference", daemon=True)
+        self.thread = threading.Thread(
+            target=self.run, name="clip-inference", daemon=True
+        )
 
     def submit(self, pixels, labels, finish):
         result = Future()
@@ -195,29 +197,34 @@ def create_app(encoder, *, max_batch_size=4):
             raise HTTPException(503, "recognition service CUDA unavailable")
         return encoder.score_batch(pixels, labels)
 
-    worker = _BatchWorker(score_batch, max_batch_size)
+    worker = None
 
     @asynccontextmanager
     async def lifespan(_app):
-        worker.thread.start()
+        nonlocal worker
+
+        active = _BatchWorker(score_batch, max_batch_size)
+        active.thread.start()
+        worker = active
         try:
             yield
         finally:
+            worker = None
             while True:
                 try:
-                    item = worker.pending.get_nowait()
+                    item = active.pending.get_nowait()
                 except queue.Empty:
                     break
                 if item is not None:
                     item[0].cancel()
-            worker.pending.put(None)
-            worker.thread.join()
+            active.pending.put(None)
+            active.thread.join()
 
     app = FastAPI(lifespan=lifespan)
 
     @app.get("/health")
     def health():
-        return {"ready": shared_error is None, "model": MODEL}
+        return {"ready": worker is not None and shared_error is None, "model": MODEL}
 
     @app.post("/predict")
     async def predict(request: Request):
@@ -268,7 +275,10 @@ def create_app(encoder, *, max_batch_size=4):
                     with Image.open(
                         io.BytesIO(base64.b64decode(encoded, validate=True))
                     ) as source:
-                        if source.format != "JPEG" or source.width * source.height > 16_000_000:
+                        if (
+                            source.format != "JPEG"
+                            or source.width * source.height > 16_000_000
+                        ):
                             raise ValueError("invalid JPEG")
                         decoded.append(source.convert("RGB"))
                 return encoder.prepare(decoded)
@@ -340,7 +350,9 @@ def create_app(encoder, *, max_batch_size=4):
                     started = time.perf_counter()
                     try:
                         if shared_error is not None:
-                            raise HTTPException(503, "recognition service CUDA unavailable")
+                            raise HTTPException(
+                                503, "recognition service CUDA unavailable"
+                            )
                         if ppe is None:
                             ppe = ClipPPE(encoder)
                         sources = []
@@ -366,7 +378,9 @@ def create_app(encoder, *, max_batch_size=4):
                             error="cuda_shared_failure", detail=shared_error["detail"]
                         )
                         return JSONResponse(status_code=503, content=response)
-                response["timings"]["server_elapsed_seconds"] = time.perf_counter() - received
+                response["timings"]["server_elapsed_seconds"] = (
+                    time.perf_counter() - received
+                )
                 return response
             except (TypeError, ValueError):
                 raise HTTPException(503, "recognition could not complete") from None
@@ -390,14 +404,20 @@ def create_app(encoder, *, max_batch_size=4):
         if shared_error is not None:
             raise HTTPException(503, "recognition service CUDA unavailable")
         if await request.is_disconnected():
-            return JSONResponse(status_code=499, content={"detail": "client disconnected"})
+            return JSONResponse(
+                status_code=499, content={"detail": "client disconnected"}
+            )
+        if worker is None:
+            raise HTTPException(503, "recognition service unavailable")
         pending = asyncio.wrap_future(worker.submit(pixels, labels, infer))
         try:
             while not pending.done():
                 await asyncio.wait({pending}, timeout=0.1)
                 if not pending.done() and await request.is_disconnected():
                     pending.cancel()
-                    return JSONResponse(status_code=499, content={"detail": "client disconnected"})
+                    return JSONResponse(
+                        status_code=499, content={"detail": "client disconnected"}
+                    )
             return await pending
         except asyncio.CancelledError:
             pending.cancel()
@@ -417,7 +437,10 @@ def main():
 
     encoder = Encoder(args.cache_dir)
     encoder.warmup()
-    uvicorn.run(create_app(encoder, max_batch_size=args.max_batch_size), host=args.host, port=args.port)
+    uvicorn.run(
+        create_app(encoder, max_batch_size=args.max_batch_size),
+        host=args.host, port=args.port,
+    )
 
 
 if __name__ == "__main__":
