@@ -150,7 +150,10 @@ class Encoder:
                 if any(not valid_margin(value) for value in values) or not all(
                     _valid_pair(row[index]) for row in pairs[offset:offset + count]
                 ):
-                    raise ValueError("invalid calibrated frame scores")
+                    # Fail this entire request in infer(), without discarding
+                    # valid neighboring requests from the same model batch.
+                    selected.append(None)
+                    continue
                 winner = max(range(count), key=values.__getitem__)
                 selected.append({
                     "score_kind": "cosine_margin", "score": values[winner],

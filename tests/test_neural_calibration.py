@@ -361,8 +361,13 @@ def test_margin_winner_survives_probability_saturation_and_batch_offsets(
     assert smoking["image_index"] == 0
     assert output[1][0]["image_index"] == 0  # first tied maximum within this window
     frames[0, 0] = float("nan")
-    with pytest.raises(ValueError, match="invalid calibrated frame"):
-        encoder.score_batch([torch.tensor([0, 1])], [["fight"]])
+    output = encoder.score_batch(
+        [torch.tensor([0, 1]), torch.tensor([2, 2])], [["fight"], ["fight"]]
+    )
+    assert output[0] == [None]
+    assert contract.calibrated_choice(output[1][0], "fight", 2) == 0
+    _, _, failed = response_for([output[0][0], score_row()])
+    assert failed.status_code == 503
 
 
 @pytest.mark.parametrize("configured", [False, True])

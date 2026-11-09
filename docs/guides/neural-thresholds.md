@@ -8,6 +8,11 @@ CLI path takes precedence. Missing or invalid files stop startup before loading
 model weights. Without a configured file, the original prompts and pair choices
 remain unchanged. PPE and ground-litter decoding retain their existing contracts.
 
+Upgrade the service and harness client together before enabling thresholds. Older
+clients validate answers against the probability argmax and can reject a valid
+threshold-based negative or unknown answer. The updated client still accepts
+unconfigured services' legacy responses.
+
 The file must have exactly these fields:
 
 | Field | Required value |
