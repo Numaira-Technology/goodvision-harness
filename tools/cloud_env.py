@@ -1,40 +1,33 @@
-"""Restore a model's packed environment onto a rented GPU over SSH.
+"""Restore a pinned environment over SSH; return its path on the remote host.
 
-The remote analogue of ``tools/cloud_env.ensure``: where cloud_prefetch fills the
-weight cache on the box, this restores the pre-built conda-pack'd env there, so a
-launcher can `source` it instead of compiling torch/flash-attn.
-
-It uploads the small reader modules (model_source.py, registry.py, env_source.py,
-models.yaml) into ``<remote_dir>/tools`` and runs ``python -m tools.env_source``
-on the box, carrying the R2 credentials over SSH **stdin** only. The box needs the
-**read-only** R2 key -- restore never uploads -- plus ``boto3`` and ``PyYAML``.
-
-Returns the remote path to the env's ``activate`` script, e.g.::
-
-    source "$(restore result)"  # then run the model in its own env
+Only reader modules are uploaded. R2 credentials travel on SSH stdin and are
+removed from the environment before any packed executable runs. The caller must
+supply a read-only bucket token. The returned activation path is remote, not local.
 """
 
+import io
 import json
+import os
 import shlex
 import subprocess
+import tarfile
+import uuid
 from pathlib import Path
 
-from tools.cloud_prefetch import credential_blob
+from tools import registry
+from tools.cloud_prefetch import R2_KEYS, credential_blob
 
 TOOLS = Path(__file__).resolve().parent
-# Everything env_source needs to resolve + pull an env (no weights, no HF).
 UPLOAD = ("model_source.py", "registry.py", "env_source.py", "models.yaml")
 
 
 def _default_runner(command, *, input=None, timeout=1800):
-    """Run ``command``, feeding ``input`` on stdin, returning captured stdout.
-
-    env_source logs to stderr (streamed through) and prints its JSON result to
-    stdout, which the caller parses for the activate path.
-    """
     proc = subprocess.Popen(
-        command, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
-        stdout=subprocess.PIPE, text=True, start_new_session=True,
+        command,
+        stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
     )
     try:
         out, _ = proc.communicate(input=input, timeout=timeout)
@@ -48,28 +41,54 @@ def _default_runner(command, *, input=None, timeout=1800):
 
 
 def remote_command(name, *, python="python3", remote_dir="."):
-    """One remote shell command: source creds from stdin, then restore the env.
-
-    Prints the env_source JSON; nothing secret appears in the command itself.
-    """
-    inner = (
-        f"cd {shlex.quote(remote_dir)} && PYTHONPATH={shlex.quote(remote_dir)} "
-        f"{shlex.quote(python)} -m tools.env_source --model {shlex.quote(name)}"
+    # -I excludes cwd/site PYTHONPATH injection. Insert only the uploaded reader root.
+    program = (
+        f"import runpy,sys; sys.path.insert(0, {remote_dir!r}); "
+        "runpy.run_module('tools.env_source', run_name='__main__')"
     )
-    return f"set -a; . /dev/stdin; set +a; {inner}"
+    inner = shlex.join([python, "-I", "-c", program, "--model", name])
+    return (
+        f"set +x; set +v; unset {' '.join(R2_KEYS)} HF_TOKEN; "
+        f". /dev/stdin || exit; exec {inner}"
+    )
 
 
 def _default_uploader(ssh_options, host, port, remote_dir):
+    # Avoid scp's different legacy-shell and SFTP path-quoting rules entirely.
+    payload = io.BytesIO()
+    with tarfile.open(fileobj=payload, mode="w") as tf:
+        for name in UPLOAD:
+            tf.add(TOOLS / name, arcname=name)
+        tf.addfile(tarfile.TarInfo("__init__.py"))
+    target = shlex.quote(f"{remote_dir}/tools")
     subprocess.run(
-        ["ssh", *ssh_options, "-p", str(port), f"root@{host}",
-         f"mkdir -p {shlex.quote(remote_dir)}/tools"],
-        check=True, stdin=subprocess.DEVNULL, timeout=60,
+        [
+            "ssh",
+            *ssh_options,
+            "-p",
+            str(port),
+            f"root@{host}",
+            f"mkdir -p -- {target} && tar -xf - --no-same-owner -C {target}",
+        ],
+        input=payload.getvalue(),
+        check=True,
+        timeout=180,
     )
-    srcs = [str(TOOLS / f) for f in UPLOAD]
+
+
+def _default_cleaner(ssh_options, host, port, remote_dir):
     subprocess.run(
-        ["scp", *ssh_options, "-P", str(port), *srcs,
-         f"root@{host}:{remote_dir}/tools/"],
-        check=True, stdin=subprocess.DEVNULL, timeout=180,
+        [
+            "ssh",
+            *ssh_options,
+            "-p",
+            str(port),
+            f"root@{host}",
+            f"rm -rf -- {shlex.quote(remote_dir)}",
+        ],
+        check=True,
+        stdin=subprocess.DEVNULL,
+        timeout=60,
     )
 
 
@@ -84,47 +103,78 @@ def restore_env(
     python="python3",
     runner=_default_runner,
     uploader=_default_uploader,
+    cleaner=_default_cleaner,
     timeout=1800,
 ):
-    """Upload the readers and restore model ``name``'s env on the box.
-
-    Returns the remote activate-script path. Credentials travel over SSH stdin;
-    nothing secret is placed in argv. The restore uses the read-only R2 key.
-    """
+    """Return the remote activate path only after a matching successful restore."""
+    env = registry.env_of(name)
+    if env is None:
+        raise registry.RegistryError(f"model {name!r} has no packed environment")
+    if not isinstance(remote_dir, str) or not remote_dir.startswith("/"):
+        raise ValueError("remote_dir must be an absolute POSIX path")
+    registry.relative_path(remote_dir[1:])
+    if not all((r2_env or {}).get(key) for key in R2_KEYS):
+        raise ValueError("all four read-only R2 environment values are required")
     blob = credential_blob(r2_env)
-    uploader(ssh_options, host, port, remote_dir)
-    cmd = remote_command(name, python=python, remote_dir=remote_dir)
-    ssh = ["ssh", *ssh_options, "-p", str(port), f"root@{host}", cmd]
-    out = runner(ssh, input=blob, timeout=timeout)
-    # env_source prints one JSON object; take the last such line.
-    for line in reversed((out or "").splitlines()):
-        line = line.strip()
-        if line.startswith("{") and "activate" in line:
-            return json.loads(line)["activate"]
-    raise RuntimeError("env_source did not report an activate path")
+    # Each invocation owns just this unpredictable child, never the caller's directory.
+    reader_dir = f"{remote_dir}/.env-reader-{uuid.uuid4().hex}"
+    try:
+        uploader(ssh_options, host, port, reader_dir)
+        cmd = remote_command(name, python=python, remote_dir=reader_dir)
+        ssh = ["ssh", *ssh_options, "-p", str(port), f"root@{host}", cmd]
+        out = runner(ssh, input=blob, timeout=timeout)
+        expected = f"{env['unpack_to']}/{env['activate_rel']}"
+        for line in reversed((out or "").splitlines()):
+            try:
+                info = json.loads(line)
+            except ValueError:
+                continue
+            if (
+                isinstance(info, dict)
+                and info.get("name") == name
+                and info.get("source") in ("local", "r2")
+                and info.get("activate") == expected
+            ):
+                return expected
+        raise RuntimeError("env_source did not report the expected activate path")
+    finally:
+        try:
+            cleaner(ssh_options, host, port, reader_dir)
+        except Exception:
+            # Preserve a restore/upload failure; cleanup contains no credentials.
+            import sys
+
+            print(
+                "warning: could not remove temporary remote env readers",
+                file=sys.stderr,
+            )
 
 
 def main(argv=None):
     import argparse
-    import os
 
     ap = argparse.ArgumentParser(
-        description="Restore a pinned packed env onto a rented GPU over SSH (R2).")
+        description="Restore a pinned env over SSH (path is remote)."
+    )
     ap.add_argument("--host", required=True)
     ap.add_argument("--port", type=int, required=True)
-    ap.add_argument("--ssh-key", type=Path, help="private key (adds -i/-o options)")
-    ap.add_argument("--model", required=True, help="model name in tools/models.yaml")
+    ap.add_argument("--ssh-key", type=Path)
+    ap.add_argument("--model", required=True)
     ap.add_argument("--remote-dir", default="/workspace/goodvision-models")
+    ap.add_argument("--python", default="python3", help="remote host Python executable")
     args = ap.parse_args(argv)
-
-    opts = []
+    opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new"]
     if args.ssh_key:
-        opts = ["-i", str(args.ssh_key), "-o", "IdentitiesOnly=yes",
-                "-o", "StrictHostKeyChecking=accept-new"]
-    r2_env = {k: os.environ.get(k) for k in
-              ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY")}
-    activate = restore_env(ssh_options=opts, host=args.host, port=args.port,
-                           name=args.model, remote_dir=args.remote_dir, r2_env=r2_env)
+        opts += ["-i", str(args.ssh_key), "-o", "IdentitiesOnly=yes"]
+    activate = restore_env(
+        ssh_options=opts,
+        host=args.host,
+        port=args.port,
+        name=args.model,
+        remote_dir=args.remote_dir,
+        python=args.python,
+        r2_env={k: os.environ.get(k) for k in R2_KEYS},
+    )
     print(activate)
 
 

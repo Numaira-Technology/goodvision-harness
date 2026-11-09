@@ -1,172 +1,275 @@
-"""Build a model's environment ONCE on a matching GPU, conda-pack it, upload to R2.
+"""Build once on a compatible GPU and publish NEW immutable environment objects.
 
-Runs ON a rented box whose GPU matches the model's ``env.compat`` (e.g. an RTX
-4090 / Ada for CUDA 12.8). It:
-
-  1. installs miniconda if absent (each model env is a self-contained conda env),
-  2. creates the env at the registry's fixed ``unpack_to`` prefix,
-  3. pip-installs torch (cu128), the model's requirements, and flash-attn --
-     the slow, compile-once step,
-  4. conda-pack's the prefix into a single tarball,
-  5. uploads the tarball + a side-manifest (sha256, size, compat) to R2 at the
-     registry's ``env.r2_key`` / ``env.manifest_key``.
-
-After this, tools/env_source.py restores the env on any matching box with a plain
-download -- no apt, no pip, no flash-attn compile. Run build_env again only to
-refresh a pin or target a new GPU family (a second tarball, not a rebuild of the
-first).
-
-Credentials (R2_* read-write) come from the environment, carried over SSH stdin,
-never committed and never echoed.
+No weights are built or uploaded. Existing prefixes, packs and R2 objects are
+never replaced. The output is a proposed registry pin; review it before use.
+A trusted installed Miniforge, or a local installer plus its independently
+verified SHA256, is required. Nothing is fetched from a floating installer URL.
 """
 
 import argparse
-import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-from tools import model_source, registry
+from tools import env_source, model_source, registry
 
-# Miniforge: a miniconda-family distribution defaulting to conda-forge, so the
-# build is not blocked by the Anaconda defaults' Terms-of-Service gate.
-MINICONDA_URL = ("https://github.com/conda-forge/miniforge/releases/latest/"
-                 "download/Miniforge3-Linux-x86_64.sh")
-# flash-attn is compiled for one SM; map the registry gpu_family to an arch list.
-_ARCH = {"ada": "8.9", "ampere": "8.0;8.6", "hopper": "9.0"}
+# R2 documents create-once PutObject; do not assume multipart completion supports it.
+# https://developers.cloudflare.com/r2/api/s3/extensions/#conditional-operations-in-putobject
+MAX_PUT_SIZE = 5 * 1024**3 - 5 * 1024**2
+_sha256 = env_source._sha256
 
 
 def _log(*a):
     print(f"[build_env {time.strftime('%H:%M:%S')}]", *a, flush=True, file=sys.stderr)
 
 
-def _sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _run(cmd, **kw):
-    _log("$", cmd if isinstance(cmd, str) else " ".join(cmd))
-    subprocess.run(cmd, check=True, **kw)
+    # Package installers must not inherit storage credentials from the builder.
+    child_env = env_source.subprocess_env()
+    for key in (
+        "PATH",
+        "CUDA_HOME",
+        "CUDA_PATH",
+        "LD_LIBRARY_PATH",
+        "CC",
+        "CXX",
+        "MAX_JOBS",
+    ):
+        if key in os.environ:
+            child_env[key] = os.environ[key]
+    child_env.update(kw.pop("env", {}))
+    subprocess.run(
+        cmd,
+        check=True,
+        stdin=subprocess.DEVNULL,
+        stdout=sys.stderr,
+        env=child_env,
+        **kw,
+    )
 
 
-def _ensure_miniconda(home):
-    conda = Path(home) / "bin" / "conda"
+def _ensure_miniconda(home, installer=None, installer_sha256=None):
+    home = Path(home).expanduser().resolve()
+    conda = home / "bin" / "conda"
     if conda.is_file():
         return conda
-    installer = Path("/tmp/miniconda.sh")
-    _run(["curl", "-fsSL", "-o", str(installer), MINICONDA_URL])
+    if (
+        installer is None
+        or not isinstance(installer_sha256, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", installer_sha256)
+    ):
+        raise ValueError(
+            "install trusted Miniforge first, or supply a local installer and SHA256"
+        )
+    installer = Path(installer).resolve()
+    if _sha256(installer) != installer_sha256:
+        raise ValueError("Miniforge installer sha256 mismatch")
     _run(["bash", str(installer), "-b", "-p", str(home)])
+    if not conda.is_file():
+        raise RuntimeError("Miniforge did not install conda")
     return conda
 
 
 def _build_prefix(conda, prefix, requirements, python_ver, arch):
-    """Create the conda env at ``prefix`` and install the full stack into it."""
-    # One bash block so `conda activate` sticks for the pip steps.
-    script = f"""
-set -euo pipefail
-source "{conda.parent.parent}/etc/profile.d/conda.sh"
-conda create -y -p "{prefix}" -c conda-forge --override-channels python={python_ver}
-conda activate "{prefix}"
-python -m pip install --no-cache-dir --upgrade pip setuptools wheel packaging ninja
-python -m pip install --no-cache-dir torch==2.8.0 torchvision==0.23.0 \
-  --index-url https://download.pytorch.org/whl/cu128
-python -m pip install --no-cache-dir -r "{requirements}"
-export TORCH_CUDA_ARCH_LIST="{arch}"
-export MAX_JOBS="${{MAX_JOBS:-4}}"
-python -m pip install --no-cache-dir --no-build-isolation \
-  flash-attn==2.8.3.post2 causal-conv1d==1.7.0
-python - <<'PY'
-import torch, flash_attn
-print("torch", torch.__version__, "cuda", torch.version.cuda)
-print("flash_attn", flash_attn.__version__)
-assert torch.cuda.is_available(), "CUDA not available in built env"
-PY
-"""
-    _run(["bash", "-c", script], env={**os.environ, "HF_HUB_DISABLE_XET": "1"})
+    """Use argv throughout: paths containing shell syntax remain literal paths."""
+    _run(
+        [
+            str(conda),
+            "create",
+            "-y",
+            "-p",
+            str(prefix),
+            "-c",
+            "conda-forge",
+            "--override-channels",
+            f"python={python_ver}",
+        ]
+    )
+    python = str(Path(prefix) / "bin/python")
+    pip = [python, "-I", "-m", "pip", "install", "--no-cache-dir"]
+    _run([*pip, "--upgrade", "pip", "setuptools", "wheel", "packaging", "ninja"])
+    _run(
+        [
+            *pip,
+            "torch==2.8.0",
+            "torchvision==0.23.0",
+            "--index-url",
+            "https://download.pytorch.org/whl/cu128",
+        ]
+    )
+    _run([*pip, "-r", str(requirements)])
+    _run(
+        [
+            *pip,
+            "--no-build-isolation",
+            "flash-attn==2.8.3.post2",
+            "causal-conv1d==1.7.0",
+        ],
+        env={
+            "TORCH_CUDA_ARCH_LIST": arch,
+            "MAX_JOBS": os.environ.get("MAX_JOBS", "4"),
+            "FLASH_ATTENTION_FORCE_BUILD": "TRUE",
+            "CAUSAL_CONV1D_FORCE_BUILD": "TRUE",
+        },
+    )
+    _run(
+        [
+            python,
+            "-I",
+            "-c",
+            "\n".join(
+                [
+                    "import sys, torch, flash_attn, causal_conv1d",
+                    "assert sys.version_info[:2] == (3, 12), 'unexpected Python'",
+                    "assert torch.__version__ == '2.8.0+cu128', 'unexpected torch'",
+                    "assert torch.version.cuda == '12.8', 'unexpected CUDA runtime'",
+                    "assert flash_attn.__version__ == '2.8.3.post2', "
+                    "'unexpected flash-attn'",
+                    "assert torch.cuda.is_available(), 'CUDA unavailable'",
+                ]
+            ),
+        ]
+    )
 
 
 def _pack(conda, prefix, out):
-    """conda-pack the prefix into a single tarball at ``out``."""
-    script = f"""
-set -euo pipefail
-source "{conda.parent.parent}/etc/profile.d/conda.sh"
-conda activate base
-python -m pip install --no-cache-dir conda-pack
-conda pack -p "{prefix}" -o "{out}" --ignore-missing-files --force
-"""
-    _run(["bash", "-c", script])
+    base_python = str(conda.parent / "python")
+    _run(
+        [
+            base_python,
+            "-I",
+            "-m",
+            "pip",
+            "install",
+            "--no-cache-dir",
+            "conda-pack==0.8.1",
+        ]
+    )
+    _run([base_python, "-I", "-m", "conda_pack", "-p", str(prefix), "-o", str(out)])
 
 
 def _upload(env_spec, name, tarball, compat, repo_rev):
-    client = model_source.r2_client()
-    if client is None:
-        sys.exit("no R2 client: export read-write R2_* first")
-    bucket = os.environ["R2_BUCKET"]
-    sha = _sha256(tarball)
-    size = Path(tarball).stat().st_size
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    """Create content-addressed objects conditionally; never delete after a timeout.
 
+    A failed/uncertain second write can leave an unreferenced tarball. Preserve it
+    for author inspection rather than risking deletion of a committed artifact.
+    """
+    registry.validate_env(env_spec)
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
+        raise ValueError("invalid model name")
+    if compat != env_spec["compat"]:
+        raise ValueError("build compatibility differs from registry")
+    tarball = Path(tarball)
+    sha = _sha256(tarball)
+    size = tarball.stat().st_size
+    if not 0 < size <= MAX_PUT_SIZE:
+        raise ValueError(
+            "create-only upload supports packs below 5 GiB; no multipart fallback"
+        )
+    key = f"envs/{name}/{sha}.tar.gz"
+    manifest_key = f"envs/{name}/{sha}.json"
     manifest = {
-        "name": name, "r2_key": env_spec["r2_key"], "sha256": sha, "size": size,
-        "created_utc": now, "unpack_to": env_spec["unpack_to"],
-        "activate_rel": env_spec["activate_rel"], "compat": compat,
-        "built_by": "goodvision-harness build_env", "for_model": repo_rev,
+        "name": name,
+        "r2_key": key,
+        "sha256": sha,
+        "size": size,
+        "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "unpack_to": env_spec["unpack_to"],
+        "activate_rel": env_spec["activate_rel"],
+        "compat": compat,
+        "built_by": "goodvision-harness build_env",
+        "for_model": repo_rev,
         "format": "conda-pack",
     }
-    _log(f"uploading {tarball} ({size/1e9:.2f} GB) -> {env_spec['r2_key']}")
-    client.upload_file(str(tarball), bucket, env_spec["r2_key"])
-    client.put_object(Bucket=bucket, Key=env_spec["manifest_key"],
-                      Body=json.dumps(manifest, indent=2).encode())
-    return manifest
+    client = model_source.r2_client()
+    if client is None:
+        raise RuntimeError("R2 credentials not configured")
+    bucket = os.environ["R2_BUCKET"]
+    try:
+        with tarball.open("rb") as body:
+            client.put_object(
+                Bucket=bucket, Key=key, Body=body, ContentLength=size, IfNoneMatch="*"
+            )
+        client.put_object(
+            Bucket=bucket,
+            Key=manifest_key,
+            IfNoneMatch="*",
+            Body=json.dumps(manifest, indent=2).encode(),
+        )
+    except Exception:
+        raise RuntimeError(
+            f"create-only upload failed or is uncertain; inspect {key} "
+            f"and {manifest_key}; "
+            "existing objects were not deleted or overwritten"
+        ) from None
+    return {**manifest, "manifest_key": manifest_key}
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        description="Build + conda-pack + upload a model env to R2.")
-    ap.add_argument("--model", required=True, help="model name in tools/models.yaml")
+        description="Build a new immutable conda-pack environment."
+    )
+    ap.add_argument("--model", required=True)
     ap.add_argument("--conda-home", default=str(Path.home() / "miniconda3"))
-    ap.add_argument("--out", help="tarball path (default: /tmp/<name>-env.tar.gz)")
-    ap.add_argument("--requirements",
-                    default="tools/videojev_probe/requirements.txt",
-                    help="pip requirements installed into the env")
-    ap.add_argument("--skip-upload", action="store_true",
-                    help="build + pack only; print the tarball path and sha256")
+    ap.add_argument("--miniforge-installer", type=Path)
+    ap.add_argument("--miniforge-sha256")
+    ap.add_argument(
+        "--out", type=Path, required=True, help="new tarball path (must not exist)"
+    )
+    ap.add_argument(
+        "--requirements",
+        type=Path,
+        default=Path(__file__).parent / "videojev_probe/requirements.txt",
+    )
+    ap.add_argument("--skip-upload", action="store_true")
     args = ap.parse_args(argv)
-
     env_spec = registry.env_of(args.model)
     if env_spec is None:
-        sys.exit(f"model {args.model!r} has no env block in the registry")
-    compat = env_spec.get("compat") or {}
-    gpu_family = compat.get("gpu_family", "ada")
-    arch = _ARCH.get(gpu_family)
-    if not arch:
-        sys.exit(f"unknown gpu_family {gpu_family!r}; known: {sorted(_ARCH)}")
-    python_ver = compat.get("python", "3.12")
-    prefix = env_spec["unpack_to"]
-    out = Path(args.out or f"/tmp/{args.model}-env.tar.gz")
+        ap.error("model has no env block")
+    compat = env_spec["compat"]
+    if any(
+        compat[k] != v
+        for k, v in {"python": "3.12", "torch": "2.8.0", "cuda": "12.8"}.items()
+    ):
+        ap.error("this builder supports only Python 3.12 / torch 2.8.0 / CUDA 12.8")
+    env_source.check_compatibility(env_spec)
     repo, rev = registry.weights_of(args.model)
-
-    conda = _ensure_miniconda(args.conda_home)
-    _build_prefix(conda, prefix, args.requirements, python_ver, arch)
-    _pack(conda, prefix, out)
+    prefix = Path(env_spec["unpack_to"])
+    out = args.out.absolute()
+    if out.exists() or out.is_symlink():
+        ap.error("output already exists; choose a new path")
+    if not args.requirements.is_file():
+        ap.error("requirements file does not exist")
+    if out.is_relative_to(prefix):
+        ap.error("output must be outside the environment prefix")
+    arch = ";".join(registry.GPU_ARCHES[compat["gpu_family"]])
+    with env_source.prefix_lock(prefix), env_source.interruptible():
+        if prefix.exists():
+            ap.error("preserving existing environment; inspect and move it aside first")
+        conda = _ensure_miniconda(
+            args.conda_home, args.miniforge_installer, args.miniforge_sha256
+        )
+        _build_prefix(
+            conda, prefix, args.requirements.resolve(), compat["python"], arch
+        )
+        _pack(conda, prefix, out)
     sha = _sha256(out)
-    _log(f"packed {out} sha256={sha} size={Path(out).stat().st_size/1e9:.2f}GB")
-
-    if args.skip_upload:
-        print(json.dumps({"model": args.model, "tarball": str(out), "sha256": sha,
-                          "arch": arch, "uploaded": False}))
-        return
-    manifest = _upload(env_spec, args.model, out, compat, f"{repo}@{rev}")
-    print(json.dumps({"model": args.model, "r2_key": manifest["r2_key"],
-                      "sha256": manifest["sha256"], "size": manifest["size"],
-                      "arch": arch, "uploaded": True}))
+    result = {
+        "model": args.model,
+        "tarball": str(out),
+        "sha256": sha,
+        "size": out.stat().st_size,
+        "arch": arch,
+        "uploaded": False,
+    }
+    if not args.skip_upload:
+        result.update(_upload(env_spec, args.model, out, compat, f"{repo}@{rev}"))
+        result["uploaded"] = True
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":

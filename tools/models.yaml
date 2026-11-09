@@ -29,16 +29,16 @@ models:
       r2_prefix: models/ZhuYuhan/VideoJev-4B/1c1a253bf90dfa66176124d25a48ffb791d517d5/
     # key 2 -- a pre-built environment, pulled and `source`d as-is
     env:
-      # filled in by tools/build_env.py after the one-time build+upload:
-      #   r2_key:  envs/videojev/<tag>.tar.gz
-      #   sha256:  <tarball digest>   (verified on every pull)
+      # Existing immutable artifact: do not overwrite it when rebuilding.
+      # build_env prints new envs/videojev/<sha256> keys for manual pin review.
+      # The remote manifest must agree with every restore field below.
       r2_key: envs/videojev/cu128-py312-torch280-ada.tar.gz
       manifest_key: envs/videojev/cu128-py312-torch280-ada.json
       sha256: 44ac889e4c3a23803099a46c76b9917ecd8c30a7b1bb391031d7b95a572cf594
       size: 4846542699                      # 4.85 GB conda-pack tarball
       unpack_to: /opt/env/videojev          # fixed prefix; built here, restored here
       activate_rel: bin/activate            # `source {unpack_to}/{activate_rel}`
-      compat:                               # the launcher rents a box matching this
+      compat:                               # checked before download/execution
         python: "3.12"
         cuda: "12.8"
         torch: "2.8.0"
