@@ -444,6 +444,10 @@ def test_encoder_keeps_mixed_window_frames_and_reuses_fixed_text(monkeypatch):
     encoder = object.__new__(ModelEncoder)
     encoder.torch = torch
     encoder._text_features = None
+    from goodvision_harness.neural_service import PROMPTS
+
+    encoder.prompts = PROMPTS
+    encoder.thresholds = None
     text_calls = []
 
     def text_model(**kwargs):
