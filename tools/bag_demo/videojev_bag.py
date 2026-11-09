@@ -10,17 +10,16 @@ query text, not the options. All of this is demo-only, off VideoJev's frozen con
 
 import base64
 import json
-import subprocess
-from pathlib import Path
 
 from goodvision_harness.videojev_core import MODEL, OPTIONS, REVISION
+from tools.bag_demo.media import frame_jpeg, validate_times
 from tools.videojev_probe.contract import POLICY_SHA, parse_choices
 from tools.videojev_probe.contract import questions as native_questions
 
 FPS = 2.5  # the server pins fps == 2.5 and 2..4 frames per window
 FRAME_WIDTH = 720
-# Knife confidence gate: real knives score 0.99-1.0, the lone false positive (IMG_1187)
-# sat at ~0.88, so gating at 0.95 removes it without dropping any true knife.
+# Demo-only gate fitted on the author's small smoke sample; not calibrated
+# correctness confidence or benchmark acceptance evidence.
 KNIFE_GATE = 0.95
 
 # Custom bag questions. Options MUST be the canonical OPTIONS (values_for_question only
@@ -34,14 +33,17 @@ _CRITERION_PREAMBLE = (
 )
 BAG_CRITERIA = {
     BAG_KNIFE_ID: (
-        "Criterion: a knife is visibly exposed inside the bag or being taken out of it, "
+        "Criterion: a knife is visibly exposed inside the bag or being taken "
+        "out of it, "
         "judged by its visible appearance only."
     ),
     BAG_ALCOHOL_ID: (
         "Criterion: a glass bottle of an alcoholic drink -- such as a liquor, spirits, "
         "wine or beer bottle, typically glass with a printed brand label -- is visibly "
-        "exposed inside the bag or being taken out of it. A plain water bottle, a soft-drink "
-        "or plastic bottle, a flask, thermos, cup or any non-alcoholic container does NOT "
+        "exposed inside the bag or being taken out of it. A plain water bottle, "
+        "a soft-drink "
+        "or plastic bottle, a flask, thermos, cup or any non-alcoholic container "
+        "does NOT "
         "count. Judge only by the visible appearance of the bottle itself."
     ),
 }
@@ -85,7 +87,7 @@ def request_body(images_b64, questions, *, request_id, session, lane="events"):
 
 
 def _present_probability(raw, qid):
-    """Probability mass on option A (present) for a question id, for a confidence bar."""
+    """Option-A probability mass for the demo score bar (not calibrated confidence)."""
     for row in raw:
         if isinstance(row, dict) and row.get("id") == qid:
             scores = row.get("probabilities")
@@ -99,8 +101,8 @@ def parse_bag(raw, questions):
 
     knife/alcohol/weapon_native: True (present) / False (absent) / None (insufficient),
     with present-probabilities. `knife_present` is the gated weapon/knife decision used
-    for the headline: either the custom knife or the native weapon answer must be present
-    AND clear the KNIFE_GATE confidence (removes the low-confidence false positive).
+    for the headline: either the custom knife or native weapon must be present
+    and clear the demo KNIFE_GATE option-score gate.
     """
     decoded = parse_choices(raw, questions)  # raises on any contract violation
     knife, weapon_native = decoded.get(BAG_KNIFE_ID), decoded.get("scene/weapon")
@@ -125,29 +127,24 @@ def demo_label(verdict):
     """Map a parsed verdict to the demo's right-panel headline.
 
     Only the gated weapon/knife axis enters the headline; alcohol is experimental and
-    shown separately as a confidence bar, never as a verdict.
+    shown separately as an experimental score bar, never as a verdict.
     """
     if verdict.get("knife_present"):
-        return "武器(刀)"
-    if verdict.get("knife") is None:
+        return "刀/武器候选"
+    if verdict.get("knife") is not False or verdict.get("weapon_native") is not False:
         return "存疑"
-    return "无违禁品"
+    return "未检出刀/武器"
 
 
-# --- frame sampling (ffmpeg) and HTTP call: not exercised by the no-GPU unit test ---
+# Frame extraction and HTTP contracts are tested offline with synthetic inputs.
+
 
 def sample_frames(video_path, times):
     """Extract JPEG frames at the given source seconds as base64 strings (ffmpeg)."""
-    video_path = str(video_path)
-    out = []
-    for t in times:
-        proc = subprocess.run(
-            ["ffmpeg", "-nostdin", "-ss", f"{t:.3f}", "-i", video_path,
-             "-vframes", "1", "-vf", f"scale={FRAME_WIDTH}:-2", "-f", "mjpeg", "pipe:1"],
-            capture_output=True, check=True,
-        )
-        out.append(base64.b64encode(proc.stdout).decode("ascii"))
-    return out
+    return [
+        base64.b64encode(frame_jpeg(video_path, t, width=FRAME_WIDTH)).decode("ascii")
+        for t in validate_times(times)
+    ]
 
 
 def window_for(times):
@@ -155,16 +152,30 @@ def window_for(times):
     return {"frames": [{"media_seconds": float(t)} for t in times]}
 
 
-def predict(images_b64, times, *, endpoint="http://127.0.0.1:8093", request_id, session):
+def predict(
+    images_b64, times, *, endpoint="http://127.0.0.1:8093", request_id, session
+):
     """POST one window to the scorer and return the parsed bag verdict."""
     import httpx
 
+    times = validate_times(times)
+    if len(images_b64) != len(times):
+        raise ValueError("frames and source times must align")
     window = window_for(times)
     questions = build_questions(window)
     body = request_body(images_b64, questions, request_id=request_id, session=session)
-    response = httpx.post(f"{endpoint}/predict", json=body, timeout=25.0)
+    response = httpx.post(
+        f"{endpoint.rstrip('/')}/predict", json=body, timeout=25.0, trust_env=False
+    )
     response.raise_for_status()
     payload = response.json()
+    if not isinstance(payload, dict) or (
+        payload.get("model"),
+        payload.get("revision"),
+        payload.get("request_id"),
+    ) != (MODEL, REVISION, request_id):
+        raise ValueError("scorer response identity mismatch")
+    json.dumps(payload, allow_nan=False)
     verdict = parse_bag(payload["raw"], questions)
     verdict["timings"] = payload.get("timings")
     verdict["label"] = demo_label(verdict)

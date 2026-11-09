@@ -49,7 +49,7 @@
 <body>
 <header>
   <h1>翻包检测 Demo</h1>
-  <span class="sub">VideoJev（R2）主脑 · YOLO 画框 · 实时判别</span>
+  <span class="sub">实验 Demo · VideoJev 刀/武器候选 · 酒类 VLM 未接入</span>
   <div id="clips"></div>
 </header>
 
@@ -60,7 +60,7 @@
       <canvas id="ov"></canvas>
     </div>
     <div class="legend">
-      <span><span class="dot" style="background:var(--red)"></span>违禁品框（刀/瓶）</span>
+      <span><span class="dot" style="background:var(--red)"></span>物体候选框（刀/瓶，非违禁判定）</span>
       <span><span class="dot" style="background:var(--cyan)"></span>包/其他</span>
       <label class="toggle"><input type="checkbox" id="chkTruth"> 显示人工标注对照（自检）</label>
     </div>
@@ -73,9 +73,10 @@
       <div class="selfcheck" id="selfcheck"></div>
     </div>
     <div class="panel">
+      <div class="sub">酒类未判定 · 分数未经校准 · 非安全放行依据</div>
       <div class="bar"><div class="k"><span>刀 / 武器</span><span id="knifeP">–</span></div>
         <div class="track"><div class="fill" id="knifeFill" style="background:var(--red)"></div></div></div>
-      <div class="bar"><div class="k"><span>酒瓶 · 实验性(仅置信，不计入判别)</span><span id="alcoholP">–</span></div>
+      <div class="bar"><div class="k"><span>VideoJev 酒瓶实验分数（非 VLM 判定）</span><span id="alcoholP">–</span></div>
         <div class="track"><div class="fill" id="alcoholFill" style="background:var(--amber)"></div></div></div>
     </div>
     <div class="panel"><div class="log" id="log"></div></div>
@@ -86,7 +87,7 @@
 const $ = s => document.querySelector(s);
 const vid = $('#vid'), ov = $('#ov'), ctx = ov.getContext('2d');
 let CLIPS = [], current = null, boxes = null;
-let sticky = {knife:false, alcohol:false}, lastTruth = null, scoring = false, lastScoreT = -99;
+let sticky = {knife:false, alcohol:false}, lastTruth = null, scoring = false, lastScoreT = -99, generation = 0;
 
 async function loadClips() {
   const r = await (await fetch('/api/clips')).json();
@@ -103,6 +104,7 @@ async function loadClips() {
 }
 
 async function selectClip(c) {
+  ++generation;
   current = c; lastTruth = c.truth;
   document.querySelectorAll('#clips button').forEach(b =>
     b.classList.toggle('active', b.dataset.name === c.name));
@@ -111,17 +113,26 @@ async function selectClip(c) {
   $('#log').textContent = ''; $('#selfcheck').textContent = '';
   vid.src = '/media/' + encodeURIComponent(c.name);
   boxes = null;
-  try { boxes = await (await fetch('/api/boxes/' + encodeURIComponent(c.name))).json(); } catch(e){}
   vid.load();
+  showTruth();
+  try {
+    const response = await fetch('/api/boxes/' + encodeURIComponent(c.name));
+    if (!response.ok) throw new Error('boxes unavailable');
+    const data = await response.json();
+    if (current === c) boxes = data;
+  } catch(e) {
+    if (current === c) log('物体框不可用');
+  }
 }
 
 function setLabel(text, state) {
   $('#label').textContent = text; $('#state').textContent = state || '';
-  const color = text.includes('武器') ? 'var(--red)' : text.includes('酒瓶') ? 'var(--amber)'
-              : text === '无违禁品' ? 'var(--green)' : text === '存疑' ? 'var(--gray)' : '#e6edf3';
+  const color = text === '刀/武器候选' ? 'var(--red)' : text.includes('酒瓶') ? 'var(--amber)'
+              : text === '未检出刀/武器' ? 'var(--cyan)' : text === '存疑' ? 'var(--gray)' : '#e6edf3';
   $('#label').style.color = color;
 }
 function setBar(kind, p) {
+  p = Number.isFinite(p) && p >= 0 && p <= 1 ? p : null;
   const pct = p == null ? 0 : Math.round(p*100);
   $('#'+kind+'Fill').style.width = pct + '%';
   $('#'+kind+'P').textContent = p == null ? '–' : pct + '%';
@@ -160,40 +171,54 @@ async function scoreTick() {
   if (!current || vid.paused || vid.ended || scoring) return;
   if (vid.currentTime - lastScoreT < 1.2) return;   // don't outrun the scorer
   scoring = true; lastScoreT = vid.currentTime;
-  const t = vid.currentTime;
+  const t = vid.currentTime, selected = generation, clip = current.name;
   $('#state').textContent = '评分中… t=' + t.toFixed(1) + 's';
   try {
-    const r = await (await fetch(`/api/verdict?clip=${encodeURIComponent(current.name)}&t=${t.toFixed(2)}`)).json();
-    if (r.error) { $('#state').textContent = '评分失败：' + r.error + '（检查 GPU 隧道 :8093）'; }
-    else applyVerdict(r, t);
-  } catch(e) { $('#state').textContent = '请求失败：' + e; }
-  finally { scoring = false; }
+    const response = await fetch(`/api/verdict?clip=${encodeURIComponent(clip)}&t=${t.toFixed(6)}`);
+    const r = await response.json();
+    if (selected !== generation) return;
+    if (!response.ok || r.error) throw new Error('scoring unavailable');
+    if (r.clip !== clip || Math.abs(r.t - t) > 0.00001) throw new Error('response mismatch');
+    applyVerdict(r, t);
+  } catch(e) {
+    if (selected === generation) {
+      setLabel('存疑', '当前评分不可用（检查本地采样 / GPU 隧道 :8093）');
+      setBar('knife', null); setBar('alcohol', null);
+    }
+  } finally { scoring = false; }
 }
+
 function applyVerdict(r, t) {
   if (r.knife_present) sticky.knife = true;        // gated weapon/knife decision (>=0.95)
   if (r.alcohol === true) sticky.alcohol = true;  // tracked for the experimental bar / self-check only
-  setBar('knife', r.knife_p); setBar('alcohol', r.alcohol_p);
-  // Headline reports only the reliable weapon/knife axis; alcohol is experimental
-  // (shown as a confidence bar) and never enters the verdict or latches it.
-  let label = sticky.knife ? '武器(刀)' : (r.knife == null ? '存疑' : '无违禁品');
+  const weaponScores = [r.knife_p, r.weapon_native_p].filter(Number.isFinite);
+  setBar('knife', weaponScores.length ? Math.max(...weaponScores) : null);
+  setBar('alcohol', r.alcohol_p);
+  const label = sticky.knife ? '刀/武器候选' : r.label;
   const ms = r.timings && r.timings.model_pipeline_seconds;
-  setLabel(label, 't=' + t.toFixed(1) + 's · 窗口判别=' + fmtV(r) + (ms ? ` · ${(ms).toFixed(1)}s` : ''));
+  setLabel(label, 't=' + t.toFixed(1) + 's · 窗口判别=' + fmtV(r) + (Number.isFinite(ms) ? ` · ${ms.toFixed(1)}s` : ''));
   log(`t=${t.toFixed(1)}  knife=${fmt(r.knife)}(${pc(r.knife_p)}) alcohol=${fmt(r.alcohol)}(${pc(r.alcohol_p)}) weaponNative=${fmt(r.weapon_native)}`);
-  if ($('#chkTruth').checked && lastTruth) {
-    const okK = sticky.knife === !!lastTruth.knife, okA = sticky.alcohol === !!lastTruth.alcohol;
-    const sc = $('#selfcheck');
-    sc.textContent = `对照人工标注：刀 ${okK?'✓':'✗'}（真值${lastTruth.knife?'有':'无'}）· 酒瓶 ${okA?'✓':'✗'}（真值${lastTruth.alcohol?'有':'无'}）`;
-    sc.className = 'selfcheck ' + (okK && okA ? 'ok' : 'bad');
-  }
+  showTruth();
+}
+function showTruth() {
+  const sc = $('#selfcheck');
+  sc.className = 'selfcheck';
+  sc.textContent = $('#chkTruth').checked && lastTruth
+    ? `样本人工标注（非本窗口真值）：刀${lastTruth.knife?'有':'无'} · 酒瓶${lastTruth.alcohol?'有':'无'}` : '';
 }
 const fmt = v => v === true ? 'yes' : v === false ? 'no' : '?';
 const fmtV = r => `刀${fmt(r.knife)}/瓶${fmt(r.alcohol)}`;
 const pc = p => p == null ? '–' : Math.round(p*100) + '%';
-function log(line) { const el = $('#log'); el.textContent += line + '\n'; el.scrollTop = el.scrollHeight; }
+function log(line) { const el = $('#log'); el.textContent = (el.textContent + line + '\n').split('\n').slice(-101).join('\n'); el.scrollTop = el.scrollHeight; }
 
 vid.addEventListener('timeupdate', scoreTick);
-vid.addEventListener('seeked', () => { sticky = {knife:false, alcohol:false}; lastScoreT = -99; });
-loadClips();
+vid.addEventListener('seeking', () => {
+  generation++; sticky = {knife:false, alcohol:false}; lastScoreT = -99;
+  setLabel('—', '已跳转，等待新窗口'); setBar('knife', null); setBar('alcohol', null);
+  $('#log').textContent = '';
+});
+$('#chkTruth').addEventListener('change', showTruth);
+loadClips().catch(() => setLabel('存疑', '无法加载视频列表'));
 </script>
 </body>
 </html>

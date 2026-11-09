@@ -5,10 +5,12 @@ the class filter beyond person to the bag/contraband COCO classes. This is a sta
 demo helper and does NOT touch the benchmark's person-only detector worker.
 """
 
-import base64
 import json
-import subprocess
+import math
 from pathlib import Path
+
+from tools.bag_demo.media import duration as _duration
+from tools.bag_demo.media import frame_jpeg
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WEIGHTS = REPO_ROOT / "workers" / "detector_rich_label" / "yolo26s.pt"
@@ -40,6 +42,9 @@ def _device():
 
 class BagYolo:
     def __init__(self, weights=WEIGHTS, conf=DEFAULT_CONF):
+        # Ultralytics otherwise downloads missing weights implicitly.
+        if not Path(weights).is_file():
+            raise FileNotFoundError("YOLO weights must already exist locally")
         from ultralytics import YOLO
 
         self.model = YOLO(str(weights))
@@ -47,11 +52,14 @@ class BagYolo:
         self.device = _device()
 
     def detect(self, image_bgr):
-        """Return boxes as dicts with normalized xyxy (0..1), class name and confidence."""
+        """Return normalized xyxy (0..1), class name and detector confidence."""
         h, w = image_bgr.shape[:2]
         results = self.model.predict(
-            image_bgr, classes=list(CLASSES), conf=self.conf,
-            device=self.device, verbose=False,
+            image_bgr,
+            classes=list(CLASSES),
+            conf=self.conf,
+            device=self.device,
+            verbose=False,
         )
         out = []
         if not results:
@@ -60,13 +68,19 @@ class BagYolo:
             cls_id = int(box.cls[0])
             name = CLASSES.get(cls_id, str(cls_id))
             x1, y1, x2, y2 = (float(v) for v in box.xyxy[0].tolist())
-            out.append({
-                "cls": name,
-                "conf": round(float(box.conf[0]), 3),
-                "xyxy": [round(x1 / w, 4), round(y1 / h, 4),
-                         round(x2 / w, 4), round(y2 / h, 4)],
-                "alert": name in CONTRABAND,
-            })
+            out.append(
+                {
+                    "cls": name,
+                    "conf": round(float(box.conf[0]), 3),
+                    "xyxy": [
+                        round(x1 / w, 4),
+                        round(y1 / h, 4),
+                        round(x2 / w, 4),
+                        round(y2 / h, 4),
+                    ],
+                    "alert": name in CONTRABAND,
+                }
+            )
         return out
 
 
@@ -74,45 +88,47 @@ def _frame_bgr_at(video_path, t):
     import cv2
     import numpy as np
 
-    proc = subprocess.run(
-        ["ffmpeg", "-nostdin", "-ss", f"{t:.3f}", "-i", str(video_path),
-         "-vframes", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
-        capture_output=True, check=True,
-    )
-    arr = np.frombuffer(proc.stdout, dtype=np.uint8)
-    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
-
-
-def _duration(video_path):
-    out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=nokey=1:noprint_wrappers=1", str(video_path)],
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
-    return float(out)
+    arr = np.frombuffer(frame_jpeg(video_path, t), dtype=np.uint8)
+    image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError("could not decode frame")
+    return image
 
 
 def precompute(video_path, fps=SAMPLE_FPS, conf=DEFAULT_CONF):
     """Per-timestamp boxes for the whole clip, for synced client-side overlay."""
-    video_path = Path(video_path)
-    detector = BagYolo(conf=conf)
+    if not math.isfinite(fps) or not 0 < fps <= 60:
+        raise ValueError("fps must be finite and within (0, 60]")
+    if not math.isfinite(conf) or not 0 <= conf <= 1:
+        raise ValueError("confidence must be finite and within 0..1")
+    video_path = Path(video_path).resolve(strict=True)
     duration = _duration(video_path)
-    n = max(1, int(duration * fps))
+    detector = BagYolo(conf=conf)
+    n = max(1, math.ceil(duration * fps))
     frames = []
     for i in range(n):
-        t = (i + 0.5) / fps
-        if t >= duration:
-            break
-        frames.append({"t": round(t, 3), "boxes": detector.detect(_frame_bgr_at(video_path, t))})
-    return {"clip": video_path.name, "duration": round(duration, 3), "fps": fps, "frames": frames}
+        t = min((i + 0.5) / fps, (i / fps + duration) / 2)
+        frames.append(
+            {"t": round(t, 3), "boxes": detector.detect(_frame_bgr_at(video_path, t))}
+        )
+    return {
+        "clip": video_path.name,
+        "duration": round(duration, 3),
+        "fps": fps,
+        "frames": frames,
+    }
 
 
 def main(argv=None):
     import argparse
 
-    ap = argparse.ArgumentParser(description="Precompute YOLO boxes for bag-demo clips.")
+    ap = argparse.ArgumentParser(
+        description="Precompute YOLO boxes for bag-demo clips."
+    )
     ap.add_argument("--video", required=True, type=Path)
-    ap.add_argument("--out", type=Path, help="write boxes JSON here (default: <video>.boxes.json)")
+    ap.add_argument(
+        "--out", type=Path, help="write boxes JSON here (default: <video>.boxes.json)"
+    )
     ap.add_argument("--fps", type=float, default=SAMPLE_FPS)
     ap.add_argument("--conf", type=float, default=DEFAULT_CONF)
     args = ap.parse_args(argv)
