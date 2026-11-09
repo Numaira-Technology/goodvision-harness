@@ -292,6 +292,8 @@ def test_page_rejects_late_responses_and_never_shows_clean_for_unavailable():
     [
         ({"host": "attacker.invalid"}, 400),
         ({"origin": "https://attacker.invalid"}, 403),
+        ({"origin": "http://[invalid"}, 403),
+        ({"origin": "https://127.0.0.1"}, 403),
         ({"sec-fetch-site": "cross-site"}, 403),
     ],
 )

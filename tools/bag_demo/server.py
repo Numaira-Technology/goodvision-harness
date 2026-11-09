@@ -14,7 +14,6 @@ import math
 import os
 import threading
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -52,7 +51,7 @@ SCORING = threading.BoundedSemaphore(1)
 async def local_browser_requests(request: Request, call_next):
     origin = request.headers.get("origin")
     if request.headers.get("sec-fetch-site") == "cross-site" or (
-        origin and urlsplit(origin).netloc != request.headers.get("host")
+        origin and origin != f"{request.url.scheme}://{request.headers.get('host')}"
     ):
         return JSONResponse({"error": "cross_origin_request"}, status_code=403)
     response = await call_next(request)
