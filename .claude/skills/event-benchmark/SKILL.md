@@ -20,12 +20,18 @@ use the user's authorized scope and budget.
    manifest, media directories and output path. Verify manifest review status,
    samples hash, question/label identities and media hashes. The runner does this
    before requests. Do not change a draft status to bypass review.
-   `manifest_50.json` is reviewed; `manifest_120.json` is currently draft and
-   includes 100 base-event questions plus 20 separate bag-search questions.
-   Question count is not unique-video count. Select the samples/manifest pair from
-   `tools/event_benchmark/datasets/`; categories, answers and source details come
-   from the selected samples. Video source does not change the category or scoring
-   workflow. Never assume a colleague's Desktop path exists.
+   Select the reviewed manifest from `tools/event_benchmark/datasets/` and obtain
+   its exact matching samples file; not every samples file is committed there.
+   Read review status from the selected manifest. The reviewed 120-question set
+   includes 100 base-event questions plus 20 separate bag-search questions; the
+   base runner scores only the former. Question count is not unique-video count.
+   Categories, questions, answers and source details come from the selected samples.
+   Video source does not change the scoring workflow. Keep each cohort separately
+   identified; supplementary data does not extend an existing result block.
+   Preserve source groups across train/development, validation and test splits:
+   cuts from one recording must not cross splits. Missing onset/person annotations
+   do not establish reaction-time or track-ID accuracy. Never assume a colleague's
+   Desktop path exists.
 2. **Run accuracy from the repository root**, only after authorization for calls:
    ```sh
    python tools/event_benchmark/run_eval.py --candidate luna \
@@ -50,10 +56,14 @@ use the user's authorized scope and budget.
 
 ## Download media when needed
 
-Use the selected samples/manifest pair for every source. On Vast, download videos
-directly to the GPU machine. Private Drive files need `GOOGLE_DRIVE_ACCESS_TOKEN`
-or a private `--links` JSON map of filenames/Drive IDs to temporary HTTPS download
-URLs; a Drive view link is not a direct download URL. Keep credentials outside Git.
+Use the selected samples/manifest pair for every source. The downloader handles
+samples with `filename`, `size_bytes` and a `drive_file_id` (or a filename-keyed
+download link). For other source schemas, obtain the exact media through the
+source's authorized transfer method; do not invent metadata or change frozen files
+to fit the downloader. On Vast, download directly to the GPU machine. Private
+Drive files need `GOOGLE_DRIVE_ACCESS_TOKEN` or a private `--links` JSON map of
+filenames/Drive IDs to temporary HTTPS download URLs; a Drive view link is not a
+direct download URL. Keep credentials and temporary link maps outside Git.
 
 ```sh
 python tools/event_benchmark/download_media.py \
@@ -65,9 +75,11 @@ python tools/event_benchmark/download_media.py \
   --output /path/to/media --check-only
 ```
 
-`--check-only` uses the evaluator's input loader and reports video/question counts
-by category without downloading or calling a model. Then use the accuracy command
-above with the same selected files.
+`--check-only` works with every evaluator-compatible samples/manifest pair and
+uses the evaluator's input loader to verify reviewed labels and hashes of existing
+local media. It reports scored video/question counts by category without downloading
+or calling a model. A download's size check is not frozen-hash verification; run
+`--check-only` after transfer, then use the accuracy command above with the same files.
 
 ## Frozen v2 baseline
 
