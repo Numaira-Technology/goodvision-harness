@@ -663,7 +663,7 @@ def test_launch_argv_aborts_when_sys_prefix_does_not_match(tmp_path):
     python.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n")
     python.chmod(0o755)
     env = _launch_spec(prefix)
-    with pytest.raises(RuntimeError, match="sys.prefix"):
+    with pytest.raises(RuntimeError, match=r"sys\.prefix"):
         es.launch_argv(env)
 
 

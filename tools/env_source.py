@@ -89,27 +89,63 @@ _PREFIX_PROBE = "\n".join(
 )
 
 
-_LAUNCH_WRAPPER = _PREFIX_PROBE + "\n" + "\n".join(
-    [
-        "import runpy",
-        "argv = sys.argv[1:]",
-        "if not argv:",
-        "    raise SystemExit('missing eval/serve arguments')",
-        "if argv[0] == '-m':",
-        "    if len(argv) < 2:",
-        "        raise SystemExit('missing module name')",
-        "    sys.argv = argv[1:]",
-        "    runpy.run_module(argv[1], run_name='__main__')",
-        "elif argv[0] == '-c':",
-        "    if len(argv) < 2:",
-        "        raise SystemExit('missing -c command')",
-        "    sys.argv = ['-c', *argv[2:]]",
-        "    exec(compile(argv[1], '<string>', 'exec'), {'__name__': '__main__'})",
-        "else:",
-        "    sys.argv = argv",
-        "    runpy.run_path(argv[0], run_name='__main__')",
-    ]
-)
+_LAUNCH_WRAPPER = _PREFIX_PROBE + "\n" + """
+def _launch():
+    import sys
+    # Load launcher dependencies without letting the caller's cwd shadow stdlib.
+    path0 = sys.path.pop(0)
+    try:
+        import builtins, importlib.machinery, io, os, pkgutil, runpy
+    finally:
+        sys.path.insert(0, path0)
+    argv = sys.argv[1:]
+    if not argv:
+        raise SystemExit('missing eval/serve arguments')
+    if argv[0] in ('-m', '-c') and len(argv) < 2:
+        raise SystemExit('missing module name or -c command')
+
+    # Keep the real __main__ for pickling, spawn and atexit callbacks. Public
+    # run_module/run_path use a temporary module and restore it on return.
+    namespace = sys.modules['__main__'].__dict__
+    namespace.clear()
+    namespace.update(__name__='__main__', __doc__=None, __package__=None,
+                     __spec__=None, __annotations__={}, __builtins__=builtins)
+    if argv[0] == '-m':
+        sys.argv = argv[1:]
+        sys.path[0] = os.getcwd()
+        # This is CPython's own -m entrypoint, including package resolution.
+        runpy._run_module_as_main(argv[1])
+    elif argv[0] == '-c':
+        sys.argv = ['-c', *argv[2:]]
+        namespace['__loader__'] = importlib.machinery.BuiltinImporter
+        exec(compile(argv[1], '<string>', 'exec'), namespace)
+    else:
+        sys.argv = argv
+        filename = (argv[0] if os.path.isabs(argv[0])
+                    else os.path.join(os.getcwd(), argv[0]))
+        if pkgutil.get_importer(argv[0]) is not None:
+            sys.path[0] = argv[0]
+            runpy._run_module_as_main('__main__', alter_argv=False)
+        else:
+            sys.path[0] = os.path.dirname(os.path.realpath(filename))
+            with io.open_code(filename) as source:
+                code = pkgutil.read_code(source)
+            loader = importlib.machinery.SourcelessFileLoader
+            if code is None:
+                with io.open_code(filename) as source:
+                    code = compile(source.read(), filename, 'exec')
+                loader = importlib.machinery.SourceFileLoader
+            namespace.update(__file__=filename, __cached__=None,
+                             __loader__=loader('__main__', filename))
+            try:
+                exec(code, namespace)
+            finally:
+                # CPython removes these file-only attributes before shutdown.
+                namespace.pop('__file__', None)
+                namespace.pop('__cached__', None)
+
+_launch()
+"""
 
 
 def verify_packed_interpreter(env, *, runner=subprocess.run):
