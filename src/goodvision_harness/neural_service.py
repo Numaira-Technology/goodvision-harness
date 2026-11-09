@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from PIL import Image
+from PIL import Image, ImageOps
 
 MODEL = "openai/clip-vit-large-patch14"
 REVISION = "32bd64288804d66eefd0ccbe215aa642df71cc41"
@@ -77,7 +77,15 @@ class Encoder:
         return self.score_batch([self.prepare(image)], [labels])[0]
 
     def prepare(self, image):
-        return self.processor(images=image, return_tensors="pt")["pixel_values"]
+        images = [image] if isinstance(image, Image.Image) else image
+        padded = [
+            ImageOps.pad(
+                frame, (224, 224), method=Image.Resampling.BICUBIC,
+                color=(123, 117, 104),
+            )
+            for frame in images
+        ]
+        return self.processor(images=padded, return_tensors="pt")["pixel_values"]
 
     def score_batch(self, pixels, labels):
         torch = self.torch
