@@ -5,7 +5,8 @@ calls prefetch_models() right after SSH is up and before starting its worker, so
 weights land from the R2 fixed store (egress-free) instead of a slow HF pull.
 
 Credentials reach the instance the same way start_sam carries HF_TOKEN: over SSH
-stdin, never in argv/env on the box and never baked into an image. The remote runs
+stdin, never in argv or an image. Only the prefetch child inherits them in its
+environment. The remote runs
 the uploaded tools/model_source.py, which verifies against the bucket MANIFEST and
 falls back to a normal HF download when R2 is not reachable.
 """
@@ -35,13 +36,21 @@ def credential_blob(r2_env, hf_token=None):
     return "\n".join(lines) + "\n"
 
 
-def remote_command(cache_dir, repo, revision, *, python="python3", module="model_source.py", remote_dir="."):
+def remote_command(
+    cache_dir,
+    repo,
+    revision,
+    *,
+    python="python3",
+    module="model_source.py",
+    remote_dir=".",
+):
     """One remote shell command: source creds from stdin, then run the prefetch.
 
     `. /dev/stdin` consumes the credential blob piped in over SSH; the Python
     process itself reads no stdin. Paths/args are quoted; no secret appears here.
     """
-    script = f"{shlex.quote(remote_dir)}/{module}"
+    script = f"{remote_dir}/{module}"
     inner = (
         f"{shlex.quote(python)} {shlex.quote(script)} "
         f"--repo {shlex.quote(repo)} --revision {shlex.quote(revision)} "
@@ -58,7 +67,9 @@ def _default_runner(command, *, input=None, timeout=3600):
         start_new_session=True,
     )
     try:
-        proc.communicate(input=input.encode() if input is not None else None, timeout=timeout)
+        proc.communicate(
+            input=input.encode() if input is not None else None, timeout=timeout
+        )
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -69,12 +80,30 @@ def _default_runner(command, *, input=None, timeout=3600):
 
 def _default_uploader(ssh_options, host, port, remote_dir):
     subprocess.run(
-        ["ssh", *ssh_options, "-p", str(port), f"root@{host}", f"mkdir -p {shlex.quote(remote_dir)}"],
-        check=True, stdin=subprocess.DEVNULL, timeout=60,
+        [
+            "ssh",
+            *ssh_options,
+            "-p",
+            str(port),
+            f"root@{host}",
+            f"mkdir -p {shlex.quote(remote_dir)}",
+        ],
+        check=True,
+        stdin=subprocess.DEVNULL,
+        timeout=60,
     )
     subprocess.run(
-        ["scp", *ssh_options, "-P", str(port), str(MODEL_SOURCE), f"root@{host}:{remote_dir}/model_source.py"],
-        check=True, stdin=subprocess.DEVNULL, timeout=120,
+        [
+            "scp",
+            *ssh_options,
+            "-P",
+            str(port),
+            str(MODEL_SOURCE),
+            f"root@{host}:{remote_dir}/model_source.py",
+        ],
+        check=True,
+        stdin=subprocess.DEVNULL,
+        timeout=120,
     )
 
 
@@ -103,7 +132,9 @@ def prefetch_models(
     blob = credential_blob(r2_env, hf_token)
     uploader(ssh_options, host, port, remote_dir)
     for repo, revision in models:
-        cmd = remote_command(cache_dir, repo, revision, python=python, remote_dir=remote_dir)
+        cmd = remote_command(
+            cache_dir, repo, revision, python=python, remote_dir=remote_dir
+        )
         ssh = ["ssh", *ssh_options, "-p", str(port), f"root@{host}", cmd]
         runner(ssh, input=blob, timeout=timeout)
     return cache_dir
@@ -113,14 +144,23 @@ def main(argv=None):
     import argparse
     import os
 
-    ap = argparse.ArgumentParser(description="Prefetch pinned models onto a rented GPU from R2 (HF fallback) over SSH.")
+    ap = argparse.ArgumentParser(
+        description="Prefetch pinned models from R2 (HF fallback) over SSH."
+    )
     ap.add_argument("--host", required=True)
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--ssh-key", type=Path, help="private key (adds -i/-o options)")
     ap.add_argument("--remote-dir", default="/workspace/goodvision-models")
-    ap.add_argument("--cache-dir", help="remote HF cache dir (default: <remote-dir>/cache)")
-    ap.add_argument("--model", action="append", metavar="REPO@REVISION", required=True,
-                    help="repeatable; e.g. ZhuYuhan/VideoJev-4B@1c1a253...")
+    ap.add_argument(
+        "--cache-dir", help="remote HF cache dir (default: <remote-dir>/cache)"
+    )
+    ap.add_argument(
+        "--model",
+        action="append",
+        metavar="REPO@REVISION",
+        required=True,
+        help="repeatable; e.g. ZhuYuhan/VideoJev-4B@1c1a253...",
+    )
     ap.add_argument("--python", default="python3")
     args = ap.parse_args(argv)
 
@@ -136,9 +176,15 @@ def main(argv=None):
 
     r2_env = {k: os.environ.get(k) for k in R2_KEYS}
     cache = prefetch_models(
-        ssh_options=options, host=args.host, port=args.port, remote_dir=args.remote_dir,
-        models=models, cache_dir=args.cache_dir, r2_env=r2_env,
-        hf_token=os.environ.get("HF_TOKEN"), python=args.python,
+        ssh_options=options,
+        host=args.host,
+        port=args.port,
+        remote_dir=args.remote_dir,
+        models=models,
+        cache_dir=args.cache_dir,
+        r2_env=r2_env,
+        hf_token=os.environ.get("HF_TOKEN"),
+        python=args.python,
     )
     print(cache)
 

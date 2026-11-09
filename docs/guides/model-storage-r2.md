@@ -9,8 +9,9 @@
 | 日期 | bucket | 内容 |
 |---|---|---|
 | 2026-11-03 | `goodvision-models`（account `2c044451…`，Standard） | VideoJev-4B + CLIP 已上传，共 40 对象 / 10.68 GB（各含 `MANIFEST.json` + `_ADDED.json`） |
+| 2026-11-04 | 同上 | 新增 SigLIP2（1.54 GB）+ d3-nano（4.46 GB）；bucket 共 4 模型 / 85 对象 / ≈16.67 GB |
 
-账号 `sx2660@nyu.edu` 的 Cloudflare 已确认带 R2。SigLIP2 / d3-nano / Qwen FP8 尚未上传（见 [待办](#待办与需要用户提供的信息)）。
+账号 `sx2660@nyu.edu` 的 Cloudflare 已确认带 R2。SigLIP2 与 d3-nano 已上传；Qwen FP8 尚未上传（见 [待办](#待办与需要用户提供的信息)）。
 
 > **上传踩坑（务必注意）**：`huggingface_hub` 若装了 `hf_xet`，大权重会走 HF 的 Xet CDN，期间可能报 `CAS Client Error ... error sending request`，导致只传上去几个小文件就中断。上传脚本因此：① `export HF_HUB_DISABLE_XET=1`（或卸载 `hf_xet`）强制走传统 LFS；② 每个文件最多重试 6 次、指数退避；③ 带 `HF_TOKEN`（本仓库 `.env` 已有）解除匿名限速。缺 token 也能跑，但 8GB 会被限速拖得很慢。
 
@@ -22,8 +23,8 @@
 |---|---|---|---|---|---|
 | VideoJev-4B | decision（system-one 决策，native） | `ZhuYuhan/VideoJev-4B` | `1c1a253bf90dfa66176124d25a48ffb791d517d5` | `src/goodvision_harness/videojev_core.py:7-8` | **已上传 ✅ (8.96 GB)** |
 | CLIP ViT-L/14 | threshold（neural / CLIP 分数） | `openai/clip-vit-large-patch14` | `32bd64288804d66eefd0ccbe215aa642df71cc41` | `src/goodvision_harness/neural_service.py:18-19` | **已上传 ✅ (1.71 GB)** |
-| SigLIP2 base | threshold（计划接入） | `google/siglip2-base-patch16-224` | **未钉死**（本分支代码里还没有，需补） | 任务指定，暂无代码引用 | 是（待补 revision） |
-| d3-nano | decision（本地 decision3 运行时） | `vllm-sr/d3-nano` | `462efc366229ea268cf4eed3738b3fc4415e4817` | `src/goodvision_harness/decision3_runtime.py:16-17` | 是（本地跑才需要） |
+| SigLIP2 base | threshold（计划接入） | `google/siglip2-base-patch16-224` | `75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2` | `tools/model_source.py` `_KNOWN`（暂无服务引用） | **已上传 ✅ (1.54 GB)** |
+| d3-nano | decision（本地 decision3 运行时） | `vllm-sr/d3-nano` | `462efc366229ea268cf4eed3738b3fc4415e4817` | `src/goodvision_harness/decision3_runtime.py:16-17` | **已上传 ✅ (4.46 GB)** |
 | Qwen3.5-35B-A3B FP8 | 自部署 Qwen 基线（Vast） | `Qwen/Qwen3.5-35B-A3B-FP8` | `9d1823d2dee688a6b25e77009dc727688c44936e` | `tools/vast_vlm/fp8_profile.py:10-11` | 可选，见下 |
 | Qwen3.5-35B-A3B BF16 | 自部署 Qwen 基线（110GiB+ 显存） | `Qwen/Qwen3.5-35B-A3B` | `59d61f3ce65a6d9863b86d2e96597125219dc754` | `docs/guides/vast-self-hosted-qwen35.md` | 可选，见下 |
 
@@ -148,6 +149,7 @@ acl = private
 **设计原则：核心加载代码不动，只在 runner 预取阶段把数据源从 HF 换成 R2。** 模型服务（`videojev_core` / `neural_service`）仍按 repo id + revision 从 `cache_dir` 的 HF 缓存布局加载（`local_files_only`），我们只是先把缓存填好。无 R2 凭据时自动退化为纯 HF，所以可安全合并、增量迁移。
 
 - **新模块 `tools/model_source.py`**：`ensure_cached(repo, revision, cache_dir)`，顺序 **本地已校验 → R2（有凭据时）→ HF 兜底**；把 `models/<repo>/<rev>/` 按 HF 缓存布局（`models--org--name/snapshots/<rev>/`）填进 `cache_dir`，并按 bucket 的 `MANIFEST.json` 逐文件校验 sha256。也可当 CLI 用。
+- **完整性边界**：R2 下载先写临时目录，全部校验通过后才发布 HF snapshot；失败的临时目录会丢弃，避免 HF 兜底复用半成品。固定 revision 不改写 HF `refs/main`。已有 R2 snapshot 若校验失败（文件损坏、manifest 无效或身份不符），会直接报错；检查并移走该 revision 目录后再重试，不把已知损坏的文件交给 HF 缓存快路径。
 - **凭据**：从环境读 `R2_ENDPOINT/R2_BUCKET/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY`，controller 经 SSH 带到 GPU（和 `HF_TOKEN` 一套，不进 repo/镜像）。服务启动前 `tools/vast_vlm/runtime.py` 会把 `R2_*` / `HF_TOKEN` / `*API_KEY*` 从服务进程环境抹除。
 - **VideoJev**：`videojev_probe download` 已改为走 `ensure_cached`；随后 `run` / `server` 用同一 `--cache-dir` 原样加载。
 - **CLIP**：无需改核心——controller 先跑预取 CLI，再照常起 `neural_service`（同一 `--cache-dir`，设 `HF_HUB_OFFLINE=1`）。
@@ -222,7 +224,7 @@ python -m tools.cloud_prefetch --host H --port P --ssh-key ~/.ssh/goodvision_vas
 
 | 场景 | 体积（估） | 存储/月 |
 |---|---|---|
-| 视觉集单 revision（VideoJev≈8 + CLIP≈1.7 + SigLIP2≈0.4 + d3-nano≈2） | ≈ 12 GB | ≈ $0.18（基本落在 10GB 免费内） |
+| 视觉集单 revision（VideoJev≈9 + CLIP≈1.7 + SigLIP2≈1.5 + d3-nano≈4.5） | ≈ 16.7 GB | ≈ $0.10（扣除 10GB 免费额度后约 6.7GB 计费） |
 | 视觉集 ×2 revision + 一个 Qwen FP8（≈35） | ≈ 59 GB | ≈ $0.89 |
 | 宽松上限 | ≈ 100 GB | ≈ $1.50 |
 
@@ -233,14 +235,15 @@ python -m tools.cloud_prefetch --host H --port P --ssh-key ~/.ssh/goodvision_vas
 
 ## 待办与需要用户提供的信息
 
-**已完成：** 账号（`sx2660@nyu.edu`，account `2c044451…`）+ bucket `goodvision-models` 确认；VideoJev + CLIP 已上传校验；只读 token `vast-R2-goodvision-models-readonly` 已建并验证（能读、写被拒），4 个 `R2_*` 写入本地 `.env`（未提交）；runner 集成（`tools/model_source.py` + `videojev_probe download`）已落地并对真实 R2 冒烟通过。
+**已完成：** 账号（`sx2660@nyu.edu`，account `2c044451…`）+ bucket `goodvision-models` 确认；VideoJev + CLIP + SigLIP2 + d3-nano 已上传校验；只读 token `vast-R2-goodvision-models-readonly` 已建并验证（能读、写被拒），4 个 `R2_*` 写入本地 `.env`（未提交）；runner 集成（`tools/model_source.py` + `videojev_probe download`）已落地并对真实 R2 冒烟通过。
 
 **待办：**
 
 1. **其余模型上传**（用读写 key，维护者执行）：
-   - **d3-nano**（`vllm-sr/d3-nano` @ `462efc36…`）。
+   - ~~d3-nano~~ **已上传 ✅**（`vllm-sr/d3-nano` @ `462efc36…`，4.46 GB）。
+   - ~~SigLIP2~~ **已上传 ✅**（`google/siglip2-base-patch16-224` @ `75de2d55…`，1.54 GB；revision 钉在 `tools/model_source.py` `_KNOWN`，服务接入时再移到运行时模块）。
    - **Qwen3.5-35B FP8**（`Qwen/Qwen3.5-35B-A3B-FP8` @ `9d1823d2…`，~35GB）——确认要不要进（建议要；BF16 暂不）。
-   - **SigLIP2**：需先钉死一个 commit SHA（`google/siglip2-base-patch16-224` 本分支代码还没引用）。
+   - Qwen3-VL-8B 是纯 API baseline，无本地权重，不进 R2。
 2. **只读凭据分发**：把那 4 个 `R2_*` 放进团队密码管理器，供其他同事 runner 用（**不要进 repo/聊天**）。
 3. **持久卷**：等 Qwen FP8 上了，给它在 Vast 挂持久卷以免重租重下。
 4. **Vast cloud connection（可选）**：若想用 `vastai cloud copy` 而非 boto3/rclone，在网页控制台把 R2 注册成 S3 连接。
