@@ -47,9 +47,14 @@ def frozen(tmp_path):
         plan = {"split": split, "config_sha256": digest(config), "rules_sha256": digest(RULES),
                 "units": units, "questions": questions}
         write_new(bundle / f"plans/luna-{split}.json", plan)
+        write_new(bundle / f"plans/choice-{split}.json", plan | {"config_sha256": digest(choice)})
     write_new(bundle / "rules.json", RULES)
     sources = preflight.freeze_sources(bundle)
-    write_new(bundle / "preflight.json", {"offline_passed": True, "sources_sha256": digest(sources)})
+    models = {}
+    for path in (bundle / "plans").glob("*.json"):
+        alias, split = path.stem.rsplit("-", 1)
+        models.setdefault(alias, {})[split] = {"plan_sha256": digest(json.loads(path.read_text()))}
+    write_new(bundle / "preflight.json", {"offline_passed": True, "sources_sha256": digest(sources), "models": models})
     seal(bundle)
     bundle_digest = workflow.verify_bundle(bundle)
     val = json.loads((bundle / "plans/luna-validation.json").read_text())
@@ -185,3 +190,39 @@ def test_empty_threshold_mapping_is_not_a_fixed_baseline(frozen):
     plan = json.loads((bundle / "plans/luna-validation.json").read_text())
     with pytest.raises(ValueError, match="six finite"):
         score(plan, evidence, "probability", {})
+
+
+@pytest.mark.parametrize("entrypoint", ["api", "select", "report"])
+@pytest.mark.parametrize("mutation", ["plan", "config", "preflight_digest", "unrecorded_model"])
+def test_unsealed_or_changed_plan_blocks_before_any_work(frozen, tmp_path, monkeypatch, mutation, entrypoint):
+    bundle, _, _, _, _ = frozen
+    manifest = bundle / "bundle-files-sha256.json"
+    hashes = json.loads(manifest.read_text())
+    if mutation in ("plan", "config"):
+        hashes.pop("plans/luna-test.json" if mutation == "plan" else "configs/luna.json")
+        manifest.write_text(json.dumps(hashes))
+    elif mutation == "preflight_digest":
+        path = bundle / "plans/luna-test.json"
+        plan = json.loads(path.read_text())
+        plan["questions"][0]["reference"] = "no"
+        path.write_text(json.dumps(plan))
+        seal(bundle)  # Even an updated inventory cannot bypass the preflight plan digest.
+    else:
+        path = bundle / "preflight.json"
+        report = json.loads(path.read_text())
+        report["models"].pop("luna")
+        path.write_text(json.dumps(report))
+        seal(bundle)
+    def forbidden(*args, **kwargs):
+        pytest.fail("unsealed plans must fail before credentials or ledger access")
+    monkeypatch.setattr(api_run, "load_explicit_key", forbidden)
+    monkeypatch.setattr(workflow, "Ledger", forbidden)
+    with pytest.raises(ValueError, match="unsealed|plan identity|unrecorded"):
+        if entrypoint == "api":
+            api_run.main(["--bundle", str(bundle), "--models", "luna", "--phase", "validation",
+                "--env-file", "absent.env", "--output", str(tmp_path / "out"),
+                "--authorization-note", "synthetic", "--execute"])
+        else:
+            workflow.main([entrypoint, "--bundle", str(bundle), "--model", "luna", "--ledger", "absent.jsonl",
+                "--output", str(tmp_path / "out")])
+    assert not (tmp_path / "out").exists()

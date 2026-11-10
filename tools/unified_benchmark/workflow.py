@@ -38,6 +38,36 @@ def verify_bundle(bundle):
         if file_hash(path) != sources[name]:
             raise ValueError("active source differs from frozen bundle: " + name
                              + "; use the retained code for replay or build a new bundle")
+    models = report.get("models")
+    if not isinstance(models, dict) or not models:
+        raise ValueError("bundle is missing preflight model/plan records")
+    expected_configs, expected_plans = set(), set()
+    for alias, phases in models.items():
+        if Path(alias).name != alias or set(phases) != {"validation", "test"}:
+            raise ValueError("invalid preflight model/plan records")
+        config_name = f"configs/{alias}.json"
+        expected_configs.add(config_name)
+        if config_name not in hashes:
+            raise ValueError("unsealed bundle config: " + config_name)
+        config = json.loads((bundle / config_name).read_text())
+        for split, recorded in phases.items():
+            name = f"plans/{alias}-{split}.json"
+            expected_plans.add(name)
+            if name not in hashes:
+                raise ValueError("unsealed bundle plan: " + name)
+            plan = json.loads((bundle / name).read_text())
+            if (recorded.get("plan_sha256") != digest(plan) or plan.get("split") != split
+                    or plan.get("config_sha256") != digest(config)
+                    or plan.get("rules_sha256") != digest(RULES)):
+                raise ValueError("preflight plan identity differs: " + name)
+            for unit in plan["units"]:
+                for frame in unit.get("frames", []):
+                    if hashes.get(frame["path"]) != frame["sha256"]:
+                        raise ValueError("unsealed bundle frame: " + frame["path"])
+    for directory, expected in (("configs", expected_configs), ("plans", expected_plans)):
+        actual = {str(p.relative_to(bundle)) for p in (bundle / directory).glob("*.json")}
+        if actual != expected:
+            raise ValueError("bundle has unrecorded or missing " + directory)
     return file_hash(bundle / "bundle-files-sha256.json")
 
 

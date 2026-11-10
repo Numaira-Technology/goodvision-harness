@@ -203,3 +203,62 @@ def test_api_transport_saved_response_mock_no_real_http(tmp_path):
         assert observed["u"]["fight"]["answer"] == "yes"
         assert len(list((tmp_path / "out/receipts").glob('*.json'))) == 1
     finally: ledger.close()
+
+
+@pytest.mark.parametrize("bad_item", [None, [], "invalid", {"type": "choice", "probabilities": None}])
+def test_decision3_retries_bad_target_without_overwriting_valid_sibling(tmp_path, bad_item):
+    config = {"backend": "decision3", "model": "m", "revision": "r"}
+    u = unit(targets=["fight", "fall"])
+    def item(index):
+        return {"type": "choice", "choice": a.D3_OPTIONS[index],
+                "probabilities": dict(zip(a.D3_OPTIONS, [int(i == index) for i in range(3)]))}
+    payloads = iter([
+        {"fight": item(0), "fall": bad_item},
+        {"fight": item(1), "fall": item(1)},
+    ])
+    def send(_):
+        return a.parse_response(config, u, {"request_id": u["id"], "model": "m", "revision": "r",
+                                           "raw": {"answers": next(payloads)}}), {}
+    ledger, clock, q = queue(tmp_path, send)
+    try:
+        _, answers = q.one(u)
+        assert answers["fight"]["answer"] == "yes"
+        assert answers["fall"]["answer"] == "no"
+        assert ledger.state(u, "choice")[0] == 2
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize("choices", [None, [], [None], [{"finish_reason": "stop", "message": None}],
+    [{"finish_reason": "stop", "message": {"content": None}}]])
+@pytest.mark.parametrize("recover", [False, True])
+def test_api_malformed_envelope_uses_retry_budget(tmp_path, choices, recover):
+    import threading
+    from tools.unified_benchmark.api_run import Transport
+    from tools.unified_benchmark.contract import file_hash
+    (tmp_path / "f.jpg").write_bytes(b"synthetic-image")
+    config = {"model": "qwen/test", "backend": "language", "kind": "choice", "max_tokens": 30, "temperature": 0,
+              "provider_context": {"config": {"expected_provider_name": "Mock", "provider": {"only": ["mock"]}}}}
+    u = unit() | {"frames": [{"path": "f.jpg", "sha256": file_hash(tmp_path / "f.jpg"), "time": 0}], "question": "Fight?"}
+    u["request_sha256"] = digest(a.request_body(config, u, tmp_path)[1])
+    ledger = Ledger(tmp_path / "attempts.jsonl", {"test": True})
+    transport = Transport(tmp_path, config, "synthetic-key", tmp_path / "out", ledger, threading.Event())
+    calls = []
+    def call(url, body=None):
+        calls.append(body)
+        payload = response('{"answer":true}') if recover and len(calls) > 1 else {"choices": choices}
+        return payload | {"provider": "Mock", "model": "qwen/test", "usage": {"cost": .01}}
+    transport.call = call
+    tick = [0.0]
+    q = Queue(ledger, "choice", transport, clock=lambda: tick[0], sleep=lambda seconds: tick.__setitem__(0, tick[0] + seconds))
+    try:
+        _, observed = q.one(u)
+        assert observed == ({"fight": {"answer": "yes"}} if recover else {})
+        assert len(calls) == (2 if recover else 3)
+        assert len(list((tmp_path / "out/receipts").glob("*.json"))) == len(calls)
+        assert all(row.get("metadata", {}).get("answer_error") for row in ledger.rows
+                   if row["type"] == "result" and not row["complete"])
+        q.one(u)
+        assert len(calls) == (2 if recover else 3)
+    finally:
+        ledger.close()

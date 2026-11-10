@@ -82,10 +82,16 @@ def parse_response(config, unit, response):
     if backend in ("language", "decision"):
         event = unit["targets"][0]
         if backend == "language":
-            choice = response["choices"][0]
-            if choice.get("finish_reason") != "stop" or choice.get("error") is not None or choice.get("message", {}).get("refusal"):
+            choices = response.get("choices")
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                raise ValueError("invalid language choice envelope")
+            choice = choices[0]
+            message = choice.get("message")
+            if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+                raise ValueError("invalid language message")
+            if choice.get("finish_reason") != "stop" or choice.get("error") is not None or message.get("refusal"):
                 raise ValueError("incomplete or refused language answer")
-            match = re.search(r"\{.*\}", choice["message"]["content"], re.DOTALL)
+            match = re.search(r"\{.*\}", message["content"], re.DOTALL)
             answer = json.loads(match[0], object_pairs_hook=original._unique) if match else None
             if not isinstance(answer, dict) or set(answer) != {"answer"}:
                 raise ValueError("invalid bag answer")
@@ -126,10 +132,14 @@ def parse_response(config, unit, response):
                 continue
             answers[event] = {"answer": ("yes", "no", "unknown")[index], "probabilities": probs}
     else:
+        if not isinstance(raw, dict) or not isinstance(raw.get("answers"), dict):
+            raise ValueError("invalid native answer group")
         for event in unit["targets"]:
-            item = raw.get("answers", {}).get(event, {})
+            item = raw["answers"].get(event)
+            if not isinstance(item, dict):
+                continue
             p = item.get("probabilities", {})
-            if item.get("type") != "choice" or item.get("error") is not None or set(p) != set(D3_OPTIONS):
+            if item.get("type") != "choice" or item.get("error") is not None or not isinstance(p, dict) or set(p) != set(D3_OPTIONS):
                 continue
             probs = [p[o] for o in D3_OPTIONS]
             if item.get("choice") not in D3_OPTIONS or not _probabilities(probs):

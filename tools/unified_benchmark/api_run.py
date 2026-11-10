@@ -116,8 +116,6 @@ class Transport:
                 self.config["backend"] == "decision" and actual_model.startswith(self.config["model"] + "-")):
             raise RequestFailure("actual model mismatch: " + actual_model, fatal=True)
         try:
-            if self.config["backend"] == "language" and payload.get("choices", [{}])[0].get("message", {}).get("refusal"):
-                raise ValueError("explicit refusal")
             answers = parse_response(self.config, unit, payload)
         except (ValueError, KeyError, TypeError, IndexError) as error:
             answers = {}

@@ -34,6 +34,18 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: pyproject.toml
+      - name: Fetch pinned historical benchmark source objects
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          sources = json.loads(Path("tools/unified_benchmark/native_assets/sources.json").read_text())
+          for commit in sorted({source["commit"] for source in sources.values()}):
+              subprocess.run(["git", "fetch", "--no-tags", "--depth=1", "origin", commit], check=True)
+          PY
       - name: Check repository hygiene
         run: python tools/check_repo_hygiene.py
       - uses: actions/setup-node@v4

@@ -228,10 +228,12 @@ class NativeBackend:
     def close(self):
         try:
             if self.encoder:
-                import torch
-                write_new(self.output / "memory.json", {"peak_allocated_bytes": torch.cuda.max_memory_allocated(),
-                    "peak_reserved_bytes": torch.cuda.max_memory_reserved()})
-                self.encoder.close()
+                try:
+                    import torch
+                    write_new(self.output / "memory.json", {"peak_allocated_bytes": torch.cuda.max_memory_allocated(),
+                        "peak_reserved_bytes": torch.cuda.max_memory_reserved()})
+                finally:
+                    self.encoder.close()
             if self.service and self.service.poll() is None:
                 try:
                     write_new(self.output / "final-health.json", self.health())
@@ -289,26 +291,37 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output):
         result = results.get((row["unit"], row["attempt"]))
         if result:
             metadata = result.get("metadata", {})
-            if metadata.get("receipt_sha256") and file_hash(output / metadata["receipt"]) != metadata["receipt_sha256"]:
-                raise ValueError("saved successful receipt differs")
-            continue
-        if not path.exists():
+            if (metadata.get("receipt") != str(path.relative_to(output)) or not path.is_file()
+                    or metadata.get("receipt_sha256") != file_hash(path)):
+                raise ValueError("saved receipt missing or differs")
+        elif not path.exists():
             continue  # interrupted send still consumes one attempt
         receipt = json.loads(path.read_text())
         expected = {"unit": unit["id"], "attempt": row["attempt"], "request_sha256": unit["request_sha256"],
                     "config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]]}
         if any(receipt.get(k) != v for k, v in expected.items()):
-            raise ValueError("orphan receipt identity differs")
+            raise ValueError("saved receipt identity differs")
         parsed = parse_response(cfg, unit, receipt["response"]) if receipt["http_status"] == 200 and not receipt["error"] else {}
         if parsed != receipt["parsed"]:
-            raise ValueError("orphan receipt parsing differs")
+            raise ValueError("saved receipt parsing differs")
+        if result:
+            if result.get("answers") != parsed:
+                raise ValueError("saved receipt and ledger answers differ")
+            continue
         previous = ledger.state(unit, cfg["kind"])[1]
-        ledger.append({"type": "result", "unit": unit["id"], "attempt": row["attempt"],
+        recovered = {"type": "result", "unit": unit["id"], "attempt": row["attempt"],
             "request_sha256": unit["request_sha256"], "answers": parsed,
             "complete": set(previous | parsed) == set(unit["targets"]),
             "error": receipt["error"], "elapsed_seconds": receipt["transport_seconds"],
+            "http_status": receipt["http_status"], "fatal": receipt.get("fatal", False),
+            "retry_after": receipt.get("retry_after", 0),
             "metadata": {"actual_provider": "self-hosted", "receipt": str(path.relative_to(output)),
-                         "receipt_sha256": file_hash(path), "recovered_receipt": True}})
+                         "receipt_sha256": file_hash(path), "recovered_receipt": True}}
+        if (not recovered["complete"] and not recovered["fatal"]
+                and (row["attempt"] < 3 or recovered["http_status"] == 429)):
+            recovered["cooldown_until"] = receipt["completed_at_unix"] + max(
+                recovered["retry_after"], 30 if row["attempt"] == 1 else 60)
+        ledger.append(recovered)
 
 
 def execute(alias, bundle, deployment, output, deployment_hash, *, phase, threshold_path=None,
@@ -394,11 +407,13 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                 write_new(path, {"unit": unit["id"], "attempt": attempt, "request_sha256": unit["request_sha256"],
                     "config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]],
                     "at": stamp(), "http_status": code, "response": raw, "parsed": parsed, "error": error,
+                    "fatal": fatal, "retry_after": 0, "completed_at_unix": time.time(),
                     "transport_seconds": time.monotonic() - started, "timings": timing})
+                metadata = {"actual_provider": "self-hosted", "receipt": str(path.relative_to(output)),
+                            "receipt_sha256": file_hash(path), "http_status": code}
                 if error:
-                    raise RequestFailure(error, status=code, fatal=fatal)
-                return parsed, {"actual_provider": "self-hosted", "receipt": str(path.relative_to(output)),
-                                "receipt_sha256": file_hash(path), "http_status": code}
+                    raise RequestFailure(error, status=code, fatal=fatal, metadata=metadata)
+                return parsed, metadata
             try:
                 reconcile_receipts(phase_dir, ledger, plan, cfg, output)
                 completion_path = phase_dir / "completion.json"

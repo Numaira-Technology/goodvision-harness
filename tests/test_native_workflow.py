@@ -68,7 +68,11 @@ def frozen(tmp_path):
     write_new(deployment / "deployment.json", {"complete": True, "models": list(deploy.ALIASES), "files": files})
     write_new(bundle / "rules.json", RULES)
     sources = preflight.freeze_sources(bundle)
-    write_new(bundle / "preflight.json", {"offline_passed": True, "sources_sha256": digest(sources)})
+    models = {}
+    for path in (bundle / "plans").glob("*.json"):
+        alias, split = path.stem.rsplit("-", 1)
+        models.setdefault(alias, {})[split] = {"plan_sha256": digest(json.loads(path.read_text()))}
+    write_new(bundle / "preflight.json", {"offline_passed": True, "sources_sha256": digest(sources), "models": models})
     seal(bundle)
     return bundle, deployment, file_hash(deployment / "deployment.json")
 
@@ -351,3 +355,115 @@ def test_offline_native_cli_no_runtime(frozen, tmp_path, capsys):
               "--deployment-sha256", sha, "--output", str(tmp_path / "untouched")])
     assert json.loads(capsys.readouterr().out)["inference_calls"] == 0
     assert not (tmp_path / "untouched").exists()
+
+
+@pytest.mark.parametrize("recover", [False, True])
+@pytest.mark.parametrize("bad_raw", [None, [], {"answers": None}, {"answers": {"fight": None}}])
+def test_malformed_decision3_retries_and_can_resume(frozen, tmp_path, bad_raw, recover):
+    target = "test/fight/0/yes"
+    def behavior(self, unit, body):
+        if unit["id"] == target and (not recover or self.calls.count(target) == 1):
+            return 200, self.raw(unit, "yes") | {"raw": bad_raw}, {}
+    FakeBackend.behavior = behavior
+    out = tmp_path / "run"
+    execute(frozen, out, "decision3", "test")
+    expected = 2 if recover else 3
+    assert Counter(FakeBackend.calls)[target] == expected
+    result = json.loads((out / "test/report.json").read_text())
+    assert result["correct"] == (120 if recover else 119)
+    assert result["final_missing_unique_units"] == (0 if recover else 1)
+    execute(frozen, out, "decision3", "test", resume=True)
+    assert Counter(FakeBackend.calls)[target] == expected
+
+
+@pytest.mark.parametrize("mutation", ["delete", "edit", "remove_hash"])
+def test_failed_receipt_tampering_blocks_resume_before_start(frozen, tmp_path, mutation):
+    target = "test/fight/0/yes"
+    FakeBackend.behavior = lambda self, unit, body: (403, {"error": "stop"}, {}) if unit["id"] == target else None
+    out = tmp_path / "run"
+    with pytest.raises(PausedRun):
+        execute(frozen, out, "decision3", "test")
+    path = out / "test/receipts" / f"{digest(target)}-1.json"
+    ledger_path = out / "test/attempts.jsonl"
+    rows = [json.loads(line) for line in ledger_path.read_text().splitlines()]
+    row = next(r for r in rows if r["unit"] == target and r["type"] == "result")
+    assert row["metadata"]["receipt_sha256"] == file_hash(path)
+    if mutation == "delete":
+        path.unlink()
+    elif mutation == "edit":
+        path.write_text(path.read_text().replace('"stop"', '"changed"'))
+    else:
+        row["metadata"].pop("receipt_sha256")
+        ledger_path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    FakeBackend.instances.clear()
+    with pytest.raises(ValueError, match="saved receipt"):
+        execute(frozen, out, "decision3", "test", resume=True)
+    assert FakeBackend.instances == []
+
+
+@pytest.mark.parametrize("attempt, retry_after, delay", [(1, 0, 30), (2, 0, 60), (1, 90, 90)])
+def test_orphan_failure_restores_receipt_and_remaining_cooldown(frozen, tmp_path, attempt, retry_after, delay):
+    bundle, _, _ = frozen
+    cfg = deploy.profile("decision3")
+    plan = json.loads((bundle / "plans/decision3-test.json").read_text())
+    unit = plan["units"][0]
+    phase = tmp_path / "run/test"
+    ledger = Ledger(phase / "attempts.jsonl", workflow.context_for(plan, cfg, workflow.verify_bundle(bundle)))
+    for number in range(1, attempt + 1):
+        ledger.append({"unit": unit["id"], "attempt": number, "type": "intent", "request_sha256": unit["request_sha256"]})
+    path = phase / "receipts" / f"{digest(unit['id'])}-{attempt}.json"
+    write_new(path, {"unit": unit["id"], "attempt": attempt, "request_sha256": unit["request_sha256"],
+        "config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]],
+        "http_status": 503, "error": "HTTP 503", "response": {"error": "unavailable"}, "parsed": {},
+        "transport_seconds": .1, "completed_at_unix": 1000, "fatal": False, "retry_after": retry_after})
+    try:
+        run.reconcile_receipts(phase, ledger, plan, cfg, phase.parent)
+        row = ledger.rows[-1]
+        assert row["metadata"]["receipt_sha256"] == file_hash(path)
+        assert row["cooldown_until"] == 1000 + delay and row["http_status"] == 503
+        tick, sent = [1005.0], []
+        def send(_):
+            sent.append(tick[0])
+            return {"fight": {"answer": "yes"}}, {}
+        queue = Queue(ledger, "choice", send, clock=lambda: tick[0], sleep=lambda s: tick.__setitem__(0, tick[0] + s))
+        queue.one(unit)
+        assert sent == [1000 + delay]
+        assert ledger.state(unit, "choice")[0] == attempt + 1
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize("failure", ["cuda", "memory_file"])
+def test_encoder_always_closed_when_telemetry_fails(tmp_path, monkeypatch, failure):
+    import sys
+    from types import SimpleNamespace
+    backend = run.NativeBackend("clip", {}, tmp_path, tmp_path, tmp_path, 8093)
+    closed = []
+    backend.encoder = SimpleNamespace(close=lambda: closed.append(True))
+    def cuda_query():
+        if failure == "cuda":
+            raise RuntimeError("synthetic CUDA failure")
+        return 0
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(
+        max_memory_allocated=cuda_query, max_memory_reserved=lambda: 0)))
+    original_write = run.write_new
+    def write(path, value):
+        if failure == "memory_file" and path.name == "memory.json":
+            raise OSError("synthetic memory write failure")
+        original_write(path, value)
+    monkeypatch.setattr(run, "write_new", write)
+    with pytest.raises((RuntimeError, OSError), match="synthetic"):
+        backend.close()
+    assert closed == [True] and backend.stop.is_set()
+
+
+@pytest.mark.parametrize("name", ["plans/decision3-test.json", "configs/decision3.json", "frame-0.jpg"])
+def test_unsealed_native_input_rejected_before_backend(frozen, tmp_path, name):
+    bundle, _, _ = frozen
+    path = bundle / "bundle-files-sha256.json"
+    manifest = json.loads(path.read_text())
+    manifest.pop(name)
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="unsealed bundle"):
+        execute(frozen, tmp_path / "run", "decision3", "test")
+    assert not FakeBackend.instances

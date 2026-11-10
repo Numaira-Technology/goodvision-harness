@@ -14,9 +14,10 @@ class PausedRun(RuntimeError):
 
 
 class RequestFailure(Exception):
-    def __init__(self, reason, *, status=None, retry_after=0, fatal=False):
+    def __init__(self, reason, *, status=None, retry_after=0, fatal=False, metadata=None):
         super().__init__(reason)
         self.reason, self.status, self.retry_after, self.fatal = reason, status, retry_after, fatal
+        self.metadata = metadata or {}
 
 
 class Ledger:
@@ -106,7 +107,8 @@ class Queue:
             except RequestFailure as error:
                 row = {**base, "type": "result", "answers": {}, "complete": False,
                        "error": error.reason, "http_status": error.status,
-                       "elapsed_seconds": self.clock() - started, "fatal": error.fatal}
+                       "elapsed_seconds": self.clock() - started, "fatal": error.fatal,
+                       "metadata": error.metadata}
                 if error.fatal:
                     self.stopped.set()
                 row["retry_after"] = error.retry_after
