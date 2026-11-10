@@ -907,7 +907,7 @@ class WorkflowRuntimeMixin:
                 source_frame_sequences=[item[0] for item in selected],
                 source_timestamps_seconds=[item[1] for item in selected],
                 model_frame_usage=(
-                    "base labels: last preview frame; "
+                    "base labels: any supplied source frame; "
                     "PPE derived: both supplied source frames"
                     if plan["events_engine"] == "neural"
                     else "last preview frame with the earlier frame as context"

@@ -19,7 +19,8 @@ and result-file hash. A count such as 50 or 100 is not a dataset identity. Recor
 question count and distinct-media count separately. Do not send labels or reference
 answers to the model. Private media, keys and raw outputs stay outside Git.
 
-Current manifests: 50 is reviewed; merged PR #73 records all 120 questions as
+Read review status from the selected manifest. The committed 50 is reviewed;
+merged PR #73 records all 120 questions as
 `user_reviewed` under `status=human_reviewed`, with 100 base-4 and 20 bag questions.
 Questions, answers and media/sample fingerprints were unchanged by that metadata
 update. The flags do not independently establish owner verification, reviewed
