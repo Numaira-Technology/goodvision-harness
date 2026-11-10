@@ -23,8 +23,17 @@ the 82 added views inherit source labels and await separate-view review. Downloa
 the entire media-only videos.json before filtering questions for a scoring task.
 The historical 120 set contains 100 base-4 questions and 20 bag questions. Read
 the selected manifest's status; do not relabel a draft to enable a run. Bag
-questions retain their separate versioned task/metric. Source groups keep both
-views and other cuts from the same recording in one split.
+questions retain their separate versioned task/metric. The current draft cannot
+pass the runner's input check. Downloads and inherited labels do not make it
+eligible for reviewed scoring or threshold calibration.
+
+Keep both views and other cuts from the same original recording in one split.
+The current `source_group` metadata is not a reviewed `source_video_group` mapping;
+the combined manifest lacks group fields. The 82 views come from three recordings,
+including one recording for all 36 added fall views. Weapon questions retain two
+prompt protocols, which must not be silently combined or rewritten for tuning.
+The retained historical samples also do not match the exact hash pinned by the
+committed 120 manifest. Recover the frozen bytes rather than changing that hash.
 
 ## Frozen v2 procedure
 

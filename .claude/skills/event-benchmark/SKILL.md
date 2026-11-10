@@ -34,11 +34,18 @@ Read all 202 entries from `samples` and group by `event`. The base-4 runner
 reads 182 questions; the 20 bag questions retain their separate task and metric.
 Video filenames deduplicate to 192 because the bag clips have two questions each.
 Source and `view` fields are metadata, not new categories or model branches.
-Keep related views/cuts in the same split using `source_group`.
+Keep related views/cuts from the same original recording in one split. Existing
+`source_group` metadata alone does not establish reviewed train/validation/test
+isolation: the current samples lack `source_video_group`, and the combined
+manifest has no group mapping. Do not invent or silently rewrite these fields.
 
 The original 120 questions are reviewed. The 82 derived views inherit source
 labels and remain `pending_view_review`; preserve the combined draft status.
 Media preparation does not require changing these labels or starting inference.
+The combined set is not ready for threshold calibration: weapon questions retain
+two different prompt protocols, and the added 82 views come from only three
+original recordings (all 36 added fall views share one). Human visibility review,
+reviewed source isolation and compatible frozen prompts remain separate gates.
 
 ## Workflow
 
@@ -110,7 +117,11 @@ rclone backend copyid TEAM_DRIVE: 1Hj8TjxeIeN9AH5bIZjww4BbjieojMz6S \
 The downloader accepts `url`/`video_url` Drive references or `drive_file_id`, with
 optional `size_bytes`. Existing `--samples`, `GOOGLE_DRIVE_ACCESS_TOKEN` and private
 `--links` maps remain supported. It downloads unique filenames from every category,
-keeps completed files and reports individual failures without calling a model.
+retains existing nonempty files (also requiring the listed size when supplied),
+and reports transfer failures without calling a model. These size checks do not
+verify file identity or media hashes. Explicit temporary links take precedence,
+then `--drive-remote`, then the environment token. Remote names refer only to an
+existing configuration; the downloader does not configure authentication.
 Keep credentials and temporary links outside Git; reference answers stay with the
 offline scorer and never enter model requests.
 
@@ -123,9 +134,13 @@ python tools/event_benchmark/download_media.py \
 ```
 
 `--check-only` retains the evaluator's reviewed-manifest rules and checks only the
-base-4 scoring cohort, not the complete 192-video download. It reports 182 base
-questions for this version; bag questions remain separate. Downloading media does
-not certify label review, scoring eligibility or model performance.
+base-4 scoring cohort, not the complete 192-video download. The current draft
+manifest is rejected before counts are reported. Once all input gates are met,
+this set would contain 182 scored base questions; bag questions remain separate.
+The retained `samples_120.json` is semantically historical but does not match the
+exact samples hash pinned by the committed 120-question manifest. Reproduction
+requires recovering those original bytes, not replacing the frozen hash. Downloading
+media does not certify label review, scoring eligibility or model performance.
 
 ## Frozen v2 baseline
 
