@@ -142,6 +142,7 @@ from .reference_memory import (
 )
 from .resource_trace import start_resource_sampling, stop_resource_sampling
 from .result_bus import FrameBus, FramePacket, ResultBus
+from .result_websocket import install_result_socket_routes
 from .rich_label_models import (
     DEFAULT_RICH_LABEL_MODEL,
     DETECTOR_MODEL_HEADER,
@@ -4961,6 +4962,7 @@ def create_app(
     install_event_routes(application)
     install_local_camera_routes(application)
     install_fleet_routes(application)
+    install_result_socket_routes(application)
     from .workflow_routes import install_workflow_routes
     install_workflow_routes(application)
 
