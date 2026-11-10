@@ -129,8 +129,17 @@ def test_failed_text_encoding_does_not_publish_a_partial_cache():
 def test_cached_batch_matches_independent_frame_scores_and_window_boundaries(configured):
     thresholds = FrozenThresholds(
         {"fight": 0.1, "smoking": 0.0, "fall": None, "weapon": 0.2}, "f" * 64,
+        sampling={
+            "policy": "two-frame-target-spacing-v1",
+            "candidate_fps": 4.0,
+            "observation_window_frames": 2,
+            "observation_frame_delta_seconds": 0.5,
+            "observation_fps": 1.25,
+        },
     ) if configured else None
     encoder, calls, reference = encoder_fixture(thresholds)
+    # Exercise encoder batch offsets directly. The calibrated HTTP boundary
+    # separately enforces two-frame windows before any encoder work.
     windows = [
         [Image.new("RGB", (640, 360), color) for color in [(3, 1, 2), (1, 4, 2)]],
         [Image.new("RGB", (360, 640), (2, 3, 1))],
@@ -155,6 +164,7 @@ def test_cached_batch_matches_independent_frame_scores_and_window_boundaries(con
                 assert row["score"] == pytest.approx(values[winner], abs=1e-12)
                 assert row["threshold"] == thresholds.values[label]
                 assert row["thresholds_sha256"] == thresholds.sha256
+                assert row["sampling"] == dict(thresholds.sampling)
                 np.testing.assert_allclose(row["probabilities"], [*probabilities[winner][index], 0.0])
             else:
                 expected = max((scores[index] for scores in probabilities), key=lambda pair: pair[0])
