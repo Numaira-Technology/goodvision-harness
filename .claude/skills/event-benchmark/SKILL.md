@@ -1,8 +1,7 @@
 ---
 name: event-benchmark
 description: >-
-  Prepare, run and report the surveillance event benchmark and reviewed robot-video
-  supplement (fight/smoking/fall/weapon).
+  Prepare, run and report the surveillance event benchmark (fight/smoking/fall/weapon).
   Use for benchmark/model comparisons, 跑一下测评, 测速, or preparing benchmark tables.
   Preserves reviewed inputs, protocol versions, fixed baselines and measured provenance.
 ---
@@ -63,10 +62,18 @@ centered sampling and the original strict parser do not reproduce the current
    manifest, media directories and output path. Verify manifest review status,
    samples hash, question/label identities and media hashes. The runner does this
    before requests. Do not change a draft status to bypass review.
-   Read each manifest's actual status and fingerprint; `manifest_120.json`
-   includes 100 base-event questions plus 20 separate bag-search questions.
-   Question count is not unique-video count. Larger sets require their own reviewed
-   manifest. Never assume a colleague's Desktop path exists.
+   Select the reviewed manifest from `tools/event_benchmark/datasets/` and obtain
+   its exact matching samples file; not every samples file is committed there.
+   Read review status from the selected manifest. The reviewed 120-question set
+   includes 100 base-event questions plus 20 separate bag-search questions; the
+   base runner scores only the former. Question count is not unique-video count.
+   Categories, questions, answers and source details come from the selected samples.
+   Video source does not change the scoring workflow. Keep each cohort separately
+   identified; supplementary data does not extend an existing result block.
+   Preserve source groups across train/development, validation and test splits:
+   cuts from one recording must not cross splits. Missing onset/person annotations
+   do not establish reaction-time or track-ID accuracy. Never assume a colleague's
+   Desktop path exists.
    `--preflight` checks inputs offline without credentials or inference. Keep its
    pending-provider/hardware/authorization items distinct from input validity.
 2. **Run accuracy from the repository root**, only after authorization for calls:
@@ -94,68 +101,40 @@ centered sampling and the original strict parser do not reproduce the current
    Use `bench-sheet-contribute` only when publishing is requested. Its default
    preparation is an offline preview, with no sheet write.
 
-## Reviewed robot videos: 41-question supplement
+## Download media when needed
 
-Use `tools/event_benchmark/datasets/samples_robot41.json` with
-`tools/event_benchmark/datasets/manifest_robot41.json`. These are the 41 clips
-Pengyu reviewed on November 3, numbered 121–161; they do not replace or silently
-extend the original 120-question cohort. Videos remain in the
-[team Drive folder](https://drive.google.com/drive/folders/132wI2o9nLno7a_IGw7IG7zLJabBqTYxW).
-
-| Category | Reference yes | Reference no | Questions |
-|---|---:|---:|---:|
-| fall | 9 | 9 | 18 |
-| weapon | 11 | 12 | 23 |
-
-Preserve the supplied questions and answers. Here `weapon` asks about visibly
-holding or carrying a knife or weapon; it does not require an attack. The confirmed
-beverage bottle and pen are `no`. Walking away, returning and crossing laterally
-are separate routes; two near-camera knife displays remain separately identified.
-Lateral weapon coverage still lacks two yes and one no clips for the requested
-three-of-each quota. Clips share three source recordings: do not split cuts from
-the same `source_group` between threshold tuning and evaluation. There are no
-reviewed natural-onset times or person-ID labels; do not claim reaction-time or
-track-ID accuracy from this supplement.
-
-Prepare media on the machine that will run inference; on Vast, download there
-directly rather than staging videos through a laptop. Use an existing Google
-account with access to the folder. The downloader accepts a read-only Drive OAuth
-token in `GOOGLE_DRIVE_ACCESS_TOKEN`, or `--links` pointing to a private JSON map
-of filenames/Drive IDs to temporary HTTPS download URLs. A connected Drive fetch
-can supply those URLs. Obtain them after environment preparation, refresh only
-expired entries, and keep the map and credentials outside Git. Private Drive
-view links are not anonymous media download URLs.
+Use the selected samples/manifest pair for every source. The downloader handles
+samples with `filename`, `size_bytes` and a `drive_file_id` (or a filename-keyed
+download link). For other source schemas, obtain the exact media through the
+source's authorized transfer method; do not invent metadata or change frozen files
+to fit the downloader. On Vast, download directly to the GPU machine. Private
+Drive files need `GOOGLE_DRIVE_ACCESS_TOKEN` or a private `--links` JSON map of
+filenames/Drive IDs to temporary HTTPS download URLs; a Drive view link is not a
+direct download URL. Keep credentials and temporary link maps outside Git.
 
 ```sh
-python tools/event_benchmark/download_media.py --output outputs/robot41/media \
+python tools/event_benchmark/download_media.py \
+  --samples /path/to/samples.json --manifest /path/to/reviewed-manifest.json \
+  --output /path/to/media \
   --links /path/to/private-temporary-links.json
-python tools/event_benchmark/download_media.py --output outputs/robot41/media --check-only
+python tools/event_benchmark/download_media.py \
+  --samples /path/to/samples.json --manifest /path/to/reviewed-manifest.json \
+  --output /path/to/media --check-only
 ```
 
-The second command uses the same input loader as the evaluator and should report
-41 questions, 41 videos, `fall: 18`, `weapon: 23`, and zero model requests. It does
-not start a model. For an authorized accuracy run, use the explicit cohort:
+`--check-only` works with every evaluator-compatible samples/manifest pair and
+uses the evaluator's input loader to verify reviewed labels and hashes of existing
+local media. It reports scored video/question counts by category without downloading
+or calling a model. A download's size check is not frozen-hash verification; run
+`--check-only` after transfer, then use the accuracy command above with the same files.
 
-```sh
-python tools/event_benchmark/run_eval.py --legacy-baseline --candidate qwen \
-  --samples tools/event_benchmark/datasets/samples_robot41.json \
-  --manifest tools/event_benchmark/datasets/manifest_robot41.json \
-  --media outputs/robot41/media --interval 1.0 --workers 12 \
-  --out outputs/event-benchmark/robot41-qwen.json
-```
-
-`--legacy-baseline` explicitly uses the original default-provider v2.1 baseline
-without the validation24/test120 sidecar. It preserves the centered sampling,
-strict parser and fixed gate, and records `v2.1-legacy-unpinned-lossless-v1`.
-Do not mix it with controlled provider/split options or use its output for
-validation threshold selection. The controlled workflow above still requires
-the provider configuration and split sidecar. Add `--preflight` for offline checks.
-
-Report this as a separate robot41 cohort with full denominators 18, 23 and 41.
-The existing Sheet's 50/100/120 blocks are not robot41 result cells. Availability
-and reviewed labels do not establish model recognition accuracy; no model result
-is supplied with these annotations. Other backends retain their existing runner
-boundaries described below.
+For the original default-provider v2.1 baseline without a validation24/test120
+sidecar, add `--legacy-baseline` to the accuracy command and omit the controlled
+provider/split options. It preserves centered sampling, the strict parser and
+fixed gate, and records `v2.1-legacy-unpinned-lossless-v1`. Do not use that output
+for validation threshold selection. The controlled workflow above still requires
+the provider configuration and split sidecar. Keep supplementary cohorts separate
+from existing result blocks and report their own full denominators.
 
 ## Frozen v2 baseline
 

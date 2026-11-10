@@ -4,19 +4,16 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import shutil
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 if __package__:
     from .run_eval import frozen_inputs
 else:
     from run_eval import frozen_inputs
-
-
-DATASETS = Path(__file__).resolve().parent / "datasets"
 
 
 def download_video(sample, output, links, token):
@@ -38,7 +35,8 @@ def download_video(sample, output, links, token):
                + sample["drive_file_id"] + "?alt=media&supportsAllDrives=true")
         headers["Authorization"] = "Bearer " + token
     else:
-        raise ValueError("provide a temporary download link or GOOGLE_DRIVE_ACCESS_TOKEN")
+        raise ValueError(
+            "provide a temporary download link or GOOGLE_DRIVE_ACCESS_TOKEN")
 
     request = urllib.request.Request(url, headers=headers)
     partial = destination.with_suffix(destination.suffix + ".part")
@@ -54,13 +52,16 @@ def download_video(sample, output, links, token):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--samples", type=Path, default=DATASETS / "samples_robot41.json")
-    parser.add_argument("--manifest", type=Path, default=DATASETS / "manifest_robot41.json")
-    parser.add_argument("--output", type=Path, required=True, help="video directory on this machine")
+    parser.add_argument("--samples", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True,
+                        help="video directory on this machine")
     parser.add_argument("--links", type=Path,
-                        help="private JSON map of filenames or Drive IDs to temporary HTTPS URLs")
+                        help="private JSON map of filenames or Drive IDs "
+                             "to temporary HTTPS URLs")
     parser.add_argument("--check-only", action="store_true",
-                        help="check existing local videos with the runner; no downloads or inference")
+                        help="check existing local videos with the runner; "
+                             "no downloads or inference")
     args = parser.parse_args()
     if args.check_only:
         samples, media, _ = frozen_inputs(args.samples, args.manifest, [args.output])
@@ -88,7 +89,8 @@ def main():
             print(f"{filename}: HTTP {error.code}", file=sys.stderr)
         except (OSError, ValueError) as error:
             failures += 1
-            reason = str(error) if isinstance(error, ValueError) else type(error).__name__
+            reason = (str(error) if isinstance(error, ValueError)
+                      else type(error).__name__)
             print(f"{filename}: {reason}", file=sys.stderr)
     print(f"{len(videos) - failures}/{len(videos)} videos ready; {failures} failed")
     return int(failures > 0)
