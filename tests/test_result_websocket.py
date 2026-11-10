@@ -135,6 +135,70 @@ def test_unavailable_history_is_reported_before_retained_replay(
             ] == [3, 4]
 
 
+@pytest.mark.parametrize("use_header", [False, True])
+def test_explicit_zero_resume_reports_evicted_history(runtime, use_header):
+    token = f"{runtime.results.epoch}:0"
+    for timestamp in range(1, 5):
+        publish(runtime, timestamp=timestamp)
+    path = "/v1/results/ws"
+    headers = {"Last-Event-ID": token} if use_header else {}
+    if not use_header:
+        path += "?last_event_id=" + token
+    with TestClient(create_app(lambda: runtime)) as client:
+        with client.websocket_connect(path, headers=headers) as ws:
+            assert ws.receive_json()["type"] == "hello"
+            assert ws.receive_json() == {
+                "type": "reset",
+                "reason": "history_lost",
+                "id": f"{runtime.results.epoch}:2",
+                "oldest_cursor": 3,
+                "latest_cursor": 4,
+            }
+            assert [
+                ws.receive_json()["data"]["frame"]["timestamp_seconds"]
+                for _ in range(2)
+            ] == [3, 4]
+
+
+@pytest.mark.parametrize("query", ["", "?after=0"])
+def test_fresh_subscription_replays_retained_history_without_reset(runtime, query):
+    for timestamp in range(1, 5):
+        publish(runtime, timestamp=timestamp)
+    with TestClient(create_app(lambda: runtime)) as client:
+        with client.websocket_connect("/v1/results/ws" + query) as ws:
+            assert ws.receive_json()["type"] == "hello"
+            assert [
+                ws.receive_json()["data"]["frame"]["timestamp_seconds"]
+                for _ in range(2)
+            ] == [3, 4]
+
+
+def test_live_subscription_reports_eviction_before_first_result(runtime, monkeypatch):
+    snapshot_after = runtime.results.snapshot_after
+
+    def snapshot_then_publish(cursor):
+        snapshot = snapshot_after(cursor)
+        if snapshot.cursor == 0:
+            # Evict the first arrivals after the initial empty snapshot, without
+            # relying on a race between publications and the next polling tick.
+            for timestamp in range(1, 5):
+                publish(runtime, timestamp=timestamp)
+        return snapshot
+
+    monkeypatch.setattr(runtime.results, "snapshot_after", snapshot_then_publish)
+    with TestClient(create_app(lambda: runtime)) as client:
+        with client.websocket_connect("/v1/results/ws") as ws:
+            assert ws.receive_json()["type"] == "hello"
+            reset = ws.receive_json()
+            assert reset["type"] == "reset"
+            assert reset["reason"] == "history_lost"
+            assert reset["id"] == f"{runtime.results.epoch}:2"
+            assert [
+                ws.receive_json()["data"]["frame"]["timestamp_seconds"]
+                for _ in range(2)
+            ] == [3, 4]
+
+
 def test_open_subscription_observes_session_reset(runtime):
     publish(runtime)
     with TestClient(create_app(lambda: runtime)) as client:

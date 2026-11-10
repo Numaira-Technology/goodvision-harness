@@ -13,6 +13,7 @@ from fastapi import FastAPI, WebSocket
 from test_branch_result_delivery import observation, runtime_without_workers
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
+from websockets.sync.server import serve
 
 from goodvision_harness.analysis_gateway import create_app as gateway_app
 from goodvision_harness.service import create_app
@@ -51,8 +52,8 @@ def running(app):
         assert not thread.is_alive(), "subscription prevented server shutdown"
 
 
-def receive(ws):
-    return json.loads(ws.recv(timeout=3))
+def receive(ws, timeout=3):
+    return json.loads(ws.recv(timeout=timeout))
 
 
 def test_actual_gateway_and_fleet_connections_resume_and_isolate_cameras(monkeypatch):
@@ -178,7 +179,7 @@ def test_gateway_preserves_resume_header_sanitizes_headers_and_cleans_up():
 
 
 def test_gateway_unavailable_upstream_is_explicit_and_has_no_local_fallback():
-    # A bound, non-listening port deterministically refuses upstream connections.
+    # A bound, non-listening port cannot complete an upstream handshake.
     with socket.socket() as closed_peer:
         closed_peer.bind(("127.0.0.1", 0))
         origin = f"http://127.0.0.1:{closed_peer.getsockname()[1]}"
@@ -187,7 +188,9 @@ def test_gateway_unavailable_upstream_is_explicit_and_has_no_local_fallback():
             with connect(
                 url.replace("http:", "ws:") + "/v1/results/ws", proxy=None
             ) as ws:
-                assert receive(ws) == {
+                # macOS may time out rather than refuse a non-listening port.
+                # Allow the production 5-second connect deadline plus scheduling.
+                assert receive(ws, timeout=7) == {
                     "type": "error",
                     "message": "result service unavailable",
                 }
@@ -215,3 +218,30 @@ def test_upstream_policy_close_reaches_subscriber():
                 with pytest.raises(ConnectionClosed) as error:
                     ws.recv(timeout=3)
                 assert error.value.rcvd.code == 1008
+
+
+@pytest.mark.parametrize(
+    "upstream_code,expected", [(None, 1013), (1000, 1000), (1001, 1001)]
+)
+def test_upstream_normal_close_never_forwards_synthetic_code(upstream_code, expected):
+    def close_upstream(ws):
+        # None sends a valid empty close frame, reported by clients as 1005.
+        ws.close(code=upstream_code)
+
+    with serve(close_upstream, "127.0.0.1", 0, compression=None) as upstream:
+        thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        thread.start()
+        try:
+            origin = f"http://127.0.0.1:{upstream.socket.getsockname()[1]}"
+            with running(gateway_app(origin)) as url:
+                with connect(
+                    url.replace("http:", "ws:") + "/v1/results/ws", proxy=None
+                ) as ws:
+                    with pytest.raises(ConnectionClosed) as error:
+                        ws.recv(timeout=3)
+                    assert error.value.rcvd is not None
+                    assert error.value.rcvd.code == expected
+        finally:
+            upstream.shutdown()
+            thread.join(5)
+            assert not thread.is_alive()

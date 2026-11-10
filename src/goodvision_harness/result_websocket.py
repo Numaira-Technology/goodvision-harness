@@ -52,6 +52,9 @@ async def _send(socket, payload, camera_id=None):
 
 
 async def _close(socket, code=1000):
+    # Upstream empty/abnormal closes use synthetic codes forbidden on the wire.
+    if code in {1005, 1006, 1015}:
+        code = 1013
     try:
         await asyncio.wait_for(socket.close(code=code), SEND_TIMEOUT)
     except (RuntimeError, WebSocketDisconnect, OSError, TimeoutError):
@@ -130,6 +133,10 @@ async def stream_results(socket, runtime, channel=None, *, camera_id=None):
         )
         if epoch is None:
             epoch = snapshot.epoch
+            if current == 0:
+                # A fresh subscription starts at the retained history boundary.
+                # Once connected, even cursor zero must detect later eviction.
+                current = snapshot.oldest_cursor - 1
         loop = asyncio.get_running_loop()
         last_sent = loop.time()
         while True:
@@ -138,7 +145,7 @@ async def stream_results(socket, runtime, channel=None, *, camera_id=None):
                 reason = "stream_changed"
             elif current > snapshot.cursor:
                 reason = "cursor_ahead"
-            elif current and current < snapshot.oldest_cursor - 1:
+            elif current < snapshot.oldest_cursor - 1:
                 reason = "history_lost"
             if reason is not None:
                 epoch = snapshot.epoch
@@ -252,8 +259,7 @@ async def proxy_results(socket, origin, path, *, camera_id=None):
     except ConnectionClosed as error:
         close = error.rcvd or error.sent
         code = close.code if close is not None else 1013
-        # 1005/1006 are synthetic and cannot be sent on the wire.
-        await _close(socket, code if code not in {1005, 1006, 1015} else 1013)
+        await _close(socket, code)
     except (OSError, TimeoutError, InvalidHandshake):
         await reject_subscription(socket, "result service unavailable", 1013, camera_id)
     except (ValueError, TypeError):
