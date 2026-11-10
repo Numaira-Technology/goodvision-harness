@@ -3939,6 +3939,8 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             reason = "waiting_for_first_frame"
         elif source_age > self.settings.ready_max_frame_age_seconds:
             reason = "frame_stale"
+        elif health.get("sampling_window_state") == "unavailable":
+            reason = "source_window_unavailable"
         elif success_age is None:
             reason = "waiting_for_first_analysis"
         elif success_age > self.settings.ready_max_result_age_seconds:

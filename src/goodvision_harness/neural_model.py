@@ -1,6 +1,6 @@
 """Native image/text recognition client for the neural workflow block."""
 
-from .neural_calibration import CORE_EVENTS, calibrated_choice
+from .neural_calibration import CORE_EVENTS, calibrated_choice, sampling_contract
 from .videojev_model import VideoJevInspector
 from .vlm_independent_model import IndependentVerdict
 
@@ -14,7 +14,7 @@ class NeuralInspector(VideoJevInspector):
         # Stateless requests also survive service restarts and multiple clients.
         self._template_registered = False
         self._neural_frame_count = len(job.frames)
-        return super()._payload(job)
+        return super()._payload(job, sampling=sampling_contract(self.config))
 
     def _decode(self, response, expected, labels):
         if response.get("model") != self.model_name:
@@ -29,6 +29,7 @@ class NeuralInspector(VideoJevInspector):
             "image_index",
             "frame_scores",
             "thresholds_sha256",
+            "sampling",
         }
         calibrated = [
             row for row in rows if isinstance(row, dict) and fields & row.keys()
@@ -69,6 +70,7 @@ class NeuralInspector(VideoJevInspector):
                 row,
                 label,
                 getattr(self, "_neural_frame_count", None),
+                sampling=sampling_contract(self.config),
             )
             hashes.add(row["thresholds_sha256"])
             if (
