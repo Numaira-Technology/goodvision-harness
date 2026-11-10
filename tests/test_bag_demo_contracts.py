@@ -270,7 +270,10 @@ def test_yolo_rejects_invalid_settings_before_model_load(kwargs):
         yolo_boxes.precompute("not-opened.MOV", **kwargs)
 
 
-def test_page_rejects_late_responses_and_never_shows_clean_for_unavailable():
+@pytest.mark.parametrize(
+    "script", ["bag_demo_page_contract.cjs", "bag_demo_request_ownership.cjs"]
+)
+def test_page_rejects_late_responses_and_never_shows_clean_for_unavailable(script):
     import shutil
     from pathlib import Path
 
@@ -278,7 +281,7 @@ def test_page_rejects_late_responses_and_never_shows_clean_for_unavailable():
     if not node:
         pytest.skip("Node is required for offline page contracts")
     result = subprocess.run(
-        [node, "tests/bag_demo_page_contract.cjs"],
+        [node, f"tests/{script}"],
         cwd=Path(__file__).resolve().parents[1],
         capture_output=True,
         text=True,

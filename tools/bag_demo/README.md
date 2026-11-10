@@ -47,6 +47,13 @@ alcohol or contraband verdicts. Corrupt sidecars produce an explicit overlay err
 - A positive candidate is retained within a continuous playback segment. Clip changes
   and seeks reset it. Late responses from a previous segment are discarded. The
   displayed source timestamp is the sampled window, not the current playback position.
+- Clip changes and seeks cancel the page's previous scoring wait; leaving the page
+  also cancels overlay loading. Scoring waits expire after 60 seconds and overlays
+  after 10 seconds, including reading the response body. A timeout stays unknown;
+  subsequent playback windows can retry. Client cancellation does not guarantee
+  cancellation of work already running in the server/scorer. The server retains
+  its single scoring slot until that work finishes or hits its own bounded timeout,
+  and returns unavailable while busy.
 - Before 0.4 seconds there are insufficient past frames. No future frame is sampled
   to fabricate a full window. Invalid/out-of-range timestamps are rejected; extraction
   is bounded, empty ffmpeg output fails, and only one scoring request runs at a time.

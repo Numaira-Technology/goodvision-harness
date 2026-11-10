@@ -87,7 +87,37 @@
 const $ = s => document.querySelector(s);
 const vid = $('#vid'), ov = $('#ov'), ctx = ov.getContext('2d');
 let CLIPS = [], current = null, boxes = null;
-let sticky = {knife:false, alcohol:false}, lastTruth = null, scoring = false, lastScoreT = -99, generation = 0;
+let sticky = {knife:false, alcohol:false}, lastTruth = null, lastScoreT = -99, generation = 0;
+let scoreRequest = null, boxRequest = null;
+
+function requestJSON(url, timeoutMs) {
+  const controller = new AbortController();
+  let rejectCancelled;
+  const cancelled = new Promise((_, reject) => { rejectCancelled = reject; });
+  const cancel = () => {
+    // Settle our wait even if the transport/body reader ignores abort.
+    rejectCancelled(new Error('request cancelled or timed out'));
+    controller.abort();
+  };
+  const timer = setTimeout(cancel, timeoutMs);
+  const result = (async () => {
+    const response = await fetch(url, {signal:controller.signal});
+    if (!response.ok) throw new Error('request unavailable');
+    return await response.json();
+  })();
+  return {cancel, promise:Promise.race([result, cancelled]).finally(() => clearTimeout(timer))};
+}
+
+function cancelScore() {
+  const previous = scoreRequest;
+  scoreRequest = null; // detach before its catch/finally can run
+  if (previous) previous.cancel();
+}
+function cancelBoxes() {
+  const previous = boxRequest;
+  boxRequest = null;
+  if (previous) previous.cancel();
+}
 
 async function loadClips() {
   const r = await (await fetch('/api/clips')).json();
@@ -105,6 +135,7 @@ async function loadClips() {
 
 async function selectClip(c) {
   ++generation;
+  cancelScore(); cancelBoxes();
   current = c; lastTruth = c.truth;
   document.querySelectorAll('#clips button').forEach(b =>
     b.classList.toggle('active', b.dataset.name === c.name));
@@ -115,13 +146,16 @@ async function selectClip(c) {
   boxes = null;
   vid.load();
   showTruth();
+  const request = requestJSON('/api/boxes/' + encodeURIComponent(c.name), 10000);
+  boxRequest = request;
   try {
-    const response = await fetch('/api/boxes/' + encodeURIComponent(c.name));
-    if (!response.ok) throw new Error('boxes unavailable');
-    const data = await response.json();
-    if (current === c) boxes = data;
+    const data = await request.promise;
+    // Object identity of the clip is insufficient when the user reselects it.
+    if (boxRequest === request) boxes = data;
   } catch(e) {
-    if (current === c) log('物体框不可用');
+    if (boxRequest === request) log('物体框不可用');
+  } finally {
+    if (boxRequest === request) boxRequest = null;
   }
 }
 
@@ -168,24 +202,28 @@ requestAnimationFrame(drawOverlay);
 
 // --- live VideoJev scoring as the clip plays ---
 async function scoreTick() {
-  if (!current || vid.paused || vid.ended || scoring) return;
+  if (!current || vid.paused || vid.ended || scoreRequest) return;
   if (vid.currentTime - lastScoreT < 1.2) return;   // don't outrun the scorer
-  scoring = true; lastScoreT = vid.currentTime;
+  lastScoreT = vid.currentTime;
   const t = vid.currentTime, selected = generation, clip = current.name;
   $('#state').textContent = '评分中… t=' + t.toFixed(1) + 's';
+  const request = requestJSON(`/api/verdict?clip=${encodeURIComponent(clip)}&t=${t.toFixed(6)}`, 60000);
+  scoreRequest = request;
   try {
-    const response = await fetch(`/api/verdict?clip=${encodeURIComponent(clip)}&t=${t.toFixed(6)}`);
-    const r = await response.json();
-    if (selected !== generation) return;
-    if (!response.ok || r.error) throw new Error('scoring unavailable');
+    const r = await request.promise;
+    if (scoreRequest !== request || selected !== generation) return;
+    if (r.error) throw new Error('scoring unavailable');
     if (r.clip !== clip || Math.abs(r.t - t) > 0.00001) throw new Error('response mismatch');
     applyVerdict(r, t);
   } catch(e) {
-    if (selected === generation) {
+    if (scoreRequest === request && selected === generation) {
       setLabel('存疑', '当前评分不可用（检查本地采样 / GPU 隧道 :8093）');
       setBar('knife', null); setBar('alcohol', null);
     }
-  } finally { scoring = false; }
+  } finally {
+    // An abandoned request must never release a replacement request's slot.
+    if (scoreRequest === request) scoreRequest = null;
+  }
 }
 
 function applyVerdict(r, t) {
@@ -214,8 +252,12 @@ function log(line) { const el = $('#log'); el.textContent = (el.textContent + li
 vid.addEventListener('timeupdate', scoreTick);
 vid.addEventListener('seeking', () => {
   generation++; sticky = {knife:false, alcohol:false}; lastScoreT = -99;
+  cancelScore();
   setLabel('—', '已跳转，等待新窗口'); setBar('knife', null); setBar('alcohol', null);
   $('#log').textContent = '';
+});
+window.addEventListener('pagehide', () => {
+  generation++; cancelScore(); cancelBoxes();
 });
 $('#chkTruth').addEventListener('change', showTruth);
 loadClips().catch(() => setLabel('存疑', '无法加载视频列表'));

@@ -16,7 +16,8 @@ function element(id) {
   return nodes.get(id);
 }
 const response = data => ({ok: true, json: async () => data});
-const context = vm.createContext({console, requestAnimationFrame() {},
+const context = vm.createContext({console, AbortController, setTimeout, clearTimeout,
+  window: {addEventListener() {}}, requestAnimationFrame() {},
   document: {querySelector: element, querySelectorAll: () => [], createElement: element},
   fetch: async () => response({clips: []}),
 });
@@ -51,7 +52,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
     await scoring;
     assert.equal(run('sticky.knife'), false, 'stale verdict must not latch after ' + action);
     assert.equal(element('#label').textContent, '—');
-    assert.equal(run('scoring'), false);
+    assert.equal(run('scoreRequest'), null);
   }
 
   context.fetch = async () => response({frames: []});
