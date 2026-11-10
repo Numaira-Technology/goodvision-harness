@@ -296,6 +296,99 @@ data: <一条原始分析消息 JSON，可能仅包含一个分支>
 `X-Result-Stream`。游标按发布顺序单调增加，并非源帧时间；各能力的游标允许跳号。
 全局 `latest` 的游标也可能小于另一能力 `latest` 的游标，因为两者按源帧时间选取。
 
+## WebSocket 实时结果订阅
+
+使用 `ws://HOST:8080`（HTTPS 部署使用 `wss://HOST`）连接以下地址：
+
+| 内容 | 单路兼容地址 | 多路地址 |
+| --- | --- | --- |
+| 分析结果 | `/v1/results/ws` | `/v1/fleet/cameras/{camera_id}/results/ws` |
+| 整体描述 | `/v1/results/overall/ws` | `/v1/fleet/cameras/{camera_id}/results/overall/ws` |
+| 指定能力 | `/v1/results/{feature}/ws` | `/v1/fleet/cameras/{camera_id}/results/{feature}/ws` |
+
+`feature` 为 `fight`、`smoking`、`fall`、`weapon`、`stranger`。`GET /v1/fleet`
+的 `cameras[].outputs` 包含这些地址。多路始终连接主程序；分析网关也支持相同地址。
+这些接口只订阅已有结果，不启动推理或视频连接，断开订阅不停止分析。可以在分析开始前
+连接并等待结果；客户端不需要发送订阅命令，也不得在此发送 `start`、`stop` 或视频帧。
+
+每个 WebSocket 文本帧是一个完整 JSON 对象。首条消息为：
+
+```json
+{"type":"hello","protocol":1,"epoch":"stream-uuid","latest_cursor":42,"oldest_cursor":1}
+```
+
+随后回放当前仍保留的历史，再持续推送新结果：
+
+```json
+{"type":"analysis_result","id":"stream-uuid:43","data":{"type":"analysis_result","message_id":"message-43"}}
+```
+
+示例省略了 `data` 的其他字段；实际 `data` 与对应 HTTP/SSE 的完整结果 JSON 相同。
+整体描述的消息类型为 `overall_description`。多路消息的外层和 `data` 对象都带
+`camera_id`，其中的证据链接也带所属摄像头前缀。不同连接各自独立，不消费彼此的结果。
+无可发送结果时约每 15 秒发送 `{"type":"heartbeat","id":"stream-uuid:43"}`；
+心跳的游标可包含被能力过滤跳过的记录，不表示检测阴性。
+
+成功处理消息后保存完整 `id`，重连使用 `?last_event_id=<epoch:cursor>`；支持同名意义的
+`Last-Event-ID` 请求头，查询参数优先。也支持 `?after=<非负整数>`，显式非零 `after`
+优先于完整令牌；跨进程重启应使用完整令牌。每个摄像头、每个订阅地址单独保存游标。
+不指定游标（或 `after=0`）表示回放当前保留的历史。
+
+服务会话变更、请求游标超前或所需历史被淘汰时，先发送 `reset`，再回放可用记录：
+
+```json
+{"type":"reset","reason":"history_lost","id":"stream-uuid:30","oldest_cursor":31,"latest_cursor":42}
+```
+
+`reason` 为 `stream_changed`、`cursor_ahead` 或 `history_lost`。客户端应记录此通知，
+按业务需要补查归档，再保存 `reset.id` 并继续接收；它不代表缺失历史已补齐。
+续传只覆盖内存缓存，不保证永久保存或恰好一次交付；重连后可用消息 `id` 去重。
+分析停止后的连接保持等待，下一次分析重置结果流时会发出 `stream_changed`。
+
+参数或通道错误、客户端发送命令时返回 `type=error` 并以 **1008** 关闭；单条编码后
+消息超过 2 MiB 时为 **1009**；上游消息无效时为 **1011**；上游不可用或写入超时
+时为 **1013**。慢客户端写入最多等待 5 秒，随后断开，重连时使用最后处理的 `id`。
+协议关闭码与 HTTP 状态码不同。只有 1013、网络中断等暂时性故障应延迟重试；
+1008/1009 需要先修正接入参数或数据规模。
+
+Python 接入示例（安装项目已有依赖 `websockets>=15,<16`）：
+
+```python
+import asyncio
+import json
+from urllib.parse import urlencode
+from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed
+
+BASE = "ws://127.0.0.1:8080/v1/fleet/cameras/camera01/results/ws"
+
+async def main():
+    last_id = None
+    while True:
+        url = BASE + ("?" + urlencode({"last_event_id": last_id}) if last_id else "")
+        try:
+            async with connect(url, max_size=2 * 1024 * 1024, proxy=None) as ws:
+                async for raw in ws:
+                    message = json.loads(raw)
+                    if message["type"] in {"analysis_result", "overall_description"}:
+                        print(json.dumps(message["data"], ensure_ascii=False), flush=True)
+                    elif message["type"] in {"reset", "error"}:
+                        print(message, flush=True)  # 业务接入应处理历史缺口或错误。
+                    if "id" in message:
+                        last_id = message["id"]  # 在业务处理成功后保存。
+        except ConnectionClosed as exc:
+            if exc.rcvd and exc.rcvd.code in {1008, 1009, 1011}:
+                raise
+        except (OSError, TimeoutError):
+            pass
+        await asyncio.sleep(2)
+
+asyncio.run(main())
+```
+
+反向代理须允许上述路径的 WebSocket Upgrade，空闲超时建议大于 30 秒。
+`/ws` 仍是原摄像头上传和控制协议；结果订阅使用本节列出的 `/results/.../ws`。
+
 ## 结果字段与帧关联
 
 `observation_id` 是 `message_id` 的稳定别名；`analysis_kind` 区分事件与人脸
