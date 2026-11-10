@@ -136,6 +136,13 @@ for validation threshold selection. The controlled workflow above still requires
 the provider configuration and split sidecar. Keep supplementary cohorts separate
 from existing result blocks and report their own full denominators.
 
+```sh
+python tools/event_benchmark/run_eval.py --legacy-baseline --candidate qwen \
+  --samples /path/to/samples.json --manifest /path/to/reviewed-manifest.json \
+  --media /path/to/media --interval 1.0 --workers 12 \
+  --out outputs/event-benchmark/legacy-qwen.json
+```
+
 ## Frozen v2 baseline
 
 - Same questions from `samples.json`, same media, 1 fps centered frame schedule,

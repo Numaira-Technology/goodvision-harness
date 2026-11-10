@@ -213,9 +213,12 @@ def test_only_endpoint_is_not_labeled_a_measured_fastest_provider():
 def test_robot41_documented_command_runs_legacy_with_synthetic_replies(tmp_path, monkeypatch):
     skill = Path(".claude/skills/event-benchmark/SKILL.md").read_text()
     command = next(block for block in re.findall(r"```sh\n(.*?)```", skill, re.DOTALL)
-                   if "run_eval.py" in block and "samples_robot41.json" in block)
+                   if "run_eval.py" in block and "--legacy-baseline" in block)
     argv = shlex.split(command.replace("\\\n", ""))[1:]
     argv[argv.index("--out") + 1] = str(tmp_path / "robot41.json")
+    argv[argv.index("--samples") + 1] = "tools/event_benchmark/datasets/samples_robot41.json"
+    argv[argv.index("--manifest") + 1] = "tools/event_benchmark/datasets/manifest_robot41.json"
+    argv[argv.index("--media") + 1] = str(tmp_path)
     samples = json.loads(Path(argv[argv.index("--samples") + 1]).read_text())["samples"]
     assert len(samples) == 41
     clip = tmp_path / "synthetic.mp4"
