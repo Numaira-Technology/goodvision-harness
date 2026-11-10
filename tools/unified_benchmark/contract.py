@@ -75,13 +75,22 @@ def sample_times(duration):
     return [float(i) for i in range(math.ceil(duration)) if i < duration]
 
 
+def finite_number(value):
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def valid_value(value, kind):
     if not isinstance(value, dict):
         return False
     if kind == "choice":
         return value.get("answer") in ("yes", "no", "unknown")
     score = value.get("score")
-    return (type(score) in (int, float) and math.isfinite(score)
+    return (finite_number(score)
             and (kind == "margin" or kind == "probability" and 0 <= score <= 1))
 
 

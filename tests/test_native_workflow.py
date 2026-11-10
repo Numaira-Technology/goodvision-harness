@@ -467,3 +467,33 @@ def test_unsealed_native_input_rejected_before_backend(frozen, tmp_path, name):
     with pytest.raises(ValueError, match="unsealed bundle"):
         execute(frozen, tmp_path / "run", "decision3", "test")
     assert not FakeBackend.instances
+
+
+@pytest.mark.parametrize("alias", deploy.ALIASES)
+@pytest.mark.parametrize("huge", [10 ** 400, -(10 ** 400)])
+@pytest.mark.parametrize("recover", [False, True])
+def test_oversized_native_numbers_use_bounded_retries(frozen, tmp_path, alias, huge, recover):
+    target = "test/fight/0/yes"
+    def behavior(self, unit, body):
+        if unit["id"] != target or (recover and self.calls.count(target) > 1):
+            return None
+        raw = self.raw(unit, "yes")
+        if self.cfg["kind"] == "margin":
+            raw["fight"]["margin"] = huge
+        elif self.alias == "videojev":
+            raw["raw"][0]["probabilities"][0] = huge
+        else:
+            raw["raw"]["answers"]["fight"]["probabilities"][D3_OPTIONS[0]] = huge
+        return 200, raw, {}
+    FakeBackend.behavior = behavior
+    out = tmp_path / "run"
+    execute(frozen, out, alias)
+    count = 2 if recover else 3
+    assert Counter(FakeBackend.calls)[target] == count
+    report = json.loads((out / "test/report.json").read_text())
+    assert report["correct"] == (120 if recover else 119)
+    assert report["incomplete_questions"] == (0 if recover else 1)
+    assert report["accuracy_denominator"] == 120
+    assert len(list((out / "test/receipts").glob(f"{digest(target)}-*.json"))) == count
+    execute(frozen, out, alias, resume=True)
+    assert Counter(FakeBackend.calls)[target] == count

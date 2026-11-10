@@ -165,7 +165,7 @@ def parse_answer(payload, backend):
     answer = payload["answers"]["answer"]
     score = answer.get("noul")
     if (answer.get("type") != "noul" or answer.get("error") is not None
-            or type(score) not in (int, float) or not math.isfinite(score)
+            or not evidence.finite_number(score)
             or not 0 <= score <= 1):
         raise ValueError("decision answer must be a probability in [0, 1]")
     return score

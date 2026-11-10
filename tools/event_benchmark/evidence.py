@@ -66,6 +66,15 @@ def provider_body(context):
     return dict(context["config"]["provider"]) if context else None
 
 
+def finite_number(value):
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def response_metadata(payload):
     """Allowlist metadata, never save keys, image payloads or provider error text."""
     if not isinstance(payload, dict):
@@ -81,10 +90,10 @@ def response_metadata(payload):
         result["usage"] = {key: value for key, value in usage.items()
                            if key in {"prompt_tokens", "completion_tokens", "total_tokens",
                                       "input_tokens", "output_tokens", "cost"}
-                           and type(value) in (int, float) and math.isfinite(value)}
+                           and finite_number(value)}
     for key in ("total_cost", "native_tokens_prompt", "native_tokens_completion"):
         value = payload.get(key)
-        if type(value) in (int, float) and math.isfinite(value):
+        if finite_number(value):
             result[key] = value
     return result
 

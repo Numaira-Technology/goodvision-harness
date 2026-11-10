@@ -205,7 +205,8 @@ def test_api_transport_saved_response_mock_no_real_http(tmp_path):
     finally: ledger.close()
 
 
-@pytest.mark.parametrize("bad_item", [None, [], "invalid", {"type": "choice", "probabilities": None}])
+@pytest.mark.parametrize("bad_item", [None, [], "invalid", {"type": "choice", "probabilities": None},
+    {"type": "choice", "choice": a.D3_OPTIONS[0], "probabilities": dict(zip(a.D3_OPTIONS, [10 ** 400, 0, 0]))}])
 def test_decision3_retries_bad_target_without_overwriting_valid_sibling(tmp_path, bad_item):
     config = {"backend": "decision3", "model": "m", "revision": "r"}
     u = unit(targets=["fight", "fall"])
@@ -260,5 +261,59 @@ def test_api_malformed_envelope_uses_retry_budget(tmp_path, choices, recover):
                    if row["type"] == "result" and not row["complete"])
         q.one(u)
         assert len(calls) == (2 if recover else 3)
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize("kind", ["margin", "probability"])
+def test_oversized_ledger_score_is_invalid_evidence(kind):
+    from tools.unified_benchmark.contract import valid_value
+    assert not valid_value({"score": 10 ** 400}, kind)
+    assert not valid_value({"score": -(10 ** 400)}, kind)
+
+
+@pytest.mark.parametrize("backend", ["decision", "language"])
+@pytest.mark.parametrize("field", ["score", "metadata"])
+def test_api_oversized_score_retries_but_optional_metadata_does_not(tmp_path, backend, field):
+    import threading
+    from tools.unified_benchmark.api_run import Transport, accounting
+    from tools.unified_benchmark.contract import file_hash
+    (tmp_path / "f.jpg").write_bytes(b"synthetic-image")
+    config = {"model": "test/model", "backend": backend, "kind": "probability" if backend == "decision" else "choice",
+              "max_tokens": 30, "temperature": 0,
+              "provider_context": {"config": {"expected_provider_name": "Mock", "provider": {"only": ["mock"]}}}}
+    u = unit() | {"frames": [{"path": "f.jpg", "sha256": file_hash(tmp_path / "f.jpg"), "time": 0}], "question": "Fight?"}
+    u["request_sha256"] = digest(a.request_body(config, u, tmp_path)[1])
+    ledger = Ledger(tmp_path / "attempts.jsonl", {"test": True})
+    transport = Transport(tmp_path, config, "synthetic-key", tmp_path / "out", ledger, threading.Event())
+    calls = []
+    def call(url, body=None):
+        calls.append(body)
+        payload = ({"answers": {"answer": {"type": "noul", "noul": .8}}}
+                   if backend == "decision" else response('{"answer":true}'))
+        payload.update(provider="Mock", model="test/model")
+        if field == "score" and len(calls) == 1:
+            if backend == "decision":
+                payload["answers"]["answer"]["noul"] = 10 ** 400
+            else:
+                payload = response(json.dumps({"answer": 10 ** 400})) | {"provider": "Mock", "model": "test/model"}
+        elif field == "metadata":
+            payload.update(usage={"cost": 10 ** 400, "prompt_tokens": 10 ** 400, "completion_tokens": 5},
+                           total_cost=10 ** 400, native_tokens_prompt=10 ** 400)
+        return payload
+    transport.call = call
+    tick = [0.0]
+    q = Queue(ledger, config["kind"], transport, clock=lambda: tick[0], sleep=lambda seconds: tick.__setitem__(0, tick[0] + seconds))
+    try:
+        _, answers = q.one(u)
+        assert answers == {"fight": {"score": .8} if backend == "decision" else {"answer": "yes"}}
+        assert len(calls) == (2 if field == "score" else 1)
+        if field == "metadata":
+            row = ledger.rows[-1]
+            assert row["metadata"]["usage"] == {"completion_tokens": 5}
+            assert "total_cost" not in row["metadata"] and "native_tokens_prompt" not in row["metadata"]
+            receipt = json.loads((tmp_path / "out" / row["metadata"]["receipt"]).read_text())
+            assert receipt["response"]["usage"]["cost"] == 10 ** 400
+            assert accounting(ledger)["attempts_without_cost_evidence"] == 1
     finally:
         ledger.close()

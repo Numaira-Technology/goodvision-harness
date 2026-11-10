@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 
 from tools.event_benchmark import run_eval as original
-from .contract import EVENTS, canonical, file_hash, valid_value
+from .contract import EVENTS, canonical, file_hash, finite_number, valid_value
 
 CURRENT_IMAGE_PROMPTS = {'fight': 'Is any fighting visible in the current image? Judge only the current image. Do not '
           'infer events before or after this image.',
@@ -107,7 +107,7 @@ def parse_response(config, unit, response):
         result = {}
         for event in unit["targets"]:
             p = response.get(event)
-            if isinstance(p, dict) and all(type(p.get(k)) in (int, float) and math.isfinite(p[k])
+            if isinstance(p, dict) and all(finite_number(p.get(k))
                                            for k in ("positive_cosine", "contrast_cosine", "margin")):
                 result[event] = {"score": p["margin"], "native_scores": p}
         return result
@@ -152,5 +152,5 @@ def parse_response(config, unit, response):
 
 def _probabilities(probs):
     return (isinstance(probs, list) and len(probs) == 3
-            and all(type(p) in (int, float) and math.isfinite(p) and 0 <= p <= 1 for p in probs)
+            and all(finite_number(p) and 0 <= p <= 1 for p in probs)
             and math.isclose(sum(probs), 1, abs_tol=1e-4))
