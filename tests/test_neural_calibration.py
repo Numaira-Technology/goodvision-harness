@@ -19,7 +19,7 @@ from goodvision_harness import neural_service as service
 def artifact():
     # Deliberately synthetic fixture: these values are not calibration evidence.
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "model": contract.MODEL,
         "revision": contract.REVISION,
         "prompts": {
@@ -28,6 +28,13 @@ def artifact():
         "preprocessing": contract.PREPROCESSING,
         "aggregation": "max_all_images",
         "comparison": ">",
+        "sampling": {
+            "policy": "two-frame-target-spacing-v1",
+            "candidate_fps": 4.0,
+            "observation_window_frames": 2,
+            "observation_frame_delta_seconds": 0.5,
+            "observation_fps": 1.25,
+        },
         "thresholds": dict(
             zip(contract.CORE_EVENTS, [0.1, -0.1, None, 0.0], strict=True)
         ),
@@ -67,19 +74,23 @@ def test_artifact_is_hashed_exactly_and_thresholds_are_immutable(tmp_path):
     assert loaded.sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
     with pytest.raises(TypeError):
         loaded.values["fight"] = 1
+    assert dict(loaded.sampling) == artifact()["sampling"]
+    with pytest.raises(TypeError):
+        loaded.sampling["observation_window_frames"] = 4
 
 
 @pytest.mark.parametrize(
     "key,value",
     [
         ("schema_version", True),
-        ("schema_version", 2),
+        ("schema_version", 1),
         ("model", "other"),
         ("revision", "a" * 40),
         ("prompts", {}),
         ("preprocessing", "center_crop"),
         ("aggregation", "last_image"),
         ("comparison", ">="),
+        ("sampling", {}),
         ("provenance", {}),
         ("thresholds", {}),
         ("thresholds", []),
@@ -163,6 +174,116 @@ def test_constructor_rejects_raw_thresholds_before_model_import():
         service.Encoder("unused", {"fight": 0.1})
 
 
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("policy", "legacy"),
+        ("candidate_fps", 2.5),
+        ("observation_window_frames", 4),
+        ("observation_window_frames", 2.0),
+        ("observation_frame_delta_seconds", 0.8),
+        ("observation_fps", True),
+        ("observation_fps", 0),
+        ("observation_fps", 4),
+        ("observation_fps", float("nan")),
+        ("observation_fps", "1.25"),
+        ("extra", 1),
+    ],
+)
+def test_artifact_rejects_other_or_ambiguous_sampling(tmp_path, key, value):
+    document = artifact()
+    document["sampling"][key] = value
+    with pytest.raises(ValueError):
+        contract.load_thresholds(write_artifact(tmp_path, document))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda p: p.pop("sampling"),  # Old client.
+        lambda p: p["sampling"].update(observation_window_frames=4),
+        lambda p: p["sampling"].update(observation_fps=0.5),
+        lambda p: p["sampling"].update(candidate_fps=None),  # Draft preview.
+        lambda p: p.update(images=p["images"] * 2),
+        lambda p: p.pop("frame_times"),
+        lambda p: p.update(frame_times=[0.5]),
+        lambda p: p.update(frame_times=[0.5, 0.5]),
+        lambda p: p.update(frame_times=[1, 0.5]),
+        lambda p: p.update(frame_times=[False, 0.5]),
+        lambda p: p.update(frame_times=[0, 1]),
+        lambda p: p.update(frame_times=["0.5", 1]),
+    ],
+)
+def test_configured_service_rejects_mismatched_evidence_before_work(
+    tmp_path, change
+):
+    class NoWork(FakeEncoder):
+        thresholds = contract.load_thresholds(write_artifact(tmp_path))
+
+        def prepare(self, images):
+            pytest.fail("incompatible calibration reached preprocessing")
+
+    _, payload, _ = client_and_request()
+    change(payload)
+    with TestClient(service.create_app(NoWork())) as client:
+        response = client.post("/predict", json=payload)
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("cadence", [0.5, 1.25, 3.0])
+def test_matching_calibration_roundtrip_binds_cadence(tmp_path, cadence):
+    from dataclasses import replace
+
+    document = artifact()
+    document["sampling"]["observation_fps"] = cadence
+    frozen = contract.load_thresholds(write_artifact(tmp_path, document))
+
+    class Scores(FakeEncoder):
+        thresholds = frozen
+
+        def scores(self, images, labels):
+            return [
+                {**score_row(), "sampling": dict(frozen.sampling),
+                 "thresholds_sha256": frozen.sha256}
+                for _ in labels
+            ]
+
+    inspector, payload, expected = client_and_request()
+    inspector.config = replace(inspector.config, observation_fps=cadence)
+    payload["sampling"]["observation_fps"] = cadence
+    with TestClient(service.create_app(Scores())) as client:
+        response = client.post("/predict", json=payload)
+    assert response.status_code == 200
+    assert [v.detected for v in inspector._decode(
+        response.json(), expected, ("smoking", "fall")
+    )] == [False, False]
+
+
+def test_core_thresholds_do_not_change_noncore_request_sampling(tmp_path):
+    class Litter(FakeEncoder):
+        thresholds = contract.load_thresholds(write_artifact(tmp_path))
+
+        def scores(self, images, labels):
+            assert len(images) == 1 and labels == ["ground_litter"]
+            return [[0.9, 0.1]]
+
+    inspector, payload, expected = client_and_request()
+    payload.pop("sampling")
+    payload["images"] = payload["images"][:1]
+    payload["frame_times"] = [0]
+    payload["question_template"] = [
+        {**payload["question_template"][0], "id": "scene/ground_litter"}
+    ]
+    with TestClient(service.create_app(Litter())) as client:
+        response = client.post("/predict", json=payload)
+    assert response.status_code == 200
+    verdict, = inspector._decode(
+        response.json(), [{**expected[0], "id": "scene/ground_litter"}],
+        ("ground_litter",),
+    )
+    assert verdict.detected is True
+
+
 def score_row(*, threshold=0.1, score=0.1, frame_scores=None, image_index=1):
     return {
         "score_kind": "cosine_margin",
@@ -172,6 +293,7 @@ def score_row(*, threshold=0.1, score=0.1, frame_scores=None, image_index=1):
         "image_index": image_index,
         "probabilities": [0.9, 0.1, 0.0],
         "thresholds_sha256": "a" * 64,
+        "sampling": artifact()["sampling"],
     }
 
 
@@ -258,6 +380,9 @@ def test_invalid_calibrated_evidence_fails_service_and_client(mutation):
         lambda rows: rows.reverse(),
         lambda rows: rows.pop(),
         lambda rows: rows[0].update(thresholds_sha256="b" * 64),
+        lambda rows: rows[0].pop("sampling"),  # Old calibrated service.
+        lambda rows: rows[0]["sampling"].update(observation_window_frames=4),
+        lambda rows: rows[0]["sampling"].update(observation_fps=0.5),
     ],
 )
 def test_client_rejects_incomplete_or_inconsistent_choices(mutation):

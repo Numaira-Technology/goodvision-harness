@@ -41,6 +41,39 @@ _MAX_ARTIFACT_BYTES = 64 * 1024
 class FrozenThresholds:
     values: Mapping[str, float | None]
     sha256: str
+    sampling: Mapping[str, float | int | str]
+
+
+def sampling_contract(config):
+    return {
+        "policy": "two-frame-target-spacing-v1",
+        "candidate_fps": config.candidate_fps,
+        "observation_window_frames": config.observation_window_frames,
+        "observation_frame_delta_seconds": config.observation_frame_delta_seconds,
+        "observation_fps": config.observation_fps,
+    }
+
+
+def valid_sampling(value):
+    fixed = {
+        "policy": "two-frame-target-spacing-v1",
+        "candidate_fps": 4.0,
+        "observation_window_frames": 2,
+        "observation_frame_delta_seconds": 0.5,
+    }
+    return (
+        isinstance(value, Mapping)
+        and set(value) == set(fixed) | {"observation_fps"}
+        and all(value[key] == expected for key, expected in fixed.items())
+        and type(value["observation_window_frames"]) is int
+        and all(
+            type(value[key]) in (int, float)
+            for key in ("candidate_fps", "observation_frame_delta_seconds")
+        )
+        and type(value["observation_fps"]) in (int, float)
+        and 0 < value["observation_fps"] <= 3
+        and math.isfinite(value["observation_fps"])
+    )
 
 
 def _object(pairs):
@@ -77,7 +110,7 @@ def load_thresholds(path):
         parse_constant=_reject_constant,
     )
     expected = {
-        "schema_version": 1,
+        "schema_version": 2,
         "model": MODEL,
         "revision": REVISION,
         "prompts": {key: list(value) for key, value in CALIBRATED_PROMPTS.items()},
@@ -87,11 +120,13 @@ def load_thresholds(path):
     }
     if (
         not isinstance(artifact, dict)
-        or set(artifact) != set(expected) | {"thresholds", "provenance"}
+        or set(artifact) != set(expected) | {"thresholds", "provenance", "sampling"}
         or type(artifact["schema_version"]) is not int
         or any(artifact[key] != value for key, value in expected.items())
     ):
         raise ValueError("incompatible threshold artifact contract")
+    if not valid_sampling(artifact["sampling"]):
+        raise ValueError("incompatible threshold sampling contract")
     values = artifact["thresholds"]
     if (
         not isinstance(values, dict)
@@ -119,10 +154,11 @@ def load_thresholds(path):
     return FrozenThresholds(
         MappingProxyType(values),
         hashlib.sha256(raw).hexdigest(),
+        MappingProxyType(artifact["sampling"]),
     )
 
 
-def calibrated_choice(row, label, frame_count=None):
+def calibrated_choice(row, label, frame_count=None, *, sampling=None):
     """Validate complete window evidence and return the threshold choice index."""
     if (
         label not in CORE_EVENTS
@@ -131,6 +167,11 @@ def calibrated_choice(row, label, frame_count=None):
         or not _hex(row.get("thresholds_sha256"), 64)
     ):
         raise ValueError("invalid calibrated score contract")
+    if sampling is not None and (
+        not valid_sampling(row.get("sampling"))
+        or row["sampling"] != sampling
+    ):
+        raise ValueError("incompatible calibrated sampling contract")
     score, threshold = row.get("score"), row["threshold"]
     values, winner = row.get("frame_scores"), row.get("image_index")
     if (

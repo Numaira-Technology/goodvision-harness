@@ -178,10 +178,20 @@ def client_and_request():
             provider="local", endpoint="http://localhost:8094"
         ),
         output_mode="events",
+        candidate_fps=4.0,
+        observation_window_frames=2,
+        observation_frame_delta_seconds=0.5,
     )
     inspector = _inspector(cfg)
     assert isinstance(inspector, NeuralInspector)
-    body, expected = inspector._payload(job(cfg, 1, 2))
+    inspection = job(cfg, 1, 2)
+    inspection = replace(
+        inspection,
+        frames=(replace(inspection.frames[0], timestamp_seconds=0.5),
+                inspection.frames[1]),
+        request=replace(inspection.request, start_seconds=0.5),
+    )
+    body, expected = inspector._payload(inspection)
     return inspector, json.loads(body), expected
 
 
