@@ -2855,7 +2855,10 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 if self.config.runtime.scene_independent_vlm:
                     prepared_native_vlm = (
                         model_settings.provider == "local"
-                        and model in {"ZhuYuhan/VideoJev-4B", "vllm-sr/d3-nano"}
+                        and model in {
+                            "ZhuYuhan/VideoJev-4B", "vllm-sr/d3-nano",
+                            "openai/clip-vit-large-patch14",
+                        }
                     )
                     process_config = VLMProcessConfig(
                         session.stream_session_id, self.source_id, generation, scene_labels,
