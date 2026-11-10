@@ -115,6 +115,8 @@ def enrich_attempts(attempts, key):
                 if len(raw) > 1024 * 1024:
                     raise ValueError("oversized metadata")
                 data = json.loads(raw)["data"]
+                if not isinstance(data, dict):
+                    raise ValueError("invalid generation metadata envelope")
                 if data.get("id") != generation_id:
                     raise ValueError("metadata generation id differs")
                 cache[generation_id] = response_metadata(data)

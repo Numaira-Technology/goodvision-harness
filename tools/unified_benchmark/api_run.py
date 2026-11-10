@@ -97,6 +97,8 @@ class Transport:
         if generation and (not metadata.get("actual_provider") or not metadata.get("actual_model")):
             try:
                 generation_data = self.call("https://openrouter.ai/api/v1/generation?id=" + urllib.parse.quote(generation, safe=""))["data"]
+                if not isinstance(generation_data, dict):
+                    raise ValueError("invalid generation metadata envelope")
                 if generation_data.get("id") != generation:
                     raise ValueError("generation identity mismatch")
                 for k, v in response_metadata(generation_data).items():
@@ -106,21 +108,22 @@ class Transport:
         write_receipt(self.output / "receipts" / (prefix + ".json"), {
             "response": payload, "generation_metadata": generation_data,
             "unit": unit["id"], "request_sha256": unit["request_sha256"]})
+        metadata["receipt"] = "receipts/" + prefix + ".json"
+        metadata["receipt_sha256"] = file_hash(self.output / metadata["receipt"])
         expected = self.config["provider_context"]["config"]["expected_provider_name"]
         if metadata.get("actual_provider") and metadata["actual_provider"] != expected:
-            raise RequestFailure("actual provider mismatch: " + metadata["actual_provider"], fatal=True)
+            raise RequestFailure("actual provider mismatch: " + metadata["actual_provider"], fatal=True, metadata=metadata)
         if not metadata.get("actual_provider") or not metadata.get("actual_model"):
-            raise RequestFailure("provider/model receipt identity unavailable", fatal=True)
+            raise RequestFailure("provider/model receipt identity unavailable", fatal=True, metadata=metadata)
         actual_model = metadata.get("actual_model")
         if actual_model and actual_model != self.config["model"] and not (
                 self.config["backend"] == "decision" and actual_model.startswith(self.config["model"] + "-")):
-            raise RequestFailure("actual model mismatch: " + actual_model, fatal=True)
+            raise RequestFailure("actual model mismatch: " + actual_model, fatal=True, metadata=metadata)
         try:
             answers = parse_response(self.config, unit, payload)
         except (ValueError, KeyError, TypeError, IndexError) as error:
             answers = {}
             metadata["answer_error"] = str(error)[:500]
-        metadata["receipt"] = "receipts/" + prefix + ".json"
         return answers, metadata
 
 

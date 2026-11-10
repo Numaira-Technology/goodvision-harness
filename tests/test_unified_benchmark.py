@@ -337,3 +337,43 @@ def test_nonfinite_raw_receipt_roundtrip_and_failed_write_leave_no_empty_file(tm
     with pytest.raises(ValueError):
         write_new(invalid, {"score": float("inf")})
     assert not invalid.exists()
+
+
+@pytest.mark.parametrize("backend", ["language", "decision"])
+@pytest.mark.parametrize("generation_data", [None, [], "invalid", {"id": "other"},
+    {"id": "synthetic-generation", "provider_name": "Mock", "model": "test/model"}])
+def test_api_generation_metadata_shape_preserves_inference_receipt(tmp_path, backend, generation_data):
+    import threading
+    from tools.unified_benchmark.api_run import Transport
+    from tools.unified_benchmark.contract import file_hash, read_receipt
+    (tmp_path / "f.jpg").write_bytes(b"synthetic-image")
+    config = {"model": "test/model", "backend": backend, "kind": "probability" if backend == "decision" else "choice",
+              "max_tokens": 30, "temperature": 0,
+              "provider_context": {"config": {"expected_provider_name": "Mock", "provider": {"only": ["mock"]}}}}
+    u = unit() | {"frames": [{"path": "f.jpg", "sha256": file_hash(tmp_path / "f.jpg"), "time": 0}], "question": "Fight?"}
+    u["request_sha256"] = digest(a.request_body(config, u, tmp_path)[1])
+    ledger = Ledger(tmp_path / "attempts.jsonl", {"test": True})
+    transport = Transport(tmp_path, config, "synthetic-key", tmp_path / "out", ledger, threading.Event())
+    raw = ({"answers": {"answer": {"type": "noul", "noul": .8}}}
+           if backend == "decision" else response('{"answer":true}')) | {"id": "synthetic-generation", "model": "test/model"}
+    calls = []
+    def call(url, body=None):
+        calls.append(body is not None)
+        return raw if body is not None else {"data": generation_data}
+    transport.call = call
+    try:
+        q = Queue(ledger, config["kind"], transport)
+        if isinstance(generation_data, dict) and generation_data.get("provider_name") == "Mock":
+            _, answers = q.one(u)
+            assert answers == {"fight": {"score": .8} if backend == "decision" else {"answer": "yes"}}
+        else:
+            with pytest.raises(PausedRun, match="provider/model receipt identity unavailable"):
+                q.one(u)
+            assert ledger.rows[-1]["metadata"]["metadata_lookup_error"] == "unavailable"
+        assert calls == [True, False]  # One inference POST, then one metadata GET.
+        receipt_path = tmp_path / "out" / ledger.rows[-1]["metadata"]["receipt"]
+        receipt = read_receipt(receipt_path)
+        assert receipt["response"] == raw and receipt["generation_metadata"] == generation_data
+        assert ledger.rows[-1]["metadata"]["receipt_sha256"] == file_hash(receipt_path)
+    finally:
+        ledger.close()

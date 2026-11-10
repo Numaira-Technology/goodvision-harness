@@ -260,3 +260,21 @@ def test_legacy_cannot_be_mixed_with_controlled_options(monkeypatch, option):
         "--samples", "unused.json", "--media", "unused", option, "test"])
     with pytest.raises(SystemExit) as error: runner.main()
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize("bad_data", [None, [], "invalid", {"id": "other"}])
+def test_generation_metadata_failure_keeps_answer_and_can_recover(monkeypatch, bad_data):
+    generation = "synthetic-generation"
+    replies = iter([{"data": bad_data}, {"data": {"id": generation, "provider_name": "Provider A", "model": "model-a"}}])
+    calls = []
+    def fetch(request, **kwargs):
+        calls.append(request.get_method())
+        return io.BytesIO(json.dumps(next(replies)).encode())
+    monkeypatch.setattr(evidence.urllib.request, "urlopen", fetch)
+    attempts = [{"ok": True, "score": .49996, "generation_id": generation}]
+    evidence.enrich_attempts(attempts, "synthetic-key")
+    assert attempts[0]["metadata_lookup_error"] == "unavailable"
+    assert attempts[0]["ok"] is True and attempts[0]["score"] == .49996
+    evidence.enrich_attempts(attempts, "synthetic-key")
+    assert attempts[0]["actual_provider"] == "Provider A" and attempts[0]["actual_model"] == "model-a"
+    assert attempts[0]["score"] == .49996 and calls == ["GET", "GET"]
