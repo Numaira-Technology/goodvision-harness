@@ -6,7 +6,7 @@ They cannot establish v2 accuracy or calibrate a v2 variant without fresh eviden
 
 ## Inputs and provenance
 
-Before any request, require a `human_reviewed` manifest matching the exact samples
+Before any model request, require a `human_reviewed` manifest matching the exact samples
 file and every scored media file. Pass `--manifest` explicitly. Missing media,
 ambiguous filenames, changed questions/labels and hash mismatches are blockers.
 `--checksums` is a compatibility flag: hash checking is always enforced.
@@ -17,11 +17,14 @@ and result-file hash. A count such as 50 or 100 is not a dataset identity. Recor
 question count and distinct-media count separately. Do not send labels or reference
 answers to the model. Private media, keys and raw outputs stay outside Git.
 
-Read review status from the selected manifest: the committed 50 and 120 manifests
-are reviewed; 120 contains 100 base-4 questions and 20 bag-search questions. Any
-draft status must be resolved by reviewers, not relabeled by an agent to enable a
-run. Bag questions allow unknown and require a separate versioned task/metric;
-the base runner filters them out.
+The current unified Drive set has 202 questions and 192 videos: 182 base-4
+questions and 20 bag-search questions. The original 120 questions remain reviewed;
+the 82 added views inherit source labels and await separate-view review. Download
+the entire media-only videos.json before filtering questions for a scoring task.
+The historical 120 set contains 100 base-4 questions and 20 bag questions. Read
+the selected manifest's status; do not relabel a draft to enable a run. Bag
+questions retain their separate versioned task/metric. Source groups keep both
+views and other cuts from the same recording in one split.
 
 ## Frozen v2 procedure
 
