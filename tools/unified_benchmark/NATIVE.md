@@ -179,6 +179,12 @@ An incomplete final result is still incomplete; `completed` means the bounded
 queue finished, not that every question succeeded. There is no automatic infinite
 retry loop. Inspect `status.json` and the current invocation's logs before resuming.
 
+Receipts remain strict JSON. If a decoded raw response contains nonfinite numbers
+(for example JSON `1e400` becomes infinity), its `response_json` field retains the
+decoded JSON text under `raw_json_encoding: python-json-nonfinite-v1`; `response`
+is null. `read_receipt` restores that raw payload for replay. Such scores remain
+invalid and retryable; optional invalid cost metadata remains unknown.
+
 For each phase, keep `run.json`, `attempts.jsonl`, `receipts/`, `report.json` and
 `completion.json`; a failed stage leaves a partial report in its invocation.
 CLIP/SigLIP2 also keep `thresholds.json`. Keep runtime/smoke, hardware, GPU telemetry,

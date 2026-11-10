@@ -470,7 +470,7 @@ def test_unsealed_native_input_rejected_before_backend(frozen, tmp_path, name):
 
 
 @pytest.mark.parametrize("alias", deploy.ALIASES)
-@pytest.mark.parametrize("huge", [10 ** 400, -(10 ** 400)])
+@pytest.mark.parametrize("huge", [10 ** 400, -(10 ** 400), float("inf"), float("-inf"), float("nan")])
 @pytest.mark.parametrize("recover", [False, True])
 def test_oversized_native_numbers_use_bounded_retries(frozen, tmp_path, alias, huge, recover):
     target = "test/fight/0/yes"

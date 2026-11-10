@@ -63,10 +63,40 @@ def validate_threshold_values(thresholds, kind):
 
 
 def write_new(path, value):
+    data = canonical(value) + b"\n"
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("xb") as f:
-        f.write(canonical(value) + b"\n")
+        f.write(data)
+
+
+def write_receipt(path, record):
+    """Keep decoded nonfinite raw fields losslessly inside a strict JSON record."""
+    record = dict(record)
+    for field in ("response", "generation_metadata"):
+        value = record.get(field)
+        try:
+            canonical(value)
+        except ValueError:
+            # Python decodes JSON 1e400 as inf. Store its decoded representation
+            # as text rather than losing the receipt or treating it as evidence.
+            record["raw_json_encoding"] = "python-json-nonfinite-v1"
+            record[field + "_json"] = json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=True)
+            record[field] = None
+    write_new(path, record)
+
+
+def read_receipt(path):
+    record = json.loads(Path(path).read_text())
+    if "raw_json_encoding" in record:
+        if record["raw_json_encoding"] != "python-json-nonfinite-v1":
+            raise ValueError("unsupported raw receipt encoding")
+        for field in ("response", "generation_metadata"):
+            if field + "_json" in record:
+                if record.get(field) is not None or not isinstance(record[field + "_json"], str):
+                    raise ValueError("invalid raw receipt encoding")
+                record[field] = json.loads(record[field + "_json"])
+    return record
 
 
 def sample_times(duration):

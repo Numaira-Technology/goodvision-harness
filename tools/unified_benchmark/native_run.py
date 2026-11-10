@@ -24,7 +24,7 @@ import urllib.request
 import uuid
 
 from .adapters import frame_bytes, parse_response, request_body
-from .contract import EVENTS, RULES, canonical, digest, file_hash, select_thresholds, write_new
+from .contract import EVENTS, RULES, canonical, digest, file_hash, read_receipt, select_thresholds, write_new, write_receipt
 from .native_deploy import ALIASES, environment_for, profile, verify_deployment
 from .retry import Ledger, Queue, RequestFailure
 from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
@@ -296,7 +296,7 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output):
                 raise ValueError("saved receipt missing or differs")
         elif not path.exists():
             continue  # interrupted send still consumes one attempt
-        receipt = json.loads(path.read_text())
+        receipt = read_receipt(path)
         expected = {"unit": unit["id"], "attempt": row["attempt"], "request_sha256": unit["request_sha256"],
                     "config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]]}
         if any(receipt.get(k) != v for k, v in expected.items()):
@@ -404,7 +404,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     fatal = "identity differs" in error
                 except Exception as e:
                     error, fatal = type(e).__name__ + ": " + str(e), True
-                write_new(path, {"unit": unit["id"], "attempt": attempt, "request_sha256": unit["request_sha256"],
+                write_receipt(path, {"unit": unit["id"], "attempt": attempt, "request_sha256": unit["request_sha256"],
                     "config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]],
                     "at": stamp(), "http_status": code, "response": raw, "parsed": parsed, "error": error,
                     "fatal": fatal, "retry_after": 0, "completed_at_unix": time.time(),

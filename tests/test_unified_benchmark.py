@@ -274,7 +274,8 @@ def test_oversized_ledger_score_is_invalid_evidence(kind):
 
 @pytest.mark.parametrize("backend", ["decision", "language"])
 @pytest.mark.parametrize("field", ["score", "metadata"])
-def test_api_oversized_score_retries_but_optional_metadata_does_not(tmp_path, backend, field):
+@pytest.mark.parametrize("huge", [10 ** 400, float("inf"), float("nan")])
+def test_api_oversized_score_retries_but_optional_metadata_does_not(tmp_path, backend, field, huge):
     import threading
     from tools.unified_benchmark.api_run import Transport, accounting
     from tools.unified_benchmark.contract import file_hash
@@ -294,12 +295,12 @@ def test_api_oversized_score_retries_but_optional_metadata_does_not(tmp_path, ba
         payload.update(provider="Mock", model="test/model")
         if field == "score" and len(calls) == 1:
             if backend == "decision":
-                payload["answers"]["answer"]["noul"] = 10 ** 400
+                payload["answers"]["answer"]["noul"] = huge
             else:
-                payload = response(json.dumps({"answer": 10 ** 400})) | {"provider": "Mock", "model": "test/model"}
+                payload = response(json.dumps({"answer": huge})) | {"provider": "Mock", "model": "test/model"}
         elif field == "metadata":
-            payload.update(usage={"cost": 10 ** 400, "prompt_tokens": 10 ** 400, "completion_tokens": 5},
-                           total_cost=10 ** 400, native_tokens_prompt=10 ** 400)
+            payload.update(usage={"cost": huge, "prompt_tokens": huge, "completion_tokens": 5},
+                           total_cost=huge, native_tokens_prompt=huge)
         return payload
     transport.call = call
     tick = [0.0]
@@ -312,8 +313,27 @@ def test_api_oversized_score_retries_but_optional_metadata_does_not(tmp_path, ba
             row = ledger.rows[-1]
             assert row["metadata"]["usage"] == {"completion_tokens": 5}
             assert "total_cost" not in row["metadata"] and "native_tokens_prompt" not in row["metadata"]
-            receipt = json.loads((tmp_path / "out" / row["metadata"]["receipt"]).read_text())
-            assert receipt["response"]["usage"]["cost"] == 10 ** 400
+            from tools.unified_benchmark.contract import read_receipt
+            receipt_path = tmp_path / "out" / row["metadata"]["receipt"]
+            receipt = read_receipt(receipt_path)
+            assert str(receipt["response"]["usage"]["cost"]) == str(huge)
+            # The enclosing receipt is strict JSON even for Infinity/NaN raw fields.
+            json.loads(receipt_path.read_text(), parse_constant=lambda x: pytest.fail(x))
             assert accounting(ledger)["attempts_without_cost_evidence"] == 1
     finally:
         ledger.close()
+
+
+def test_nonfinite_raw_receipt_roundtrip_and_failed_write_leave_no_empty_file(tmp_path):
+    from tools.unified_benchmark.contract import read_receipt, write_new, write_receipt
+    path = tmp_path / "receipt.json"
+    raw = json.loads('{"score":1e400}')
+    write_receipt(path, {"response": raw, "generation_metadata": {"total_cost": float("nan")}})
+    decoded = read_receipt(path)
+    assert decoded["response"]["score"] == float("inf")
+    assert str(decoded["generation_metadata"]["total_cost"]) == "nan"
+    json.loads(path.read_text(), parse_constant=lambda x: pytest.fail(x))
+    invalid = tmp_path / "invalid.json"
+    with pytest.raises(ValueError):
+        write_new(invalid, {"score": float("inf")})
+    assert not invalid.exists()

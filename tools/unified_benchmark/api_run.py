@@ -16,7 +16,7 @@ import urllib.request
 import certifi
 from tools.event_benchmark.evidence import response_metadata
 from .adapters import parse_response, request_body
-from .contract import EVENTS, RULES, canonical, digest, file_hash, score, select_thresholds, write_new
+from .contract import EVENTS, RULES, canonical, digest, file_hash, score, select_thresholds, write_new, write_receipt
 from .retry import Ledger, PausedRun, Queue, RequestFailure
 from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
 
@@ -78,7 +78,7 @@ class Transport:
             payload = self.call(uri, body)
         except urllib.error.HTTPError as error:
             raw = error.read(2 * 1024 * 1024).decode(errors="replace").replace(self.key, "[REDACTED]")
-            write_new(self.output / "receipts" / (prefix + ".json"), {
+            write_receipt(self.output / "receipts" / (prefix + ".json"), {
                 "http_status": error.code, "body": raw, "retry_after": error.headers.get("Retry-After"),
                 "unit": unit["id"], "request_sha256": unit["request_sha256"]})
             if error.code == 402:
@@ -86,7 +86,7 @@ class Transport:
             raise RequestFailure("HTTP " + str(error.code), status=error.code,
                 retry_after=retry_after(error.headers.get("Retry-After")), fatal=error.code in (400, 401, 402, 403, 404)) from error
         except (OSError, TimeoutError, ValueError) as error:
-            write_new(self.output / "receipts" / (prefix + ".json"), {
+            write_receipt(self.output / "receipts" / (prefix + ".json"), {
                 "transport_error": type(error).__name__, "detail": str(error).replace(self.key, "[REDACTED]"),
                 "unit": unit["id"], "request_sha256": unit["request_sha256"]})
             raise RequestFailure(type(error).__name__) from error
@@ -103,7 +103,7 @@ class Transport:
                     metadata.setdefault(k, v)
             except (OSError, ValueError, KeyError, TypeError):
                 metadata["metadata_lookup_error"] = "unavailable"
-        write_new(self.output / "receipts" / (prefix + ".json"), {
+        write_receipt(self.output / "receipts" / (prefix + ".json"), {
             "response": payload, "generation_metadata": generation_data,
             "unit": unit["id"], "request_sha256": unit["request_sha256"]})
         expected = self.config["provider_context"]["config"]["expected_provider_name"]
