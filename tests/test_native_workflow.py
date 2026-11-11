@@ -68,7 +68,11 @@ def frozen(tmp_path):
     write_new(deployment / "deployment.json", {"complete": True, "models": list(deploy.ALIASES), "files": files})
     write_new(bundle / "rules.json", RULES)
     sources = preflight.freeze_sources(bundle)
-    write_new(bundle / "preflight.json", {"offline_passed": True, "sources_sha256": digest(sources)})
+    write_new(bundle / "preflight.json", {
+        "offline_passed": True, "sources_sha256": digest(sources),
+        "models": {alias: {split: {"plan_sha256": digest(json.loads(
+            (bundle / f"plans/{alias}-{split}.json").read_text()))}
+            for split in ("validation", "test")} for alias in deploy.ALIASES}})
     seal(bundle)
     return bundle, deployment, file_hash(deployment / "deployment.json")
 

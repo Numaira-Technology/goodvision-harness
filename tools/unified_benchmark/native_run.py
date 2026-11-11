@@ -5,14 +5,10 @@ new prompt policy, single-frame conversion, or changed model precision.
 """
 import argparse
 import base64
-from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 import fcntl
 import io
 import json
 import os
-from pathlib import Path
 import signal
 import socket
 import subprocess
@@ -22,13 +18,33 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from pathlib import Path
 
 from .adapters import frame_bytes, parse_response, request_body
-from .contract import EVENTS, RULES, canonical, digest, file_hash, select_thresholds, write_new
+from .contract import (
+    EVENTS,
+    RULES,
+    canonical,
+    digest,
+    file_hash,
+    finite_number,
+    select_thresholds,
+    valid_value,
+    write_new,
+)
 from .native_deploy import ALIASES, environment_for, profile, verify_deployment
-from .receipts import raw_fields, read_raw_field
-from .retry import Ledger, Queue, RequestFailure
-from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
+from .receipts import raw_fields, read_receipt
+from .retry import Ledger, PausedRun, Queue, RequestFailure
+from .workflow import (
+    collect,
+    context_for,
+    load_threshold_artifact,
+    report,
+    verify_bundle,
+)
 
 
 def stamp():
@@ -163,6 +179,7 @@ class NativeBackend:
             if Path(sys.prefix).resolve() != env_dir.resolve():
                 raise ValueError("run contrastive evaluation using the prepared clip/env/bin/python")
             import torch
+
             from tools.clip_benchmark.runtime import ClipEncoder
             props = torch.cuda.get_device_properties(0)
             if not 23 * 1024**3 <= props.total_memory <= 25 * 1024**3:
@@ -307,35 +324,86 @@ def _verify_sealed_receipts(output):
     return receipts
 
 
+def _recovery_outcome(receipt, path, *, complete, require_metadata=True):
+    """Use authoritative outcome facts; never invent legacy completion times."""
+    status, error = receipt.get("http_status"), receipt.get("error")
+    if status is not None and (type(status) is not int or not 100 <= status <= 599):
+        raise ValueError(f"invalid receipt http_status: {path}")
+    if error is not None and not isinstance(error, str):
+        raise ValueError(f"invalid receipt error: {path}")
+    if (
+        not finite_number(receipt.get("transport_seconds"))
+        or receipt["transport_seconds"] < 0
+    ):
+        raise ValueError(f"invalid receipt transport_seconds: {path}")
+    required = ("fatal", "retry_after", "completed_at_unix")
+    if not complete and require_metadata:
+        missing = [key for key in required if key not in receipt]
+        if missing:
+            raise ValueError(
+                f"cannot recover incomplete receipt {path}: missing authoritative "
+                + ", ".join(missing)
+            )
+    fatal = receipt.get("fatal", False)
+    if type(fatal) is not bool:
+        raise ValueError(f"invalid receipt fatal: {path}")
+    if fatal and complete:
+        raise ValueError(f"fatal receipt cannot contain a complete answer: {path}")
+    for field in ("retry_after", "completed_at_unix"):
+        if field in receipt and (
+            not finite_number(receipt[field]) or receipt[field] < 0
+        ):
+            raise ValueError(f"invalid receipt {field}: {path}")
+    if status in (401, 403) and not fatal:
+        raise ValueError(f"authentication failure receipt is not marked fatal: {path}")
+    return {
+        "http_status": status,
+        "fatal": fatal,
+        "retry_after": receipt.get("retry_after", 0),
+    }
+
+
 def reconcile_receipts(phase_dir, ledger, plan, cfg, output, sealed_receipts=None):
-    """A crash after saving a receipt must not discard its first valid answer."""
+    """Verify old answers and recover orphans; newly observed fatal pauses first.
+
+    A fatal already recorded before an explicit resume is acknowledged by that
+    invocation. A newly recovered fatal is appended, then surfaced to the caller
+    before any backend startup. A subsequent explicit resume may acknowledge it.
+    """
     units = {u["id"]: u for u in plan["units"]}
-    collect(
-        plan, cfg, ledger
-    )  # validates the cumulative budget/context before any startup
+    collect(plan, cfg, ledger)
     results = {
         (r["unit"], r["attempt"]): r for r in ledger.rows if r["type"] == "result"
     }
+    recovered_fatal = []
     for row in list(ledger.rows):
         if row["type"] != "intent":
             continue
         unit = units[row["unit"]]
         path = phase_dir / "receipts" / f"{digest(unit['id'])}-{row['attempt']}.json"
         result = results.get((row["unit"], row["attempt"]))
+        name = str(path.relative_to(output))
         if result:
             metadata = result.get("metadata", {})
-            name = str(path.relative_to(output))
-            if metadata.get("receipt") not in (None, name):
+            if not isinstance(metadata, dict) or metadata.get("receipt") not in (
+                None,
+                name,
+            ):
                 raise ValueError("saved receipt path differs from its attempt")
             expected_hash = metadata.get("receipt_sha256") or (
                 sealed_receipts or {}
             ).get(name)
-            if not expected_hash or file_hash(path) != expected_hash:
+            if (
+                not expected_hash
+                or not path.is_file()
+                or file_hash(path) != expected_hash
+            ):
                 raise ValueError("saved receipt differs or lacks an integrity anchor")
-            continue
-        if not path.exists():
+        elif not path.exists():
             continue  # interrupted send still consumes one attempt
-        receipt = json.loads(path.read_text())
+        if path.is_symlink() or not path.resolve().is_relative_to(output.resolve()):
+            raise ValueError("invalid saved receipt path")
+        receipt = read_receipt(path)
         expected = {
             "unit": unit["id"],
             "attempt": row["attempt"],
@@ -343,34 +411,107 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, sealed_receipts=Non
             "config_sha256": digest(cfg),
             "frame_sha256": [f["sha256"] for f in unit["frames"]],
         }
-        if any(receipt.get(k) != v for k, v in expected.items()):
-            raise ValueError("orphan receipt identity differs")
+        if type(receipt.get("attempt")) is not int or any(
+            receipt.get(k) != v for k, v in expected.items()
+        ):
+            raise ValueError("saved receipt identity differs")
         parsed = (
-            parse_response(cfg, unit, read_raw_field(receipt, "response"))
+            parse_response(cfg, unit, receipt["response"])
             if receipt["http_status"] == 200 and not receipt["error"]
             else {}
         )
         if parsed != receipt["parsed"]:
-            raise ValueError("orphan receipt parsing differs")
-        previous = ledger.state(unit, cfg["kind"])[1]
-        ledger.append(
-            {
-                "type": "result",
-                "unit": unit["id"],
-                "attempt": row["attempt"],
-                "request_sha256": unit["request_sha256"],
-                "answers": parsed,
-                "complete": set(previous | parsed) == set(unit["targets"]),
-                "error": receipt["error"],
-                "elapsed_seconds": receipt["transport_seconds"],
-                "metadata": {
-                    "actual_provider": "self-hosted",
-                    "receipt": str(path.relative_to(output)),
-                    "receipt_sha256": file_hash(path),
-                    "recovered_receipt": True,
+            raise ValueError("saved receipt parsing differs")
+        if result:
+            if result.get("answers") != parsed:
+                raise ValueError("saved receipt and ledger answers differ")
+            # Legacy recorded failures may carry authoritative outcome facts in
+            # their anchored ledger row rather than the older receipt schema.
+            # Validate supplied fields without inventing missing completion time
+            # or replacing its already-recorded cooldown.
+            _recovery_outcome(
+                {
+                    **{
+                        k: result[k]
+                        for k in ("fatal", "retry_after", "http_status")
+                        if k in result
+                    },
+                    **receipt,
                 },
-            }
+                path,
+                complete=result.get("complete", False),
+                require_metadata=False,
+            )
+            for key in ("fatal", "http_status", "retry_after"):
+                if key in receipt and key in result and receipt[key] != result[key]:
+                    raise ValueError("saved receipt and ledger outcome differ: " + key)
+            continue
+        # Later recorded answers must not make an earlier incomplete receipt
+        # appear complete or erase its missing recovery metadata/cooldown.
+        previous = {}
+        for earlier in sorted(ledger.rows, key=lambda r: r["attempt"]):
+            if (
+                earlier["type"] == "result"
+                and earlier["unit"] == unit["id"]
+                and earlier["attempt"] < row["attempt"]
+            ):
+                for event, value in earlier["answers"].items():
+                    if event in unit["targets"] and valid_value(value, cfg["kind"]):
+                        previous.setdefault(event, value)
+        complete = set(previous | parsed) == set(unit["targets"])
+        outcome = _recovery_outcome(receipt, path, complete=complete)
+        recovered = {
+            "type": "result",
+            "unit": unit["id"],
+            "attempt": row["attempt"],
+            "request_sha256": unit["request_sha256"],
+            "answers": parsed,
+            "complete": complete,
+            "error": receipt["error"],
+            "elapsed_seconds": receipt["transport_seconds"],
+            **outcome,
+            "metadata": {
+                "actual_provider": "self-hosted",
+                "receipt": name,
+                "receipt_sha256": file_hash(path),
+                "recovered_receipt": True,
+            },
+        }
+        if (
+            not complete
+            and not outcome["fatal"]
+            and (row["attempt"] < 3 or outcome["http_status"] == 429)
+        ):
+            recovered["cooldown_until"] = receipt["completed_at_unix"] + max(
+                outcome["retry_after"], 30 if row["attempt"] == 1 else 60
+            )
+            if not finite_number(recovered["cooldown_until"]):
+                raise ValueError(f"invalid receipt cooldown sum: {path}")
+        ledger.append(recovered)
+        if outcome["fatal"]:
+            recovered_fatal.append(name)
+    if recovered_fatal:
+        raise PausedRun(
+            "newly recovered fatal receipt; inspect before explicit resume: "
+            + ", ".join(recovered_fatal)
         )
+
+
+def _reconcile_existing_phases(bundle, output, splits, cfg, bundle_digest, sealed):
+    """Validate/recover every requested existing phase before starting a backend."""
+    for split in splits:
+        phase_dir = output / split
+        ledger_path = phase_dir / "attempts.jsonl"
+        if not ledger_path.exists():
+            continue
+        plan = json.loads(
+            (bundle / "plans" / f"{cfg['alias']}-{split}.json").read_text()
+        )
+        ledger = Ledger(ledger_path, context_for(plan, cfg, bundle_digest))
+        try:
+            reconcile_receipts(phase_dir, ledger, plan, cfg, output, sealed)
+        finally:
+            ledger.close()
 
 
 def execute(alias, bundle, deployment, output, deployment_hash, *, phase, threshold_path=None,
@@ -390,6 +531,11 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
         write_new(output / "run.json", {**identity, "started_at": stamp(), "authorization": authorization, "slots": 12,
             "scheduler": "12 video workers; one in-flight unit per source; ordered windows; backpressure, no planned drops",
             "ground_truth_in_model_requests": False, "not_12_camera_throughput": True})
+    splits = ("validation", "test") if phase == "both" else (phase,)
+    if resume:
+        _reconcile_existing_phases(
+            bundle, output, splits, cfg, bundle_digest, sealed_receipts
+        )
     invocation = output / "invocations" / uuid.uuid4().hex
     invocation.mkdir(parents=True)
     write_new(invocation / "run.json", {"started_at": stamp(), "resume": resume, "authorization": authorization})
@@ -411,7 +557,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
     completed = []
     try:
         save_status(output / "status.json", {"state": "starting", "pid": os.getpid(), "at": stamp(), "invocation": str(invocation)})
-        for split in (("validation", "test") if phase == "both" else (phase,)):
+        for split in splits:
             plan = json.loads((bundle / "plans" / f"{alias}-{split}.json").read_text())
             phase_dir = output / split
             phase_dir.mkdir(exist_ok=True)
@@ -458,6 +604,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     "config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]],
                     "at": stamp(), "http_status": code,
                     "parsed": parsed, "error": error,
+                    "fatal": fatal, "retry_after": 0, "completed_at_unix": time.time(),
                     "transport_seconds": time.monotonic() - started,
                     **raw_fields(response=raw, timings=timing)})
                 metadata = {

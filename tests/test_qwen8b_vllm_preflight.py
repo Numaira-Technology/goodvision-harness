@@ -92,7 +92,10 @@ def frozen(tmp_path):
     (bundle / "rules.json").write_text(json.dumps(RULES))
     sources = freeze_sources(bundle)
     (bundle / "preflight.json").write_text(
-        json.dumps({"offline_passed": True, "sources_sha256": digest(sources)})
+        json.dumps({"offline_passed": True, "sources_sha256": digest(sources),
+        "models": {alias: {split: {"plan_sha256": digest(json.loads(
+            (bundle / f"plans/{alias}-{split}.json").read_text()))}
+            for split in ("validation", "test")} for alias in ('qwen8b_r2_vllm',)}})
     )
     seal(bundle)
     return bundle
@@ -129,6 +132,17 @@ def test_even_resealed_stale_or_changed_profiles_fail(frozen, change):
         }[change]
         cfg[field] = value
     path.write_text(json.dumps(cfg))
+    # Rebind the synthetic preflight to isolate the independent active-profile
+    # gate. Otherwise the new plan/config binding rejects this earlier.
+    report_path = frozen / "preflight.json"
+    report = json.loads(report_path.read_text())
+    for split in ("validation", "test"):
+        plan_path = frozen / f"plans/qwen8b_r2_vllm-{split}.json"
+        plan = json.loads(plan_path.read_text())
+        plan["config_sha256"] = digest(cfg)
+        plan_path.write_text(json.dumps(plan))
+        report["models"]["qwen8b_r2_vllm"][split]["plan_sha256"] = digest(plan)
+    report_path.write_text(json.dumps(report))
     seal(frozen)
     before = {
         str(p.relative_to(frozen)): file_hash(p)
@@ -174,10 +188,12 @@ def test_changed_request_plan_fails_before_sending(frozen, change):
         launcher._verify_eval_bundle(frozen, "both", registry.env_of("qwen8b-vllm"))
 
 
-def test_test_phase_does_not_require_validation_for_smoke(frozen):
+def test_test_phase_needs_no_calibration_but_preserves_preflight_inventory(frozen):
+    launcher._verify_eval_bundle(frozen, "test", registry.env_of("qwen8b-vllm"))
     (frozen / "plans/qwen8b_r2_vllm-validation.json").unlink()
     seal(frozen)
-    launcher._verify_eval_bundle(frozen, "test", registry.env_of("qwen8b-vllm"))
+    with pytest.raises(ValueError, match="unsealed bundle plan"):
+        launcher._verify_eval_bundle(frozen, "test", registry.env_of("qwen8b-vllm"))
 
 
 def test_invalid_bundle_stops_main_before_credentials_or_rental(

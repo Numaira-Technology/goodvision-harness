@@ -6,7 +6,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from .contract import canonical, valid_value
+
+from .contract import canonical, finite_number, valid_value
 
 
 class PausedRun(RuntimeError):
@@ -22,6 +23,53 @@ class RequestFailure(Exception):
         self.metadata = metadata
 
 
+def validate_rows(rows):
+    """Require one prior durable intent for every unique result identity."""
+    intents, results, requests = {}, set(), {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("ledger row must be an object")
+        unit, request = row.get("unit"), row.get("request_sha256")
+        attempt, kind = row.get("attempt"), row.get("type")
+        if (
+            not isinstance(unit, str)
+            or not unit
+            or not isinstance(request, str)
+            or not request
+            or type(attempt) is not int
+            or not 1 <= attempt <= 3
+            or kind not in ("intent", "result")
+        ):
+            raise ValueError("invalid ledger row identity/type/attempt")
+        if unit in requests and requests[unit] != request:
+            raise ValueError("cannot resume a changed request")
+        requests[unit] = request
+        used = intents.setdefault(unit, [])
+        if kind == "intent":
+            if attempt != len(used) + 1:
+                raise ValueError("invalid cumulative attempt sequence")
+            used.append(attempt)
+        else:
+            key = unit, attempt
+            if attempt not in used or key in results:
+                raise ValueError("result requires one prior matching intent")
+            if not isinstance(row.get("answers"), dict):
+                raise ValueError("ledger result answers must be an object")
+            for field in ("cooldown_until", "retry_after"):
+                if field in row and (not finite_number(row[field]) or row[field] < 0):
+                    raise ValueError("invalid ledger " + field)
+            if "fatal" in row and type(row["fatal"]) is not bool:
+                raise ValueError("invalid ledger fatal outcome")
+            if "complete" in row and type(row["complete"]) is not bool:
+                raise ValueError("invalid ledger complete outcome")
+            status = row.get("http_status")
+            if status is not None and (
+                type(status) is not int or not 100 <= status <= 599
+            ):
+                raise ValueError("invalid ledger http_status")
+            results.add(key)
+
+
 class Ledger:
     """Exclusive process lock + fsynced intent before send. Crash intents consume budget."""
     def __init__(self, path, context):
@@ -32,6 +80,7 @@ class Ledger:
             fcntl.flock(self.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.file.seek(0)
             self.rows = [json.loads(line) for line in self.file if line.strip()]
+            validate_rows(self.rows)
             if any(row.get("context") != context for row in self.rows):
                 raise ValueError("resume context differs")
         except BaseException:
@@ -45,6 +94,7 @@ class Ledger:
     def append(self, row):
         with self.lock:
             row = {**row, "context": self.context, "at_unix": time.time()}
+            validate_rows([r for r in self.rows if r["unit"] == row["unit"]] + [row])
             self.file.seek(0, 2)
             self.file.write(canonical(row).decode() + "\n")
             self.file.flush()
@@ -54,15 +104,17 @@ class Ledger:
     def state(self, unit, kind):
         with self.lock:
             records = [r for r in self.rows if r["unit"] == unit["id"]]
+            validate_rows(records)
             if any(r["request_sha256"] != unit["request_sha256"] for r in records):
                 raise ValueError("cannot resume a changed request")
             intents = [r for r in records if r["type"] == "intent"]
             if [r["attempt"] for r in intents] != list(range(1, len(intents) + 1)) or len(intents) > 3:
                 raise ValueError("invalid cumulative attempt sequence")
             answers = {}
-            for row in records:
-                if row["type"] != "result":
-                    continue
+            # Recovery may append an older orphan after later recorded results.
+            # First-valid is request chronology, not recovery append order.
+            for row in sorted((r for r in records if r["type"] == "result"),
+                              key=lambda r: r["attempt"]):
                 for event, value in row.get("answers", {}).items():
                     if event in unit["targets"] and valid_value(value, kind):
                         answers.setdefault(event, value)

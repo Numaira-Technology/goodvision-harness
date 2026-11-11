@@ -72,7 +72,25 @@ def host_bundle(tmp_path):
     (root / "rules.json").write_text(json.dumps(RULES))
     sources = freeze_sources(root)
     (root / "preflight.json").write_text(
-        json.dumps({"offline_passed": True, "sources_sha256": digest(sources)})
+        json.dumps(
+            {
+                "offline_passed": True,
+                "sources_sha256": digest(sources),
+                "models": {
+                    alias: {
+                        split: {
+                            "plan_sha256": digest(
+                                json.loads(
+                                    (root / f"plans/{alias}-{split}.json").read_text()
+                                )
+                            )
+                        }
+                        for split in ("validation", "test")
+                    }
+                    for alias in ("qwen8b_r2_host",)
+                },
+            }
+        )
     )
     seal(root)
     return root
@@ -187,3 +205,38 @@ def test_copy_race_cannot_bless_changed_bytes(host_bundle, tmp_path, monkeypatch
         converter.prepare(host_bundle, tmp_path / "rejected")
     assert not (tmp_path / "rejected").exists()
     assert snapshot(host_bundle) == before
+
+
+@pytest.mark.parametrize(
+    "fault", ["derived_plan", "source_inventory", "profile_lineage"]
+)
+def test_derived_preflight_requires_exact_lineage_bindings(
+    host_bundle, tmp_path, fault
+):
+    from tools.unified_benchmark.workflow import verify_bundle
+
+    dest = tmp_path / "derived"
+    converter.prepare(host_bundle, dest)
+    original_preflight = (dest / "preflight.json").read_bytes()
+    if fault == "derived_plan":
+        path = dest / f"plans/{converter.VLLM}-test.json"
+        data = json.loads(path.read_text())
+        data["questions"][0]["reference"] = "yes"
+    elif fault == "source_inventory":
+        path = dest / converter.SOURCE_SEAL
+        data = json.loads(path.read_text())
+        del data[f"plans/{converter.HOST}-test.json"]
+    else:
+        path = dest / converter.LINEAGE
+        data = json.loads(path.read_text())
+        data["derived_profile_sha256"] = "0" * 64
+    path.write_text(json.dumps(data))
+    if fault == "source_inventory":
+        path = dest / converter.LINEAGE
+        data = json.loads(path.read_text())
+        data["source_bundle_sha256"] = file_hash(dest / converter.SOURCE_SEAL)
+        path.write_text(json.dumps(data))
+    seal(dest)
+    with pytest.raises(ValueError):
+        verify_bundle(dest)
+    assert (dest / "preflight.json").read_bytes() == original_preflight

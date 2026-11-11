@@ -3,10 +3,11 @@ import base64
 import importlib.util
 import json
 import math
-from pathlib import Path
 import re
+from pathlib import Path
 
 from tools.event_benchmark import run_eval as original
+
 from .contract import EVENTS, canonical, file_hash, valid_value
 
 CURRENT_IMAGE_PROMPTS = {'fight': 'Is any fighting visible in the current image? Judge only the current image. Do not '
@@ -83,10 +84,19 @@ def parse_response(config, unit, response):
     if backend in ("language", "decision"):
         event = unit["targets"][0]
         if backend == "language":
-            choice = response["choices"][0]
-            if choice.get("finish_reason") != "stop" or choice.get("error") is not None or choice.get("message", {}).get("refusal"):
+            choices = response.get("choices")
+            if (not isinstance(choices, list) or not choices
+                    or not isinstance(choices[0], dict)):
+                raise ValueError("invalid language choice envelope")
+            choice = choices[0]
+            message = choice.get("message")
+            if (not isinstance(message, dict)
+                    or not isinstance(message.get("content"), str)):
+                raise ValueError("invalid language message")
+            if (choice.get("finish_reason") != "stop"
+                    or choice.get("error") is not None or message.get("refusal")):
                 raise ValueError("incomplete or refused language answer")
-            match = re.search(r"\{.*\}", choice["message"]["content"], re.DOTALL)
+            match = re.search(r"\{.*\}", message["content"], re.DOTALL)
             answer = json.loads(match[0], object_pairs_hook=original._unique) if match else None
             if not isinstance(answer, dict) or set(answer) != {"answer"}:
                 raise ValueError("invalid bag answer")
