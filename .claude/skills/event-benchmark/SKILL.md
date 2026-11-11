@@ -87,6 +87,8 @@ OpenRouter `qwen8b` Parasail cell for that comparison.
 An independently authorized serving engine is profile `qwen8b_r2_vllm` via
 `tools.start_qwen8b_vllm` (vLLM OpenAI server, same R2 weights revision, bf16).
 The source branch declares `envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz`.
+#98 records that object as missing `typing_extensions` in the prefix. The ada2
+pack and its exam do not validate this pin.
 This published identity is frozen; rebuilds require a new reviewed key and actual
 artifact/runtime evidence. The launcher checks the active source profile and
 sealed request bundle before rental and again before inference. A separate

@@ -259,7 +259,10 @@ PYTHONPATH=. python -m tools.start_qwen8b_vllm \
 change JPEG size, prompts, max_tokens, or client concurrency to fit VRAM.
 The source profile retains the published
 `envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz` identity. That key and the HF
-pack are frozen. Rebuilds require a reviewed successor entry, fresh prefix and
+pack are frozen. #98 records this active cu128 object as missing
+`typing_extensions` in the prefix. That gap belongs to this profile. The
+separate ada2 pack and its exam do not validate this pin. This note is not
+producer provenance, a full-archive readback, or a restore/import log. Rebuilds require a reviewed successor entry, fresh prefix and
 new immutable identity; follow the [local build and provenance procedure](../qwen8b_vllm/BUILD.md).
 CPU import evidence is not GPU acceptance. The launcher checks sealed profile
 and request identities before rental and again before inference, and retains a

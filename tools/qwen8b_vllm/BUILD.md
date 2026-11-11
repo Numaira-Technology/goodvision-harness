@@ -58,6 +58,10 @@ Retained historical cu128 declaration (not a build/upload destination):
 - `envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz`
 - `envs/qwen8b-vllm/cu128-py312-vllm0310-ada.json`
 
+#98 records this object as missing `typing_extensions` in the prefix. Keep the
+pin frozen. Do not treat the ada2 exam as acceptance of this object, and do not
+overwrite it. This statement is not a producer record or a restore log.
+
 Unpack prefix: `/opt/env/qwen8b-vllm` (not `/opt/env/qwen8b`).
 
 The serving launcher validates local declarations and sealed requests before

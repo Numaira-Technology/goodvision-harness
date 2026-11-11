@@ -131,6 +131,11 @@ models:
     weights:
       r2_prefix: models/Qwen/Qwen3-VL-8B-Instruct/0c351dd01ed87e9c1b53cbc748cba10e6187ff3b/
     env:
+      # Recorded gap for this active pin, not a new artifact: #98 records this
+      # cu128 object as missing typing_extensions in the prefix. The ada2 pack
+      # and its exam do not validate this identity. Producer provenance,
+      # full-archive readback and isolated restore/import evidence are still
+      # outstanding. Do not overwrite the object.
       r2_key: envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz
       manifest_key: envs/qwen8b-vllm/cu128-py312-vllm0310-ada.json
       sha256: 2a3dcb1fc6a8d84439263512c65dae0bb576c50d4f559ae9f069407eb2e86db6
