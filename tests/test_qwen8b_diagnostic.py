@@ -1,7 +1,10 @@
 """Diagnostic acceptance and cleanup tests with no cloud or GPU operations."""
 
 import copy
+import json
+import socket
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -137,3 +140,184 @@ def test_main_success_requires_all_probes_and_confirmed_release(
         assert report["released"] is True
     if fault == "unrelated":
         assert report["live_after"] == [{"id": 987, "label": "unrelated"}]
+
+
+@pytest.fixture
+def reporting_runtime(tmp_path, monkeypatch):
+    """Real shared creation and report writer; all external work is synthetic."""
+    snapshots, writes, attempted, shared_calls = [], [], [], []
+
+    class ReportVast(FakeVast):
+        def __init__(self):
+            super().__init__(None)
+            self.label = None
+            self.script = ["success"]
+
+        def search_offers(self, **kwargs):
+            first = super().search_offers(**kwargs)[0] | {"machine_id": 101}
+            return [first, first | {"id": 2, "machine_id": 102, "dph_total": 1.4}]
+
+        def create_instance(self, **kwargs):
+            attempted.append(kwargs["id"])
+            self.label = kwargs["label"]
+            snapshots.append(json.loads(report_path.read_text()))
+            outcome = self.script.pop(0)
+            if outcome == "unavailable":
+                return {"success": False, "error": "offer_unavailable"}
+            self.alive = True
+            if outcome == "lost":
+                raise TimeoutError("synthetic lost response")
+            return {"success": True, "new_contract": 123}
+
+        def show_instances(self):
+            return [{"id": 123, "label": self.label}] if self.alive else []
+
+    vast = ReportVast()
+    key = tmp_path / "synthetic-key"
+    key.write_text("not a real key")
+    report_path = tmp_path / "report.json"
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    monkeypatch.setattr(diag, "OUT_DEFAULT", report_path)
+    # Exercise the existing mirror too, without touching /opt/cursor/artifacts.
+    monkeypatch.setattr(
+        diag,
+        "Path",
+        lambda value: artifacts if value == "/opt/cursor/artifacts" else Path(value),
+    )
+    monkeypatch.setitem(
+        sys.modules, "dotenv", SimpleNamespace(load_dotenv=lambda *a, **k: None)
+    )
+    monkeypatch.setitem(sys.modules, "vastai", SimpleNamespace(VastAI=lambda **k: vast))
+    monkeypatch.setattr(
+        diag.S,
+        "required",
+        lambda name: str(key) if name == "SAM_SSH_KEY" else "SYNTHETIC",
+    )
+    monkeypatch.setattr(diag.S, "IMAGE", "synthetic")
+    for name in diag.H.R2_KEYS:
+        monkeypatch.setenv(name, "synthetic")
+    monkeypatch.setattr(diag.S, "prepare_ssh_key", lambda *a: key)
+    monkeypatch.setattr(diag.H, "attach_key", lambda *a: None)
+    monkeypatch.setattr(diag.H, "wait_for_ssh", lambda *a: ("synthetic.invalid", 22))
+    monkeypatch.setattr(diag.V, "_verify_host_driver", lambda *a: None)
+    monkeypatch.setattr(diag.S, "run", lambda *a, **k: None)
+    monkeypatch.setattr(
+        diag, "restore_env", lambda **k: "/opt/env/qwen8b-vllm/bin/python"
+    )
+    monkeypatch.setattr(
+        diag,
+        "_ssh_run",
+        lambda *a, **k: {"rc": 0, "stdout": "synthetic", "stderr": "", "seconds": 0},
+    )
+
+    def forbidden(*a, **k):
+        raise AssertionError("external operation forbidden in reporting tests")
+
+    monkeypatch.setattr(socket, "socket", forbidden)
+    monkeypatch.setattr(socket, "create_connection", forbidden)
+    monkeypatch.setattr(diag.subprocess, "run", forbidden)
+    monkeypatch.setattr(diag.subprocess, "Popen", forbidden)
+    original_create = diag.S.create_from_offers
+
+    def create(*args, **kwargs):
+        shared_calls.append(json.loads(report_path.read_text()))
+        return original_create(*args, **kwargs)
+
+    monkeypatch.setattr(diag.S, "create_from_offers", create)
+    original_write = diag._write
+
+    def write(path, report):
+        original_write(path, report)
+        writes.append(copy.deepcopy(report))
+
+    monkeypatch.setattr(diag, "_write", write)
+    return SimpleNamespace(
+        vast=vast,
+        path=report_path,
+        mirror=artifacts / report_path.name,
+        snapshots=snapshots,
+        writes=writes,
+        attempted=attempted,
+        shared_calls=shared_calls,
+        write=write,
+    )
+
+
+def test_create_intent_report_precedes_shared_dispatch(reporting_runtime):
+    runtime = reporting_runtime
+    assert diag.main() == 0
+    before = runtime.snapshots[0]
+    assert runtime.writes[0]["label"] == runtime.vast.label
+    assert runtime.writes[0]["ok"] is False
+    assert runtime.writes[0]["dph_selected"] is None
+    assert before["phase"] == "creating"
+    assert runtime.shared_calls == [before]
+    assert before["label"] == runtime.vast.label
+    assert before["create_intent"] == {
+        "label": runtime.vast.label,
+        "state": "prepared",
+    }
+    assert before["dph_selected"] is None
+    assert before["dph_cheapest_eligible"] == 1.1
+    assert "instance_id" not in before
+    assert runtime.attempted == [1]
+    assert runtime.vast.destroyed == [123]
+    assert json.loads(runtime.mirror.read_text()) == json.loads(
+        runtime.path.read_text()
+    )
+
+
+def test_failed_create_checkpoint_prevents_dispatch(reporting_runtime, monkeypatch):
+    runtime = reporting_runtime
+
+    def write(path, report):
+        if report["phase"] == "creating":
+            raise OSError("synthetic checkpoint failure")
+        runtime.write(path, report)
+
+    monkeypatch.setattr(diag, "_write", write)
+    assert diag.main() == 1
+    assert runtime.attempted == []
+    assert runtime.shared_calls == []
+    assert runtime.snapshots == []
+    assert runtime.vast.destroyed == []
+    assert runtime.writes[0]["label"] == runtime.writes[-1]["label"]
+    assert runtime.writes[-1]["ok"] is False
+    assert "synthetic checkpoint failure" in runtime.writes[-1]["error"]
+
+
+def test_fallback_does_not_claim_cheapest_quote_as_selected(reporting_runtime):
+    runtime = reporting_runtime
+    runtime.vast.script = ["unavailable", "success"]
+    assert diag.main() == 0
+    assert runtime.attempted == [1, 2]
+    report = json.loads(runtime.path.read_text())
+    assert report["instance_id"] == 123
+    assert report["dph_cheapest_eligible"] == 1.1
+    assert report["dph_selected"] is None
+    assert all(
+        snapshot["create_intent"]["label"] == runtime.vast.label
+        for snapshot in runtime.snapshots
+    )
+    assert runtime.vast.destroyed == [123]
+
+
+def test_ambiguous_create_retains_intent_without_replacement(reporting_runtime):
+    runtime = reporting_runtime
+    runtime.vast.script = ["lost", "success"]
+    assert diag.main() == 1
+    assert runtime.attempted == [1]
+    assert len(runtime.shared_calls) == 1
+    assert runtime.vast.script == ["success"]
+    before = runtime.snapshots[0]
+    report = json.loads(runtime.path.read_text())
+    assert before["phase"] == "creating"
+    assert before["create_intent"]["label"] == runtime.vast.label
+    assert report["label"] == runtime.vast.label
+    assert report["instance_id"] == 123  # Existing exact-label reconciliation.
+    assert report["dph_selected"] is None
+    assert "Creation outcome unknown" in report["error"]
+    assert runtime.vast.destroyed == [123]
+    assert report["released"] is True
+    assert report["ok"] is False

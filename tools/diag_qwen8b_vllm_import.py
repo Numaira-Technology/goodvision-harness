@@ -171,8 +171,12 @@ def main() -> int:
     V._require_r2_pack(env_spec)
 
     out_path = OUT_DEFAULT
+    label = f"goodvision-qwen8b-vllm-diag-{uuid4().hex[:12]}"
     report: dict = {
         "phase": "start",
+        "label": label,
+        "ok": False,
+        "dph_selected": None,
         "authorization": "import-diag-only",
         "eval": False,
         "prefetch_weights": False,
@@ -184,9 +188,6 @@ def main() -> int:
     instance_id = None
     creation_attempted = False
     exit_code = 1
-    report["ok"] = False
-    label = f"goodvision-qwen8b-vllm-diag-{uuid4().hex[:12]}"
-    report["label"] = label
 
     def interrupt(_s, _f):
         raise KeyboardInterrupt
@@ -237,7 +238,14 @@ def main() -> int:
             f"cheapest ${cheapest:.4f}/hr (prior ${PRIOR_DPH:.4f}/hr)",
             flush=True,
         )
-        report["dph_selected"] = cheapest
+        # The helper returns a contract ID, not a selected offer/price binding.
+        # Keep dph_selected unknown, including after a more expensive fallback.
+        report["dph_cheapest_eligible"] = cheapest
+        report["phase"] = "creating"
+        report["create_intent"] = {"label": label, "state": "prepared"}
+        # A successful synchronous checkpoint precedes dispatch. This is not a
+        # crash-durable journal, and prepared intent does not prove a sent call.
+        _write(out_path, report)
         creation_attempted = True
         instance_id = S.create_from_offers(
             vast,
