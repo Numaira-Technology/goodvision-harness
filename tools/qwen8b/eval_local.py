@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 
 from tools.unified_benchmark.adapters import parse_response, request_body
-from tools.unified_benchmark.api_run import InvalidResponse, MAX_RESPONSE_BYTES, accounting, atomic, retry_after
+from tools.unified_benchmark.api_run import InvalidResponse, MAX_RESPONSE_BYTES, accounting, atomic, http_error_body, retry_after
 from tools.unified_benchmark.contract import EVENTS, canonical, digest, file_hash, score, write_new, write_receipt
 from tools.unified_benchmark.retry import Ledger, Queue, RequestFailure
 from tools.unified_benchmark.workflow import collect, context_for, report, verify_bundle
@@ -73,8 +73,8 @@ class LocalTransport:
                 "body_truncated": error.truncated, "captured_body_bytes": len(error.body)})
             raise RequestFailure(str(error), status=error.status, metadata=metadata) from error
         except urllib.error.HTTPError as error:
-            raw = error.read(2 * 1024 * 1024).decode(errors="replace")
-            metadata = save({"http_status": error.code, "body": raw})
+            metadata = save({**http_error_body(error), "http_status": error.code,
+                             "retry_after": error.headers.get("Retry-After")})
             raise RequestFailure("HTTP " + str(error.code), status=error.code,
                                  retry_after=retry_after(error.headers.get("Retry-After")),
                                  fatal=error.code in (400, 401, 403, 404), metadata=metadata) from error

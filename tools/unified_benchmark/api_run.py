@@ -34,6 +34,26 @@ class InvalidResponse(ValueError):
         self.status, self.body, self.truncated = status, body, truncated
 
 
+def http_error_body(error, *, secret=None):
+    """Retain bounded error bytes even when reading the error stream fails."""
+    read_error = None
+    try:
+        raw = error.read(MAX_RESPONSE_BYTES + 1)
+    except (http.client.HTTPException, OSError, ValueError) as failure:
+        read_error = type(failure).__name__
+        raw = getattr(failure, "partial", b"")
+        if not isinstance(raw, bytes):
+            raw = b""
+    truncated = len(raw) > MAX_RESPONSE_BYTES
+    captured = raw[:MAX_RESPONSE_BYTES]
+    redacted = captured.replace(secret.encode(), b"[REDACTED]") if secret else captured
+    return {"body": redacted.decode(errors="replace"),
+            "body_base64": base64.b64encode(redacted).decode(),
+            "body_truncated": truncated, "body_incomplete": read_error is not None,
+            "body_read_error": read_error, "body_redacted": redacted != captured,
+            "captured_body_bytes": len(captured)}
+
+
 def load_explicit_key(path):
     # A dotenv value may be quoted. Do not silently prefer a different process key.
     values = [line.split("=", 1)[1].strip().strip('"\'') for line in Path(path).read_text().splitlines()
@@ -108,12 +128,12 @@ class Transport:
                 "unit": unit["id"], "request_sha256": unit["request_sha256"]})
             raise RequestFailure(str(error), status=error.status) from error
         except urllib.error.HTTPError as error:
-            raw = error.read(2 * 1024 * 1024).decode(errors="replace").replace(self.key, "[REDACTED]")
-            write_receipt(self.output / "receipts" / (prefix + ".json"), {
-                "http_status": error.code, "body": raw, "retry_after": error.headers.get("Retry-After"),
-                "unit": unit["id"], "request_sha256": unit["request_sha256"]})
             if error.code == 402:
                 self.billing_stop.set()
+            write_receipt(self.output / "receipts" / (prefix + ".json"), {
+                **http_error_body(error, secret=self.key),
+                "http_status": error.code, "retry_after": error.headers.get("Retry-After"),
+                "unit": unit["id"], "request_sha256": unit["request_sha256"]})
             raise RequestFailure("HTTP " + str(error.code), status=error.code,
                 retry_after=retry_after(error.headers.get("Retry-After")), fatal=error.code in (400, 401, 402, 403, 404)) from error
         except (OSError, TimeoutError, ValueError) as error:

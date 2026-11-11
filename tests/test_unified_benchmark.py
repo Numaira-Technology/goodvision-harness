@@ -598,3 +598,109 @@ def test_api_incomplete_http_keeps_receipt_and_retries_without_stopping_queue(tm
             assert key not in json.dumps(saved)
     finally:
         ledger.close()
+
+
+@pytest.mark.parametrize('transport_kind', ['api', 'local'])
+@pytest.mark.parametrize('status', [429, 503])
+@pytest.mark.parametrize('body_case', ['incomplete', 'timeout', 'oversized', 'oversized_partial', 'normal'])
+def test_http_error_bodies_preserve_status_receipts_and_retry(tmp_path, monkeypatch, transport_kind, status, body_case):
+    import base64
+    import http.client
+    import io
+    import threading
+    import urllib.error
+    from tools.qwen8b.eval_local import LocalTransport
+    from tools.unified_benchmark import api_run
+    from tools.unified_benchmark.contract import file_hash
+
+    key = 'synthetic-secret'
+    raw = b'error ' + key.encode() + b'\xff'
+    if body_case in ('oversized', 'oversized_partial'):
+        raw += b'x' * api_run.MAX_RESPONSE_BYTES
+    class ErrorBody(io.BytesIO):
+        def read(self, size=-1):
+            assert 0 < size <= api_run.MAX_RESPONSE_BYTES + 1
+            if body_case in ('incomplete', 'oversized_partial'):
+                raise http.client.IncompleteRead(raw, 10)
+            if body_case == 'timeout':
+                raise TimeoutError('synthetic body timeout')
+            return super().read(size)
+    class Response(io.BytesIO):
+        status = 200
+    calls = []
+    def urlopen(request, **kwargs):
+        good = b'GOOD synthetic' in request.data
+        calls.append(good)
+        if not good:
+            raise urllib.error.HTTPError(request.full_url, status, 'synthetic',
+                {'Retry-After': '91'}, ErrorBody(raw))
+        return Response(json.dumps({'provider': 'Mock', 'model': 'qwen/test', 'choices': [
+            {'finish_reason': 'stop', 'message': {'content': '{"answer":true}'}}]}).encode())
+    monkeypatch.setattr(api_run.urllib.request, 'urlopen', urlopen)
+    (tmp_path / 'f.jpg').write_bytes(b'synthetic-image')
+    config = {'model': 'qwen/test', 'backend': 'language', 'kind': 'choice', 'max_tokens': 30, 'temperature': 0,
+        'provider_context': {'config': {'expected_provider_name': 'Mock', 'provider': {'only': ['mock'], 'allow_fallbacks': False}}}}
+    bad = unit() | {'frames': [{'path': 'f.jpg', 'sha256': file_hash(tmp_path / 'f.jpg'), 'time': 0}], 'question': 'Synthetic?'}
+    bad['request_sha256'] = digest(a.request_body(config, bad, tmp_path)[1])
+    good = bad | {'id': 'good', 'question': 'GOOD synthetic?'}
+    good['request_sha256'] = digest(a.request_body(config, good, tmp_path)[1])
+    ledger, clock = Ledger(tmp_path / 'attempts.jsonl', {'test': True}), Clock()
+    output = tmp_path / 'output'
+    client = (api_run.Transport(tmp_path, config, key, output, ledger, threading.Event())
+        if transport_kind == 'api' else LocalTransport(tmp_path, config, 'http://127.0.0.1:9', output, ledger))
+    try:
+        observed = Queue(ledger, 'choice', client, slots=1, clock=clock.now, sleep=clock.sleep).run([bad, good])
+        assert observed['u'] == {} and observed['good']['fight']['answer'] == 'yes'
+        assert calls.count(False) == 3 and calls.count(True) == 1
+        failed = [r for r in ledger.rows if r['type'] == 'result' and r['unit'] == 'u']
+        assert len(failed) == 3
+        assert all(r['http_status'] == status and r['retry_after'] == 91 and not r['fatal'] for r in failed)
+        receipts = [json.loads(p.read_text()) for p in (output / 'receipts').glob('*.json')]
+        assert len(receipts) == 4
+        for saved in (r for r in receipts if r['unit'] == 'u'):
+            expected = b'' if body_case == 'timeout' else raw[:api_run.MAX_RESPONSE_BYTES]
+            if transport_kind == 'api':
+                expected = expected.replace(key.encode(), b'[REDACTED]')
+                assert key not in json.dumps(saved)
+            assert base64.b64decode(saved['body_base64']) == expected
+            assert saved['http_status'] == status and saved['retry_after'] == '91'
+            assert saved['body_truncated'] is (body_case in ('oversized', 'oversized_partial'))
+            assert saved['body_incomplete'] is (body_case in ('incomplete', 'oversized_partial', 'timeout'))
+    finally:
+        ledger.close()
+
+
+def test_truncated_billing_error_sets_stop_before_read_and_stays_fatal(tmp_path, monkeypatch):
+    import http.client
+    import io
+    import threading
+    import urllib.error
+    from tools.unified_benchmark import api_run
+    from tools.unified_benchmark.contract import file_hash
+
+    stopped = threading.Event()
+    class ErrorBody(io.BytesIO):
+        def read(self, size=-1):
+            assert stopped.is_set()
+            raise http.client.IncompleteRead(b'synthetic-secret', 10)
+    def urlopen(request, **kwargs):
+        raise urllib.error.HTTPError(request.full_url, 402, 'synthetic', {}, ErrorBody())
+    monkeypatch.setattr(api_run.urllib.request, 'urlopen', urlopen)
+    (tmp_path / 'f.jpg').write_bytes(b'synthetic-image')
+    config = {'model': 'qwen/test', 'backend': 'language', 'kind': 'choice', 'max_tokens': 30, 'temperature': 0,
+        'provider_context': {'config': {'expected_provider_name': 'Mock', 'provider': {'only': ['mock'], 'allow_fallbacks': False}}}}
+    u = unit() | {'frames': [{'path': 'f.jpg', 'sha256': file_hash(tmp_path / 'f.jpg'), 'time': 0}], 'question': 'Synthetic?'}
+    u['request_sha256'] = digest(a.request_body(config, u, tmp_path)[1])
+    ledger, clock = Ledger(tmp_path / 'attempts.jsonl', {'test': True}), Clock()
+    client = api_run.Transport(tmp_path, config, 'synthetic-secret', tmp_path / 'output', ledger, stopped)
+    try:
+        with pytest.raises(PausedRun, match='HTTP 402'):
+            Queue(ledger, 'choice', client, slots=1, clock=clock.now, sleep=clock.sleep).run([u])
+        results = [r for r in ledger.rows if r['type'] == 'result']
+        assert len(results) == 1 and results[0]['fatal'] and results[0]['http_status'] == 402
+        path, = (tmp_path / 'output/receipts').glob('*.json')
+        saved = json.loads(path.read_text())
+        assert saved['http_status'] == 402 and saved['body_incomplete']
+        assert 'synthetic-secret' not in path.read_text()
+    finally:
+        ledger.close()
