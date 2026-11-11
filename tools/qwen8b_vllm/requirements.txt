@@ -4,6 +4,9 @@
 # 24GB 4090-class cards (tools/vlm_benchmark). It pulls torch 2.13.x; do not
 # force the HF packed-env torch==2.8.0 here.
 vllm==0.31.0
+typing_extensions==4.16.0
+filelock==4.2.9
+tqdm==4.70.1
 transformers==5.14.1
 tokenizers==0.22.2
 qwen-vl-utils==0.0.14
