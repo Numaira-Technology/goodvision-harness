@@ -152,15 +152,35 @@ def _upload_repo(ssh):
         raise RuntimeError("repo upload failed")
 
 
+def _posix_prefix(value: str) -> str | None:
+    """Return a leading-slash registry path unchanged, or None for a host path."""
+    text = str(value)
+    if text.startswith("/") and not text.startswith("//"):
+        return text.rstrip("/")
+    return None
+
+
 def _packed_python(activate: str) -> str:
-    """Absolute packed interpreter. Never PATH python or `source activate`."""
-    python = Path(activate).parent / "python"
-    if python.name != "python":
+    """Absolute packed interpreter. Never PATH python or `source activate`.
+
+    A registry prefix such as ``/opt/env/...`` must stay a POSIX string.
+    pathlib rewrites a leading slash to the current drive root on Windows.
+    """
+    text = _posix_prefix(activate)
+    if text is not None:
+        python = text.rsplit("/", 1)[0] + "/python"
+    else:
+        python = str(Path(activate).parent / "python")
+    name = python.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if name != "python":
         raise RuntimeError(f"packed interpreter path is unsafe: {python}")
-    return str(python)
+    return python
 
 
 def _unpack_to(activate: str) -> str:
+    text = _posix_prefix(activate)
+    if text is not None:
+        return text.rsplit("/", 1)[0].rsplit("/", 1)[0]
     return str(Path(activate).parent.parent)
 
 

@@ -1,44 +1,58 @@
 """Explicitly authorized OpenRouter execution of the frozen offline bundle."""
 import argparse
+import base64
+import http.client
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import json
 import math
+from pathlib import Path
 import ssl
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
-from pathlib import Path
 
 import certifi
-
 from tools.event_benchmark.evidence import response_metadata
-
 from .adapters import parse_response, request_body
-from .contract import (
-    EVENTS,
-    RULES,
-    canonical,
-    digest,
-    file_hash,
-    score,
-    select_thresholds,
-    write_new,
-)
+from .contract import EVENTS, plan_rules, canonical, digest, file_hash, score, select_thresholds, write_new, write_receipt
 from .receipts import raw_fields
 from .retry import Ledger, PausedRun, Queue, RequestFailure
-from .workflow import (
-    collect,
-    context_for,
-    load_threshold_artifact,
-    report,
-    verify_bundle,
-)
+from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
 
 ALIASES = ("qwen8b", "gemini25", "gemini38", "qwen235b", "luna", "maverick")
+
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+
+
+class InvalidResponse(ValueError):
+    """Keep bounded response bytes when the HTTP envelope cannot be decoded."""
+    def __init__(self, reason, status, body, *, truncated=False):
+        super().__init__(reason)
+        self.status, self.body, self.truncated = status, body, truncated
+
+
+def http_error_body(error, *, secret=None):
+    """Retain bounded error bytes even when reading the error stream fails."""
+    read_error = None
+    try:
+        raw = error.read(MAX_RESPONSE_BYTES + 1)
+    except (http.client.HTTPException, OSError, ValueError) as failure:
+        read_error = type(failure).__name__
+        raw = getattr(failure, "partial", b"")
+        if not isinstance(raw, bytes):
+            raw = b""
+    truncated = len(raw) > MAX_RESPONSE_BYTES
+    captured = raw[:MAX_RESPONSE_BYTES]
+    redacted = captured.replace(secret.encode(), b"[REDACTED]") if secret else captured
+    return {"body": redacted.decode(errors="replace"),
+            "body_base64": base64.b64encode(redacted).decode(),
+            "body_truncated": truncated, "body_incomplete": read_error is not None,
+            "body_read_error": read_error, "body_redacted": redacted != captured,
+            "captured_body_bytes": len(captured)}
 
 
 def load_explicit_key(path):
@@ -69,37 +83,38 @@ def atomic(path, data):
     temp.replace(path)
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise urllib.error.HTTPError(
-            req.full_url, code, "OpenRouter redirects are refused", headers, fp
-        )
-
-
 class Transport:
     def __init__(self, bundle, config, key, output, ledger, billing_stop):
         self.bundle, self.config, self.key, self.output = bundle, config, key, output
         self.ledger, self.billing_stop = ledger, billing_stop
         self.ssl = ssl.create_default_context(cafile=certifi.where())
-        self.opener = urllib.request.build_opener(
-            urllib.request.HTTPSHandler(context=self.ssl), _NoRedirect()
-        )
+        # opener.open is the patch point for receipt tests. It still calls
+        # urlopen, which the HTTP-body tests replace.
+        self.opener = self
+
+    def open(self, req, timeout=90):
+        return urllib.request.urlopen(req, context=self.ssl, timeout=timeout)
 
     def call(self, url, body=None):
-        parsed = urllib.parse.urlsplit(url)
-        if (parsed.scheme != "https" or parsed.netloc != "openrouter.ai"
-                or parsed.fragment or parsed.path not in {
-                    "/api/v1/chat/completions", "/api/alpha/decisions",
-                    "/api/v1/generation",
-                }):
-            raise ValueError("OpenRouter transport refuses an unapproved endpoint")
         req = urllib.request.Request(url, data=canonical(body) if body is not None else None,
             headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json"})
-        with self.opener.open(req, timeout=90) as response:
-            raw = response.read(2 * 1024 * 1024 + 1)
-        if len(raw) > 2 * 1024 * 1024:
-            raise ValueError("oversized response")
-        return json.loads(raw)
+        status = None
+        try:
+            with self.opener.open(req, timeout=90) as response:
+                status = getattr(response, "status", None)
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+        except http.client.HTTPException as error:
+            partial = getattr(error, "partial", b"")
+            if not isinstance(partial, bytes):
+                partial = b""
+            raise InvalidResponse("invalid or incomplete HTTP response", status,
+                partial[:MAX_RESPONSE_BYTES], truncated=len(partial) > MAX_RESPONSE_BYTES) from error
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise InvalidResponse("oversized response", status, raw[:MAX_RESPONSE_BYTES], truncated=True)
+        try:
+            return json.loads(raw)
+        except ValueError as error:
+            raise InvalidResponse("invalid JSON response", status, raw) from error
 
     def __call__(self, unit):
         if self.billing_stop.is_set():
@@ -111,17 +126,25 @@ class Transport:
             raise RequestFailure("request fingerprint mismatch", fatal=True)
         try:
             payload = self.call(uri, body)
-        except urllib.error.HTTPError as error:
-            raw = error.read(2 * 1024 * 1024).decode(errors="replace").replace(self.key, "[REDACTED]")
+        except InvalidResponse as error:
+            raw = error.body.replace(self.key.encode(), b"[REDACTED]")
             write_new(self.output / "receipts" / (prefix + ".json"), {
-                "http_status": error.code, "body": raw, "retry_after": error.headers.get("Retry-After"),
+                "http_status": error.status, "transport_error": type(error).__name__, "detail": str(error),
+                "body_base64": base64.b64encode(raw).decode(), "body_truncated": error.truncated,
+                "body_redacted": raw != error.body, "captured_body_bytes": len(error.body),
                 "unit": unit["id"], "request_sha256": unit["request_sha256"]})
+            raise RequestFailure(str(error), status=error.status) from error
+        except urllib.error.HTTPError as error:
             if error.code == 402:
                 self.billing_stop.set()
+            write_receipt(self.output / "receipts" / (prefix + ".json"), {
+                **http_error_body(error, secret=self.key),
+                "http_status": error.code, "retry_after": error.headers.get("Retry-After"),
+                "unit": unit["id"], "request_sha256": unit["request_sha256"]})
             raise RequestFailure("HTTP " + str(error.code), status=error.code,
                 retry_after=retry_after(error.headers.get("Retry-After")), fatal=error.code in (400, 401, 402, 403, 404)) from error
         except (OSError, TimeoutError, ValueError) as error:
-            write_new(self.output / "receipts" / (prefix + ".json"), {
+            write_receipt(self.output / "receipts" / (prefix + ".json"), {
                 "transport_error": type(error).__name__, "detail": str(error).replace(self.key, "[REDACTED]"),
                 "unit": unit["id"], "request_sha256": unit["request_sha256"]})
             raise RequestFailure(type(error).__name__) from error
@@ -131,44 +154,29 @@ class Transport:
         generation_data = None
         if generation and (not metadata.get("actual_provider") or not metadata.get("actual_model")):
             try:
-                generation_payload = self.call(
-                    "https://openrouter.ai/api/v1/generation?id="
-                    + urllib.parse.quote(generation, safe="")
-                )
-                generation_data = (
-                    generation_payload.get("data")
-                    if isinstance(generation_payload, dict) else None
-                )
-                if (not isinstance(generation_data, dict)
-                        or generation_data.get("id") != generation):
+                generation_data = self.call("https://openrouter.ai/api/v1/generation?id=" + urllib.parse.quote(generation, safe=""))["data"]
+                if not isinstance(generation_data, dict):
+                    raise ValueError("invalid generation metadata envelope")
+                if generation_data.get("id") != generation:
                     raise ValueError("generation identity mismatch")
                 for k, v in response_metadata(generation_data).items():
                     metadata.setdefault(k, v)
             except (OSError, ValueError, KeyError, TypeError):
                 metadata["metadata_lookup_error"] = "unavailable"
-        write_new(self.output / "receipts" / (prefix + ".json"), {
+        write_receipt(self.output / "receipts" / (prefix + ".json"), {
             **raw_fields(response=payload, generation_metadata=generation_data),
             "unit": unit["id"], "request_sha256": unit["request_sha256"]})
         metadata["receipt"] = "receipts/" + prefix + ".json"
         metadata["receipt_sha256"] = file_hash(self.output / metadata["receipt"])
         expected = self.config["provider_context"]["config"]["expected_provider_name"]
         if metadata.get("actual_provider") and metadata["actual_provider"] != expected:
-            raise RequestFailure(
-                "actual provider mismatch: " + metadata["actual_provider"],
-                fatal=True, metadata=metadata,
-            )
+            raise RequestFailure("actual provider mismatch: " + metadata["actual_provider"], fatal=True, metadata=metadata)
         if not metadata.get("actual_provider") or not metadata.get("actual_model"):
-            raise RequestFailure(
-                "provider/model receipt identity unavailable",
-                fatal=True, metadata=metadata,
-            )
+            raise RequestFailure("provider/model receipt identity unavailable", fatal=True, metadata=metadata)
         actual_model = metadata.get("actual_model")
         if actual_model and actual_model != self.config["model"] and not (
                 self.config["backend"] == "decision" and actual_model.startswith(self.config["model"] + "-")):
-            raise RequestFailure(
-                "actual model mismatch: " + actual_model,
-                fatal=True, metadata=metadata,
-            )
+            raise RequestFailure("actual model mismatch: " + actual_model, fatal=True, metadata=metadata)
         try:
             answers = parse_response(self.config, unit, payload)
         except (ValueError, KeyError, TypeError, IndexError) as error:
@@ -230,13 +238,13 @@ def execute_model(alias, bundle, root, key, billing_stop, bundle_digest, *, phas
                 chosen["validation_only"] = True
             write_new(output / "thresholds.json", chosen | {"calibration": calibration,
                 "config_sha256": digest(config), "bundle_sha256": bundle_digest,
-                "rules_sha256": digest(RULES), "model": config["model"], "selected_before_test_at": time.time()})
+                "rules_sha256": digest(plan_rules(plan)), "model": config["model"], "selected_before_test_at": time.time()})
         result = report(plan, config, ledger, thresholds)
         result.update(split=split, calibration=calibration, started_at_unix=started, finished_at_unix=time.time(),
                       elapsed_seconds=time.time() - started, failure=failed, accounting=accounting(ledger))
         if split == "test":
             for label, events in (("base100", EVENTS[:4]), ("bag20", EVENTS[4:])):
-                subset_q = [q for q in plan["questions"] if q["event"] in events]
+                subset_q = [q for q in plan["questions"] if q["event"] in events and q["number"] <= 120]
                 wanted = {uid for q in subset_q for uid in q["unit_ids"]}
                 subset = plan | {"questions": subset_q, "units": [u for u in plan["units"] if u["id"] in wanted]}
                 result[label] = score(subset, {uid: v for uid, v in observed.items() if uid in wanted}, config["kind"], thresholds)

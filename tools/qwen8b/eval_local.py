@@ -7,6 +7,8 @@ must identify as qwen/qwen3-vl-8b-instruct. Headline scoring stays correct/all.
 from __future__ import annotations
 
 import argparse
+import base64
+import http.client
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -15,8 +17,23 @@ import urllib.error
 import urllib.request
 
 from tools.unified_benchmark.adapters import parse_response, request_body
-from tools.unified_benchmark.api_run import accounting, atomic, retry_after
-from tools.unified_benchmark.contract import EVENTS, canonical, digest, file_hash, score, write_new
+from tools.unified_benchmark.api_run import (
+    InvalidResponse,
+    MAX_RESPONSE_BYTES,
+    accounting,
+    atomic,
+    http_error_body,
+    retry_after,
+)
+from tools.unified_benchmark.contract import (
+    EVENTS,
+    canonical,
+    digest,
+    file_hash,
+    score,
+    write_new,
+    write_receipt,
+)
 from tools.unified_benchmark.receipts import raw_fields
 from tools.unified_benchmark.retry import Ledger, Queue, RequestFailure
 from tools.unified_benchmark.workflow import collect, context_for, report, verify_bundle
@@ -34,36 +51,83 @@ class LocalTransport:
             data=canonical(body),
             headers={"Content-Type": "application/json", "Authorization": "Bearer local"},
         )
-        with urllib.request.urlopen(req, timeout=90) as response:
-            raw = response.read(2 * 1024 * 1024 + 1)
-        if len(raw) > 2 * 1024 * 1024:
-            raise ValueError("oversized response")
-        return json.loads(raw)
+        status = None
+        try:
+            with urllib.request.urlopen(req, timeout=90) as response:
+                status = getattr(response, "status", None)
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+        except http.client.HTTPException as error:
+            partial = getattr(error, "partial", b"")
+            if not isinstance(partial, bytes):
+                partial = b""
+            raise InvalidResponse(
+                "invalid or incomplete HTTP response",
+                status,
+                partial[:MAX_RESPONSE_BYTES],
+                truncated=len(partial) > MAX_RESPONSE_BYTES,
+            ) from error
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise InvalidResponse(
+                "oversized response", status, raw[:MAX_RESPONSE_BYTES], truncated=True
+            )
+        try:
+            payload = json.loads(raw)
+        except ValueError as error:
+            raise InvalidResponse("invalid JSON response", status, raw) from error
+        return payload
 
     def __call__(self, unit):
         attempt = self.ledger.state(unit, self.config["kind"])[0]
         prefix = digest(unit["id"]) + f"-attempt-{attempt}"
+        receipt = self.output / "receipts" / (prefix + ".json")
+
+        def save(record):
+            write_receipt(
+                receipt,
+                record | {"unit": unit["id"], "request_sha256": unit["request_sha256"]},
+            )
+            return {
+                "receipt": str(receipt.relative_to(self.output)),
+                "receipt_sha256": file_hash(receipt),
+            }
+
         _url, body = request_body(self.config, unit, self.bundle)
         if digest(body) != unit["request_sha256"]:
             raise RequestFailure("request fingerprint mismatch", fatal=True)
         try:
             payload = self.call(body)
+        except InvalidResponse as error:
+            metadata = save({
+                "http_status": error.status,
+                "transport_error": type(error).__name__,
+                "detail": str(error),
+                "body_base64": base64.b64encode(error.body).decode(),
+                "body_truncated": error.truncated,
+                "body_incomplete": True,
+                "captured_body_bytes": len(error.body),
+            })
+            raise RequestFailure(str(error), status=error.status, metadata=metadata) from error
         except urllib.error.HTTPError as error:
-            raw = error.read(2 * 1024 * 1024).decode(errors="replace")
-            write_new(self.output / "receipts" / (prefix + ".json"), {
-                "http_status": error.code, "body": raw,
-                "unit": unit["id"], "request_sha256": unit["request_sha256"]})
-            raise RequestFailure("HTTP " + str(error.code), status=error.code,
-                                 retry_after=retry_after(error.headers.get("Retry-After")),
-                                 fatal=error.code in (400, 401, 403, 404)) from error
+            metadata = save({
+                **http_error_body(error),
+                "http_status": error.code,
+                "retry_after": error.headers.get("Retry-After"),
+            })
+            raise RequestFailure(
+                "HTTP " + str(error.code),
+                status=error.code,
+                retry_after=retry_after(error.headers.get("Retry-After")),
+                fatal=error.code in (400, 401, 403, 404),
+                metadata=metadata,
+            ) from error
         except (OSError, TimeoutError, ValueError) as error:
-            write_new(self.output / "receipts" / (prefix + ".json"), {
-                "transport_error": type(error).__name__, "detail": str(error)[:500],
-                "unit": unit["id"], "request_sha256": unit["request_sha256"]})
-            raise RequestFailure(type(error).__name__) from error
-        write_new(self.output / "receipts" / (prefix + ".json"), {
-            **raw_fields(response=payload), "unit": unit["id"],
-            "request_sha256": unit["request_sha256"]})
+            metadata = save({
+                "transport_error": type(error).__name__,
+                "detail": str(error)[:500],
+                "body_incomplete": isinstance(error, TimeoutError),
+            })
+            raise RequestFailure(type(error).__name__, metadata=metadata) from error
+        metadata = save({"http_status": 200, **raw_fields(response=payload)})
         actual_model = payload.get("model") if isinstance(payload, dict) else None
         if not isinstance(actual_model, str) or not actual_model.strip():
             raise RequestFailure("actual model identity missing or invalid", fatal=True)

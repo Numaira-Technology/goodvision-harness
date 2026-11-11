@@ -1,12 +1,15 @@
 """Durable three-attempt queue. Transport is injected; importing does no IO."""
+import hashlib
 import json
 import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 from .contract import canonical, finite_number, valid_value
+from .locking import lock_exclusive
 
 
 class PausedRun(RuntimeError):
@@ -69,21 +72,6 @@ def validate_rows(rows):
             results.add(key)
 
 
-def lock_exclusive(fileobj):
-    """Nonblocking exclusive lock where the platform has flock.
-
-    Linux and macOS keep ``flock``. Windows has no equivalent that is both
-    nonblocking and safe to call from the regression job, so the ledger still
-    opens and the in-process lock stands. Cross-process exclusion stays on
-    POSIX.
-    """
-    try:
-        import fcntl
-    except ImportError:
-        return
-    fcntl.flock(fileobj, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-
 class Ledger:
     """Exclusive process lock + fsynced intent before send. Crash intents consume budget."""
     def __init__(self, path, context, *, read_only=False):
@@ -111,6 +99,25 @@ class Ledger:
     def close(self):
         if self.file is not None:
             self.file.close()
+
+    @contextmanager
+    def raw_reader(self):
+        """Read exact persisted bytes through the still-locked owning handle."""
+        with self.lock:
+            self.file.flush()
+            position = self.file.tell()
+            try:
+                self.file.seek(0)
+                yield self.file.buffer
+            finally:
+                self.file.seek(position)
+
+    def file_hash(self):
+        checksum = hashlib.sha256()
+        with self.raw_reader() as reader:
+            for block in iter(lambda: reader.read(1024 * 1024), b""):
+                checksum.update(block)
+        return checksum.hexdigest()
 
     def append(self, row):
         if self.read_only:

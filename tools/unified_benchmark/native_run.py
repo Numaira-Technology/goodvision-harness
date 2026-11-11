@@ -35,7 +35,8 @@ from .contract import (
 )
 from .native_deploy import ALIASES, environment_for, profile, verify_deployment
 from .receipts import raw_fields, read_receipt
-from .retry import Ledger, PausedRun, Queue, RequestFailure, lock_exclusive
+from .locking import lock_exclusive
+from .retry import Ledger, PausedRun, Queue, RequestFailure
 from .workflow import (
     collect,
     context_for,

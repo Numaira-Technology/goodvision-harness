@@ -14,6 +14,8 @@ from .contract import (
     RULES,
     digest,
     file_hash,
+    plan_rules,
+    rules_for,
     score,
     select_thresholds,
     source_files,
@@ -74,7 +76,8 @@ def _model_records(bundle, report, hashes):
     return models
 
 
-def _verify_plan_bindings(bundle, report, hashes):
+def _verify_plan_bindings(bundle, report, hashes, frozen_rules):
+    rules_digest = digest(frozen_rules)
     models = _model_records(bundle, report, hashes)
     expected_configs, expected_plans = set(), set()
     for alias, phases in models.items():
@@ -99,13 +102,15 @@ def _verify_plan_bindings(bundle, report, hashes):
             if name not in hashes:
                 raise ValueError("unsealed bundle plan: " + name)
             plan = json.loads((bundle / name).read_text())
+            if isinstance(plan, dict) and plan_rules(plan) != frozen_rules:
+                raise ValueError("plan protocol differs from bundle")
             if (
                 not isinstance(recorded, dict)
                 or not isinstance(plan, dict)
                 or recorded.get("plan_sha256") != digest(plan)
                 or plan.get("split") != split
                 or plan.get("config_sha256") != digest(config)
-                or plan.get("rules_sha256") != digest(RULES)
+                or plan.get("rules_sha256") != rules_digest
             ):
                 raise ValueError("preflight plan identity differs: " + name)
             for unit in plan["units"]:
@@ -146,7 +151,15 @@ def verify_bundle(bundle):
         path = bundle / name
         if file_hash(path) != expected:
             raise ValueError("bundle file differs: " + name)
-    if json.loads((bundle / "rules.json").read_text()) != RULES:
+    frozen_rules = json.loads((bundle / "rules.json").read_text())
+    try:
+        expected_rules = rules_for(frozen_rules.get("version"))
+    except (ValueError, AttributeError) as error:
+        raise ValueError(
+            "bundle protocol differs; use its retained source snapshot "
+            "for historical replay"
+        ) from error
+    if frozen_rules != expected_rules:
         raise ValueError(
             "bundle protocol differs; use its retained source snapshot "
             "for historical replay"
@@ -172,7 +185,7 @@ def verify_bundle(bundle):
                 + name
                 + "; use the retained code for replay or build a new bundle"
             )
-    _verify_plan_bindings(bundle, report, hashes)
+    _verify_plan_bindings(bundle, report, hashes, frozen_rules)
     return file_hash(bundle / "bundle-files-sha256.json")
 
 
@@ -234,6 +247,9 @@ def report(plan, config, ledger, thresholds):
     observed = collect(plan, config, ledger)
     result = score(plan, observed, config["kind"], thresholds)
     sent = {r["unit"] for r in ledger.rows if r["type"] == "intent"}
+    # Offline re-scoring keeps the inference date, including across resumes.
+    attempt_times = [r["at_unix"] for r in ledger.rows if r["type"] == "intent"
+                     and type(r.get("at_unix")) in (int, float) and math.isfinite(r["at_unix"])]
     result.update(sent_unique_units=len(sent), send_coverage=len(sent) / len(plan["units"]),
                   send_semantics="durable transport handoff intent; server receipt not proven after interrupted call",
                   unattempted_unique_units=len(plan["units"]) - len(sent),
@@ -241,7 +257,9 @@ def report(plan, config, ledger, thresholds):
                   thresholds=thresholds, model=config["model"], requested_conditions=config,
                   observed_providers=sorted({r.get("metadata", {}).get("actual_provider") for r in ledger.rows
                       if r.get("metadata", {}).get("actual_provider")}),
-                  run_date_utc=datetime.now(timezone.utc).isoformat(),
+                  run_date_utc=datetime.fromtimestamp(min(attempt_times), timezone.utc).isoformat() if attempt_times else None,
+                  run_date_source="earliest timestamped durable request intent; null if unavailable",
+                  report_generated_at_utc=datetime.now(timezone.utc).isoformat(),
                   failed_attempt_history="retained only in attempts.jsonl; not final missing count")
     return result
 
