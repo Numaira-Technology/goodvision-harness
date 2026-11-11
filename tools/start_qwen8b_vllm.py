@@ -224,8 +224,16 @@ def _require_r2_pack(env_spec: dict) -> str:
 
 
 def _packed_python(activate: str) -> str:
-    """Interpreter next to conda-pack's activate script (bin/python)."""
-    return str(Path(activate).parent / "python")
+    """Interpreter next to conda-pack's activate script (bin/python).
+
+    A registry prefix such as ``/opt/env/...`` must stay a POSIX string.
+    pathlib rewrites a leading slash to the current drive root on Windows.
+    """
+    text = str(activate)
+    if text.startswith("/") and not text.startswith("//"):
+        parent = text.rstrip("/").rsplit("/", 1)[0]
+        return parent + "/python"
+    return str(Path(text).parent / "python")
 
 
 def _verify_restored_env(ssh, activate: str) -> None:

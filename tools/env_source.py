@@ -315,25 +315,46 @@ def _already_restored(env):
 
 @contextmanager
 def prefix_lock(prefix):
-    """Serialize cooperating restore/build processes; never unlink the lock inode."""
-    import fcntl  # packed environments are Linux-only; imported lazily for readers
+    """Serialize cooperating restore/build processes; never unlink the lock inode.
+
+    Uses the shared nonblocking lock: flock on POSIX, a one-byte CRT lock on
+    Windows. There is no unlocked fallback.
+    """
+    from tools.unified_benchmark.locking import lock_exclusive
 
     prefix = Path(prefix)
     _check_prefix(prefix)
     prefix.parent.mkdir(parents=True, exist_ok=True)
     lock = prefix.with_name(f".{prefix.name}.r2-env.lock")
-    fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(lock, flags, 0o600)
+    file = os.fdopen(fd, "r+b")
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            lock_exclusive(file)
+        except OSError as exc:
+            # flock raises BlockingIOError. CRT locking raises OSError
+            # (lock violation / deadlock) and must not be treated as success.
+            if not _lock_contended(exc):
+                raise
             raise RuntimeError(
                 "another environment restore/build holds the prefix lock"
             ) from None
         _check_prefix(prefix)
         yield
     finally:
-        os.close(fd)
+        file.close()
+
+
+def _lock_contended(exc):
+    if isinstance(exc, BlockingIOError):
+        return True
+    winerror = getattr(exc, "winerror", None)
+    if winerror in (33, 36):  # ERROR_LOCK_VIOLATION, ERROR_LOCK_FAILED
+        return True
+    return exc.errno in (11, 13, 35, 36)
 
 
 def _validate_archive_links(paths):
