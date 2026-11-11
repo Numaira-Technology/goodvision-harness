@@ -1,9 +1,13 @@
 # Benchmark report fields
 
-Use the named protocol's saved, verified results. For current120, the headline is
-correct / all 120 planned questions; separately show complete-valid questions,
+Use the named protocol's saved, verified results. For current202, the headline is
+correct / all 202 planned questions; separately show complete-valid questions,
 missing unique frames/windows, incomplete questions, unknowns and send/valid coverage.
-Per-event denominators are 32/22/26/20/10/10; bag classes are not Weapon.
+Per-event denominators are 32/22/62/66/10/10; bag classes are not Weapon.
+
+Also report same-run original120 and robot82 cohorts, retaining the inherited,
+pending single-view review status for robot82. Historical120 results keep their
+120 denominator and 32/22/26/20/10/10 event counts.
 
 Report model/effort, protocol/parser, provider, threshold artifact, prompt and data
 hashes, source commit, run date, sampling, hardware/capacity/peak usage, actual
