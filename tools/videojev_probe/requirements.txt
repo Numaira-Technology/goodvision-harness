@@ -10,6 +10,8 @@ av==18.1.0
 flash-linear-attention==0.4.2
 fla-core==0.4.2
 httpx==0.28.1
+# R2 prefetch (tools/model_source.py); optional, HF fallback works without it.
+boto3==1.43.123
 # Existing evidence-packet validation imports these harness dependencies.
 # Core and Ultralytics require different distribution names; pin one cv2 ABI.
 opencv-python-headless==4.12.0.88

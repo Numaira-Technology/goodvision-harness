@@ -1,0 +1,56 @@
+--- a/src/goodvision_harness/decision3_runtime.py
++++ b/src/goodvision_harness/decision3_runtime.py
+@@ -180,9 +180,9 @@
+         started = time.perf_counter()
+         if (not isinstance(payloads, (list, tuple)) or len(payloads) != 2
+                 or type(fps) not in (int, float) or not math.isfinite(fps)
+-                or not math.isclose(fps, 2.0, rel_tol=0, abs_tol=1e-8)
++                or not math.isclose(fps, 1.0, rel_tol=0, abs_tol=1e-8)
+                 or type(max_pixels) is not int or max_pixels != MAX_PIXELS):
+-            raise ValueError("provide two original JPEGs at 2 FPS with the fixed official pixel budget")
++            raise ValueError("provide two original JPEGs at 1 FPS with the fixed official pixel budget")
+         frames = []
+         for payload in payloads:
+             if not isinstance(payload, bytes):
+@@ -196,7 +196,7 @@
+         array = np.ascontiguousarray(np.stack(frames))
+         timings = {
+             "input_frame_count": len(frames), "internal_temporal_padding_frames": 0,
+-            "native_temporal_fps": 2.0,
++            "native_temporal_fps": 1.0,
+             "source_height": array.shape[1], "source_width": array.shape[2],
+         }
+         prepared = _PreparedVideo(array, None, (), None, None, timings)
+@@ -213,7 +213,14 @@
+             return prepared
+         native = self.native
+         # Reuse the official media planner and CPU processor without rendering questions twice.
+-        media = native._prepare_videos("", {}, [], native.load_videos([prepared.frames]))
++        videos = native.load_videos([prepared.frames])
++        if (len(videos) != 1 or len(videos[0].frames) != 2
++                or videos[0].indices != [0, 1] or videos[0].total_frames != 2):
++            raise ValueError("the official loader changed the two-frame window")
++        # Arrays default to 2 FPS upstream. Preserve the pixels and indices while
++        # passing the actual 1 FPS evidence cadence into the official processor.
++        video = replace(videos[0], fps=1.0)
++        media = native._prepare_videos("", {}, [], [video])
+         if any(value.device.type != "cpu" for value in media.media.values()):
+             raise ValueError("video preparation must produce CPU tensors")
+         questions, texts, lengths, errors, rows, prefix_length = template.bind(self, media, times)
+--- a/src/goodvision_harness/videojev_service.py
++++ b/src/goodvision_harness/videojev_service.py
+@@ -834,11 +834,11 @@
+             Image.new("RGB", size, (127, 127, 127)).save(jpeg, format="JPEG")
+             windows.append({
+                 "prepared": runtime.prepare(
+-                    [jpeg.getvalue()] * 2, 2.0,
++                    [jpeg.getvalue()] * 2, 1.0,
+                     context=args.context, max_pixels=args.max_pixels,
+-                    question_template=template, frame_times=[0.0, 0.5],
++                    question_template=template, frame_times=[0.0, 1.0],
+                 ),
+-                "question_template": template, "frame_times": [0.0, 0.5],
++                "question_template": template, "frame_times": [0.0, 1.0],
+             })
+         # Initialize native kernels and fixed text before accepting camera windows.
+         # These predictions are discarded, not published as event observations.
