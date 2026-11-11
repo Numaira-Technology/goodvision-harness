@@ -173,7 +173,7 @@ def test_changed_or_omitted_source_blocks_every_entrypoint(frozen, tmp_path, mon
     change_frozen_code(bundle, remove)
     def forbidden(*args, **kwargs): pytest.fail("code mismatch must fail before reading credentials or ledgers")
     monkeypatch.setattr(api_run, "load_explicit_key", forbidden)
-    monkeypatch.setattr(workflow, "Ledger", forbidden)
+    monkeypatch.setattr("tools.unified_benchmark.retry.Ledger", forbidden)
     with pytest.raises(ValueError, match="source"):
         if entrypoint == "api":
             api_run.main(["--bundle", str(bundle), "--models", "luna", "--phase", "validation",
@@ -216,7 +216,7 @@ def test_unsealed_or_changed_plan_blocks_before_any_work(frozen, tmp_path, monke
     def forbidden(*args, **kwargs):
         pytest.fail("unsealed plans must fail before credentials or ledger access")
     monkeypatch.setattr(api_run, "load_explicit_key", forbidden)
-    monkeypatch.setattr(workflow, "Ledger", forbidden)
+    monkeypatch.setattr("tools.unified_benchmark.retry.Ledger", forbidden)
     with pytest.raises(ValueError, match="unsealed|plan identity|unrecorded"):
         if entrypoint == "api":
             api_run.main(["--bundle", str(bundle), "--models", "luna", "--phase", "validation",

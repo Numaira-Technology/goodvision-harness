@@ -75,7 +75,7 @@ def source_files():
         "tools/clip_benchmark/runtime.py", "tools/clip_benchmark/base_timing.py",
         "tools/clip_benchmark/protocol.py",
     )]
-    return {str(path.relative_to(root)): path for path in sorted(paths)}
+    return {path.relative_to(root).as_posix(): path for path in sorted(paths)}
 
 
 def validate_threshold_values(thresholds, kind):

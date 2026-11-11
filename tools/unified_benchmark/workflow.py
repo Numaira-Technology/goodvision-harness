@@ -10,7 +10,6 @@ import math
 from pathlib import Path
 
 from .contract import CURRENT_VERSION, EVENTS, plan_rules, rules_for, digest, file_hash, score, select_thresholds, source_files, validate_threshold_values, write_new
-from .retry import Ledger
 
 
 def verify_bundle(bundle):
@@ -80,7 +79,7 @@ def verify_bundle(bundle):
                     if hashes.get(frame["path"]) != frame["sha256"]:
                         raise ValueError("unsealed bundle frame: " + frame["path"])
     for directory, expected in (("configs", expected_configs), ("plans", expected_plans)):
-        actual = {str(p.relative_to(bundle)) for p in (bundle / directory).glob("*.json")}
+        actual = {p.relative_to(bundle).as_posix() for p in (bundle / directory).glob("*.json")}
         if actual != expected:
             raise ValueError("bundle has unrecorded or missing " + directory)
     return file_hash(bundle / "bundle-files-sha256.json")
@@ -184,6 +183,7 @@ def main(argv=None):
         thresholds = artifact["thresholds"]
     if not args.ledger.is_file():
         raise ValueError("existing inference ledger required; no synthetic or empty result")
+    from .retry import Ledger  # Only ledger execution needs the POSIX process lock.
     ledger = Ledger(args.ledger, context_for(plan, config, bundle_digest))
     try:
         observed = collect(plan, config, ledger)

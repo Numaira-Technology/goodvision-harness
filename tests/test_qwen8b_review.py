@@ -1,42 +1,19 @@
 """Frozen Qwen contract regressions using synthetic inputs and intercepted HTTP."""
 import io
 import json
-from pathlib import Path
 
 import pytest
 
 pytest.importorskip("fcntl", reason="Qwen evaluation is a Linux/macOS workflow")
 
 from tools.qwen8b import eval_local, prepare_vllm_bundle
-from tools.unified_benchmark import preflight, workflow
+from tools.unified_benchmark import workflow
 from tools.unified_benchmark.adapters import request_body
-from tools.unified_benchmark.contract import RULES, digest, file_hash, read_receipt, write_new
+from tools.unified_benchmark.contract import digest, file_hash, read_receipt
 from tools.unified_benchmark.retry import Ledger, Queue, RequestFailure
 
 
-def frozen_host_bundle(root):
-    root.mkdir()
-    config = preflight.model_configs(["qwen8b_r2_host"])["qwen8b_r2_host"]
-    write_new(root / "configs/qwen8b_r2_host.json", config)
-    frame = root / "frame.jpg"
-    frame.write_bytes(b"synthetic offline JPEG bytes")
-    unit = {"id": "u1", "targets": ["fight"], "question": "Is fighting visible?",
-            "frames": [{"path": frame.name, "sha256": file_hash(frame), "time": 0}]}
-    unit["request_sha256"] = digest(request_body(config, unit, root)[1])
-    models = {"qwen8b_r2_host": {}}
-    for split in ("validation", "test"):
-        plan = {"protocol": RULES["version"], "split": split, "config_sha256": digest(config),
-                "rules_sha256": digest(RULES), "units": [unit], "questions": [
-                    {"number": 1, "event": "fight", "reference": "yes", "unit_ids": [unit["id"]]}]}
-        write_new(root / f"plans/qwen8b_r2_host-{split}.json", plan)
-        models["qwen8b_r2_host"][split] = {"plan_sha256": digest(plan)}
-    write_new(root / "rules.json", RULES)
-    sources = preflight.freeze_sources(root)
-    write_new(root / "preflight.json", {"offline_passed": True, "sources_sha256": digest(sources), "models": models})
-    write_new(root / "bundle-files-sha256.json", {str(p.relative_to(root)): file_hash(p)
-                                                 for p in root.rglob('*') if p.is_file()})
-    workflow.verify_bundle(root)
-    return config, unit
+from helpers.qwen_bundle import frozen_host_bundle
 
 
 @pytest.fixture

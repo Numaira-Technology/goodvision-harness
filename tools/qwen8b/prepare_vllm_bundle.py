@@ -62,7 +62,7 @@ def prepare(src: Path, dest: Path) -> dict:
     report["derived_from_bundle_sha256"] = source_digest
     report["derivation"] = "new vLLM variant; existing inputs, frames and request bytes retained"
     (dest / "preflight.json").write_text(json.dumps(report, indent=2) + "\n")
-    hashes = {str(p.relative_to(dest)): file_hash(p)
+    hashes = {p.relative_to(dest).as_posix(): file_hash(p)
               for p in sorted(dest.rglob("*")) if p.is_file() and p.name != "bundle-files-sha256.json"}
     (dest / "bundle-files-sha256.json").write_text(json.dumps(hashes, indent=2) + "\n")
     verify_bundle(dest)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.qwen8b import eval_local, serve_vllm
+from tools.qwen8b import serve_vllm
 from tools.start_qwen8b_vllm import (
     MAX_DPH,
     HF_ENV_KEY,
@@ -32,7 +32,7 @@ def test_exam_rules_still_require_twelve_slots():
 
 
 def test_eval_local_hardcodes_twelve_slots():
-    src = Path(eval_local.__file__).read_text()
+    src = (ROOT / "tools/qwen8b/eval_local.py").read_text()
     assert '"slots": 12' in src
     assert '"slots_per_model": 12' in src
     assert "--slots" not in src
@@ -181,7 +181,7 @@ def test_eligible_offers_reject_expensive_or_multi_gpu():
 def test_prepare_vllm_bundle_preserves_request_hashes(tmp_path):
     from tools.qwen8b.prepare_vllm_bundle import prepare
     from tools.unified_benchmark.workflow import verify_bundle
-    from test_qwen8b_review import frozen_host_bundle
+    from helpers.qwen_bundle import frozen_host_bundle
     src = tmp_path / "host"
     _, unit = frozen_host_bundle(src)
     original = {str(p.relative_to(src)): p.read_bytes() for p in src.rglob('*') if p.is_file()}
@@ -315,3 +315,20 @@ def test_readiness_does_not_accept_other_models(monkeypatch):
     monkeypatch.setattr(launcher, "build_opener", lambda _: Opener())
     with pytest.raises(RuntimeError, match="did not become ready"):
         launcher._wait_ready(Mock(poll=lambda: None), timeout=1)
+
+
+def test_offline_qwen_contracts_do_not_require_posix_locks(tmp_path):
+    import sys
+    code = '''
+import runpy
+import sys
+from pathlib import Path
+sys.modules['fcntl'] = None
+sys.path.insert(0, str(Path('tests').resolve()))
+namespace = runpy.run_path('tests/test_qwen8b_vllm.py')
+namespace['test_eval_local_hardcodes_twelve_slots']()
+namespace['test_prepare_vllm_bundle_preserves_request_hashes'](Path(sys.argv[1]))
+'''
+    result = subprocess.run([sys.executable, '-c', code, str(tmp_path)], cwd=ROOT,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
