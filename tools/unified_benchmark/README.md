@@ -39,6 +39,18 @@ bounded continuation. Its offline tests do not establish a new GPU result.
 CLIP/SigLIP2's separate paced runner at `tools/clip_benchmark/run.py` retains its
 own protocol; do not substitute it for the shared-JPEG unified run.
 
+## Exclusive local evidence locks
+
+The ledger and native execution CLI require real nonblocking process exclusion.
+POSIX uses `flock`; Windows uses the standard-library CRT exclusive byte lock at
+fixed offset zero, even on an empty file. The owning descriptor stays open for
+the entire protected operation and releases its lock on close or process exit.
+Lock contention or an unavailable backend aborts before execution; there is no
+unlocked fallback. Windows byte locks are mandatory, so inspect a ledger through
+its owning handle or after closing it. These are local-filesystem locks, not a
+claim of distributed/network-filesystem coordination or Windows GPU support.
+Offline imports do not acquire locks or require a platform locking backend.
+
 ## Handoff checklist
 
 These instructions include the corrected vLLM `ada2` launcher and the main

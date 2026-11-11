@@ -4,7 +4,6 @@ import json
 
 import pytest
 
-pytest.importorskip("fcntl", reason="Qwen evaluation is a Linux/macOS workflow")
 
 from tools.qwen8b import eval_local, prepare_vllm_bundle
 from tools.unified_benchmark import workflow

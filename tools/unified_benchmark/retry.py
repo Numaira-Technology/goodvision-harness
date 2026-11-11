@@ -1,5 +1,4 @@
 """Durable three-attempt queue. Transport is injected; importing does no IO."""
-import fcntl
 import json
 import os
 import threading
@@ -7,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from .contract import canonical, valid_value
+from .locking import lock_exclusive
 
 
 class PausedRun(RuntimeError):
@@ -33,7 +33,7 @@ class Ledger:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self.file = self.path.open("r" if read_only else "a+", encoding="utf-8")
         try:
-            fcntl.flock(self.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_exclusive(self.file)
             self.file.seek(0)
             self.rows = [json.loads(line) for line in self.file if line.strip()]
             if any(row.get("context") != context for row in self.rows):

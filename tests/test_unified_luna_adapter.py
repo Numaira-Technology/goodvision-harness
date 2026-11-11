@@ -6,7 +6,6 @@ import urllib.request
 
 import pytest
 
-pytest.importorskip("fcntl", reason="The benchmark ledger requires Linux/macOS")
 
 from tools.unified_benchmark.adapters import parse_response, request_body
 from tools.unified_benchmark.api_run import Transport

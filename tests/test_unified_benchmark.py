@@ -2,7 +2,6 @@
 import json
 from pathlib import Path
 import pytest
-pytest.importorskip("fcntl", reason="The durable benchmark queue currently requires Linux/macOS")
 
 from tools.unified_benchmark import adapters as a
 from tools.unified_benchmark.contract import EVENTS, aggregate, digest, sample_times, score, select_thresholds

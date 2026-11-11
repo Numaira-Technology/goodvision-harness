@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 
 import pytest
-pytest.importorskip("fcntl", reason="Durable benchmark execution requires Linux/macOS")
 
 from tools.unified_benchmark import adapters, preflight
 from tools.unified_benchmark.contract import EVENTS, file_hash, score
