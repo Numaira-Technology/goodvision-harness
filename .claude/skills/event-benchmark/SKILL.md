@@ -122,3 +122,14 @@ does not authorize new model calls. No new columns or tabs by default.
 
 Current202, current120 and legacy protocols have different fingerprints and interpretation.
 Shared table formatting does not make their results a controlled comparison.
+
+For an explicitly requested robot41 legacy run after its own input verification,
+the retained entrypoint is:
+
+```sh
+python tools/event_benchmark/run_eval.py --legacy-baseline --candidate qwen \
+  --samples tools/event_benchmark/datasets/samples_robot41.json \
+  --manifest tools/event_benchmark/datasets/manifest_robot41.json \
+  --media outputs/robot41/media --interval 1.0 --workers 12 \
+  --out outputs/event-benchmark/robot41-qwen.json
+```
