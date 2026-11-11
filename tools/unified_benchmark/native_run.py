@@ -8,7 +8,6 @@ import base64
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-import fcntl
 import io
 import json
 import os
@@ -26,7 +25,7 @@ import uuid
 from .adapters import frame_bytes, parse_response, request_body
 from .contract import EVENTS, RULES, canonical, digest, file_hash, finite_number, read_receipt, select_thresholds, write_new, write_receipt
 from .native_deploy import ALIASES, environment_for, profile, verify_deployment
-from .retry import Ledger, PausedRun, Queue, RequestFailure
+from .retry import Ledger, PausedRun, Queue, RequestFailure, lock_exclusive
 from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
 
 
@@ -606,7 +605,7 @@ def main(argv=None):
         p.error("invalid port")
     os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_XET="1")
     with (args.deployment / "evaluation.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_exclusive(lock)
         execute(args.model, args.bundle.resolve(), args.deployment.resolve(), args.output.resolve(),
                 args.deployment_sha256, phase=args.phase, threshold_path=args.thresholds,
                 threshold_hash=args.thresholds_sha256, port=args.port, authorization=args.authorization_note, resume=args.resume)
