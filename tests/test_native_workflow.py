@@ -608,3 +608,47 @@ def test_invalid_result_identity_stops_actual_native_resume_before_backend(froze
     assert not FakeBackend.instances and not FakeBackend.calls
     assert ledger_path.read_bytes() == before
     assert not (output / "test/completion.json").exists()
+
+
+def test_late_orphan_keeps_first_attempt_answer_in_actual_native_resume(frozen, tmp_path):
+    from tools.unified_benchmark.adapters import parse_response
+    bundle, deployment, _ = frozen
+    output = tmp_path / "late-orphan"
+    unit, first_path = seeded_native_resume(frozen, output, fatal=False)
+    cfg = deploy.profile("decision3")
+    plan = json.loads((bundle / "plans/decision3-test.json").read_text())
+    context = workflow.context_for(plan, cfg, workflow.verify_bundle(bundle))
+    backend = FakeBackend("decision3", cfg, bundle, deployment, output, 1)
+    first_raw, second_raw = backend.raw(unit, "yes"), backend.raw(unit, "no")
+    first, second = parse_response(cfg, unit, first_raw), parse_response(cfg, unit, second_raw)
+    receipt = json.loads(first_path.read_text()) | {"http_status": 200, "error": None,
+                                                   "response": first_raw, "parsed": first}
+    first_path.write_text(json.dumps(receipt))
+    second_path = first_path.with_name(f"{digest(unit['id'])}-2.json")
+    write_new(second_path, receipt | {"attempt": 2, "response": second_raw, "parsed": second})
+    ledger = Ledger(output / "test/attempts.jsonl", context)
+    base = {"unit": unit["id"], "request_sha256": unit["request_sha256"], "attempt": 2}
+    ledger.append(base | {"type": "intent"})
+    ledger.append(base | {"type": "result", "answers": second, "complete": True,
+        "elapsed_seconds": .01, "metadata": {"receipt": str(second_path.relative_to(output)),
+                                              "receipt_sha256": file_hash(second_path)}})
+    ledger.close()
+    before = (output / "test/attempts.jsonl").read_bytes()
+    hashes = {path: file_hash(path) for path in (first_path, second_path)}
+    FakeBackend.instances.clear()
+    execute(frozen, output, "decision3", "test", resume=True)
+    assert len(FakeBackend.calls) == 119 and unit["id"] not in FakeBackend.calls
+    ledger = Ledger(output / "test/attempts.jsonl", context)
+    try:
+        assert ledger.state(unit, cfg["kind"]) == (2, first)
+        assert [row["attempt"] for row in ledger.rows
+                if row["type"] == "result" and row["unit"] == unit["id"]] == [2, 1]
+    finally:
+        ledger.close()
+    assert (output / "test/attempts.jsonl").read_bytes().startswith(before)
+    assert all(file_hash(path) == sha for path, sha in hashes.items())
+    assert json.loads((output / "test/report.json").read_text())["correct"] == 120
+    completed = (output / "test/attempts.jsonl").read_bytes()
+    execute(frozen, output, "decision3", "test", resume=True)
+    assert len(FakeBackend.calls) == 119
+    assert (output / "test/attempts.jsonl").read_bytes() == completed

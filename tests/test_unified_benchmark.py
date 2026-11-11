@@ -439,3 +439,30 @@ def test_late_receipt_result_for_preceding_crash_intent_keeps_first_answer(tmp_p
         assert ledger.state(unit(), "choice") == (2, {"fight": {"answer": "yes"}})
     finally:
         ledger.close()
+
+
+@pytest.mark.parametrize("order", [(1, 2, 3), (1, 3, 2), (2, 1, 3), (2, 3, 1), (3, 1, 2), (3, 2, 1)])
+@pytest.mark.parametrize("kind", ["choice", "probability", "margin"])
+@pytest.mark.parametrize("invalid_first", [False, True])
+def test_first_valid_answers_follow_attempt_order_not_append_order(tmp_path, order, kind, invalid_first):
+    ledger, _, _ = queue(tmp_path, lambda u: ({}, {}), kind)
+    u = unit(targets=["fight", "smoking"])
+    if kind == "choice":
+        first, later, smoke, changed_smoke = ({"answer": value} for value in ("yes", "no", "unknown", "yes"))
+        invalid = {"answer": "malformed"}
+    else:
+        first, later, smoke, changed_smoke = ({"score": value} for value in (.7, .2, .8, .1))
+        invalid = {"score": True}
+    answers = {1: {"fight": invalid if invalid_first else first},
+               2: {"fight": later, "smoking": smoke}, 3: {"smoking": changed_smoke}}
+    try:
+        base = {"unit": u["id"], "request_sha256": u["request_sha256"]}
+        for attempt in (1, 2, 3):
+            ledger.append(base | {"type": "intent", "attempt": attempt})
+        for attempt in order:
+            ledger.append(base | {"type": "result", "attempt": attempt, "answers": answers[attempt]})
+        before = ledger.path.read_bytes()
+        assert ledger.state(u, kind) == (3, {"fight": later if invalid_first else first, "smoking": smoke})
+        assert ledger.path.read_bytes() == before
+    finally:
+        ledger.close()

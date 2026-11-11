@@ -59,7 +59,7 @@ class Ledger:
             intents = [r for r in records if r["type"] == "intent"]
             if [r["attempt"] for r in intents] != list(range(1, len(intents) + 1)) or len(intents) > 3:
                 raise ValueError("invalid cumulative attempt sequence")
-            answers, preceding, completed = {}, set(), set()
+            preceding, completed = set(), set()
             for row in records:
                 attempt = row["attempt"]
                 if row["type"] == "intent":
@@ -72,6 +72,12 @@ class Ledger:
                 if attempt in completed:
                     raise ValueError("duplicate result for intent")
                 completed.add(attempt)
+            # Validate append history before sorting: recovered orphan receipts
+            # can arrive late, but cannot legitimize a result before its intent.
+            answers = {}
+            results = sorted((r for r in records if r["type"] == "result"),
+                             key=lambda r: r["attempt"])
+            for row in results:
                 for event, value in row.get("answers", {}).items():
                     if event in unit["targets"] and valid_value(value, kind):
                         answers.setdefault(event, value)

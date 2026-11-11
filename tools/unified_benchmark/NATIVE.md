@@ -174,7 +174,9 @@ and phases, and preserves frozen thresholds. An interrupted intent without a
 recoverable receipt consumes one attempt. A unit already at three attempts cannot
 be sent a fourth time. Do not use a new output directory to evade that limit.
 Every result must match one preceding intent for the same unit, request and attempt;
-duplicate or unmatched results stop recovery before backend startup.
+duplicate or unmatched results stop recovery before backend startup. First valid
+answers are selected in original attempt order, even if an older orphan receipt is
+recovered after a later result. Historical ledger rows and receipt files are not rewritten.
 
 A fatal receipt discovered during recovery is recorded and pauses that invocation
 before backend startup. Diagnose it before a subsequent explicit `--resume`, which
