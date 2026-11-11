@@ -1,4 +1,4 @@
-"""Portable execution of the recorded four-model native 120-question protocol.
+"""Portable execution of the frozen four-model native evaluation protocol.
 
 Twelve video workers; exactly one in-flight window per source. No paced drops,
 new prompt policy, single-frame conversion, or changed model precision.
@@ -23,9 +23,10 @@ import urllib.request
 import uuid
 
 from .adapters import frame_bytes, parse_response, request_body
-from .contract import EVENTS, RULES, canonical, digest, file_hash, finite_number, read_receipt, select_thresholds, write_new, write_receipt
+from .contract import EVENTS, plan_rules, canonical, digest, file_hash, finite_number, read_receipt, select_thresholds, write_new, write_receipt
 from .native_deploy import ALIASES, environment_for, profile, verify_deployment
-from .retry import Ledger, PausedRun, Queue, RequestFailure, lock_exclusive
+from .locking import lock_exclusive
+from .retry import Ledger, PausedRun, Queue, RequestFailure
 from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
 
 
@@ -344,12 +345,12 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, *, recover=True):
 def selected_calibration(plan, cfg, ledger, bundle_digest, deployment_hash):
     selected = select_thresholds(plan, collect(plan, cfg, ledger), cfg["kind"], cfg["model"])
     selected.update(calibration="selected_on_complete_validation24", config_sha256=digest(cfg),
-        rules_sha256=digest(RULES), bundle_sha256=bundle_digest, model=cfg["model"],
+        rules_sha256=digest(plan_rules(plan)), bundle_sha256=bundle_digest, model=cfg["model"],
         native_deployment_sha256=deployment_hash)
     return selected
 
 
-def validate_completion(output, split, cfg):
+def validate_completion(output, split, cfg, *, ledger=None):
     """A completed phase is immutable, including its required evidence anchors."""
     path = output / split / "completion.json"
     if not path.exists():
@@ -363,8 +364,10 @@ def validate_completion(output, split, cfg):
         raise ValueError("completed phase evidence anchors missing or invalid")
     for name, expected in done["files"].items():
         evidence = (output / name).resolve()
-        if (not evidence.is_relative_to(output.resolve()) or not evidence.is_file()
-                or file_hash(evidence) != expected):
+        if not evidence.is_relative_to(output.resolve()) or not evidence.is_file():
+            raise ValueError("completed phase evidence differs")
+        actual = ledger.file_hash() if ledger is not None and evidence == ledger.path.resolve() else file_hash(evidence)
+        if actual != expected:
             raise ValueError("completed phase evidence differs")
     return True
 
@@ -516,7 +519,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                 return parsed, metadata
             try:
                 completion_path = phase_dir / "completion.json"
-                if validate_completion(output, split, cfg):
+                if validate_completion(output, split, cfg, ledger=ledger):
                     if reconcile_receipts(phase_dir, ledger, plan, cfg, output, recover=False):
                         raise ValueError("completed phase has unrecorded receipts")
                 else:
@@ -540,10 +543,11 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     threshold_hash = file_hash(threshold_path)
                     artifact = load_threshold_artifact(threshold_path, threshold_hash, bundle=bundle, alias=alias,
                                                       config=cfg, bundle_digest=bundle_digest)
+                    thresholds = artifact["thresholds"]
                 if not completion_path.exists():
                     result = report(plan, cfg, ledger, thresholds)
                     result["native_deployment_sha256"] = deployment_hash
-                    result["threshold_artifact_sha256"] = threshold_hash if split == "test" else None
+                    result["threshold_artifact_sha256"] = threshold_hash
                     # Incomplete validation still produces a report in the exception handler below.
                     save_status(phase_dir / "report.json", result)
                     files = [ledger.path, phase_dir / "report.json", phase_record]
@@ -552,7 +556,8 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     write_new(completion_path, {"execution_finished": True,
                         "final_missing_unique_units": result["final_missing_unique_units"],
                         "incomplete_questions": result["incomplete_questions"],
-                        "files": {str(p.relative_to(output)): file_hash(p) for p in files}, "at": stamp()})
+                        "files": {str(p.relative_to(output)): ledger.file_hash() if p == ledger.path else file_hash(p)
+                                  for p in files}, "at": stamp()})
                 completed.append(split)
             except BaseException:
                 # Per-invocation partial report: never overwrite completed evidence.

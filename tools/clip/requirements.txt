@@ -1,0 +1,27 @@
+# clip -- openai/clip-vit-large-patch14 inference env (src/goodvision_harness/neural_service.py).
+#
+# A CLIP ViT: NO flash-attn (set env.build.flash_attn: false for this model, so the
+# build skips the nvcc compile-once step entirely).
+#
+# Install into a NEW Python 3.12 / CUDA 12.8 env AFTER torch==2.8.0 + torchvision
+# ==0.23.0 (installed from the cu128 wheel index by tools/build_env.py). Pins track
+# the `neural` + core extras in pyproject.toml.
+ultralytics==8.4.198
+transformers==5.14.1
+safetensors==0.8.0
+numpy==2.2.6
+pillow==11.3.0
+# Core harness deps imported by neural_service / ppe.
+httpx==0.28.1
+PyYAML==6.0.2
+python-dotenv==1.1.1
+# Core and Ultralytics require different cv2 distribution names; pin one ABI.
+opencv-python-headless==4.12.0.88
+opencv-python==4.12.0.88
+# neural_service.py is a FastAPI service (goodvision-neural entrypoint); the packed
+# env serves it standalone, so the ASGI stack ships in the env.
+fastapi==0.141.1
+starlette==1.6.0
+uvicorn==0.53.0
+# R2 prefetch (tools/model_source.py); optional, HF fallback works without it.
+boto3==1.43.123

@@ -106,7 +106,7 @@ the test set as development data; obtain a new untouched test set for the next c
 The base-four CLI accepts v2 and v2.1, verifies each version's total/error counts,
 and requires matching validation/test spec versions. Its historical `overall_at_*`
 metrics remain complete-only; `all_questions_at_*` holds correct/all-question counts.
-For unified-frame-120-v2 ledgers use the unified workflow instead. Its headline
+For unified-frame-202-v1 or explicit unified-frame-120-v2 ledgers use the unified workflow instead. Its headline
 accuracy includes missing questions in the planned denominator, while the selected
 threshold algorithm still requires complete validation. Never remove missing
 validation examples to get a more favorable fit.

@@ -1,0 +1,51 @@
+{
+  "r2_key": "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz",
+  "manifest_key": "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.json",
+  "sha256": "24f1eb0cc264a9794979eb6c2225eca47d67d68025407d51db86aa171ce7ba7e",
+  "size": 4252947071,
+  "head_content_length": 4252947071,
+  "get_sha256": "24f1eb0cc264a9794979eb6c2225eca47d67d68025407d51db86aa171ce7ba7e",
+  "created_utc": "2026-11-08T21:44:18Z",
+  "compat": {
+    "python": "3.12",
+    "cuda": "13.0",
+    "torch": "2.13.0+cu130",
+    "vllm": "0.31.0",
+    "gpu_family": "ada"
+  },
+  "isolation": {
+    "python_s": true,
+    "PYTHONNOUSERSITE": true,
+    "user_site_enable": false,
+    "build_prefix": "/opt/env/qwen8b-vllm",
+    "fresh_restore": "/tmp/qwen8b-vllm-isolated-restore",
+    "imported_from_prefix": [
+      "torch",
+      "typing_extensions",
+      "vllm",
+      "filelock",
+      "tqdm",
+      "transformers",
+      "tokenizers",
+      "PIL",
+      "numpy",
+      "boto3",
+      "yaml",
+      "qwen_vl_utils"
+    ],
+    "pip_check": "No broken requirements found",
+    "cpu_import_is_not_gpu_serve": true
+  },
+  "superseded_kept": {
+    "r2_key": "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz",
+    "sha256": "2a3dcb1fc6a8d84439263512c65dae0bb576c50d4f559ae9f069407eb2e86db6",
+    "size": 4236991211
+  },
+  "hf_pack_untouched": {
+    "r2_key": "envs/qwen8b/cu128-py312-torch280-ada.tar.gz",
+    "sha256": "d101d333fe942887aefb29a4ff98eb1e0fcaaa0ea5e5f57ac1baeb53818c72ff",
+    "size": 4666450073
+  },
+  "gpu_rental_this_round": false,
+  "gpu_restore_verified": false
+}
