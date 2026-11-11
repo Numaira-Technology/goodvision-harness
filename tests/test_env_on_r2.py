@@ -617,6 +617,9 @@ def _launch_spec(prefix):
     return env
 
 
+@pytest.mark.skipif(
+    os.name != "posix", reason="packed env prefixes are absolute POSIX paths"
+)
 def test_packed_python_missing_aborts(tmp_path):
     prefix = tmp_path / "opt/env"
     prefix.mkdir(parents=True)
@@ -625,6 +628,9 @@ def test_packed_python_missing_aborts(tmp_path):
         es.packed_python(env)
 
 
+@pytest.mark.skipif(
+    os.name != "posix", reason="packed env prefixes are absolute POSIX paths"
+)
 def test_packed_python_path_stays_under_unpack_to_even_if_symlink(tmp_path):
     prefix = tmp_path / "opt/env"
     (prefix / "bin").mkdir(parents=True)

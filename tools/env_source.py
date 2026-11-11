@@ -199,13 +199,21 @@ def restore_identity(env):
     return {**_identity(env), "manifest_key": env["manifest_key"]}
 
 
+def _packed_bin(prefix):
+    """Keep a registry POSIX prefix intact. pathlib rewrites ``/opt/...`` on Windows."""
+    text = str(prefix)
+    if text.startswith("/") and not text.startswith("//"):
+        return text.rstrip("/") + "/bin"
+    return str(Path(text) / "bin")
+
+
 def subprocess_env(prefix=None):
     """Do not pass R2/HF/cloud credentials or Python injection vars to pack code."""
     result = {
         key: os.environ[key] for key in ("HOME", "LANG", "TMPDIR") if key in os.environ
     }
     result["PATH"] = (
-        str(Path(prefix) / "bin") + os.pathsep if prefix else ""
+        _packed_bin(prefix) + os.pathsep if prefix else ""
     ) + os.defpath
     result["PYTHONNOUSERSITE"] = "1"
     return result
