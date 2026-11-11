@@ -8,7 +8,8 @@ reproduction, and verify their fingerprints. The video folder alone is not enoug
 Do not fabricate the missing files or remove flags to bypass this mismatch.
 
 Use this separate cohort only when requested. It does not replace or extend the
-current120 exam. For the default workflow return to [the skill](../SKILL.md).
+current202 exam, which includes82 single views instead of these41 stereo clips.
+Do not count both sets. For the default workflow return to [the skill](../SKILL.md).
 The archived instructions below apply only to that matching historical snapshot.
 
 Use `tools/event_benchmark/datasets/samples_robot41.json` with

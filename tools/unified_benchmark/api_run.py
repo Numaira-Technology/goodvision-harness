@@ -1,5 +1,6 @@
 """Explicitly authorized OpenRouter execution of the frozen offline bundle."""
 import argparse
+import base64
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -16,11 +17,19 @@ import urllib.request
 import certifi
 from tools.event_benchmark.evidence import response_metadata
 from .adapters import parse_response, request_body
-from .contract import EVENTS, RULES, canonical, digest, file_hash, score, select_thresholds, write_new
+from .contract import EVENTS, plan_rules, canonical, digest, file_hash, score, select_thresholds, write_new
 from .retry import Ledger, PausedRun, Queue, RequestFailure
 from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
 
 ALIASES = ("qwen8b", "gemini25", "gemini38", "qwen235b", "luna", "maverick")
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+
+
+class InvalidResponse(ValueError):
+    """Keep bounded response bytes when the HTTP envelope cannot be decoded."""
+    def __init__(self, reason, status, body, *, truncated=False):
+        super().__init__(reason)
+        self.status, self.body, self.truncated = status, body, truncated
 
 
 def load_explicit_key(path):
@@ -61,10 +70,14 @@ class Transport:
         req = urllib.request.Request(url, data=canonical(body) if body is not None else None,
             headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json"})
         with urllib.request.urlopen(req, context=self.ssl, timeout=90) as response:
-            raw = response.read(2 * 1024 * 1024 + 1)
-        if len(raw) > 2 * 1024 * 1024:
-            raise ValueError("oversized response")
-        return json.loads(raw)
+            status = response.status
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise InvalidResponse("oversized response", status, raw[:MAX_RESPONSE_BYTES], truncated=True)
+        try:
+            return json.loads(raw)
+        except ValueError as error:
+            raise InvalidResponse("invalid JSON response", status, raw) from error
 
     def __call__(self, unit):
         if self.billing_stop.is_set():
@@ -76,6 +89,14 @@ class Transport:
             raise RequestFailure("request fingerprint mismatch", fatal=True)
         try:
             payload = self.call(uri, body)
+        except InvalidResponse as error:
+            raw = error.body.replace(self.key.encode(), b"[REDACTED]")
+            write_new(self.output / "receipts" / (prefix + ".json"), {
+                "http_status": error.status, "transport_error": type(error).__name__, "detail": str(error),
+                "body_base64": base64.b64encode(raw).decode(), "body_truncated": error.truncated,
+                "body_redacted": raw != error.body, "captured_body_bytes": len(error.body),
+                "unit": unit["id"], "request_sha256": unit["request_sha256"]})
+            raise RequestFailure(str(error), status=error.status) from error
         except urllib.error.HTTPError as error:
             raw = error.read(2 * 1024 * 1024).decode(errors="replace").replace(self.key, "[REDACTED]")
             write_new(self.output / "receipts" / (prefix + ".json"), {
@@ -179,13 +200,13 @@ def execute_model(alias, bundle, root, key, billing_stop, bundle_digest, *, phas
                 chosen["validation_only"] = True
             write_new(output / "thresholds.json", chosen | {"calibration": calibration,
                 "config_sha256": digest(config), "bundle_sha256": bundle_digest,
-                "rules_sha256": digest(RULES), "model": config["model"], "selected_before_test_at": time.time()})
+                "rules_sha256": digest(plan_rules(plan)), "model": config["model"], "selected_before_test_at": time.time()})
         result = report(plan, config, ledger, thresholds)
         result.update(split=split, calibration=calibration, started_at_unix=started, finished_at_unix=time.time(),
                       elapsed_seconds=time.time() - started, failure=failed, accounting=accounting(ledger))
         if split == "test":
             for label, events in (("base100", EVENTS[:4]), ("bag20", EVENTS[4:])):
-                subset_q = [q for q in plan["questions"] if q["event"] in events]
+                subset_q = [q for q in plan["questions"] if q["event"] in events and q["number"] <= 120]
                 wanted = {uid for q in subset_q for uid in q["unit_ids"]}
                 subset = plan | {"questions": subset_q, "units": [u for u in plan["units"] if u["id"] in wanted]}
                 result[label] = score(subset, {uid: v for uid, v in observed.items() if uid in wanted}, config["kind"], thresholds)

@@ -1,10 +1,10 @@
-# Current-frame 120-question evaluation handoff
+# Current-frame 202-question evaluation handoff
 
-Protocol: **unified-frame-120-v2**. This packages the previously local workflow for
-another checkout. It does not modify the original videos, questions or references,
+Default protocol: **unified-frame-202-v1**. See [dataset202 acquisition and limits](DATASET202.md).
+This packages the previously local workflow for another checkout. It does not modify the original videos, questions or references,
 re-run models, or reinterpret old bundles. Keep historical source snapshots with
 historical artifacts. The historical `tools/event_benchmark/run_eval.py` included
-here is not the current-frame 120-question entrypoint; archived v2.1 instructions
+here is not the current-frame entrypoint; archived v2.1 instructions
 require their own matching implementation as described below.
 
 Default sequence: **preflight → environment checks → validation → threshold
@@ -12,12 +12,13 @@ selection when applicable → test → local report**. Sheet publication follows
 the requested target/version/scope. Historical [v2.1](../../.claude/skills/event-benchmark/references/legacy-v2.1.md)
 and [robot41](../../.claude/skills/event-benchmark/references/robot41.md) have separate
 references requiring their matching retained code/data snapshots. Their archived
-commands are not executable from this checkout and are not the current120 route.
+commands are not executable from this checkout and are not the current202 route.
 
 ## What is included
 
-- Mandatory byte hashes for the reviewed validation24/test120 inputs. The five
+- Mandatory byte hashes for validation24/test202 inputs. The eight
   frozen JSON files are private team inputs, not published in this public repository.
+  The additional82 labels remain inherited and pending review.
   Download the original files from the [restricted team Drive](#get-the-frozen-inputs)
   below; do not regenerate their labels.
 - Thirteen recorded profiles: qwen8b, qwen235b, maverick, luna, gemini25_off,
@@ -50,8 +51,8 @@ the run. Preserve existing changes; do not reset a checkout to match this note.
 | Required material | Ready when |
 |---|---|
 | Code and instructions | Selected profiles and execution entrypoints exist in the same checkout; revision/local changes are recorded. The agent reads `.claude/skills/event-benchmark/SKILL.md` and the selected route's guide explicitly. |
-| Five private JSON files | `manifest_validation_24.json`, `validation-samples.json`, `manifest_120.json`, `test-samples.json`, `validation_split.json` are together under `--inputs`; all five pass the [pinned-hash check](#get-the-frozen-inputs). |
-| Original videos | 24 validation videos and 110 test videos (120 test questions), obtained from the private samples' team links, pass media fingerprints and full decoding. Do not substitute re-encoded copies. |
+| Eight private JSON files | `manifest_validation_24.json`, `validation-samples.json`, `manifest_120.json`, `test-samples.json`, `validation_split.json` plus `manifest_202.json`, `samples.json`, `videos.json` are together under `--inputs`; all eight pass the [pinned-hash check](#get-the-frozen-inputs). |
+| Original videos | 24 validation videos and 192 test videos (202 test questions), obtained from the private samples' team links, pass media fingerprints and full decoding. Do not substitute re-encoded copies. |
 | Offline environment | Python 3.12, Pillow, certifi, FFmpeg/ffprobe; run the [offline preflight](#run-the-offline-preflight) for the selected aliases and retain the new bundle. |
 | API route | Private key file or per-model key-file mapping, account access/balance and selected provider support are checked; model/provider identity must match actual receipts. No keys in Git or command arguments. |
 | Four-model native route | Linux x86_64 RTX 4090 24GB, SSH access, enough disk, fixed model revisions and the Python/CUDA environments in [NATIVE.md](NATIVE.md#2-prepare-the-gpu-deployment-no-evaluation-inference). Deployment verification must pass. R2 is optional for this route. |
@@ -67,13 +68,19 @@ own runtime checks. Stop at a failed prerequisite and report the missing item.
 
 ## Fixed method
 
-Test: 120 questions / 110 videos, fight32, smoking22, fall26, weapon20, bag knife10,
+Test: 202 questions / 192 videos, fight32, smoking22, fall62, weapon66, bag knife10,
 bag alcohol bottle10. Validation: 24 videos/questions, six per base event with
 three yes and three no. There is no bag validation and no fabricated train split.
 Source-group/hash separation is checked; unknown training/actor/scene overlap and
-prior test reuse remain limitations. The robot41 supplement is a separate cohort.
+prior test reuse remain limitations. The original41 stereo clips are not counted
+again. New questions121–202 are all test; their inherited labels remain pending
+single-view review. See [membership and limits](DATASET202.md#membership-and-reference-limits).
 
-- Sample t=0,1,2,... strictly before duration; common 720px JPEGs, frozen byte hashes.
+- Sample t=0,1,2,... strictly before duration and at/before the last decoded video
+  frame timestamp (relative to container start). Current202 records the original
+  grid, retained times and excluded tail points in `media-audit.json`; it never
+  repeats the last frame to fill an empty tail or skips failed in-range frames.
+  Use common 720px JPEGs with frozen byte hashes. Legacy120 retains its old boundary.
 - API profiles use the recorded **current-image** prompts, not whole-video wording.
   Each API request receives one image/question; reference answers never enter it.
 - CLIP/SigLIP2 keep one-frame positive-minus-contrast margins and native precision.
@@ -86,8 +93,8 @@ prior test reuse remain limitations. The robot41 supplement is a separate cohort
   For a complete question: any yes -> yes; otherwise any no -> no; all unknown -> unknown.
   Unknown is valid but wrong against these binary references. Refusal is missing.
 - Headline **accuracy = correct / all planned questions**, including missing questions
-  (120 overall, 100 for base100, each event's fixed count for the breakdown).
-  `complete_only_accuracy` is diagnostic, never the headline. All-missing is 0/120.
+  (202 overall, 120/82 for the two cohorts, 100 for original base100, each event's fixed count for the breakdown).
+  `complete_only_accuracy` is diagnostic, never the headline. All-missing is 0/202.
 - Maximum three total attempts per unit (initial + two retries), cumulative across
   continuations. Retain the first valid answer; never retry a valid wrong answer.
   Wait 30/60 seconds or a longer Retry-After; do not skip work to maintain playback.
@@ -115,12 +122,17 @@ Run from the repository root on Linux/macOS with Python3.12 and FFmpeg/ffprobe.
 Use an isolated environment (`certifi`, `Pillow`; `pytest` for offline checks).
 GPU dependencies are a separate pinned deployment. No CUDA imports/weights are
 needed for this preflight. Place media under `/data/goodvision/validation/` and
-`/data/goodvision/test/`, keeping frozen filenames. Obtain and verify the five
+`/data/goodvision/test/`, keeping frozen filenames. Obtain and verify the eight
 private JSON inputs using the steps below, then run the offline preflight.
 
 ### Get the frozen inputs
 
-The frozen `unified-frame-120-v2` inputs are in the
+For default202, obtain these original five inputs **plus the three202 files** in
+[DATASET202.md](DATASET202.md#acquire-and-verify). Keep them together; the original
+files validate the unchanged120 subset and validation split. For explicit legacy120,
+only the five below are required.
+
+The original `unified-frame-120-v2` inputs are in the
 [team Drive folder: unified-frame-120-v2-private-inputs-20261107](https://drive.google.com/drive/folders/1bCcadb0FDLxcmnnQI_tZ1ReR0x3avsoD).
 Access is restricted to the existing benchmark team members; the link does not
 grant public access. Sign in with your authorized team account. If access is
@@ -139,11 +151,12 @@ and place all five JSON files directly in one private directory outside Git, for
 example `/private/goodvision-inputs/`; pass that directory as `--inputs`, not the
 ZIP or a parent directory. Preserve filenames and original bytes: do not convert
 to Google Docs, copy text from a preview, or reformat/save the JSON. This folder
-contains only the five JSON files; obtain the videos separately from the existing
-team dataset locations. No credentials or model weights are included.
+contains only the original five JSON files; add the three202 files from the
+current dataset folder, and obtain videos separately. No credentials or model weights are included.
 
 From the repository root, use the prepared Python environment to check the files
-against the runner's pinned SHA-256 values (replace the example input path):
+against the runner's pinned SHA-256 values (replace the example input path).
+For explicit legacy120 only, iterate `PINNED_INPUTS` without `PINNED_202_INPUTS`:
 
 ```sh
 python - /private/goodvision-inputs <<'PY'
@@ -151,15 +164,16 @@ import hashlib
 import sys
 from pathlib import Path
 from tools.unified_benchmark.preflight import PINNED_INPUTS
+from tools.unified_benchmark.dataset202 import PINNED_202_INPUTS
 
 inputs = Path(sys.argv[1])
-for name, expected in PINNED_INPUTS.items():
+for name, expected in (PINNED_INPUTS | PINNED_202_INPUTS).items():
     path = inputs / name
     if not path.is_file():
         raise SystemExit(f"Missing frozen input: {name}")
     if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
         raise SystemExit(f"Frozen input hash mismatch: {name}; download the original again")
-print("Verified all 5 frozen inputs.")
+print("Verified all 8 frozen inputs.")
 PY
 ```
 
@@ -177,6 +191,9 @@ python -m tools.unified_benchmark.preflight \
   --output outputs/new-current-frame-bundle
 ```
 
+Default `--protocol unified-frame-202-v1` uses202; for a deliberately selected
+legacy120 run pass `--protocol unified-frame-120-v2` with the five original inputs.
+Both protocols preserve the inference method; they never reuse or overwrite old bundles.
 Required `--inputs` locates the private frozen snapshots; optional `--profiles`
 selects a reviewed configuration directory. The published hashes are mandatory;
 changed datasets require a separately reviewed protocol, not relabelled hashes.
@@ -348,6 +365,8 @@ interval midpoint, strict `>`, with FP/FN tie rules. Selection requires complete
 validation and cannot read test predictions. Freeze model/config/rules/bundle hashes.
 Bag remains Luna0.5 or margin0, explicitly uncalibrated. Boolean/argmax models have
 no scalar threshold. Past calibrated values are comparisons, not new-run defaults.
+After successful native CLIP/SigLIP2 calibration, the validation report uses the
+selected thresholds and cites their artifact hash, as does the subsequent test.
 
 For normalized ledgers, offline commands are:
 
@@ -364,6 +383,13 @@ cost includes validation/test/retries. GPU actual cost needs a bill or verified
 rate and duration. Test P50/P95 are successful complete transport attempt times,
 including parsing/metadata lookup, excluding queue/backoff; report n and missing.
 They are not independent-probe latency or end-to-end twelve-camera throughput.
+`run_date_utc` comes from the first timestamped request intent in the saved ledger,
+including resumed runs; it is null if no such evidence exists. Offline re-scoring
+records its own `report_generated_at_utc` and does not change the inference date.
+For invalid JSON or oversized HTTP responses, receipts retain up to 2 MiB of raw
+body bytes as `body_base64`, the HTTP status, and truncation/redaction flags. Such
+attempts remain invalid and consume the existing three-attempt budget; missing
+cost evidence stays unknown. API key bytes are redacted if echoed in that body.
 
 An agent can prepare a local publication preview and carry out an authorized
 update using [bench-sheet-contribute](../../.claude/skills/bench-sheet-contribute/SKILL.md).
@@ -383,7 +409,7 @@ In the prepared lightweight environment with pytest, run:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python -m pytest \
-  tests/test_unified_benchmark.py tests/test_unified_luna_adapter.py \
+  tests/test_unified_benchmark.py tests/test_unified_dataset202.py tests/test_unified_luna_adapter.py \
   tests/test_native_workflow.py tests/test_start_qwen8b_r2.py tests/test_qwen8b_vllm.py \
   -o addopts='' -q -p no:cacheprovider
 ```

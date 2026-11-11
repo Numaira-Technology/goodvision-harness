@@ -106,7 +106,7 @@ def execute(alias, bundle, root, endpoint, bundle_digest, phase):
                       execution="self_hosted_r2", endpoint=endpoint)
         if split == "test":
             for label, events in (("base100", EVENTS[:4]), ("bag20", EVENTS[4:])):
-                subset_q = [q for q in plan["questions"] if q["event"] in events]
+                subset_q = [q for q in plan["questions"] if q["event"] in events and q["number"] <= 120]
                 wanted = {uid for q in subset_q for uid in q["unit_ids"]}
                 subset = plan | {"questions": subset_q, "units": [u for u in plan["units"] if u["id"] in wanted]}
                 result[label] = score(subset, {uid: v for uid, v in observed.items() if uid in wanted},

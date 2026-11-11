@@ -1,4 +1,4 @@
-For the current-frame 120-question variant, use `tools/unified_benchmark/README.md`.
+For the current-frame 202-question variant, use `tools/unified_benchmark/README.md`.
 The procedure below describes the retained legacy runner.
 
 # Legacy v2/v2.1 benchmark methodology

@@ -14,11 +14,11 @@ the current runner to make an archived command execute. If the matching snapshot
 is unavailable, report the historical route as unavailable. The examples and
 rules below are retained provenance, not commands to run from this checkout.
 
-The default current120 route is **unified-frame-120-v2** in
+The default current202 route is **unified-frame-202-v1** in
 [the current skill](../SKILL.md) and
 [the unified guide](../../../../tools/unified_benchmark/README.md).
 The two protocols have different sampling, parsers and source identities; do not
-use the commands below as a shortcut for the current120 run.
+use the commands below as a shortcut for the current202 run.
 
 In the matching historical snapshot, use its `tools/event_benchmark/SPEC.md`
 (v2.1) and `CONTROLLED_RUN.md`. Historical v1 outputs are not v2 evidence.

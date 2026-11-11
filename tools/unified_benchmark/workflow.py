@@ -9,7 +9,7 @@ import json
 import math
 from pathlib import Path
 
-from .contract import EVENTS, RULES, digest, file_hash, score, select_thresholds, source_files, validate_threshold_values, write_new
+from .contract import CURRENT_VERSION, EVENTS, plan_rules, rules_for, digest, file_hash, score, select_thresholds, source_files, validate_threshold_values, write_new
 from .retry import Ledger
 
 
@@ -20,13 +20,24 @@ def verify_bundle(bundle):
         path = (bundle / name).resolve()
         if not path.is_relative_to(bundle.resolve()) or file_hash(path) != expected:
             raise ValueError("bundle file differs: " + name)
-    if json.loads((bundle / "rules.json").read_text()) != RULES:
+    frozen_rules = json.loads((bundle / "rules.json").read_text())
+    if frozen_rules != rules_for(frozen_rules.get("version")):
         raise ValueError("bundle protocol differs; use its retained source snapshot for historical replay")
     report = json.loads((bundle / "preflight.json").read_text())
     if not report.get("offline_passed"):
         raise ValueError("offline preflight not passed")
     if not {"rules.json", "preflight.json", "source-hashes.json"} <= set(hashes):
         raise ValueError("bundle is missing required integrity records")
+    for name in hashes:
+        if not name.startswith("plans/") or not name.endswith(".json"):
+            continue
+        plan = json.loads((bundle / name).read_text())
+        if plan_rules(plan) != frozen_rules:
+            raise ValueError("plan protocol differs from bundle")
+        if frozen_rules["version"] == CURRENT_VERSION:
+            count = 24 if plan["split"] == "validation" else 202
+            if {q["number"] for q in plan["questions"]} != set(range(1, count + 1)) or len(plan["questions"]) != count:
+                raise ValueError("plan does not cover the frozen question cohort")
     sources = json.loads((bundle / "source-hashes.json").read_text())
     active = source_files()
     if set(sources) != set(active) or report.get("sources_sha256") != digest(sources):
@@ -50,7 +61,7 @@ def load_threshold_artifact(path, expected_hash, *, bundle, alias, config, bundl
             or artifact.get("calibration") != "selected_on_complete_validation24"):
         raise ValueError("successful validation-only calibration required; test blocked")
     for field, expected in {"config_sha256": digest(config), "bundle_sha256": bundle_digest,
-                            "rules_sha256": digest(RULES), "model": config["model"]}.items():
+                            "rules_sha256": digest(json.loads((Path(bundle) / "rules.json").read_text())), "model": config["model"]}.items():
         if artifact.get(field) != expected:
             raise ValueError("threshold configuration mismatch: " + field)
     kind = config["kind"]
@@ -74,7 +85,9 @@ def load_threshold_artifact(path, expected_hash, *, bundle, alias, config, bundl
 
 
 def context_for(plan, config, bundle_digest):
-    return {"plan_sha256": digest(plan), "config_sha256": digest(config), "rules_sha256": digest(RULES),
+    if plan.get("config_sha256") != digest(config):
+        raise ValueError("plan configuration differs")
+    return {"plan_sha256": digest(plan), "config_sha256": digest(config), "rules_sha256": digest(plan_rules(plan)),
             "bundle_sha256": bundle_digest}
 
 
@@ -99,6 +112,9 @@ def report(plan, config, ledger, thresholds):
     observed = collect(plan, config, ledger)
     result = score(plan, observed, config["kind"], thresholds)
     sent = {r["unit"] for r in ledger.rows if r["type"] == "intent"}
+    # Offline re-scoring must retain the inference date, including across resumes.
+    attempt_times = [r["at_unix"] for r in ledger.rows if r["type"] == "intent"
+                     and type(r.get("at_unix")) in (int, float) and math.isfinite(r["at_unix"])]
     result.update(sent_unique_units=len(sent), send_coverage=len(sent) / len(plan["units"]),
                   send_semantics="durable transport handoff intent; server receipt not proven after interrupted call",
                   unattempted_unique_units=len(plan["units"]) - len(sent),
@@ -106,7 +122,9 @@ def report(plan, config, ledger, thresholds):
                   thresholds=thresholds, model=config["model"], requested_conditions=config,
                   observed_providers=sorted({r.get("metadata", {}).get("actual_provider") for r in ledger.rows
                       if r.get("metadata", {}).get("actual_provider")}),
-                  run_date_utc=datetime.now(timezone.utc).isoformat(),
+                  run_date_utc=datetime.fromtimestamp(min(attempt_times), timezone.utc).isoformat() if attempt_times else None,
+                  run_date_source="earliest timestamped durable request intent; null if unavailable",
+                  report_generated_at_utc=datetime.now(timezone.utc).isoformat(),
                   failed_attempt_history="retained only in attempts.jsonl; not final missing count")
     return result
 
@@ -137,7 +155,7 @@ def main(argv=None):
         observed = collect(plan, config, ledger)
         if args.phase == "select":
             result = select_thresholds(plan, observed, config["kind"], config["model"])
-            result.update(calibration="selected_on_complete_validation24", config_sha256=digest(config), rules_sha256=digest(RULES), bundle_sha256=bundle_digest,
+            result.update(calibration="selected_on_complete_validation24", config_sha256=digest(config), rules_sha256=digest(plan_rules(plan)), bundle_sha256=bundle_digest,
                           model=config["model"], selected_at=datetime.now(timezone.utc).isoformat())
         else:
             result = report(plan, config, ledger, thresholds)

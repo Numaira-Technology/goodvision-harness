@@ -203,3 +203,86 @@ def test_api_transport_saved_response_mock_no_real_http(tmp_path):
         assert observed["u"]["fight"]["answer"] == "yes"
         assert len(list((tmp_path / "out/receipts").glob('*.json'))) == 1
     finally: ledger.close()
+
+
+def test_offline_report_keeps_inference_date_separate_from_report_date(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from tools.unified_benchmark import retry, workflow
+
+    ledger = Ledger(tmp_path / "attempts.jsonl", {"test": True})
+    config = {"kind": "choice", "model": "synthetic"}
+    try:
+        for timestamp, uid in ((1700000000, "u"), (1700086400, "v")):
+            monkeypatch.setattr(retry.time, "time", lambda: timestamp)
+            ledger.append({"type": "intent", "unit": uid, "attempt": 1, "request_sha256": "frozen"})
+            ledger.append({"type": "result", "unit": uid, "attempt": 1, "request_sha256": "frozen",
+                           "answers": {"fight": {"answer": "yes"}}, "complete": True, "elapsed_seconds": .5})
+        before = ledger.path.read_bytes()
+        first = workflow.report(plan(), config, ledger, None)
+        again = workflow.report(plan(), config, ledger, None)
+        expected = datetime.fromtimestamp(1700000000, timezone.utc).isoformat()
+        assert first["run_date_utc"] == again["run_date_utc"] == expected
+        assert first["report_generated_at_utc"] != expected
+        assert first["accuracy"] == again["accuracy"] == 1
+        assert ledger.path.read_bytes() == before
+    finally:
+        ledger.close()
+
+
+def test_report_without_attempts_does_not_invent_an_inference_date(tmp_path):
+    from tools.unified_benchmark.workflow import report
+    ledger = Ledger(tmp_path / "attempts.jsonl", {"test": True})
+    try:
+        result = report(plan(), {"kind": "choice", "model": "synthetic"}, ledger, None)
+        assert result["run_date_utc"] is None
+        assert result["report_generated_at_utc"]
+        assert result["unattempted_unique_units"] == 2
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize("response_case", ["invalid_json", "invalid_utf8", "oversized"])
+def test_invalid_http_json_retains_bounded_raw_receipt_and_three_attempts(tmp_path, monkeypatch, response_case):
+    import base64
+    import io
+    import threading
+    from tools.unified_benchmark import api_run
+    from tools.unified_benchmark.contract import file_hash
+
+    key = "synthetic-secret"
+    limit = 2 * 1024 * 1024
+    raw = b"<html>upstream error " + key.encode() + b"</html>"
+    oversized = response_case == "oversized"
+    if response_case == "invalid_utf8":
+        raw += b"\xff"
+    if oversized:
+        raw += b"x" * limit
+    calls = []
+    class Response(io.BytesIO):
+        status = 200
+    def urlopen(*args, **kwargs):
+        calls.append(1)
+        return Response(raw)
+    monkeypatch.setattr(api_run.urllib.request, "urlopen", urlopen)
+    (tmp_path / "f.jpg").write_bytes(b"synthetic-image")
+    config = {"model": "qwen/test", "backend": "language", "kind": "choice", "max_tokens": 30, "temperature": 0,
+              "provider_context": {"config": {"expected_provider_name": "Mock", "provider": {"only": ["mock"], "allow_fallbacks": False}}}}
+    u = unit() | {"frames": [{"path": "f.jpg", "sha256": file_hash(tmp_path / "f.jpg"), "time": 0}], "question": "Is there a fight?"}
+    u["request_sha256"] = digest(a.request_body(config, u, tmp_path)[1])
+    ledger = Ledger(tmp_path / "attempts.jsonl", {"test": True})
+    clock = Clock()
+    client = api_run.Transport(tmp_path, config, key, tmp_path / "output", ledger, threading.Event())
+    try:
+        observed = Queue(ledger, "choice", client, slots=1, clock=clock.now, sleep=clock.sleep).run([u])
+        assert observed["u"] == {} and len(calls) == 3
+        receipts = list((tmp_path / "output/receipts").glob("*.json"))
+        assert len(receipts) == 3
+        for path in receipts:
+            saved = json.loads(path.read_text())
+            assert saved["http_status"] == 200
+            assert saved["body_truncated"] is oversized
+            assert base64.b64decode(saved["body_base64"]) == raw[:limit].replace(key.encode(), b"[REDACTED]")
+            assert key not in path.read_text()
+        assert api_run.accounting(ledger)["attempts_without_cost_evidence"] == 3
+    finally:
+        ledger.close()
