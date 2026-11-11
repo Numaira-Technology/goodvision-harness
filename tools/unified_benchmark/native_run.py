@@ -350,7 +350,7 @@ def selected_calibration(plan, cfg, ledger, bundle_digest, deployment_hash):
     return selected
 
 
-def validate_completion(output, split, cfg):
+def validate_completion(output, split, cfg, *, ledger=None):
     """A completed phase is immutable, including its required evidence anchors."""
     path = output / split / "completion.json"
     if not path.exists():
@@ -364,8 +364,10 @@ def validate_completion(output, split, cfg):
         raise ValueError("completed phase evidence anchors missing or invalid")
     for name, expected in done["files"].items():
         evidence = (output / name).resolve()
-        if (not evidence.is_relative_to(output.resolve()) or not evidence.is_file()
-                or file_hash(evidence) != expected):
+        if not evidence.is_relative_to(output.resolve()) or not evidence.is_file():
+            raise ValueError("completed phase evidence differs")
+        actual = ledger.file_hash() if ledger is not None and evidence == ledger.path.resolve() else file_hash(evidence)
+        if actual != expected:
             raise ValueError("completed phase evidence differs")
     return True
 
@@ -517,7 +519,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                 return parsed, metadata
             try:
                 completion_path = phase_dir / "completion.json"
-                if validate_completion(output, split, cfg):
+                if validate_completion(output, split, cfg, ledger=ledger):
                     if reconcile_receipts(phase_dir, ledger, plan, cfg, output, recover=False):
                         raise ValueError("completed phase has unrecorded receipts")
                 else:
@@ -554,7 +556,8 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     write_new(completion_path, {"execution_finished": True,
                         "final_missing_unique_units": result["final_missing_unique_units"],
                         "incomplete_questions": result["incomplete_questions"],
-                        "files": {str(p.relative_to(output)): file_hash(p) for p in files}, "at": stamp()})
+                        "files": {str(p.relative_to(output)): ledger.file_hash() if p == ledger.path else file_hash(p)
+                                  for p in files}, "at": stamp()})
                 completed.append(split)
             except BaseException:
                 # Per-invocation partial report: never overwrite completed evidence.

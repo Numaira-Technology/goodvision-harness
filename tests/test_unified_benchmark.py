@@ -28,6 +28,11 @@ def queue(tmp_path, send, kind="choice"):
     return ledger, clock, Queue(ledger, kind, send, slots=1, clock=clock.now, sleep=clock.sleep)
 
 
+def ledger_bytes(ledger):
+    with ledger.raw_reader() as reader:
+        return reader.read()
+
+
 def test_incomplete_yes_is_not_scored():
     r = score(plan(), {"u": {"fight": {"answer": "yes"}}}, "choice")
     assert r["accuracy"] == 0 and r["accuracy_denominator"] == 1 and r["incomplete_questions"] == 1 and r["final_missing_unique_units"] == 1
@@ -460,9 +465,9 @@ def test_first_valid_answers_follow_attempt_order_not_append_order(tmp_path, ord
             ledger.append(base | {"type": "intent", "attempt": attempt})
         for attempt in order:
             ledger.append(base | {"type": "result", "attempt": attempt, "answers": answers[attempt]})
-        before = ledger.path.read_bytes()
+        before = ledger_bytes(ledger)
         assert ledger.state(u, kind) == (3, {"fight": later if invalid_first else first, "smoking": smoke})
-        assert ledger.path.read_bytes() == before
+        assert ledger_bytes(ledger) == before
     finally:
         ledger.close()
 
@@ -479,14 +484,14 @@ def test_offline_report_keeps_inference_date_separate_from_report_date(tmp_path,
             ledger.append({"type": "intent", "unit": uid, "attempt": 1, "request_sha256": "frozen"})
             ledger.append({"type": "result", "unit": uid, "attempt": 1, "request_sha256": "frozen",
                            "answers": {"fight": {"answer": "yes"}}, "complete": True, "elapsed_seconds": .5})
-        before = ledger.path.read_bytes()
+        before = ledger_bytes(ledger)
         first = workflow.report(plan(), config, ledger, None)
         again = workflow.report(plan(), config, ledger, None)
         expected = datetime.fromtimestamp(1700000000, timezone.utc).isoformat()
         assert first["run_date_utc"] == again["run_date_utc"] == expected
         assert first["report_generated_at_utc"] != expected
         assert first["accuracy"] == again["accuracy"] == 1
-        assert ledger.path.read_bytes() == before
+        assert ledger_bytes(ledger) == before
     finally:
         ledger.close()
 

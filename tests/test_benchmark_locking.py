@@ -48,6 +48,7 @@ else:
 
 def test_offline_imports_do_not_require_a_lock_backend():
     result = child("""
+import subprocess  # Initialize stdlib platform detection before hiding backends.
 import sys
 sys.modules['fcntl'] = None
 sys.modules['msvcrt'] = None
@@ -243,3 +244,52 @@ os._exit(0)
     )
     assert result.returncode == 0, result.stderr
     assert contender(path) == "1"
+
+
+def test_owned_raw_hash_is_exact_bounded_and_restores_position(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    from contextlib import contextmanager
+
+    from tools.unified_benchmark.retry import Ledger
+
+    path = tmp_path / "attempts.jsonl"
+    row = INTENT | {"context": "lock-test", "note": "é" * (1024 * 1024)}
+    raw = json.dumps(row, ensure_ascii=False).encode("utf-8") + b"\r\n"
+    path.write_bytes(raw)
+    ledger = Ledger(path, "lock-test")
+    try:
+        ledger.file.seek(0)
+        ledger.file.read(3)
+        position = ledger.file.tell()
+        original_reader = ledger.raw_reader
+        sizes = []
+
+        @contextmanager
+        def counted_reader():
+            with original_reader() as reader:
+
+                def read(size):
+                    sizes.append(size)
+                    return reader.read(size)
+
+                yield SimpleNamespace(read=read)
+
+        monkeypatch.setattr(ledger, "raw_reader", counted_reader)
+        assert ledger.file_hash() == hashlib.sha256(raw).hexdigest()
+        assert len(sizes) >= 3 and set(sizes) == {1024 * 1024}
+        assert ledger.file.tell() == position
+        with pytest.raises(RuntimeError, match="reader failure"):
+            with original_reader() as reader:
+                assert reader.read(7) == raw[:7]
+                assert contender(path) == "blocked"
+                raise RuntimeError("reader failure")
+        assert ledger.file.tell() == position
+        ledger.append(INTENT | {"attempt": 2})
+        with original_reader() as reader:
+            final_bytes = reader.read()
+        assert final_bytes.startswith(raw)
+        assert ledger.file_hash() == hashlib.sha256(final_bytes).hexdigest()
+    finally:
+        ledger.close()
+    assert path.read_bytes() == final_bytes

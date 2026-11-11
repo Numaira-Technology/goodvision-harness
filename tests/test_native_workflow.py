@@ -1032,3 +1032,35 @@ def test_native202_validation_to_test_keeps_method(frozen, tmp_path, alias):
         artifact = json.loads((out / 'thresholds.json').read_text())
         assert artifact['rules_sha256'] == digest(rules_for(CURRENT_VERSION))
         assert artifact['validation_summary']['complete_valid_questions'] == 24
+
+
+def test_native_completion_and_resume_do_not_reopen_owned_ledger(frozen, tmp_path, monkeypatch):
+    """Model Windows mandatory byte locks while exercising real native receipts."""
+    owners = set()
+    original_init, original_close, original_open = Ledger.__init__, Ledger.close, Path.open
+
+    def ledger_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        if self.file is not None:
+            owners.add(self.path.resolve())
+
+    def ledger_close(self):
+        original_close(self)
+        owners.discard(self.path.resolve())
+
+    def guarded_open(path, *args, **kwargs):
+        if path.resolve() in owners:
+            raise PermissionError("synthetic mandatory lock denies second handle")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Ledger, "__init__", ledger_init)
+    monkeypatch.setattr(Ledger, "close", ledger_close)
+    monkeypatch.setattr(Path, "open", guarded_open)
+    out = tmp_path / "run"
+    execute(frozen, out, "clip")
+    calls = list(FakeBackend.calls)
+    before = {name: file_hash(out / name) for name in ("validation/attempts.jsonl", "test/attempts.jsonl")}
+    execute(frozen, out, "clip", resume=True)
+    assert FakeBackend.calls == calls
+    assert {name: file_hash(out / name) for name in before} == before
+    assert not owners
