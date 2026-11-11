@@ -18,6 +18,7 @@ from tools.unified_benchmark.adapters import request_body
 from tools.unified_benchmark.contract import RULES, VERSION, digest, file_hash
 from tools.unified_benchmark.preflight import freeze_sources, model_configs
 from tools.unified_benchmark.retry import Ledger, Queue
+from tools.unified_benchmark.workflow import verify_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -49,6 +50,7 @@ def frozen(tmp_path):
     (bundle / "configs/qwen8b_r2_vllm.json").write_text(json.dumps(config))
     frame = bundle / "frames/synthetic.jpg"
     Image.new("RGB", (720, 404), (100, 20, 40)).save(frame)
+    phases = {}
     for split in ("validation", "test"):
         unit = {"id": f"synthetic-{split}/0", "source_id": f"synthetic-{split}",
                 "targets": ["fight"], "question": "Is fighting visible in the current image?",
@@ -58,9 +60,14 @@ def frozen(tmp_path):
                 "rules_sha256": digest(RULES), "units": [unit],
                 "questions": [{"number": 1, "event": "fight", "reference": "no", "unit_ids": [unit["id"]]}]}
         (bundle / f"plans/qwen8b_r2_vllm-{split}.json").write_text(json.dumps(plan))
+        phases[split] = {"plan_sha256": digest(plan)}
     (bundle / "rules.json").write_text(json.dumps(RULES))
     sources = freeze_sources(bundle)
-    (bundle / "preflight.json").write_text(json.dumps({"offline_passed": True, "sources_sha256": digest(sources)}))
+    (bundle / "preflight.json").write_text(json.dumps({
+        "offline_passed": True,
+        "sources_sha256": digest(sources),
+        "models": {"qwen8b_r2_vllm": phases},
+    }))
     seal(bundle)
     return bundle
 
@@ -120,7 +127,23 @@ def test_even_resealed_stale_or_changed_profiles_fail(frozen, change):
                         "weights": ("weight_revision", "0" * 40), "engine": ("engine", "transformers")}[change]
         cfg[field] = value
     path.write_text(json.dumps(cfg))
+    # Make a self-consistent synthetic bundle for the stale profile so this
+    # tests the independent active-profile gate, not an earlier binding error.
+    report_path = frozen / "preflight.json"
+    report = json.loads(report_path.read_text())
+    for split in ("validation", "test"):
+        plan_path = frozen / f"plans/qwen8b_r2_vllm-{split}.json"
+        plan = json.loads(plan_path.read_text())
+        plan["config_sha256"] = digest(cfg)
+        for unit in plan["units"]:
+            unit["request_sha256"] = digest(request_body(cfg, unit, frozen)[1])
+        plan_path.write_text(json.dumps(plan))
+        report["models"]["qwen8b_r2_vllm"][split]["plan_sha256"] = digest(plan)
+    report_path.write_text(json.dumps(report))
     seal(frozen)
+    assert verify_bundle(frozen) == file_hash(
+        frozen / "bundle-files-sha256.json"
+    )
     before = {str(p.relative_to(frozen)): file_hash(p) for p in frozen.rglob("*") if p.is_file()}
     with pytest.raises(ValueError, match="profile differs"):
         launcher._verify_eval_bundle(frozen, "both", registry.env_of("qwen8b-vllm"))
@@ -144,20 +167,68 @@ def test_changed_request_plan_fails_before_sending(frozen, change):
     elif change == "duplicate":
         plan["units"] *= 2
     path.write_text(json.dumps(plan))
+    # Bind the changed plan so request fingerprints and unique-unit guards are
+    # still exercised instead of every case stopping at the plan digest check.
+    report_path = frozen / "preflight.json"
+    report = json.loads(report_path.read_text())
+    report["models"]["qwen8b_r2_vllm"]["validation"]["plan_sha256"] = digest(plan)
+    report_path.write_text(json.dumps(report))
     seal(frozen)
     if change == "unsealed":
         manifest = frozen / "bundle-files-sha256.json"
         hashes = json.loads(manifest.read_text())
         del hashes[str(path.relative_to(frozen))]
         manifest.write_text(json.dumps(hashes))
-    with pytest.raises(ValueError):
+    expected = {
+        "request": "request fingerprint differs",
+        "config_hash": "preflight plan identity differs",
+        "rules_hash": "preflight plan identity differs",
+        "split": "preflight plan identity differs",
+        "unsealed": "bundle inventory contains unsealed or missing files",
+        "empty": "requires unique request units",
+        "duplicate": "requires unique request units",
+    }[change]
+    with pytest.raises(ValueError, match=expected):
         launcher._verify_eval_bundle(frozen, "both", registry.env_of("qwen8b-vllm"))
 
 
-def test_test_phase_does_not_require_validation_for_smoke(frozen):
+@pytest.mark.parametrize("change", ["models", "plan_digest", "config", "frame"])
+def test_resealing_does_not_replace_semantic_preflight_bindings(frozen, change):
+    report_path = frozen / "preflight.json"
+    report = json.loads(report_path.read_text())
+    if change == "models":
+        del report["models"]
+    elif change == "plan_digest":
+        report["models"]["qwen8b_r2_vllm"]["validation"]["plan_sha256"] = "0" * 64
+    elif change == "config":
+        path = frozen / "configs/qwen8b_r2_vllm.json"
+        config = json.loads(path.read_text())
+        config["max_tokens"] += 1
+        path.write_text(json.dumps(config))
+    else:
+        (frozen / "frames/synthetic.jpg").write_bytes(b"changed synthetic frame")
+    report_path.write_text(json.dumps(report))
+    seal(frozen)
+    expected = {
+        "models": "missing preflight model/plan records",
+        "plan_digest": "preflight plan identity differs",
+        "config": "preflight plan identity differs",
+        "frame": "unsealed bundle frame",
+    }[change]
+    with pytest.raises(ValueError, match=expected):
+        launcher._verify_eval_bundle(frozen, "both", registry.env_of("qwen8b-vllm"))
+
+
+def test_test_phase_preserves_declared_validation_plan(frozen):
+    # Selecting test-only inference does not need validation for its smoke,
+    # but the complete preflight inventory must remain intact.
+    assert launcher._verify_eval_bundle(
+        frozen, "test", registry.env_of("qwen8b-vllm")
+    ) == file_hash(frozen / "bundle-files-sha256.json")
     (frozen / "plans/qwen8b_r2_vllm-validation.json").unlink()
     seal(frozen)
-    launcher._verify_eval_bundle(frozen, "test", registry.env_of("qwen8b-vllm"))
+    with pytest.raises(ValueError, match="unsealed bundle plan"):
+        launcher._verify_eval_bundle(frozen, "test", registry.env_of("qwen8b-vllm"))
 
 
 def test_invalid_bundle_stops_main_before_credentials_or_rental(frozen, tmp_path, monkeypatch):
