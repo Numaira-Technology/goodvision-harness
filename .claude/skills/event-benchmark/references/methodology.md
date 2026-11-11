@@ -9,7 +9,7 @@ They cannot establish v2 accuracy or calibrate a v2 variant without fresh eviden
 
 ## Inputs and provenance
 
-Before any request, require a `human_reviewed` manifest matching the exact samples
+Before any model request, require a `human_reviewed` manifest matching the exact samples
 file and every scored media file. Pass `--manifest` explicitly. Missing media,
 ambiguous filenames, changed questions/labels and hash mismatches are blockers.
 `--checksums` is a compatibility flag: hash checking is always enforced.
@@ -24,6 +24,16 @@ Read the actual reviewed status and hash of each manifest. The 120 cohort has 10
 base-4 questions and 20 bag-search questions. Review status must be resolved by
 reviewers, not relabeled by an agent to enable a run. Bag questions allow unknown
 and require a separate versioned task/metric; the base runner filters them out.
+
+The legacy reviewed-scoring route still rejects the combined draft202 manifest.
+The separate unified202 variant explicitly reports provisional reference agreement,
+not a human-reviewed benchmark. Related views/cuts must stay in one split; a group
+name alone does not prove reviewed source isolation. All 36 added fall views share
+one recording. Original and robot weapon references retain different semantics;
+a frozen current-image prompt does not establish relabeling equivalence. Do not
+silently combine those references for calibration. The retained public historical
+samples also do not match the exact hash pinned by the committed120 manifest.
+Recover the matching frozen bytes rather than changing that hash.
 
 ## Frozen v2 procedure
 

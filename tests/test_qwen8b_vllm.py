@@ -180,30 +180,19 @@ def test_eligible_offers_reject_expensive_or_multi_gpu():
 
 def test_prepare_vllm_bundle_preserves_request_hashes(tmp_path):
     from tools.qwen8b.prepare_vllm_bundle import prepare
+    from tools.unified_benchmark.workflow import verify_bundle
+    from test_qwen8b_review import frozen_host_bundle
     src = tmp_path / "host"
-    (src / "plans").mkdir(parents=True)
-    (src / "configs").mkdir()
-    (src / "frames").mkdir()
-    host_plan = {
-        "protocol": "unified-frame-120-v2",
-        "split": "validation",
-        "config_sha256": "abc",
-        "rules_sha256": "def",
-        "questions": [{"number": 1, "unit_ids": ["u1"]}],
-        "units": [{"id": "u1", "request_sha256": "cafebabedeadbeef" * 2,
-                   "frames": [{"sha256": "0" * 64, "path": "frames/x.jpg"}]}],
-    }
-    for split in ("validation", "test"):
-        p = dict(host_plan, split=split)
-        (src / "plans" / f"qwen8b_r2_host-{split}.json").write_text(json.dumps(p))
-    (src / "bundle-files-sha256.json").write_text("{}")
+    _, unit = frozen_host_bundle(src)
+    original = {str(p.relative_to(src)): p.read_bytes() for p in src.rglob('*') if p.is_file()}
     dest = tmp_path / "vllm"
     info = prepare(src, dest)
-    plan = json.loads((dest / "plans" / "qwen8b_r2_vllm-validation.json").read_text())
-    assert plan["units"][0]["request_sha256"] == host_plan["units"][0]["request_sha256"]
-    assert plan["units"][0]["frames"][0]["sha256"] == "0" * 64
+    plan = json.loads((dest / "plans/qwen8b_r2_vllm-validation.json").read_text())
+    assert plan["units"][0]["request_sha256"] == unit["request_sha256"]
+    assert plan["units"][0]["frames"] == unit["frames"]
     assert info["exam_unchanged"] is True
-    assert (dest / "configs" / "qwen8b_r2_vllm.json").is_file()
+    assert verify_bundle(dest) == info['bundle_sha256']
+    assert original == {str(p.relative_to(src)): p.read_bytes() for p in src.rglob('*') if p.is_file()}
 
 
 def test_diag_import_does_not_eval_or_prefetch():
@@ -250,8 +239,79 @@ def test_build_env_refuses_frozen_vllm_and_hf_keys():
     assert "envs/qwen8b/cu128-py312-torch280-ada.tar.gz" in FROZEN_R2_KEYS
     assert "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz" in FROZEN_R2_KEYS
     assert "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz" in FROZEN_R2_KEYS
-    assert "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz" not in FROZEN_R2_KEYS
+    assert "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz" in FROZEN_R2_KEYS
     with pytest.raises(SystemExit):
         _refuse_frozen_key("envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz")
     with pytest.raises(SystemExit):
         _refuse_frozen_key("envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz")
+
+
+def test_cuda_query_uses_selected_pack_compat():
+    from tools.start_qwen8b_r2 import _vast_query
+    from tools import registry
+    assert "cuda_vers>=12.8" in _vast_query(80)
+    spec = registry.env_of("qwen8b-vllm")
+    assert "cuda_vers>=13.0" in _vast_query(80, cuda_version=spec["compat"]["cuda"])
+
+
+@pytest.mark.parametrize("model", [None, "wrong", 42])
+def test_smoke_requires_exact_model(monkeypatch, tmp_path, model):
+    import io
+    from tools import start_qwen8b_vllm as launcher
+    monkeypatch.setattr(launcher, "_smoke_body", lambda _: {})
+    class Opener:
+        def open(self, *a, **kw):
+            return io.BytesIO(json.dumps({"model": model}).encode())
+    with pytest.raises(RuntimeError, match="model mismatch"):
+        launcher._smoke(Opener(), tmp_path)
+
+
+def test_bundle_check_rejects_profile_before_rental(tmp_path, monkeypatch):
+    from tools import start_qwen8b_r2 as host
+    from tools.unified_benchmark import workflow
+    monkeypatch.setattr(workflow, "verify_bundle", lambda _: "verified")
+    (tmp_path / "configs").mkdir()
+    config = model_configs(["qwen8b_r2_vllm"])["qwen8b_r2_vllm"]
+    path = tmp_path / "configs/qwen8b_r2_vllm.json"
+    path.write_text(json.dumps(config))
+    output = tmp_path / "output"
+    host._verify_eval_bundle(tmp_path, "qwen8b_r2_vllm", "vllm", output)
+    path.write_text(json.dumps(config | {"engine": "transformers"}))
+    with pytest.raises(ValueError, match="engine/profile"):
+        host._verify_eval_bundle(tmp_path, "qwen8b_r2_vllm", "vllm", output)
+    path.write_text(json.dumps(config))
+    output.mkdir()
+    with pytest.raises(ValueError, match="output already exists"):
+        host._verify_eval_bundle(tmp_path, "qwen8b_r2_vllm", "vllm", output)
+
+
+@pytest.mark.parametrize("module,alias", [("tools.start_qwen8b_r2", "qwen8b_r2_host"),
+                                         ("tools.start_qwen8b_vllm", "qwen8b_r2_vllm")])
+def test_launchers_validate_before_loading_credentials(monkeypatch, tmp_path, module, alias):
+    import importlib
+    import sys
+    from tools import start_qwen8b_r2 as host
+    launcher = importlib.import_module(module)
+    def stop(bundle, selected, engine, output):
+        assert selected == alias
+        raise ValueError("offline bundle rejection")
+    monkeypatch.setattr(host, "_verify_eval_bundle", stop)
+    monkeypatch.setattr(sys, "argv", [module, "--eval-bundle", str(tmp_path),
+                                    "--eval-output", str(tmp_path / "out")])
+    with pytest.raises(ValueError, match="offline bundle rejection"):
+        launcher.main()
+
+
+def test_readiness_does_not_accept_other_models(monkeypatch):
+    import io
+    from unittest.mock import Mock
+    from tools import start_qwen8b_vllm as launcher
+    ticks = iter([0, 0, 2])
+    monkeypatch.setattr(launcher.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(launcher.time, "sleep", lambda _: None)
+    class Opener:
+        def open(self, *a, **kw):
+            return io.BytesIO(b'{"data":[{"id":"wrong"}]}')
+    monkeypatch.setattr(launcher, "build_opener", lambda _: Opener())
+    with pytest.raises(RuntimeError, match="did not become ready"):
+        launcher._wait_ready(Mock(poll=lambda: None), timeout=1)

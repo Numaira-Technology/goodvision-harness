@@ -113,11 +113,11 @@ does not authorize new model calls. No new columns or tabs by default.
 - `unified-frame-120-v2`: explicit `preflight --protocol unified-frame-120-v2`;
   five original frozen files,120 test questions. Old bundles keep their original code.
 - [Legacy v2.1](references/legacy-v2.1.md): historical centered sampling and strict
-  parser. Requires its matching retained code snapshot; this checkout does not
-  implement the documented controlled/legacy CLI flags.
+  parser. This checkout includes its controlled/legacy CLI; keep the matching
+  retained code and inputs with historical artifacts.
 - [Robot41 supplement](references/robot41.md): historical 41-question fall/weapon
-  cohort. Its downloader and frozen JSON files are absent here; obtain the matching
-  snapshot before considering a run. Never mix it into the 120 denominator.
+  cohort. Its downloader and reviewed JSON files are included; use their matching
+  fingerprints for an explicitly selected run. Never mix it into the 120 denominator.
 - [Model classes](references/model-classes.md): historical runner boundaries.
 
 Current202, current120 and legacy protocols have different fingerprints and interpretation.

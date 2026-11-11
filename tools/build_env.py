@@ -33,6 +33,11 @@ from tools import model_source, registry
 
 # Never overwrite these published objects. New packs get a new r2_key.
 FROZEN_R2_KEYS = (
+    "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz",
+    "envs/videojev/cu128-py312-torch280-ada.tar.gz",
+    "envs/clip/cu128-py312-torch280-ada.tar.gz",
+    "envs/siglip2/cu128-py312-torch280-ada.tar.gz",
+    "envs/d3-nano/cu128-py312-torch280-ada.tar.gz",
     "envs/qwen8b/cu128-py312-torch280-ada.tar.gz",
     "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz",
     # Mixed conda setuptools 84.2.1 + pip 80.10.2; tarball files != RECORD.
@@ -319,7 +324,8 @@ def _restore_tarball_isolated(tarball: Path, dest: Path, modules: tuple[str, ...
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
-    _run(["tar", "-xzf", str(tarball), "-C", str(dest)])
+    from tools.env_source import _safe_extract
+    _safe_extract(tarball, dest)
     unpacker = dest / "bin" / "conda-unpack"
     python = dest / "bin" / "python"
     if unpacker.is_file():
@@ -352,9 +358,15 @@ def _upload(env_spec, name, tarball, compat, repo_rev):
         "format": "conda-pack",
     }
     _log(f"uploading {tarball} ({size/1e9:.2f} GB) -> {env_spec['r2_key']}")
-    client.upload_file(str(tarball), bucket, env_spec["r2_key"])
+    # Conditional single-object writes preserve immutable keys even with concurrent
+    # builders. Do not fall back to overwrite-capable upload_file on unsupported stores.
+    if size > 5_000_000_000:
+        raise ValueError("pack exceeds conditional single-PUT limit; split/version the build")
+    with Path(tarball).open("rb") as body:
+        client.put_object(Bucket=bucket, Key=env_spec["r2_key"],
+                          Body=body, ContentLength=size, IfNoneMatch="*")
     client.put_object(Bucket=bucket, Key=env_spec["manifest_key"],
-                      Body=json.dumps(manifest, indent=2).encode())
+                      Body=json.dumps(manifest, indent=2).encode(), IfNoneMatch="*")
     return manifest
 
 

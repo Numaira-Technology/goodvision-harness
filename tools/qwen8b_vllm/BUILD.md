@@ -69,6 +69,9 @@ builder (`require_cuda: false` checks `torch.version.cuda`, not
 versioned `r2_key` and `manifest_key` values in the registry and preserve all
 existing objects, including `ada2` and the HF pack. The builder uploads to its
 configured keys, so do not run it against the current registry for a normal rerun.
+Published keys are refused. Both new objects use conditional create-only writes;
+an existing key or a store without conditional-write support fails closed. Packs
+above 5 GB are rejected by this single-PUT publication path.
 
 ```sh
 sudo mkdir -p /opt/env && sudo chown "$USER" /opt/env

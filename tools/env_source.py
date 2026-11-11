@@ -73,47 +73,55 @@ def read_remote_manifest(env, *, client=None, bucket=None):
     return json.loads(body)
 
 
+def _pinned_sha(env):
+    sha = env.get("sha256")
+    if (not isinstance(sha, str) or len(sha) != 64
+            or any(c not in "0123456789abcdef" for c in sha)):
+        raise ValueError("a registry-pinned SHA256 is required for environment restore")
+    return sha
+
+
 def _already_restored(env):
-    """True iff the env is already extracted and matches the expected sha256."""
-    m = _marker(env["unpack_to"])
+    """Reuse only a matching artifact with an unchanged activation script."""
+    want = _pinned_sha(env)
     activate = Path(_activate_path(env))
-    if not m.is_file() or not activate.is_file():
-        return False
     try:
-        got = json.loads(m.read_text()).get("sha256")
-    except (ValueError, OSError):
+        marker = json.loads(_marker(env["unpack_to"]).read_text())
+        return (marker.get("sha256") == want
+                and marker.get("r2_key") == env["r2_key"]
+                and marker.get("activate_rel") == env["activate_rel"]
+                and marker.get("activate_sha256") == _sha256(activate))
+    except (ValueError, OSError, AttributeError):
         return False
-    want = env.get("sha256")
-    return bool(got) and (want is None or got == want)
 
 
 def _safe_extract(tarball, dest):
-    """Extract ``tarball`` into ``dest`` with tar (fast), rejecting path escapes.
-
-    The archive is ours and sha256-verified before this runs; the data filter is a
-    second line of defence against a bad path. Falls back to the stdlib with the
-    3.12 data filter if the ``tar`` binary is unavailable.
-    """
-    dest = Path(dest)
-    dest.mkdir(parents=True, exist_ok=True)
-    if shutil.which("tar"):
-        subprocess.run(["tar", "-xzf", str(tarball), "-C", str(dest)], check=True)
-        return
+    """Always apply the stdlib data filter; never fall back to unrestricted tar."""
     import tarfile
 
+    if not hasattr(tarfile, "data_filter"):
+        raise RuntimeError("environment restore requires Python with tarfile.data_filter")
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
     with tarfile.open(tarball, "r:gz") as tf:
-        tf.extractall(dest, filter="data")  # py3.12: blocks abs paths / .. escapes
+        tf.extractall(dest, filter="data")
 
 
 def pull_env(env, *, client=None, bucket=None, scratch=None):
     """Download + verify + extract + unpack the env; return the activate path."""
+    want_sha = _pinned_sha(env)
     client = client or model_source.r2_client()
     if client is None:
         raise RuntimeError("R2 credentials not configured")
     bucket = bucket or os.environ["R2_BUCKET"]
 
     man = read_remote_manifest(env, client=client, bucket=bucket)
-    want_sha = env.get("sha256") or (man or {}).get("sha256")
+    if man is not None:
+        if not isinstance(man, dict):
+            raise ValueError("invalid environment manifest")
+        for field in ("sha256", "r2_key", "unpack_to", "activate_rel", "compat", "size"):
+            if field in man and field in env and man[field] != env[field]:
+                raise ValueError("environment manifest contradicts registry: " + field)
 
     unpack_to = Path(env["unpack_to"])
     scratch = Path(scratch or tempfile.gettempdir())
@@ -124,10 +132,11 @@ def pull_env(env, *, client=None, bucket=None, scratch=None):
     client.download_file(bucket, env["r2_key"], str(tarball))
 
     got_sha = _sha256(tarball)
-    if want_sha and got_sha != want_sha:
+    if got_sha != want_sha:
         tarball.unlink(missing_ok=True)
         raise ValueError(f"env tarball sha256 mismatch: got {got_sha}, want {want_sha}")
-    if man and man.get("size") and tarball.stat().st_size != man["size"]:
+    expected_size = env.get("size", (man or {}).get("size"))
+    if expected_size is not None and tarball.stat().st_size != expected_size:
         tarball.unlink(missing_ok=True)
         raise ValueError("env tarball size mismatch vs manifest")
 
@@ -150,6 +159,7 @@ def pull_env(env, *, client=None, bucket=None, scratch=None):
 
     _marker(unpack_to).write_text(json.dumps(
         {"sha256": got_sha, "r2_key": env["r2_key"],
+         "activate_rel": env["activate_rel"], "activate_sha256": _sha256(activate),
          "restored_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
         indent=2))
     tarball.unlink(missing_ok=True)

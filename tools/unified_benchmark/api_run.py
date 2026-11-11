@@ -17,11 +17,12 @@ import urllib.request
 import certifi
 from tools.event_benchmark.evidence import response_metadata
 from .adapters import parse_response, request_body
-from .contract import EVENTS, plan_rules, canonical, digest, file_hash, score, select_thresholds, write_new
+from .contract import EVENTS, plan_rules, canonical, digest, file_hash, score, select_thresholds, write_new, write_receipt
 from .retry import Ledger, PausedRun, Queue, RequestFailure
 from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
 
 ALIASES = ("qwen8b", "gemini25", "gemini38", "qwen235b", "luna", "maverick")
+
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
@@ -99,7 +100,7 @@ class Transport:
             raise RequestFailure(str(error), status=error.status) from error
         except urllib.error.HTTPError as error:
             raw = error.read(2 * 1024 * 1024).decode(errors="replace").replace(self.key, "[REDACTED]")
-            write_new(self.output / "receipts" / (prefix + ".json"), {
+            write_receipt(self.output / "receipts" / (prefix + ".json"), {
                 "http_status": error.code, "body": raw, "retry_after": error.headers.get("Retry-After"),
                 "unit": unit["id"], "request_sha256": unit["request_sha256"]})
             if error.code == 402:
@@ -107,7 +108,7 @@ class Transport:
             raise RequestFailure("HTTP " + str(error.code), status=error.code,
                 retry_after=retry_after(error.headers.get("Retry-After")), fatal=error.code in (400, 401, 402, 403, 404)) from error
         except (OSError, TimeoutError, ValueError) as error:
-            write_new(self.output / "receipts" / (prefix + ".json"), {
+            write_receipt(self.output / "receipts" / (prefix + ".json"), {
                 "transport_error": type(error).__name__, "detail": str(error).replace(self.key, "[REDACTED]"),
                 "unit": unit["id"], "request_sha256": unit["request_sha256"]})
             raise RequestFailure(type(error).__name__) from error
@@ -118,32 +119,33 @@ class Transport:
         if generation and (not metadata.get("actual_provider") or not metadata.get("actual_model")):
             try:
                 generation_data = self.call("https://openrouter.ai/api/v1/generation?id=" + urllib.parse.quote(generation, safe=""))["data"]
+                if not isinstance(generation_data, dict):
+                    raise ValueError("invalid generation metadata envelope")
                 if generation_data.get("id") != generation:
                     raise ValueError("generation identity mismatch")
                 for k, v in response_metadata(generation_data).items():
                     metadata.setdefault(k, v)
             except (OSError, ValueError, KeyError, TypeError):
                 metadata["metadata_lookup_error"] = "unavailable"
-        write_new(self.output / "receipts" / (prefix + ".json"), {
+        write_receipt(self.output / "receipts" / (prefix + ".json"), {
             "response": payload, "generation_metadata": generation_data,
             "unit": unit["id"], "request_sha256": unit["request_sha256"]})
+        metadata["receipt"] = "receipts/" + prefix + ".json"
+        metadata["receipt_sha256"] = file_hash(self.output / metadata["receipt"])
         expected = self.config["provider_context"]["config"]["expected_provider_name"]
         if metadata.get("actual_provider") and metadata["actual_provider"] != expected:
-            raise RequestFailure("actual provider mismatch: " + metadata["actual_provider"], fatal=True)
+            raise RequestFailure("actual provider mismatch: " + metadata["actual_provider"], fatal=True, metadata=metadata)
         if not metadata.get("actual_provider") or not metadata.get("actual_model"):
-            raise RequestFailure("provider/model receipt identity unavailable", fatal=True)
+            raise RequestFailure("provider/model receipt identity unavailable", fatal=True, metadata=metadata)
         actual_model = metadata.get("actual_model")
         if actual_model and actual_model != self.config["model"] and not (
                 self.config["backend"] == "decision" and actual_model.startswith(self.config["model"] + "-")):
-            raise RequestFailure("actual model mismatch: " + actual_model, fatal=True)
+            raise RequestFailure("actual model mismatch: " + actual_model, fatal=True, metadata=metadata)
         try:
-            if self.config["backend"] == "language" and payload.get("choices", [{}])[0].get("message", {}).get("refusal"):
-                raise ValueError("explicit refusal")
             answers = parse_response(self.config, unit, payload)
         except (ValueError, KeyError, TypeError, IndexError) as error:
             answers = {}
             metadata["answer_error"] = str(error)[:500]
-        metadata["receipt"] = "receipts/" + prefix + ".json"
         return answers, metadata
 
 

@@ -5,7 +5,8 @@
 `outputs` 列出每类输出的地址；带 `{event_id}` 等占位符的项是地址模板。
 编号依次为 `camera01`、`camera02`、…、`camera100`，以实际部署容量为准。
 
-以下表格中的 `C` 表示 `/v1/fleet/cameras/{camera_id}`。所有输出方法为 `GET`。
+以下表格中的 `C` 表示 `/v1/fleet/cameras/{camera_id}`。HTTP 输出方法为 `GET`，
+WebSocket 地址通过 Upgrade 建立连接。
 例如第二路标注视频地址是 `/v1/fleet/cameras/camera02/video/annotated/stream.mjpeg`。
 第一路将其中 `camera02` 换为 `camera01`；每一路都具备表中的完整输出能力。
 
@@ -18,6 +19,9 @@
 | 最新分析结果 / 持续结果 | `C/results/latest` / `C/results/events` | JSON / SSE |
 | 整体描述 / 持续描述 | `C/results/overall/latest` / `C/results/overall/events` | JSON / SSE |
 | 五类检测结果 / 持续结果 | `C/results/{feature}/latest` / `C/results/{feature}/events` | JSON / SSE |
+| 分析结果订阅 | `C/results/ws` | WebSocket JSON |
+| 整体描述订阅 | `C/results/overall/ws` | WebSocket JSON |
+| 指定检测能力订阅 | `C/results/{feature}/ws` | WebSocket JSON |
 | 人物追踪与丰富标签 | `C/rich-labels/latest` | JSON |
 | 人脸快速识别结果 | `C/faces/fast` | JSON |
 | 已登记人脸库状态 | `C/faces/gallery` | JSON |
@@ -44,6 +48,7 @@
 
 - JSON 对象和每个 SSE JSON 数据包在顶层增加 `camera_id`；原有字段结构不变。
   嵌套事件、人物、检测框、证据等记录归属于这一通道。
+- 结果 WebSocket 的外层消息与 `data` 都带 `camera_id`，只接收指定通道的结果。
 - 所有成功进入输出处理的 HTTP 响应带 `X-Camera-Id`，包括 JPEG、MJPEG、MP4 和 GVD1。
   GVD1 的 JSON 头也包含 `camera_id`；长度字段同步更新，图片字节和帧描述保留。
 - 返回的证据图片、事件录像、迁移地址等内部输出链接已经带同一通道前缀，直接使用返回链接即可。
@@ -83,6 +88,13 @@ C/video/display/frames?after=42&connection_id=...&revision=7&stream_session_id=.
 `Last-Event-ID` 优先于 `after`，历史过期或服务换代会按原协议发送 `reset`。
 场景 SSE 每次重连先发送当前快照。注释心跳不含 JSON，无需当作结果解析。
 
+结果 WebSocket 支持 `?last_event_id=epoch:cursor`、`Last-Event-ID` 请求头和 `after`。
+每个摄像头、每种订阅分别保存游标。服务换代、游标超前或历史淘汰会发出 `reset`；
+每条结果的 `data` 等于对应 JSON/SSE 内容，空闲时发 `heartbeat`。连接使用 `ws://`
+或 `wss://`，路径由 `outputs` 提供。完整协议、关闭码和可运行示例见
+[WebSocket 实时结果订阅](../../API_DELIVERY.md#websocket-实时结果订阅)。
+WebSocket 参数或通道错误通过 JSON `error` 和关闭码 1008 报告，不使用 HTTP 404。
+
 事件 MP4 保留 `Range`、`If-Range`、`Content-Range`、ETag 和 206/416 状态，
 可继续拖动播放。录像尚在生成时返回 202 JSON 和 `Retry-After`，不要当作 MP4 播放。
 指定尚不存在的录像修订返回 404。未产生结果或画面时也可能返回 404。
@@ -115,7 +127,7 @@ http://192.168.20.105:8080/v1/fleet/cameras/camera02/video/annotated/stream.mjpe
 控制仍使用每路 `connect`、`disconnect`、`settings`、`details` 和全局
 `/v1/fleet/analysis/start`、`/stop`；显示统计回传仍为 `POST C/video/display/metrics`。
 浏览器摄像头上传及控制 WebSocket `/ws` 保持原协议，没有新增可绕过全局分析控制的转发入口。
-消费多路输出使用上表的 HTTP/SSE 接口。
+消费多路输出使用上表的 HTTP/SSE 或只读结果 WebSocket 接口。
 
 旧 `/v1/video/...`、`/v1/results/...`、`/v1/events/...` 等地址继续返回主运行时（第一路）的
 原格式，未变为合流。接入多路应统一使用带 `camera_id` 的地址。

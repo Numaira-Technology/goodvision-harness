@@ -1,16 +1,13 @@
 # Reviewed robot41 supplement (explicit selection only)
 
-**Historical reference, unavailable as an executable route in this checkout.**
-`download_media.py`, `samples_robot41.json` and `manifest_robot41.json` are absent;
-the current legacy runner also lacks `--legacy-baseline` and `--preflight`.
-Obtain the original matching code and reviewed JSON snapshots before a requested
-reproduction, and verify their fingerprints. The video folder alone is not enough.
-Do not fabricate the missing files or remove flags to bypass this mismatch.
+This checkout includes the reviewed robot41 manifest/samples and downloader.
+Verify their fingerprints and the downloaded media before a separately authorized
+run. The video folder alone does not establish the dataset identity.
 
 Use this separate cohort only when requested. It does not replace or extend the
 current202 exam, which includes82 single views instead of these41 stereo clips.
 Do not count both sets. For the default workflow return to [the skill](../SKILL.md).
-The archived instructions below apply only to that matching historical snapshot.
+The instructions below apply only to this explicitly selected cohort.
 
 Use `tools/event_benchmark/datasets/samples_robot41.json` with
 `tools/event_benchmark/datasets/manifest_robot41.json`. These are the 41 clips

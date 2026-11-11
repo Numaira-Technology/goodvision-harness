@@ -64,7 +64,12 @@ def source_files():
     root = Path(__file__).resolve().parents[2]
     paths = list((root / "tools/unified_benchmark").glob("*.py"))
     paths += [p for p in (root / "tools/unified_benchmark/native_assets").rglob("*") if p.is_file() and p.suffix in (".py", ".json", ".patch")]
+    paths += list((root / "tools/qwen8b").glob("*.py"))
     paths += [root / name for name in (
+        "tools/models.yaml", "tools/registry.py", "tools/model_source.py",
+        "tools/env_source.py", "tools/cloud_env.py", "tools/cloud_prefetch.py",
+        "tools/start_qwen8b_r2.py", "tools/start_qwen8b_vllm.py", "tools/start_sam.py",
+        "tools/qwen8b/requirements.txt", "tools/qwen8b_vllm/requirements.txt",
         "tools/event_benchmark/run_eval.py", "tools/event_benchmark/evidence.py",
         "tools/event_benchmark/tune_threshold.py", "tools/clip_benchmark/scoring.py",
         "tools/clip_benchmark/runtime.py", "tools/clip_benchmark/base_timing.py",
@@ -83,10 +88,40 @@ def validate_threshold_values(thresholds, kind):
 
 
 def write_new(path, value):
+    data = canonical(value) + b"\n"
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("xb") as f:
-        f.write(canonical(value) + b"\n")
+        f.write(data)
+
+
+def write_receipt(path, record):
+    """Keep decoded nonfinite raw fields losslessly inside a strict JSON record."""
+    record = dict(record)
+    for field in ("response", "generation_metadata"):
+        value = record.get(field)
+        try:
+            canonical(value)
+        except ValueError:
+            # Python decodes JSON 1e400 as inf. Store its decoded representation
+            # as text rather than losing the receipt or treating it as evidence.
+            record["raw_json_encoding"] = "python-json-nonfinite-v1"
+            record[field + "_json"] = json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=True)
+            record[field] = None
+    write_new(path, record)
+
+
+def read_receipt(path):
+    record = json.loads(Path(path).read_text())
+    if "raw_json_encoding" in record:
+        if record["raw_json_encoding"] != "python-json-nonfinite-v1":
+            raise ValueError("unsupported raw receipt encoding")
+        for field in ("response", "generation_metadata"):
+            if field + "_json" in record:
+                if record.get(field) is not None or not isinstance(record[field + "_json"], str):
+                    raise ValueError("invalid raw receipt encoding")
+                record[field] = json.loads(record[field + "_json"])
+    return record
 
 
 def sample_times(duration, *, last_frame_time=None):
@@ -99,13 +134,22 @@ def sample_times(duration, *, last_frame_time=None):
             if i < duration and (last_frame_time is None or i <= last_frame_time)]
 
 
+def finite_number(value):
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def valid_value(value, kind):
     if not isinstance(value, dict):
         return False
     if kind == "choice":
         return value.get("answer") in ("yes", "no", "unknown")
     score = value.get("score")
-    return (type(score) in (int, float) and math.isfinite(score)
+    return (finite_number(score)
             and (kind == "margin" or kind == "probability" and 0 <= score <= 1))
 
 

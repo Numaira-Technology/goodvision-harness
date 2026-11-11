@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run unified-frame-120-v2 against a self-hosted OpenAI-compatible Qwen8B.
+"""Run a frozen unified bundle against a self-hosted OpenAI-compatible Qwen8B.
 
 No OpenRouter key, no generation lookup, no provider fallback. The local server
 must identify as qwen/qwen3-vl-8b-instruct. Headline scoring stays correct/all.
@@ -7,6 +7,7 @@ must identify as qwen/qwen3-vl-8b-instruct. Headline scoring stays correct/all.
 from __future__ import annotations
 
 import argparse
+import base64
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -15,8 +16,8 @@ import urllib.error
 import urllib.request
 
 from tools.unified_benchmark.adapters import parse_response, request_body
-from tools.unified_benchmark.api_run import accounting, atomic, retry_after
-from tools.unified_benchmark.contract import EVENTS, canonical, digest, file_hash, score, write_new
+from tools.unified_benchmark.api_run import InvalidResponse, MAX_RESPONSE_BYTES, accounting, atomic, retry_after
+from tools.unified_benchmark.contract import EVENTS, canonical, digest, file_hash, score, write_new, write_receipt
 from tools.unified_benchmark.retry import Ledger, Queue, RequestFailure
 from tools.unified_benchmark.workflow import collect, context_for, report, verify_bundle
 
@@ -34,54 +35,73 @@ class LocalTransport:
             headers={"Content-Type": "application/json", "Authorization": "Bearer local"},
         )
         with urllib.request.urlopen(req, timeout=90) as response:
-            raw = response.read(2 * 1024 * 1024 + 1)
-        if len(raw) > 2 * 1024 * 1024:
-            raise ValueError("oversized response")
-        return json.loads(raw)
+            status = response.status
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise InvalidResponse("oversized response", status, raw[:MAX_RESPONSE_BYTES], truncated=True)
+        try:
+            payload = json.loads(raw)
+            canonical(payload)  # Reject nonfinite JSON without discarding its raw evidence.
+        except ValueError as error:
+            raise InvalidResponse("invalid JSON response", status, raw) from error
+        return payload
 
     def __call__(self, unit):
         attempt = self.ledger.state(unit, self.config["kind"])[0]
         prefix = digest(unit["id"]) + f"-attempt-{attempt}"
+        receipt = self.output / "receipts" / (prefix + ".json")
+        def save(record):
+            write_receipt(receipt, record | {"unit": unit["id"], "request_sha256": unit["request_sha256"]})
+            return {"receipt": str(receipt.relative_to(self.output)), "receipt_sha256": file_hash(receipt)}
         _url, body = request_body(self.config, unit, self.bundle)
         if digest(body) != unit["request_sha256"]:
             raise RequestFailure("request fingerprint mismatch", fatal=True)
         try:
             payload = self.call(body)
+        except InvalidResponse as error:
+            metadata = save({"http_status": error.status, "transport_error": type(error).__name__,
+                "detail": str(error), "body_base64": base64.b64encode(error.body).decode(),
+                "body_truncated": error.truncated, "captured_body_bytes": len(error.body)})
+            raise RequestFailure(str(error), status=error.status, metadata=metadata) from error
         except urllib.error.HTTPError as error:
             raw = error.read(2 * 1024 * 1024).decode(errors="replace")
-            write_new(self.output / "receipts" / (prefix + ".json"), {
-                "http_status": error.code, "body": raw,
-                "unit": unit["id"], "request_sha256": unit["request_sha256"]})
+            metadata = save({"http_status": error.code, "body": raw})
             raise RequestFailure("HTTP " + str(error.code), status=error.code,
                                  retry_after=retry_after(error.headers.get("Retry-After")),
-                                 fatal=error.code in (400, 401, 403, 404)) from error
+                                 fatal=error.code in (400, 401, 403, 404), metadata=metadata) from error
         except (OSError, TimeoutError, ValueError) as error:
-            write_new(self.output / "receipts" / (prefix + ".json"), {
-                "transport_error": type(error).__name__, "detail": str(error)[:500],
-                "unit": unit["id"], "request_sha256": unit["request_sha256"]})
-            raise RequestFailure(type(error).__name__) from error
-        write_new(self.output / "receipts" / (prefix + ".json"), {
-            "response": payload, "unit": unit["id"], "request_sha256": unit["request_sha256"]})
-        metadata = {
+            metadata = save({"transport_error": type(error).__name__, "detail": str(error)[:500]})
+            raise RequestFailure(type(error).__name__, metadata=metadata) from error
+        metadata = save({"http_status": 200, "response": payload})
+        if not isinstance(payload, dict):
+            raise RequestFailure("invalid response envelope", status=200, metadata=metadata)
+        try:
+            canonical(payload)
+        except ValueError as error:
+            raise RequestFailure("nonfinite response", status=200, metadata=metadata) from error
+        actual_model = payload.get("model")
+        if not isinstance(actual_model, str) or not actual_model:
+            raise RequestFailure("actual model identity unavailable", fatal=True, metadata=metadata)
+        metadata.update({
             "actual_provider": "self-hosted-r2-4090",
-            "actual_model": payload.get("model") or self.expected_model,
-        }
+            "actual_model": actual_model,
+        })
         if metadata["actual_model"] != self.expected_model:
-            raise RequestFailure("actual model mismatch: " + metadata["actual_model"], fatal=True)
+            raise RequestFailure("actual model mismatch: " + actual_model, fatal=True, metadata=metadata)
         try:
             answers = parse_response(self.config, unit, payload)
         except (ValueError, KeyError, TypeError, IndexError) as error:
             answers = {}
             metadata["answer_error"] = str(error)[:500]
-        metadata["receipt"] = "receipts/" + prefix + ".json"
         return answers, metadata
 
 
 def execute(alias, bundle, root, endpoint, bundle_digest, phase):
     output = root / alias
     config = json.loads((bundle / "configs" / f"{alias}.json").read_text())
-    if config.get("execution") != "self_hosted_r2":
-        raise ValueError("eval_local requires a self_hosted_r2 profile")
+    if (config.get("execution") != "self_hosted_r2" or config.get("backend") != "language"
+            or config.get("kind") != "choice"):
+        raise ValueError("eval_local requires a self_hosted_r2 hard-answer language profile")
     thresholds, calibration = {e: .5 for e in EVENTS}, "not_applicable_hard_boolean"
     output.mkdir(exist_ok=False)
     stage_results = {}

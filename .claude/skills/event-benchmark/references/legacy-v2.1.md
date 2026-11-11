@@ -1,18 +1,9 @@
 # Legacy v2.1 benchmark (explicit selection only)
 
-**Historical reference, not an executable guide for this checkout.** Its
-`run_eval.py` reports `SPEC_VERSION = "v2"` and does not implement the archived
-`--provider-config`, `--split-manifest`, `--split`, `--preflight` or
-`--legacy-baseline` options. The separate latency script also depends on legacy
-runner helpers not present here. The v2.1 text in SPEC/CONTROLLED_RUN does not
-establish that their matching implementation is included.
-
-For an explicitly requested historical reproduction, first obtain the retained
-code revision and frozen inputs from that run, then verify its runner, latency
-script and specification together. Do not remove unsupported flags or substitute
-the current runner to make an archived command execute. If the matching snapshot
-is unavailable, report the historical route as unavailable. The examples and
-rules below are retained provenance, not commands to run from this checkout.
+This checkout includes the v2.1 controlled runner and the explicit
+`--legacy-baseline` route. Use the matching frozen inputs and source fingerprints.
+Historical artifacts still require their retained source snapshot; never remove
+required flags or edit hashes to make a different snapshot run.
 
 The default current202 route is **unified-frame-202-v1** in
 [the current skill](../SKILL.md) and
@@ -20,12 +11,11 @@ The default current202 route is **unified-frame-202-v1** in
 The two protocols have different sampling, parsers and source identities; do not
 use the commands below as a shortcut for the current202 run.
 
-In the matching historical snapshot, use its `tools/event_benchmark/SPEC.md`
+For this explicitly selected route, use `tools/event_benchmark/SPEC.md`
 (v2.1) and `CONTROLLED_RUN.md`. Historical v1 outputs are not v2 evidence.
-Archived commands below were intended to run from that snapshot's repository
-root, within the user's authorized scope.
+Commands below run from the repository root, within the user's authorized scope.
 
-## Archived workflow (matching snapshot required)
+## Selected v2.1 workflow (matching inputs required)
 
 1. **Freeze the inputs before scoring.** Identify the candidate, dataset, reviewed
    manifest, media directories and output path. Verify manifest review status,

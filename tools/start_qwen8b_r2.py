@@ -103,10 +103,10 @@ def wait_for_ssh(vast, instance_id: int, options: list[str], key_path: Path,
     raise RuntimeError("SSH did not become available before the boot budget elapsed.")
 
 
-def _vast_query(disk_gb: int) -> str:
+def _vast_query(disk_gb: int, *, cuda_version="12.8") -> str:
     gpu = os.environ.get("QWEN8B_GPU", "RTX_4090")
     return (
-        f"gpu_name={gpu} num_gpus=1 cuda_vers>=12.8 gpu_ram>=23 "
+        f"gpu_name={gpu} num_gpus=1 cuda_vers>={cuda_version} gpu_ram>=23 "
         f"disk_space>={disk_gb} inet_down>=200 reliability>0.95 rentable=true "
         "verified=true datacenter=true"
     )
@@ -165,6 +165,22 @@ def _wait_ready(process, timeout=20 * 60):
     raise RuntimeError("qwen8b server did not become ready in time; see logs above.")
 
 
+def _verify_eval_bundle(bundle: Path, alias: str, engine: str, output: Path) -> None:
+    """Reject stale/mismatched evaluation inputs before credentials or rental."""
+    from tools.unified_benchmark.workflow import verify_bundle
+    from tools.unified_benchmark.preflight import model_configs
+
+    verify_bundle(bundle)
+    config = json.loads((bundle / "configs" / (alias + ".json")).read_text())
+    expected = model_configs([alias])[alias]
+    if (config != expected or config.get("execution") != "self_hosted_r2"
+            or config.get("kind") != "choice"
+            or config.get("engine", "transformers") != engine):
+        raise ValueError("evaluation bundle does not match the selected self-hosted engine/profile")
+    if output.exists():
+        raise ValueError("evaluation output already exists; no automatic resume is supported")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--disk-gb", type=int, default=int(os.environ.get("QWEN8B_DISK_GB", "80")))
@@ -180,6 +196,9 @@ def main() -> int:
     args = ap.parse_args()
     if args.eval_bundle and not args.eval_output:
         ap.error("--eval-output is required with --eval-bundle")
+
+    if args.eval_bundle:
+        _verify_eval_bundle(args.eval_bundle, "qwen8b_r2_host", "transformers", args.eval_output)
 
     from dotenv import load_dotenv
     from vastai import VastAI

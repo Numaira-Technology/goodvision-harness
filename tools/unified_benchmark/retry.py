@@ -14,17 +14,24 @@ class PausedRun(RuntimeError):
 
 
 class RequestFailure(Exception):
-    def __init__(self, reason, *, status=None, retry_after=0, fatal=False):
+    def __init__(self, reason, *, status=None, retry_after=0, fatal=False, metadata=None):
         super().__init__(reason)
         self.reason, self.status, self.retry_after, self.fatal = reason, status, retry_after, fatal
+        self.metadata = metadata or {}
 
 
 class Ledger:
     """Exclusive process lock + fsynced intent before send. Crash intents consume budget."""
-    def __init__(self, path, context):
-        self.path, self.context = Path(path), context
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.file = self.path.open("a+", encoding="utf-8")
+    def __init__(self, path, context, *, read_only=False):
+        self.path, self.context, self.read_only = Path(path), context, read_only
+        self.lock = threading.RLock()
+        self.rows = []
+        self.file = None
+        if read_only and not self.path.exists():
+            return
+        if not read_only:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.file = self.path.open("r" if read_only else "a+", encoding="utf-8")
         try:
             fcntl.flock(self.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.file.seek(0)
@@ -34,12 +41,14 @@ class Ledger:
         except BaseException:
             self.file.close()
             raise
-        self.lock = threading.RLock()
 
     def close(self):
-        self.file.close()
+        if self.file is not None:
+            self.file.close()
 
     def append(self, row):
+        if self.read_only:
+            raise ValueError("cannot append to read-only ledger")
         with self.lock:
             row = {**row, "context": self.context, "at_unix": time.time()}
             self.file.seek(0, 2)
@@ -53,13 +62,30 @@ class Ledger:
             records = [r for r in self.rows if r["unit"] == unit["id"]]
             if any(r["request_sha256"] != unit["request_sha256"] for r in records):
                 raise ValueError("cannot resume a changed request")
+            if any(type(r.get("attempt")) is not int or not 1 <= r["attempt"] <= 3 for r in records):
+                raise ValueError("invalid ledger attempt identity")
             intents = [r for r in records if r["type"] == "intent"]
             if [r["attempt"] for r in intents] != list(range(1, len(intents) + 1)) or len(intents) > 3:
                 raise ValueError("invalid cumulative attempt sequence")
-            answers = {}
+            preceding, completed = set(), set()
             for row in records:
-                if row["type"] != "result":
+                attempt = row["attempt"]
+                if row["type"] == "intent":
+                    preceding.add(attempt)
                     continue
+                if row["type"] != "result":
+                    raise ValueError("invalid ledger record type")
+                if attempt not in preceding:
+                    raise ValueError("result has no matching preceding intent")
+                if attempt in completed:
+                    raise ValueError("duplicate result for intent")
+                completed.add(attempt)
+            # Validate append history before sorting: recovered orphan receipts
+            # can arrive late, but cannot legitimize a result before its intent.
+            answers = {}
+            results = sorted((r for r in records if r["type"] == "result"),
+                             key=lambda r: r["attempt"])
+            for row in results:
                 for event, value in row.get("answers", {}).items():
                     if event in unit["targets"] and valid_value(value, kind):
                         answers.setdefault(event, value)
@@ -106,7 +132,8 @@ class Queue:
             except RequestFailure as error:
                 row = {**base, "type": "result", "answers": {}, "complete": False,
                        "error": error.reason, "http_status": error.status,
-                       "elapsed_seconds": self.clock() - started, "fatal": error.fatal}
+                       "elapsed_seconds": self.clock() - started, "fatal": error.fatal,
+                       "metadata": error.metadata}
                 if error.fatal:
                     self.stopped.set()
                 row["retry_after"] = error.retry_after

@@ -48,6 +48,7 @@ _SERVICE_METRICS = frozenset((
     "source_height", "processed_width", "processed_height", "processor_max_pixels",
     "native_group_count", "native_input_tokens", "question_group_prepare_seconds",
     "gpu_scoring_seconds",
+    "batch_size",
     "forward_input_tokens", "prefix_tokens", "prefix_cache_hits", "prefix_cache_misses",
 ))
 
@@ -118,7 +119,7 @@ class VideoJevInspector:
         if self._http is None:
             self._http = create_vlm_http_client(trust_env=False)
 
-    def _payload(self, job):
+    def _payload(self, job, *, sampling=None):
         _validate_job(job)
         # The native model uses uniform FPS for positional encoding. Actual
         # source timestamps remain separate; irregular input is not retimed.
@@ -146,6 +147,8 @@ class VideoJevInspector:
             "frame_times": [frame.timestamp_seconds for frame in job.frames],
             "images": images,
         }
+        if sampling is not None:
+            payload["sampling"] = sampling
         if not self._template_registered:
             payload["question_template"] = list(self._question_template)
         if job.diagnostics is not None:

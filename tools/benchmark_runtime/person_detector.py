@@ -1,7 +1,8 @@
 """Bounded source-ordered detector broker, shared by spawned VLM workers.
 
-Source enqueue never performs network I/O. One consumer serializes the existing
-single-GPU /v1/tracks worker; overlapping windows reuse exact frame snapshots.
+Source enqueue never performs network or journal I/O. One consumer serializes
+the existing single-GPU /v1/tracks worker; overlapping windows reuse exact frame
+snapshots.
 The browser only reads snapshots and cannot initiate detection.
 """
 
@@ -13,7 +14,7 @@ import re
 import secrets
 import threading
 import time
-from collections import Counter, OrderedDict
+from collections import Counter, OrderedDict, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import Empty, Full, Queue
 from urllib.parse import urlsplit
@@ -102,6 +103,12 @@ class DetectorBroker:
         self.token = secrets.token_hex(24)
         self.thread = threading.Thread(target=self._work, daemon=True)
         self.log = self.server = self.server_thread = None
+        self._audit = deque()
+        self._audit_pending = set()
+        self._audit_limit = 512
+        self._audit_broken = False
+        self._error = None
+        self._log_closed = False
 
     def check_ready(self):
         with httpx.Client(trust_env=False, timeout=WAIT_SECONDS) as client:
@@ -117,7 +124,14 @@ class DetectorBroker:
         return {"model": MODEL, "gpu_ready": True}
 
     def __enter__(self):
-        self.log = (self.output / "detector.jsonl").open("w") if self.output else None
+        # Raw writes have no user-space buffer for close() to replay after an
+        # uncertain/partial failure. A successful flush still means OS delivery,
+        # not an fsync or a power-loss durability guarantee.
+        self.log = (
+            (self.output / "detector.jsonl").open("wb", buffering=0)
+            if self.output
+            else None
+        )
 
         class Server(ThreadingHTTPServer):
             request_queue_size = 128
@@ -137,32 +151,67 @@ class DetectorBroker:
         return self
 
     def __exit__(self, *_):
-        self.stop.set()
+        # Queue cancellation records before the sole writer observes stop. Its
+        # final drain must include these records, not leave them after join.
         with self.condition:
-            self.condition.notify_all()
-        if self.thread.ident is not None:
-            self.thread.join(timeout=4)
-        alive = self.thread.is_alive()
-        with self.condition:
+            self.stop.set()
             while True:
                 try:
                     _key, row, _jpeg = self.queue.get_nowait()
                 except Empty:
                     break
-                self._finish(row, state="cancelled")
+                try:
+                    self._finish(row, state="cancelled")
+                except BaseException as error:
+                    self._fail_locked(error)
+            self.condition.notify_all()
+        if self.thread.ident is not None:
+            self.thread.join(timeout=4)
+        alive = self.thread.is_alive()
         if self.server is not None:
             if self.server_thread is not None and self.server_thread.is_alive():
                 self.server.shutdown()
                 self.server_thread.join(timeout=2)
             self.server.server_close()
-        if self.log and not alive:
-            self.log.close()
+        if not alive:
+            self._close_log()
         if alive:
-            raise RuntimeError("detector worker did not stop")
+            # Never close a stream underneath its still-running writer.
+            error = RuntimeError("detector worker did not stop")
+            with self.condition:
+                self._fail_locked(error)
+            raise error
+        with self.condition:
+            if self._audit_pending:
+                self._fail_locked(RuntimeError("detector audit incomplete"))
+            self._check_error()
+
+    def _fail_locked(self, error):
+        if self._error is None:
+            self._error = error
+        self.stop.set()
+        self.condition.notify_all()
+
+    def _check_error(self):
+        if self._error is not None:
+            raise RuntimeError("detector broker failed") from self._error
+
+    def _close_log(self):
+        if self.log and not self._log_closed:
+            try:
+                self.log.close()
+            except BaseException as error:
+                with self.condition:
+                    self._fail_locked(error)
+            finally:
+                self._log_closed = True
 
     def submit(self, camera, session, sequence, timestamp, jpeg):
         key = (session, sequence)
         with self.condition:
+            self._check_error()
+            if self.stop.is_set():
+                raise RuntimeError("detector broker stopped")
             if sequence <= self.last_sequence.get(session, -1):
                 raise ValueError("detector source must increase")
             self.last_sequence[session] = sequence
@@ -224,32 +273,84 @@ class DetectorBroker:
         )
 
     def _finish(self, row, **values):
-        # All state and audit writes use the same condition lock.
+        # Called with condition held. Keep counts/latest immediately visible,
+        # but defer all journal I/O to the existing detector worker.
+        if self.log:
+            if self._log_closed or len(self._audit_pending) >= self._audit_limit:
+                error = RuntimeError("detector audit unavailable or capacity exhausted")
+                self._fail_locked(error)
+                raise error
+            key = (row["stream_session_id"], row["frame_sequence"])
+            if key in self._audit_pending or row["state"] != "pending":
+                raise RuntimeError("duplicate detector completion")
+            # Serialize now so later cache mutations cannot change the audit.
+            self._audit.append(
+                (key, (json.dumps({**row, **values}) + "\n").encode("utf-8"))
+            )
+            self._audit_pending.add(key)
         row.update(values)
         self.counts[row["state"]] += 1
         current = self.latest.get(row["camera"])
         if current is None or row["frame_sequence"] > current["frame_sequence"]:
             self.latest[row["camera"]] = dict(row)
-        if self.log:
-            self.log.write(json.dumps(row) + "\n")
-            self.log.flush()
         self.condition.notify_all()
+
+    def _flush_audit(self):
+        while True:
+            with self.condition:
+                if self._audit_broken or not self._audit:
+                    return
+                key, payload = self._audit.popleft()
+            try:
+                written = self.log.write(payload)
+                if written != len(payload):
+                    raise OSError("short detector audit write")
+                self.log.flush()
+            except BaseException as error:
+                with self.condition:
+                    # The write may be partial. Never retry it or claim success.
+                    self._audit_broken = True
+                    self._fail_locked(error)
+                return
+            with self.condition:
+                # Includes in-flight records: an empty deque is not a flush ack.
+                self._audit_pending.remove(key)
+                self.condition.notify_all()
 
     def _work(self):
         # The repository supports Python 3.10; asyncio.Runner starts at 3.11.
-        self.loop = asyncio.new_event_loop()
+        self.loop = None
         try:
+            self.loop = asyncio.new_event_loop()
             self.http = httpx.AsyncClient(trust_env=False, timeout=WAIT_SECONDS)
             try:
                 self._consume()
             finally:
                 self.loop.run_until_complete(self.http.aclose())
                 self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+        except BaseException as error:
+            with self.condition:
+                self._fail_locked(error)
         finally:
-            self.loop.close()
+            try:
+                self._flush_audit()
+            except BaseException as error:
+                with self.condition:
+                    self._fail_locked(error)
+            try:
+                if self.loop is not None:
+                    self.loop.close()
+            except BaseException as error:
+                with self.condition:
+                    self._fail_locked(error)
+            finally:
+                self._close_log()
 
     def _consume(self):
         while not self.stop.is_set():
+            self._flush_audit()
+            if self.stop.is_set():
+                break
             try:
                 _key, row, jpeg = self.queue.get(timeout=0.1)
             except Empty:
@@ -277,13 +378,19 @@ class DetectorBroker:
                     queue_seconds=waited,
                     http_seconds=time.monotonic() - started,
                 )
+            self._flush_audit()
 
     def lookup(self, session, sequences):
+        keys = [(session, seq) for seq in sequences]
         deadline = time.monotonic() + WAIT_SECONDS
         with self.condition:
             while True:
-                rows = [self.cache.get((session, seq)) for seq in sequences]
-                if all(row and row["state"] != "pending" for row in rows):
+                self._check_error()
+                rows = [self.cache.get(key) for key in keys]
+                if all(
+                    row and row["state"] != "pending" and key not in self._audit_pending
+                    for key, row in zip(keys, rows, strict=True)
+                ):
                     return [dict(row) for row in rows]
                 left = deadline - time.monotonic()
                 if self.stop.is_set() or left <= 0:
@@ -294,13 +401,20 @@ class DetectorBroker:
         """Account for every submitted source frame before freezing trial totals."""
         deadline = time.monotonic() + 2 * WAIT_SECONDS + 1
         with self.condition:
-            while self.counts["submitted"] != sum(
-                value for key, value in self.counts.items() if key != "submitted"
+            self._check_error()
+            while (
+                self.counts["submitted"]
+                != sum(
+                    value for key, value in self.counts.items() if key != "submitted"
+                )
+                or self._audit_pending
             ):
+                self._check_error()
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise RuntimeError("detector drain timed out")
                 self.condition.wait(left)
+            self._check_error()
             return dict(self.counts)
 
     def _handler(self):

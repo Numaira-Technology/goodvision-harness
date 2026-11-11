@@ -179,7 +179,7 @@ def main() -> int:
             "-o", "TCPKeepAlive=yes",
             "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=20",
         ]
-        query = H._vast_query(DISK_GB)
+        query = H._vast_query(DISK_GB, cuda_version=env_spec["compat"]["cuda"])
         print(f"Searching Vast for {query} ...", flush=True)
         offers = vast.search_offers(
             query=query, type="on-demand", order="dph_total",

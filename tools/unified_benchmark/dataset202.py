@@ -88,7 +88,9 @@ def extend_test(parts, manifest, samples, registry):
                "limits": ["82 single-view labels inherited, not individually re-reviewed; provisional reference agreement.",
                           "Related left/right views and recording cuts all stay in test; old stereo41 is not counted again.",
                           "Original120 has previous evaluation/development use; this is not a fresh held-out test.",
-                          "Train/development/actor/scene isolation remains unproven; validation24 has no bag examples."]}
+                          "Train/development/actor/scene isolation remains unproven; validation24 has no bag examples.",
+                          "Original and robot weapon reference questions have different semantics; frozen current-image prompts do not establish relabeling equivalence.",
+                          "All 36 additional fall views come from one recording; correlated views are not independent trials."]}
     return parts | {"test": {"rows": joined, "dataset_context": context,
                     "split_context": {"original120": parts["test"]["split_context"],
                                       "extension": "questions121-202 all test; source_group from pinned samples.json"}}}

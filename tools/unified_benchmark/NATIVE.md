@@ -178,10 +178,28 @@ and phases, and preserves frozen thresholds. An interrupted intent without a
 recoverable receipt consumes one attempt. A unit already at three attempts cannot
 be sent a fourth time. Do not use a new output directory to evade that limit.
 
+Every result must match one preceding intent for the same unit, request and attempt;
+duplicate or unmatched results stop recovery before backend startup. First valid
+answers are selected in original attempt order, even if an older orphan receipt is
+recovered after a later result. Historical ledger rows and receipt files are not rewritten.
+
+A fatal receipt discovered during recovery is recorded and pauses that invocation
+before backend startup. Diagnose it before a subsequent explicit `--resume`, which
+may retry an already recorded fatal response using only the remaining attempt budget.
+An incomplete legacy receipt that needs a retry cooldown must retain a finite
+`completed_at_unix`; missing or invalid timing stops recovery without inventing a
+completion time or resetting attempts. Complete legacy receipts need no retry time.
+
 Each continuation retains its own startup, telemetry and failure records.
 An incomplete final result is still incomplete; `completed` means the bounded
 queue finished, not that every question succeeded. There is no automatic infinite
 retry loop. Inspect `status.json` and the current invocation's logs before resuming.
+
+Receipts remain strict JSON. If a decoded raw response contains nonfinite numbers
+(for example JSON `1e400` becomes infinity), its `response_json` field retains the
+decoded JSON text under `raw_json_encoding: python-json-nonfinite-v1`; `response`
+is null. `read_receipt` restores that raw payload for replay. Such scores remain
+invalid and retryable; optional invalid cost metadata remains unknown.
 
 For each phase, keep `run.json`, `attempts.jsonl`, `receipts/`, `report.json` and
 `completion.json`; a failed stage leaves a partial report in its invocation.
@@ -208,7 +226,7 @@ In the lightweight preflight environment (Pillow and pytest; no torch required):
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python -m pytest \
   tests/test_native_workflow.py tests/test_unified_benchmark.py \
-  -o addopts='' -q -p no:cacheprovider
+  tests/test_eval_review_regressions.py -o addopts='' -q -p no:cacheprovider
 ```
 
 Source-export tests need the two public Git commits locally. A shallow checkout

@@ -99,9 +99,6 @@ def _make_env_tarball(dest_tar: Path):
     staging = dest_tar.parent / "staging"
     (staging / "bin").mkdir(parents=True, exist_ok=True)
     (staging / "bin" / "activate").write_text("# fake activate\n")
-    unpack = staging / "bin" / "conda-unpack"
-    unpack.write_text("#!/bin/sh\nexit 0\n")
-    unpack.chmod(0o755)
     with tarfile.open(dest_tar, "w:gz") as tf:
         for p in sorted(staging.rglob("*")):
             tf.add(p, arcname=p.relative_to(staging).as_posix())
@@ -164,10 +161,11 @@ def test_already_restored_short_circuits(tmp_path):
     unpack_to = tmp_path / "opt" / "videojev"
     (unpack_to / "bin").mkdir(parents=True)
     (unpack_to / "bin" / "activate").write_text("x")
-    (unpack_to / ".r2_env.json").write_text(json.dumps({"sha256": "abc"}))
-    env = {"unpack_to": str(unpack_to), "activate_rel": "bin/activate", "sha256": "abc"}
+    (unpack_to / ".r2_env.json").write_text(json.dumps({"sha256": "a" * 64, "r2_key": "k",
+        "activate_rel": "bin/activate", "activate_sha256": _sha256(unpack_to / "bin/activate")}))
+    env = {"unpack_to": str(unpack_to), "activate_rel": "bin/activate", "sha256": "a" * 64, "r2_key": "k"}
     assert env_source._already_restored(env) is True
-    env_wrong = dict(env, sha256="different")
+    env_wrong = dict(env, sha256="b" * 64)
     assert env_source._already_restored(env_wrong) is False
 
 
@@ -267,8 +265,9 @@ class _FakeUploadClient:
     def upload_file(self, path, bucket, key):
         self.uploaded.append((path, bucket, key))
 
-    def put_object(self, Bucket, Key, Body):
-        self.objects[(Bucket, Key)] = Body
+    def put_object(self, Bucket, Key, Body, **kwargs):
+        assert kwargs["IfNoneMatch"] == "*"
+        self.objects[(Bucket, Key)] = Body.read() if hasattr(Body, "read") else Body
 
 
 def test_skip_and_upload_only_are_mutually_exclusive():
@@ -283,6 +282,7 @@ def test_upload_only_requires_existing_tarball(tmp_path):
 
 
 def test_upload_only_uploads_without_building(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(build_env, "FROZEN_R2_KEYS", ())
     tarball = tmp_path / "videojev-env.tar.gz"
     tarball.write_bytes(b"packed-env-bytes")
     fake = _FakeUploadClient()
@@ -299,8 +299,8 @@ def test_upload_only_uploads_without_building(tmp_path, monkeypatch, capsys):
     result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert result["uploaded"] is True
     assert result["r2_key"].startswith("envs/videojev/")
-    assert len(fake.uploaded) == 1
-    assert fake.uploaded[0][0] == str(tarball)
+    assert len(fake.objects) == 2
+    assert any(value == b"packed-env-bytes" for value in fake.objects.values())
     # the side-manifest was written too
     assert any(k.endswith(".json") for (_b, k) in fake.objects)
 
@@ -320,3 +320,99 @@ def test_assert_prefix_files_detects_conda_meta_holes(tmp_path):
     }))
     with pytest.raises(RuntimeError, match="conda-meta lists files missing"):
         build_env._assert_prefix_files(prefix)
+
+@pytest.mark.parametrize("sha", [None, "", "short", "A" * 64, 5])
+def test_restore_requires_registry_digest_before_io(tmp_path, sha):
+    class NoIO:
+        def __getattr__(self, name):
+            raise AssertionError("unexpected IO: " + name)
+    with pytest.raises(ValueError, match="registry-pinned"):
+        env_source.pull_env({"sha256": sha}, client=NoIO(), bucket="b")
+
+
+@pytest.mark.parametrize("field,value", [("sha256", "b" * 64), ("r2_key", "other"),
+    ("size", 999), ("activate_rel", "bad"), ("compat", {"cuda": "other"})])
+def test_restore_rejects_manifest_contradictions(tmp_path, field, value):
+    env = {"sha256": "a" * 64, "r2_key": "k", "manifest_key": "m", "size": 1,
+           "activate_rel": "bin/activate", "compat": {"cuda": "13.0"}}
+    with pytest.raises(ValueError, match="contradicts"):
+        env_source.pull_env(env, client=_FakeR2(tmp_path / "absent", {field: value}), bucket="b")
+
+
+@pytest.mark.parametrize("kind", ["traversal", "symlink", "device"])
+def test_safe_extract_rejects_unsafe_members(tmp_path, kind):
+    archive = tmp_path / "archive.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        entry = tarfile.TarInfo("../escape" if kind == "traversal" else "member")
+        if kind == "symlink":
+            entry.type = tarfile.SYMTYPE
+            entry.linkname = "../escape"
+        elif kind == "device":
+            entry.type = tarfile.CHRTYPE
+        tf.addfile(entry)
+    with pytest.raises(tarfile.FilterError):
+        env_source._safe_extract(archive, tmp_path / "dest")
+    assert not (tmp_path / "escape").exists()
+
+
+def test_local_marker_rejects_changed_activation_and_key(tmp_path):
+    dest = tmp_path / "env"
+    (dest / "bin").mkdir(parents=True)
+    activate = dest / "bin/activate"
+    activate.write_text("original")
+    env = {"sha256": "a" * 64, "r2_key": "k", "unpack_to": str(dest), "activate_rel": "bin/activate"}
+    (dest / ".r2_env.json").write_text(json.dumps(env | {"activate_sha256": _sha256(activate)}))
+    assert env_source._already_restored(env)
+    assert not env_source._already_restored(env | {"r2_key": "different"})
+    activate.write_text("changed")
+    assert not env_source._already_restored(env)
+
+
+def test_all_published_env_keys_are_frozen():
+    for name in registry.model_names():
+        env = registry.env_of(name)
+        if env and env.get("sha256"):
+            with pytest.raises(SystemExit, match="frozen"):
+                build_env._refuse_frozen_key(env["r2_key"])
+
+
+def test_upload_never_retries_conditional_conflict(tmp_path, monkeypatch):
+    class Conflict:
+        calls = 0
+        def put_object(self, **kwargs):
+            self.calls += 1
+            assert kwargs["IfNoneMatch"] == "*"
+            raise RuntimeError("PreconditionFailed")
+    client = Conflict()
+    monkeypatch.setattr(build_env.model_source, "r2_client", lambda: client)
+    monkeypatch.setenv("R2_BUCKET", "b")
+    p = tmp_path / "pack"
+    p.write_bytes(b"synthetic bytes")
+    spec = {"r2_key": "envs/new/version.tar.gz", "manifest_key": "envs/new/version.json",
+            "unpack_to": "/opt/env/new", "activate_rel": "bin/activate"}
+    with pytest.raises(RuntimeError, match="PreconditionFailed"):
+        build_env._upload(spec, "new", p, {}, "repo@revision")
+    assert client.calls == 1
+
+
+def test_pinned_restore_without_optional_manifest(tmp_path, monkeypatch):
+    archive = _make_env_tarball(tmp_path / "source.tar.gz")
+    class MissingManifest(_FakeR2):
+        def get_object(self, **kwargs):
+            raise OSError("manifest unavailable")
+    env = {"r2_key": "k", "manifest_key": "m", "sha256": _sha256(archive),
+           "size": archive.stat().st_size, "unpack_to": str(tmp_path / "env"),
+           "activate_rel": "bin/activate"}
+    result = env_source.pull_env(env, client=MissingManifest(archive, {}), bucket="b",
+                                 scratch=tmp_path / "scratch")
+    assert Path(result).is_file()
+    assert env_source._already_restored(env)
+
+
+def test_builder_restore_also_filters_archive(tmp_path):
+    archive = tmp_path / "archive.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.addfile(tarfile.TarInfo("../escape"))
+    with pytest.raises(tarfile.FilterError):
+        build_env._restore_tarball_isolated(archive, tmp_path / "dest", ())
+    assert not (tmp_path / "escape").exists()

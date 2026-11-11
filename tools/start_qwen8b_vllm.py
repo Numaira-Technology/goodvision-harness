@@ -59,7 +59,7 @@ def _eligible_offers(offers: list[dict]) -> list[dict]:
     usable = [o for o in offers if int(o.get("num_gpus") or 1) == 1
               and float(o["dph_total"]) <= MAX_DPH]
     if not offers:
-        raise RuntimeError("No eligible RTX 4090 / CUDA 12.8 offer available.")
+        raise RuntimeError("No eligible RTX 4090 / CUDA 13.0 offer available.")
     if not usable:
         cheapest = min(float(o["dph_total"]) for o in offers)
         raise RuntimeError(
@@ -120,7 +120,7 @@ def _wait_ready(process, timeout=25 * 60):
             with opener.open(f"http://127.0.0.1:{H.LOCAL_PORT}/v1/models", timeout=4) as r:
                 body = json.load(r)
             names = [m.get("id") for m in body.get("data") or []]
-            if MODEL_ID in names or names:
+            if MODEL_ID in names:
                 print(f"vLLM ready models={names}", flush=True)
                 return body
         except (URLError, TimeoutError, OSError, ValueError):
@@ -163,7 +163,7 @@ def _smoke(opener, bundle: Path):
         code = getattr(error, "code", None)
         raise RuntimeError(f"smoke HTTP {code}: {detail or error}") from error
     model = payload.get("model")
-    if model and model != MODEL_ID:
+    if model != MODEL_ID:
         raise RuntimeError(f"smoke served model mismatch: {model}")
     print("vLLM smoke ok", flush=True)
     return payload
@@ -300,6 +300,8 @@ def main() -> int:
     ap.add_argument("--skip-upload", action="store_true")
     args = ap.parse_args()
 
+    H._verify_eval_bundle(args.eval_bundle, "qwen8b_r2_vllm", "vllm", args.eval_output)
+
     from dotenv import load_dotenv
     from vastai import VastAI
 
@@ -351,12 +353,13 @@ def main() -> int:
             instance_id = args.resume_instance_id
             print(f"Recovering instance {instance_id}; no new rental.", flush=True)
         else:
-            print(f"Searching Vast for {H._vast_query(args.disk_gb)} ...", flush=True)
-            offers = vast.search_offers(query=H._vast_query(args.disk_gb),
+            query = H._vast_query(args.disk_gb, cuda_version=env_spec["compat"]["cuda"])
+            print(f"Searching Vast for {query} ...", flush=True)
+            offers = vast.search_offers(query=query,
                                         type="on-demand", order="dph_total",
                                         storage=float(args.disk_gb), limit=10)
             if not offers:
-                raise RuntimeError("No eligible RTX 4090 / CUDA 12.8 offer available.")
+                raise RuntimeError("No eligible RTX 4090 / CUDA 13.0 offer available.")
             chosen = _eligible_offers(offers)
             cheapest = min(float(o["dph_total"]) for o in chosen)
             print(

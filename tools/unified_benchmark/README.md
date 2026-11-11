@@ -4,15 +4,15 @@ Default protocol: **unified-frame-202-v1**. See [dataset202 acquisition and limi
 This packages the previously local workflow for another checkout. It does not modify the original videos, questions or references,
 re-run models, or reinterpret old bundles. Keep historical source snapshots with
 historical artifacts. The historical `tools/event_benchmark/run_eval.py` included
-here is not the current-frame entrypoint; archived v2.1 instructions
-require their own matching implementation as described below.
+here remains a separate, supported v2.1 entrypoint, with its own matching
+inputs and interpretation.
 
 Default sequence: **preflight → environment checks → validation → threshold
 selection when applicable → test → local report**. Sheet publication follows only
 the requested target/version/scope. Historical [v2.1](../../.claude/skills/event-benchmark/references/legacy-v2.1.md)
 and [robot41](../../.claude/skills/event-benchmark/references/robot41.md) have separate
-references requiring their matching retained code/data snapshots. Their archived
-commands are not executable from this checkout and are not the current202 route.
+references and executable entrypoints in this checkout. Their matching code/data
+fingerprints remain required; they are not the current202 route.
 
 ## What is included
 
@@ -41,9 +41,8 @@ own protocol; do not substitute it for the shared-JPEG unified run.
 
 ## Handoff checklist
 
-These instructions extend the PR #98 code baseline
-`d4fea6bfdab077cae37b207540922513b7a2cc82`; that revision contains the corrected
-vLLM `ada2` launcher. Pass the complete checkout and its matching instructions to
+These instructions include the corrected vLLM `ada2` launcher and the main
+branch integrity checks. Pass the complete checkout and its matching instructions to
 the agent, not an isolated SKILL.md copied onto main. Record the actual
 `git rev-parse HEAD`, working-tree changes and preflight source fingerprints for
 the run. Preserve existing changes; do not reset a checkout to match this note.
@@ -63,8 +62,8 @@ the run. Preserve existing changes; do not reset a checkout to match this note.
 Passing offline preflight means the inputs and request plan are ready. Execution
 readiness additionally requires the route's runtime identity checks and authorized
 warmup/smoke. The native guide's synthetic tests do not establish a fresh GPU run.
-PR #98 records a completed Qwen vLLM run with `ada2`; a new machine still needs its
-own runtime checks. Stop at a failed prerequisite and report the missing item.
+Historical Qwen vLLM artifacts do not establish readiness on a new machine; it
+still needs its own runtime checks. Stop at a failed prerequisite and report the missing item.
 
 ## Fixed method
 
@@ -193,7 +192,8 @@ python -m tools.unified_benchmark.preflight \
 
 Default `--protocol unified-frame-202-v1` uses202; for a deliberately selected
 legacy120 run pass `--protocol unified-frame-120-v2` with the five original inputs.
-Both protocols preserve the inference method; they never reuse or overwrite old bundles.
+The protocols retain model settings but have different sampling boundaries and
+dataset identities; they never reuse or overwrite old bundles.
 Required `--inputs` locates the private frozen snapshots; optional `--profiles`
 selects a reviewed configuration directory. The published hashes are mandatory;
 changed datasets require a separately reviewed protocol, not relabelled hashes.
@@ -338,6 +338,11 @@ PYTHONPATH=. python -m tools.start_qwen8b_vllm \
   --eval-phase both \
   --authorization-note 'Approved self-hosted qwen8b R2 vLLM 4090 run'
 ```
+
+The Qwen evaluator currently requires a new output path and has no supported
+`--resume` CLI. `--resume-instance-id` only reconnects to a rental; it does not
+resume evaluation. Preserve interrupted ledgers and receipts. Do not restart the
+same units with a fresh output to reset the three-attempt budget.
 
 `eval_local` still uses 12 slots. vLLM may batch those 12 internally. Do not
 change JPEG size, prompts, max_tokens, or client concurrency to fit VRAM.
