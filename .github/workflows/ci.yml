@@ -76,6 +76,10 @@ jobs:
     name: Tests (windows-latest, Python 3.12)
     runs-on: windows-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -105,7 +109,7 @@ jobs:
       - name: Install video encoder (Windows)
         run: choco install ffmpeg --no-progress -y
       - name: Run regression suite (no models or service credentials)
-        run: python -m pytest -vv -o faulthandler_timeout=60 --durations=20
+        run: python -m pytest -vv -o faulthandler_timeout=60 --durations=20 -p tools.ci_pytest --ci-shard=${{ matrix.shard }} --ci-shards=2 --ci-evidence=outputs/ci/windows-${{ matrix.shard }}
 
   sam3-onnx-contract:
     name: Optional SAM3 ONNX contract (no weights)
