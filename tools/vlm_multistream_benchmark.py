@@ -472,6 +472,7 @@ def run_stage(
     inspector_factory=None,
     observer=None,
     source_hook=None,
+    source_diagnostics=None,
 ):
     api_key = _stage_api_key(args, base)
     stage = output / f"streams-{count}-repeat-{repetition}"
@@ -483,7 +484,7 @@ def run_stage(
         result = _run_stage(
             args, base, count, framesets, output, repetition, stage, database,
             api_key=api_key, inspector_factory=inspector_factory, observer=observer,
-            source_hook=source_hook,
+            source_hook=source_hook, source_diagnostics=source_diagnostics,
         )
     result["admission_storage"] = dict(database.metadata)
     (stage / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
@@ -517,6 +518,7 @@ def _stage_api_key(args, base):
 def _run_stage(
     args, base, count, framesets, output, repetition, stage, database,
     *, api_key, inspector_factory=None, observer=None, source_hook=None,
+    source_diagnostics=None,
 ):
     gate_settings = (
         AdmissionSettings(
@@ -763,7 +765,16 @@ def _run_stage(
     finally:
         try:
             if feeder is not None:
-                feeder.close()
+                try:
+                    feeder.close()
+                finally:
+                    if source_diagnostics is not None:
+                        try:
+                            source_diagnostics.update(feeder.diagnostics())
+                        except Exception as exc:
+                            source_diagnostics["collection_error_type"] = (
+                                type(exc).__name__
+                            )
         finally:
             raw.close()
             status_log.close()

@@ -14,6 +14,7 @@ from test_tracked_grounding import jpeg
 
 from tools.decisions_benchmark import adapter as native
 from tools.decisions_benchmark.report import audit_coverage, audit_rows
+from tools.synthetic_evidence import register_synthetic_evidence
 from tools.tracked_decisions import adapter, suite
 from tools.tracked_grounding.detector import DetectorBroker
 from tools.vlm_benchmark import modes
@@ -51,7 +52,7 @@ def offline_inspector(config, *, broker_url, audit_dir):
 
 @pytest.mark.parametrize("mode", ["events", "compact", "parallel"])
 def test_twelve_sources_native_decisions_and_person_reports(
-    tmp_path, monkeypatch, mode
+    tmp_path, monkeypatch, mode, request
 ):
     monkeypatch.setenv("OPENAI_API_KEY", "offline-native-key")
     monkeypatch.setenv("OPENROUTER_API_KEY", "wrong-provider-key")
@@ -74,6 +75,9 @@ def test_twelve_sources_native_decisions_and_person_reports(
             }
         ]
 
+    source_diagnostics = {}
+    diagnostic = {"source": source_diagnostics, "detector_keys": calls}
+    register_synthetic_evidence(request.node, tmp_path, diagnostic)
     with DetectorBroker("http://127.0.0.1:1", tmp_path, transport=detector) as broker:
         result = run_stage(
             args,
@@ -88,8 +92,10 @@ def test_twelve_sources_native_decisions_and_person_reports(
                 audit_dir=tmp_path / "api-audit",
             ),
             source_hook=broker.submit,
+            source_diagnostics=source_diagnostics,
         )
-        broker.drain()
+        detector_counts = broker.drain()
+        diagnostic["drain_counts"] = detector_counts
     assert result["all_drained"] and not result["result_records_missing"]
     assert result["result_retention"]["valid"]
     assert len(calls) == len(set(calls)) == 48
