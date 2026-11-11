@@ -4,13 +4,124 @@ This command does not send requests. An inference caller supplies normalized
 records through Queue; transport smoke and deployment must pass separately.
 """
 import argparse
-from datetime import datetime, timezone
 import json
 import math
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from .contract import EVENTS, RULES, digest, file_hash, score, select_thresholds, source_files, validate_threshold_values, write_new
+from .contract import (
+    EVENTS,
+    RULES,
+    digest,
+    file_hash,
+    score,
+    select_thresholds,
+    source_files,
+    validate_threshold_values,
+    write_new,
+)
 from .retry import Ledger
+
+
+def _model_records(bundle, report, hashes):
+    models = report.get("models")
+    if not isinstance(models, dict) or not models:
+        raise ValueError("bundle is missing preflight model/plan records")
+    models = dict(models)
+    # The existing HF->vLLM converter preserves every source byte, including
+    # preflight.json. Its sealed lineage can add exactly the derived profile;
+    # reconstruct its plan bindings from the original HF plans, not loose files.
+    lineage_name = "provenance/vllm-bundle-conversion.json"
+    if lineage_name not in hashes:
+        return models
+    lineage = json.loads((bundle / lineage_name).read_text())
+    source_seal = "provenance/source-bundle-files-sha256.json"
+    host, target = "qwen8b_r2_host", "qwen8b_r2_vllm"
+    if (
+        not isinstance(lineage, dict)
+        or source_seal not in hashes
+        or lineage.get("source_seal") != source_seal
+        or lineage.get("source_bundle_sha256") != file_hash(bundle / source_seal)
+        or host not in models
+        or target in models
+    ):
+        raise ValueError("invalid derived preflight lineage")
+    inherited = json.loads((bundle / source_seal).read_text())
+    additions = {lineage_name, source_seal, f"configs/{target}.json"} | {
+        f"plans/{target}-{split}.json" for split in ("validation", "test")
+    }
+    if (
+        not isinstance(inherited, dict)
+        or set(inherited) != set(hashes) - additions
+        or any(hashes.get(k) != v for k, v in inherited.items())
+    ):
+        raise ValueError("derived bundle changed inherited evidence")
+    if inherited.get("preflight.json") != hashes["preflight.json"]:
+        raise ValueError("derived preflight differs from source")
+    source_cfg = json.loads((bundle / f"configs/{host}.json").read_text())
+    target_cfg = json.loads((bundle / f"configs/{target}.json").read_text())
+    if (
+        lineage.get("source_profile_sha256") != digest(source_cfg)
+        or lineage.get("derived_profile_sha256") != digest(target_cfg)
+        or lineage.get("exam_unchanged") is not True
+    ):
+        raise ValueError("derived profile identity differs")
+    models[target] = {}
+    for split in ("validation", "test"):
+        original = json.loads((bundle / f"plans/{host}-{split}.json").read_text())
+        derived = {**original, "config_sha256": digest(target_cfg)}
+        models[target][split] = {"plan_sha256": digest(derived)}
+    return models
+
+
+def _verify_plan_bindings(bundle, report, hashes):
+    models = _model_records(bundle, report, hashes)
+    expected_configs, expected_plans = set(), set()
+    for alias, phases in models.items():
+        if (
+            not isinstance(alias, str)
+            or not alias
+            or Path(alias).name != alias
+            or not isinstance(phases, dict)
+            or set(phases) != {"validation", "test"}
+        ):
+            raise ValueError("invalid preflight model/plan records")
+        config_name = f"configs/{alias}.json"
+        expected_configs.add(config_name)
+        if config_name not in hashes:
+            raise ValueError("unsealed bundle config: " + config_name)
+        config = json.loads((bundle / config_name).read_text())
+        if not isinstance(config, dict) or config.get("alias") != alias:
+            raise ValueError("preflight config identity differs: " + config_name)
+        for split, recorded in phases.items():
+            name = f"plans/{alias}-{split}.json"
+            expected_plans.add(name)
+            if name not in hashes:
+                raise ValueError("unsealed bundle plan: " + name)
+            plan = json.loads((bundle / name).read_text())
+            if (
+                not isinstance(recorded, dict)
+                or not isinstance(plan, dict)
+                or recorded.get("plan_sha256") != digest(plan)
+                or plan.get("split") != split
+                or plan.get("config_sha256") != digest(config)
+                or plan.get("rules_sha256") != digest(RULES)
+            ):
+                raise ValueError("preflight plan identity differs: " + name)
+            for unit in plan["units"]:
+                for frame in unit.get("frames", []):
+                    if hashes.get(frame["path"]) != frame["sha256"]:
+                        raise ValueError("unsealed bundle frame: " + frame["path"])
+    for directory, expected in (
+        ("configs", expected_configs),
+        ("plans", expected_plans),
+    ):
+        actual = {
+            p.relative_to(bundle).as_posix()
+            for p in (bundle / directory).glob("*.json")
+        }
+        if actual != expected:
+            raise ValueError("bundle has unrecorded or missing " + directory)
 
 
 def verify_bundle(bundle):
@@ -61,6 +172,7 @@ def verify_bundle(bundle):
                 + name
                 + "; use the retained code for replay or build a new bundle"
             )
+    _verify_plan_bindings(bundle, report, hashes)
     return file_hash(bundle / "bundle-files-sha256.json")
 
 

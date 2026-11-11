@@ -1,25 +1,42 @@
 """Explicitly authorized OpenRouter execution of the frozen offline bundle."""
 import argparse
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 import json
 import math
-from pathlib import Path
 import ssl
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from pathlib import Path
 
 import certifi
+
 from tools.event_benchmark.evidence import response_metadata
+
 from .adapters import parse_response, request_body
-from .contract import EVENTS, RULES, canonical, digest, file_hash, score, select_thresholds, write_new
+from .contract import (
+    EVENTS,
+    RULES,
+    canonical,
+    digest,
+    file_hash,
+    score,
+    select_thresholds,
+    write_new,
+)
 from .receipts import raw_fields
 from .retry import Ledger, PausedRun, Queue, RequestFailure
-from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
+from .workflow import (
+    collect,
+    context_for,
+    load_threshold_artifact,
+    report,
+    verify_bundle,
+)
 
 ALIASES = ("qwen8b", "gemini25", "gemini38", "qwen235b", "luna", "maverick")
 
@@ -132,23 +149,31 @@ class Transport:
         write_new(self.output / "receipts" / (prefix + ".json"), {
             **raw_fields(response=payload, generation_metadata=generation_data),
             "unit": unit["id"], "request_sha256": unit["request_sha256"]})
+        metadata["receipt"] = "receipts/" + prefix + ".json"
+        metadata["receipt_sha256"] = file_hash(self.output / metadata["receipt"])
         expected = self.config["provider_context"]["config"]["expected_provider_name"]
         if metadata.get("actual_provider") and metadata["actual_provider"] != expected:
-            raise RequestFailure("actual provider mismatch: " + metadata["actual_provider"], fatal=True)
+            raise RequestFailure(
+                "actual provider mismatch: " + metadata["actual_provider"],
+                fatal=True, metadata=metadata,
+            )
         if not metadata.get("actual_provider") or not metadata.get("actual_model"):
-            raise RequestFailure("provider/model receipt identity unavailable", fatal=True)
+            raise RequestFailure(
+                "provider/model receipt identity unavailable",
+                fatal=True, metadata=metadata,
+            )
         actual_model = metadata.get("actual_model")
         if actual_model and actual_model != self.config["model"] and not (
                 self.config["backend"] == "decision" and actual_model.startswith(self.config["model"] + "-")):
-            raise RequestFailure("actual model mismatch: " + actual_model, fatal=True)
+            raise RequestFailure(
+                "actual model mismatch: " + actual_model,
+                fatal=True, metadata=metadata,
+            )
         try:
-            if self.config["backend"] == "language" and payload.get("choices", [{}])[0].get("message", {}).get("refusal"):
-                raise ValueError("explicit refusal")
             answers = parse_response(self.config, unit, payload)
         except (ValueError, KeyError, TypeError, IndexError) as error:
             answers = {}
             metadata["answer_error"] = str(error)[:500]
-        metadata["receipt"] = "receipts/" + prefix + ".json"
         return answers, metadata
 
 

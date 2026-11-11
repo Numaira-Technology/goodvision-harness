@@ -152,6 +152,32 @@ against the frozen source fingerprints. After changing code, build a new preflig
 bundle; retain the original code with old artifacts for historical replay. Do not
 rewrite old bundle hashes to pass the check.
 
+## Native receipt continuation
+
+Native `--resume` validates retained receipt hashes and reparses answers before
+starting a backend. Every ledger result must have one earlier matching intent;
+interrupted intents still consume the existing three-attempt budget. First valid
+answers follow attempt order, even if an older orphan is recovered later.
+A newly recovered fatal outcome is recorded and pauses this invocation before
+startup. A subsequent explicit `--resume` can acknowledge that recorded failure,
+as with a failure recorded during an ordinary run.
+
+New native receipts preserve HTTP status, fatal classification, retry delay and
+completion time. Incomplete orphan receipts missing these authoritative recovery
+fields fail closed with the path and missing field names; do not replace them
+with current time or rewrite historical evidence. Already-recorded legacy failures
+may retain their existing anchored ledger outcome. Recovery keeps completion-based
+cooldowns, including a final rate-limit response's shared delay.
+
+Readers accept both historical `python-json-nonfinite-v1` global and
+`json-text-nonfinite-v1` per-field raw encodings. New writes retain the per-field
+format. Diagnostic decoding neither changes original bytes nor makes nonfinite
+scores valid, and does not permit cross-source execution. Bundle checks require
+both the complete physical inventory and recorded preflight config/plan/frame
+bindings. The existing HF-to-vLLM converter's sealed lineage preserves the original
+preflight bytes and binds only its derived serving profile/plans; it cannot repair
+a changed source exam or drop an input from the recorded inventory.
+
 ## API execution after cost approval
 
 Explicitly select models and phase. Start with validation; no past user's approval

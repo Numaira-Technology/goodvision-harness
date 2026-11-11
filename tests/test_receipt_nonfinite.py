@@ -145,6 +145,7 @@ def test_encoded_orphan_receipt_replays_without_losing_first_answer(
             "error": None,
             "parsed": parsed,
             "transport_seconds": 0.1,
+            "fatal": False, "retry_after": 0, "completed_at_unix": 1000.0,
             **raw_fields(response=raw),
         },
     )

@@ -63,10 +63,11 @@ def validate_threshold_values(thresholds, kind):
 
 
 def write_new(path, value):
+    data = canonical(value) + b"\n"
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("xb") as f:
-        f.write(canonical(value) + b"\n")
+        f.write(data)
 
 
 def sample_times(duration):
@@ -75,13 +76,22 @@ def sample_times(duration):
     return [float(i) for i in range(math.ceil(duration)) if i < duration]
 
 
+def finite_number(value):
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def valid_value(value, kind):
     if not isinstance(value, dict):
         return False
     if kind == "choice":
         return value.get("answer") in ("yes", "no", "unknown")
     score = value.get("score")
-    return (type(score) in (int, float) and math.isfinite(score)
+    return (finite_number(score)
             and (kind == "margin" or kind == "probability" and 0 <= score <= 1))
 
 
@@ -142,8 +152,8 @@ def score(plan, evidence, kind, thresholds=None):
 
 def select_thresholds(plan, evidence, kind, model):
     """Reuse the existing midpoint algorithms; never accept incomplete validation."""
-    from tools.event_benchmark.tune_threshold import pick_tau
     from tools.clip_benchmark.scoring import _optimal_midpoint
+    from tools.event_benchmark.tune_threshold import pick_tau
     if plan["split"] != "validation" or len(plan["questions"]) != 24 or kind not in ("margin", "probability"):
         raise ValueError("threshold selection requires frozen validation24 and continuous scores")
     baseline = score(plan, evidence, kind)

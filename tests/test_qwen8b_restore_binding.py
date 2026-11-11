@@ -140,6 +140,18 @@ def test_legacy_hf_profile_without_artifact_stops_before_credentials(
     body = json.loads(config.read_text())
     del body["env_artifact"]
     config.write_text(json.dumps(body))
+    # Bind the deliberately stale profile in this synthetic bundle so the
+    # independent active-profile gate is still exercised after plan validation.
+    from tools.unified_benchmark.contract import digest
+    report_path = host_bundle / "preflight.json"
+    report = json.loads(report_path.read_text())
+    for split in ("validation", "test"):
+        path = host_bundle / f"plans/qwen8b_r2_host-{split}.json"
+        plan = json.loads(path.read_text())
+        plan["config_sha256"] = digest(body)
+        path.write_text(json.dumps(plan))
+        report["models"]["qwen8b_r2_host"][split]["plan_sha256"] = digest(plan)
+    report_path.write_text(json.dumps(report))
     seal(host_bundle)
     monkeypatch.setattr(
         sys,
