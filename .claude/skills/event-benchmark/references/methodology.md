@@ -1,4 +1,7 @@
-# Frozen benchmark methodology
+For the current-frame 120-question variant, use `tools/unified_benchmark/README.md`.
+The procedure below describes the retained legacy runner.
+
+# Legacy v2/v2.1 benchmark methodology
 
 Authority: `tools/event_benchmark/SPEC.md` and `run_eval.py`, currently v2.1.
 `SPEC_V1.md`, `RESULTS.md` and checked-in result JSONs are historical v1 artifacts.
@@ -23,8 +26,9 @@ the 82 added views inherit source labels and await separate-view review. Downloa
 the entire media-only videos.json before filtering questions for a scoring task.
 The historical 120 set contains 100 base-4 questions and 20 bag questions. Read
 the selected manifest's status; do not relabel a draft to enable a run. Bag
-questions retain their separate versioned task/metric. The current draft cannot
-pass the runner's input check. Downloads and inherited labels do not make it
+questions allow unknown and retain their separate versioned task/metric; the
+base runner filters them out. The current draft cannot pass the runner's input
+check. Downloads and inherited labels do not make it
 eligible for reviewed scoring or threshold calibration.
 
 Keep both views and other cuts from the same original recording in one split.
