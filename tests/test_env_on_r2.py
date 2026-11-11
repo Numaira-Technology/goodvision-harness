@@ -828,6 +828,10 @@ def test_upload_only_uploads_without_building(tmp_path, monkeypatch, capsys):
     assert all(c["IfNoneMatch"] == "*" for c in calls)
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="registry unpack_to must be an absolute POSIX prefix",
+)
 @pytest.mark.parametrize("name", ["videojev", "clip", "siglip2", "d3-nano", "qwen8b"])
 def test_each_registry_env_launch_path_is_absolute_packed_python(name, tmp_path):
     env = copy.deepcopy(registry.env_of(name))
