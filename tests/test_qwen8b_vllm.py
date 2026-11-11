@@ -155,15 +155,15 @@ def test_calledprocesserror_str_hides_output_like_59781901():
     assert err.output == "ModuleNotFoundError: vllm\n"
 
 
-def test_smoke_uses_frozen_jpeg_and_surfaces_http_body(monkeypatch, tmp_path):
+def test_smoke_uses_synthetic_jpeg_and_surfaces_http_body(monkeypatch, tmp_path):
     import tools.start_qwen8b_vllm as launcher
     from io import BytesIO
     from urllib.error import HTTPError
 
     src = Path(launcher.__file__).read_text()
     assert "/9j/4AAQSkZJRgABAQAAAQABAAD" not in src
-    assert "_smoke(opener, args.eval_bundle)" in src
-    monkeypatch.setattr(launcher, "_smoke_body", lambda bundle: {"model": "x"})
+    assert "_smoke(opener, args.eval_bundle)" not in src
+    monkeypatch.setattr(launcher, "_smoke_body", lambda: {"model": "x"})
 
     class Boom:
         def open(self, req, timeout=0):
@@ -173,7 +173,8 @@ def test_smoke_uses_frozen_jpeg_and_surfaces_http_body(monkeypatch, tmp_path):
             )
 
     with pytest.raises(RuntimeError, match="image too small"):
-        _smoke(Boom(), tmp_path)
+        _smoke(Boom(), tmp_path / "smoke.json")
+    assert json.loads((tmp_path / "smoke.json").read_text())["state"] == "failed"
 
 
 def test_eligible_offers_reject_expensive_or_multi_gpu():
@@ -182,13 +183,14 @@ def test_eligible_offers_reject_expensive_or_multi_gpu():
     with pytest.raises(RuntimeError, match="more expensive"):
         _eligible_offers([{"num_gpus": 1, "dph_total": MAX_DPH + 0.5}])
     ok = _eligible_offers([
-        {"num_gpus": 1, "dph_total": 1.22, "id": 1},
+        {"num_gpus": 1, "dph_total": 1.22, "id": 1,
+         "cuda_max_good": 13.0, "driver_version": "580.65.06"},
         {"num_gpus": 1, "dph_total": 3.0, "id": 2},
     ])
     assert [o["id"] for o in ok] == [1]
 
 
-def test_prepare_vllm_bundle_preserves_request_hashes(tmp_path):
+def test_prepare_vllm_bundle_refuses_incomplete_unsealed_source(tmp_path):
     from tools.qwen8b.prepare_vllm_bundle import prepare
     src = tmp_path / "host"
     (src / "plans").mkdir(parents=True)
@@ -208,12 +210,10 @@ def test_prepare_vllm_bundle_preserves_request_hashes(tmp_path):
         (src / "plans" / f"qwen8b_r2_host-{split}.json").write_text(json.dumps(p))
     (src / "bundle-files-sha256.json").write_text("{}")
     dest = tmp_path / "vllm"
-    info = prepare(src, dest)
-    plan = json.loads((dest / "plans" / "qwen8b_r2_vllm-validation.json").read_text())
-    assert plan["units"][0]["request_sha256"] == host_plan["units"][0]["request_sha256"]
-    assert plan["units"][0]["frames"][0]["sha256"] == "0" * 64
-    assert info["exam_unchanged"] is True
-    assert (dest / "configs" / "qwen8b_r2_vllm.json").is_file()
+    with pytest.raises((ValueError, FileNotFoundError)):
+        prepare(src, dest)
+    assert not dest.exists()
+    assert (src / "bundle-files-sha256.json").read_text() == "{}"
 
 
 def test_diag_import_does_not_eval_or_prefetch():
@@ -238,7 +238,8 @@ def test_diag_eligible_refuses_price_jump():
         _eligible([{"num_gpus": 1, "gpu_ram": 24564, "dph_total": 1.80}])
     with pytest.raises(RuntimeError, match="more expensive|authorization"):
         _eligible([{"num_gpus": 1, "gpu_ram": 49140, "dph_total": 1.21}])
-    ok = _eligible([{"num_gpus": 1, "gpu_ram": 24564, "dph_total": 1.21, "id": 1}])
+    ok = _eligible([{"num_gpus": 1, "gpu_ram": 24564, "dph_total": 1.21, "id": 1,
+                     "cuda_max_good": 13.0, "driver_version": "580.65.06"}])
     assert ok[0]["id"] == 1
 
 
@@ -260,7 +261,7 @@ def test_build_env_refuses_frozen_vllm_and_hf_keys():
     assert "envs/qwen8b/cu128-py312-torch280-ada.tar.gz" in FROZEN_R2_KEYS
     assert "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz" in FROZEN_R2_KEYS
     assert "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz" in FROZEN_R2_KEYS
-    assert "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz" not in FROZEN_R2_KEYS
+    assert "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz" in FROZEN_R2_KEYS
     with pytest.raises(SystemExit):
         _refuse_frozen_key("envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz")
     with pytest.raises(SystemExit):

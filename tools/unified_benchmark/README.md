@@ -208,6 +208,11 @@ keys `VAST_API_KEY`, `SAM_SSH_KEY`, `R2_ENDPOINT`, `R2_BUCKET`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`. Attach SSH immediately after create;
 always release the labelled instance. Headline scoring remains correct/all.
 
+The active HF and vLLM profiles bind typed `env_artifact` identities. Create fresh
+bundles for updated active profiles and preserve historical bundles unchanged.
+The captured preflight environment is authoritative through the final restore
+acknowledgement; a changed registry or artifact stops before service/evaluation.
+
 vLLM (independent engine, same exam):
 
 ```sh
@@ -220,11 +225,24 @@ PYTHONPATH=. python -m tools.start_qwen8b_vllm \
 
 `eval_local` still uses 12 slots. vLLM may batch those 12 internally. Do not
 change JPEG size, prompts, max_tokens, or client concurrency to fit VRAM.
-Pack the vLLM conda env on a CPU VM and store it at
-`envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz` (torch `2.13.0+cu130`;
-the previous `cu128-…vllm0310` object is kept for provenance). The 4090
-only restores that object plus the existing weight prefix. Do not
-overwrite the HF qwen8b pack. A CPU import check is not a GPU serve.
+The active declared vLLM artifact is
+`envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz`, SHA-256
+`59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b`,
+4,252,375,781 bytes. The profile records this identity and the launcher checks
+it against the registry before rental. The cu130 pack requires host CUDA >=13.0
+and NVIDIA driver >=580; the HF CUDA 12.8 image label is not a driver guarantee.
+The old cu130 `ada` pack is incomplete and refused. All published Qwen pack keys,
+including ada2, are frozen; CPU rebuilds require a new reviewed key. The 4090 only
+restores the pinned object and existing weights. A CPU import is not a GPU serve.
+See [pack evidence limitations](../qwen8b_vllm/BUILD.md); the declared identity
+does not independently verify the claimed historical exam.
+
+Bundle/profile/request hashes are checked before rental and rechecked before
+inference. A separate synthetic 720px JPEG is used for smoke, with its request
+and response saved to `vllm-smoke-<instance>.json` beside the evaluation output.
+It is excluded from scored attempts and latency. Scored validation/test units
+are sent only through the evaluation ledger. Create a new bundle for the updated
+ada2 profile; never rewrite a historical bundle to pass identity checks.
 
 Hard-answer profiles omit the threshold flags. Use a fresh output path per phase;
 the public CLI refuses an existing run. The ledger supports bounded continuation,

@@ -142,6 +142,7 @@ from .reference_memory import (
 )
 from .resource_trace import start_resource_sampling, stop_resource_sampling
 from .result_bus import FrameBus, FramePacket, ResultBus
+from .result_websocket import install_result_socket_routes
 from .rich_label_models import (
     DEFAULT_RICH_LABEL_MODEL,
     DETECTOR_MODEL_HEADER,
@@ -2855,7 +2856,10 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                 if self.config.runtime.scene_independent_vlm:
                     prepared_native_vlm = (
                         model_settings.provider == "local"
-                        and model in {"ZhuYuhan/VideoJev-4B", "vllm-sr/d3-nano"}
+                        and model in {
+                            "ZhuYuhan/VideoJev-4B", "vllm-sr/d3-nano",
+                            "openai/clip-vit-large-patch14",
+                        }
                     )
                     process_config = VLMProcessConfig(
                         session.stream_session_id, self.source_id, generation, scene_labels,
@@ -3936,6 +3940,8 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             reason = "waiting_for_first_frame"
         elif source_age > self.settings.ready_max_frame_age_seconds:
             reason = "frame_stale"
+        elif health.get("sampling_window_state") == "unavailable":
+            reason = "source_window_unavailable"
         elif success_age is None:
             reason = "waiting_for_first_analysis"
         elif success_age > self.settings.ready_max_result_age_seconds:
@@ -4956,6 +4962,7 @@ def create_app(
     install_event_routes(application)
     install_local_camera_routes(application)
     install_fleet_routes(application)
+    install_result_socket_routes(application)
     from .workflow_routes import install_workflow_routes
     install_workflow_routes(application)
 

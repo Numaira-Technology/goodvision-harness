@@ -1,5 +1,12 @@
 """Remote prefetch wiring: credentials travel over stdin, never in argv."""
 
+import json
+import os
+import subprocess
+import sys
+
+import pytest
+
 from tools import cloud_prefetch as cp
 
 R2_ENV = {
@@ -47,22 +54,29 @@ def test_prefetch_models_carries_secret_only_on_stdin():
         uploads.append((host, port, remote_dir))
 
     cache = cp.prefetch_models(
-        ssh_options=["-o", "BatchMode=yes"], host="1.2.3.4", port=2222,
-        remote_dir="/workspace/models", models=MODELS, r2_env=R2_ENV,
-        hf_token="hf_tok", runner=runner, uploader=uploader,
+        ssh_options=["-o", "BatchMode=yes"],
+        host="1.2.3.4",
+        port=2222,
+        remote_dir="/workspace/models",
+        models=MODELS,
+        r2_env=R2_ENV,
+        hf_token="hf_tok",
+        runner=runner,
+        uploader=uploader,
     )
 
     assert cache == "/workspace/models/cache"
     assert uploads == [("1.2.3.4", 2222, "/workspace/models")]
     assert len(calls) == len(MODELS)
-    for (command, sent), (repo, revision) in zip(calls, MODELS):
+    for (command, sent), (repo, revision) in zip(calls, MODELS, strict=True):
         # The secret is in the stdin blob...
         assert "s3cr3t-value" in sent
         # ...and never anywhere in the argv the process list would show.
         assert all("s3cr3t-value" not in part for part in command)
         assert command[0] == "ssh"
-        assert f"root@1.2.3.4" in command
+        assert "root@1.2.3.4" in command
         assert revision in command[-1]
+        assert repo in command[-1]
 
 
 def test_prefetch_defaults_cache_dir_under_remote_dir():
@@ -72,7 +86,40 @@ def test_prefetch_defaults_cache_dir_under_remote_dir():
         seen["cmd"] = command
 
     cp.prefetch_models(
-        ssh_options=[], host="h", port=22, remote_dir="/r", models=MODELS[:1],
-        r2_env=R2_ENV, runner=runner, uploader=lambda *a: None,
+        ssh_options=[],
+        host="h",
+        port=22,
+        remote_dir="/r",
+        models=MODELS[:1],
+        r2_env=R2_ENV,
+        runner=runner,
+        uploader=lambda *a: None,
     )
     assert "--cache-dir /r/cache" in seen["cmd"][-1]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="remote command targets a POSIX shell")
+def test_remote_command_executes_quoted_paths_and_credentials(tmp_path):
+    remote = tmp_path / "model's directory"
+    remote.mkdir()
+    (remote / "model_source.py").write_text(
+        "import json, os, sys\n"
+        "print(json.dumps([sys.argv[1:], os.environ['R2_SECRET_ACCESS_KEY']]))\n"
+    )
+    cache = remote / "cache with spaces"
+    secret = "quote' dollar$ semicolon; newline\nvalue"
+    cmd = cp.remote_command(
+        cache, *MODELS[0], python=sys.executable, remote_dir=str(remote)
+    )
+    result = subprocess.run(
+        ["/bin/sh", "-c", cmd],
+        input=cp.credential_blob({"R2_SECRET_ACCESS_KEY": secret}),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(result.stdout) == [
+        ["--repo", MODELS[0][0], "--revision", MODELS[0][1], "--cache-dir", str(cache)],
+        secret,
+    ]
+    assert secret not in cmd

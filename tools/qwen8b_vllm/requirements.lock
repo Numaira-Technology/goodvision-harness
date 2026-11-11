@@ -1,3 +1,5 @@
+# HISTORICAL INCOMPLETE cu130-ada INVENTORY; this is NOT an ada2 lock.
+# No independently verified ada2 package inventory is available in this checkout.
 # Isolated pip freeze from /opt/env/qwen8b-vllm (python -s, PYTHONNOUSERSITE=1).
 # torch import version is 2.13.0+cu130 (pip freeze prints 2.13.0).
 # Pack tarball /tmp/qwen8b-vllm-cu130-env.tar.gz sha256=24f1eb0cc264a9794979eb6c2225eca47d67d68025407d51db86aa171ce7ba7e size=4252947071

@@ -1,14 +1,18 @@
-# 事件识别测评集 — 固定规则（考卷规范 v2）
+# Event-recognition benchmark specification v2.1
 
-v2 retains the v1 prompts, sampling, gate and model presets. It rejects malformed
-answers, excludes clips with any missing scheduled frame or provider answer, and
-verifies reviewed dataset and media hashes before making requests. These changes
-affect scoring eligibility, so v1 results are historical and are not v2 results.
-All candidates must be rerun before publishing a v2 comparison. The original
-rules are preserved in [SPEC_V1.md](SPEC_V1.md).
+v2.1 retains the v2 prompts, sampling, gate, model presets and answer validation.
+Per-event and overall accuracy are correct answers divided by all questions in
+the corresponding cohort, including errors and missing answers. These outcomes
+remain separately reported and are never converted to negative predictions.
+Historical correct/valid percentages use a different denominator; retain the
+original records. This correction does not require new model requests when the
+saved question counts and outcomes suffice. The original v1 rules remain in
+[SPEC_V1.md](SPEC_V1.md).
 
 这是一张"换考生、不换考卷"的测评规范。**唯一允许变化的是被测模型(`--candidate` / `--model` + `--backend`)**；
-下列所有项对每个候选模型**逐字节相同、运行即冻结**。改动本规范需提版本号并重跑全部候选。
+The model inputs and inference settings below remain fixed across candidates.
+This denominator-only correction can reuse saved outcomes; it does not authorize
+rerunning candidates or changing their prompts, frames, thresholds or answers.
 
 数据集本身(视频清单、参考答案、来源、许可)由 `media50/` 的 `samples.json` / `人工审阅.md` 维护，本规范只约定**怎么考、怎么判**。
 样本量当前 50，后续可扩到 ~250；**扩充不改变本规范**。
@@ -79,7 +83,7 @@ rules are preserved in [SPEC_V1.md](SPEC_V1.md).
 - 预测：片级分数 `≥ gate` → `yes`，否则 `no`。
 - 报告：每类 **TP / FN / TN / FP**、准确率 `(TP+TN)/N`，以及总体准确率。
 - 无负例的类（smoking / weapon）：误报率/特异度标 `—（无负例）`，不得外推。
-- 任一预定帧解码失败、时长读取失败或模型回答在 3 次请求后仍无效，整片计为 **error**，从准确率分母剔除。不得把缺失或不合法回答当成阴性；即使其他帧为阳性，也须完整取证后才能计分。输出同时列出 attempted / total / errors 与逐帧数量。
+- A scheduled-frame decoding failure, unavailable duration or answer still invalid after three attempts remains an **error**. It contributes no correct answer but stays in both its event's denominator and the overall denominator. Do not convert it to a negative prediction. Keep the existing complete-frame rule for accepting a prediction, and report errors and frame counts separately. Overall `total` and `attempted` both count all supplied scored questions; each `per_event.total` counts all questions for that event.
 - language 仅接受完整 (`finish_reason=stop`) 的 JSON 布尔 `answer`；字符串、数字、重复字段均无效。decision 仅接受无错误的 `noul` 回答，分数必须是 [0,1] 内有限数值。
 
 ## 8. 数据治理（为扩到 ~250）

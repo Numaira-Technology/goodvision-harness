@@ -3,10 +3,21 @@ This document covers the older base-four controlled runner and v2/v2.1 replay.
 
 # Controlled rerun: v2-provider-pinned-lossless-v1
 
-The default CLI requires the provider configuration and validation/test sidecar.
-For the separate original baseline (including robot41), explicitly pass
-`--legacy-baseline`; it uses default routing without this sidecar and cannot be
-mixed with controlled options or accepted by this threshold-tuning protocol.
+## Implementation status
+
+This checkout includes the controlled **evidence verifier**, threshold-selection
+consumer and separate controlled latency CLI. It does **not** include a controlled
+accuracy collector or `prepare_provider.py` catalog selector. `run_eval.py` is the
+legacy default-routing collector: it rounds clip scores and has no provider/split
+sidecar, per-attempt receipt export, `--preflight` or `--legacy-baseline` switch.
+Its output is ineligible for the controlled calibration contract below. Do not
+relabel it as lossless/provider-pinned or add markers to make verification pass.
+
+Use `tools/unified_benchmark/README.md` for the implemented current120 pipeline.
+For this older controlled protocol, collect new accuracy evidence only after a
+separately reviewed producer is available, or use eligible retained records with
+their original source snapshot. The remaining sections describe the verifier's
+acceptance contract; they are not claims that the legacy CLI produces it.
 
 This is a named variant of the existing v2 sampling/scoring protocol. SPEC.md
 remains the historical fixed baseline. Questions, labels, centered 1 FPS sampling,
@@ -17,26 +28,26 @@ CLIP/SigLIP2 integration is documented in `../clip_benchmark/README.md`.
 
 ## Provider selection and evidence
 
-`prepare_provider.py` performs a public catalog GET only. It saves the original
-catalog bytes and a separate routing configuration. The default chooses the lowest
-published latency (p50 when provided), with endpoint slug as the deterministic tie
-break. If multiple eligible endpoints have missing latency, it stops rather than
-claiming one is fastest. A sole eligible endpoint is explicitly not a speed comparison.
-An explicit `--provider-slug` is recorded as an override, not a fastest-provider claim.
+The latency CLI accepts a frozen `--provider-config`; it does not choose an
+endpoint from a live catalog. A reviewed configuration pins one endpoint and
+its requested model, with fallbacks disabled. A pinned provider alone does not
+prove fastest latency, server weight revision or actual precision.
 
-Accuracy and latency require the same `--provider-config`. It pins exactly one
-catalog endpoint with fallbacks disabled. Both chat and Decisions request shapes
-support ProviderPreferences in OpenRouter's official Python SDK:
-https://github.com/OpenRouterTeam/python-sdk/blob/main/src/openrouter/decisions.py
-https://github.com/OpenRouterTeam/python-sdk/blob/main/src/openrouter/components/providerpreferences.py
+Eligible controlled accuracy records must retain each attempt's returned
+generation ID, actual provider/model, available usage/cost, elapsed time and
+lossless score or sanitized error. The verifier rejects missing or inconsistent
+identity evidence. The latency CLI can resolve missing response metadata through
+GET /api/v1/generation without repeating inference. Its request latency includes
+answer parsing but excludes the later metadata lookup. This differs from the
+current120 API runner's complete transport timing. This is not an accuracy collection path.
 
-Each attempt records the returned generation ID, actual provider/model, available
-usage/cost, elapsed time, score or sanitized error. Missing provider/model metadata
-may be resolved through GET /api/v1/generation after inference, outside timing.
-Metadata failure never causes another inference request or silently turns a score
-into a negative. Missing/inconsistent actual receipts block calibration even when
-the prediction itself is valid. Request endpoint and catalog precision are recorded;
-actual endpoint/precision, server weights, hardware and VRAM remain unknown unless
+Controlled evidence requires the returned model ID to exactly match the frozen
+configuration's model ID. Case, whitespace, provider prefixes and version suffixes
+are not normalized or treated as aliases. A differing receipt stays incomplete
+until its identity is resolved; no alias policy is inferred from a similar name.
+
+Request endpoint and catalog precision are recorded; actual endpoint/precision,
+server weights, hardware and VRAM remain unknown unless
 separately attested. A fixed provider does not prove fixed server weights.
 
 ## Scores and splits
@@ -46,7 +57,7 @@ without additional rounding. `score_display` is rounded for display only. The
 lossless marker describes local storage, not the server's numeric precision.
 Historical rounded scores cannot be upgraded by changing a marker or adding zeros.
 
-Supply the frozen `--split-manifest` and `--split validation|test`. The original
+Eligible records must identify the frozen split sidecar and validation/test split. The original
 sample and manifest files are not rewritten. The sidecar is joined on question ID,
 filename and SHA-256; complete membership, inline-group consistency and cross-split
 filename/hash/source-group isolation are checked. Its original review scope,
@@ -55,13 +66,13 @@ in the output. This is not a new leakage-free or untouched-test claim.
 
 ## Offline preflight and staged evaluation
 
-Add `--preflight` to run_eval.py to validate media and the supplied frozen provider
-and split configuration. It never reads credentials or sends HTTP. Missing provider
-configuration is listed as pending; paid inference will refuse to start without it.
-The latency script has its own offline `--preflight`, including JPEG preparation.
-Both refuse an existing output path. A preflight pass does not authorize inference.
+The implemented latency CLI has offline `--preflight`, including JPEG preparation;
+it does not authorize inference or validate accuracy records. The legacy accuracy
+CLI has no equivalent preflight. Use the media downloader's `--check-only` for
+reviewed media/manifest checks; it does not establish provider or split evidence.
 
-After separate permission for paid calls, collect complete validation evidence.
+The commands below consume existing eligible controlled records; they cannot
+upgrade legacy rounded outputs or collect missing evidence.
 Select using validation only; freeze the artifact before reading test predictions:
 
 ```sh

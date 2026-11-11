@@ -8,6 +8,14 @@ description: >-
 
 # Validation-only threshold selection
 
+For the older controlled v2 API protocol, this checkout provides evidence validation
+and threshold consumers, but no controlled accuracy collector or provider-catalog
+preparation tool. The legacy `run_eval.py` output is rounded and lacks the required
+receipt/split evidence. Do not upgrade its labels or precision marker. Use eligible
+retained records with their matching source snapshot, or wait for an implemented
+producer; current120 has its separate documented pipeline.
+
+
 Use the runner matching the saved artifact. For current120 ledgers, read
 `tools/unified_benchmark/README.md` and use `tools.unified_benchmark.workflow select`
 and `report` for offline analysis. For a new CLIP/SigLIP2 GPU run, follow

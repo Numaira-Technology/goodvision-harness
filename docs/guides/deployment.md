@@ -188,7 +188,11 @@ curl -N http://127.0.0.1:8080/v1/results/events
 
 These are HTTP MJPEG/JSON/SSE outputs, not a new RTSP publication. If an
 upstream proxy is used, disable response buffering for MJPEG and SSE, allow
-long-lived responses, and pass WebSocket upgrades for `/ws`.
+long-lived responses, and pass WebSocket upgrades for `/ws`, `/v1/results/ws`,
+`/v1/results/{feature}/ws` (including `overall`), and their
+`/v1/fleet/cameras/{camera_id}/results/...` equivalents. Result subscriptions
+send JSON heartbeats every 15 seconds; use an idle timeout above 30 seconds.
+See [the result WebSocket protocol and client example](../../API_DELIVERY.md#websocket-实时结果订阅).
 
 Stop the active detection first, then manage the known-person gallery from
 **Known people gallery** in the same UI: enroll one clear, single-face image
