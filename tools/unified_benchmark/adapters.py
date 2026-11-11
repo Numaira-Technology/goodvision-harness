@@ -52,8 +52,9 @@ def request_body(config, unit, bundle):
         if len(images) != 1 or len(unit["targets"]) != 1:
             raise ValueError("API contract requires one frame and one question")
         event = unit["targets"][0]
+        provider = None if config.get("execution") == "self_hosted_r2" else config.get("provider_context")
         url, body = original.build_request(backend, config["model"], unit["question"],
-                                          "data:image/jpeg;base64," + images[0], config["provider_context"])
+                                          "data:image/jpeg;base64," + images[0], provider)
         if backend == "language":
             body["max_tokens"] = config["max_tokens"]
             body["temperature"] = config["temperature"]

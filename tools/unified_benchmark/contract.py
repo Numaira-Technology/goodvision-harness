@@ -6,6 +6,7 @@ from collections import Counter
 from pathlib import Path
 
 VERSION = "unified-frame-120-v2"
+CURRENT_VERSION = "unified-frame-202-v1"
 EVENTS = ("fight", "smoking", "fall", "weapon", "bag_knife", "bag_alcohol_bottle")
 RULES = {
     "version": VERSION,
@@ -21,6 +22,25 @@ RULES = {
     "report": "combined test120 headline; final unique missing units and incomplete questions separately",
     "backpressure": "wait, never drop planned input; not a 12-camera real-time throughput claim",
 }
+
+
+def rules_for(version):
+    """Keep the legacy contract intact; dataset expansion has a distinct identity."""
+    if version == VERSION:
+        return dict(RULES)
+    if version == CURRENT_VERSION:
+        return RULES | {"version": CURRENT_VERSION,
+            "sampling": "t=0,1,... seconds, strictly before container duration and at/before last decoded video frame timestamp relative to container start; common decoded JPEGs; excluded tail points recorded",
+            "report": "combined test202 headline; original120 and robot82 separately; final missing units and incomplete questions",
+            "reference_review": "original120 reviewed; robot82 inherited source labels pending single-view review"}
+    raise ValueError("unsupported unified protocol: " + str(version))
+
+
+def plan_rules(plan):
+    rules = rules_for(plan.get("protocol", VERSION))
+    if plan.get("rules_sha256") != digest(rules):
+        raise ValueError("plan protocol/rules fingerprint differs")
+    return rules
 
 
 def canonical(value):
@@ -44,13 +64,18 @@ def source_files():
     root = Path(__file__).resolve().parents[2]
     paths = list((root / "tools/unified_benchmark").glob("*.py"))
     paths += [p for p in (root / "tools/unified_benchmark/native_assets").rglob("*") if p.is_file() and p.suffix in (".py", ".json", ".patch")]
+    paths += list((root / "tools/qwen8b").glob("*.py"))
     paths += [root / name for name in (
+        "tools/models.yaml", "tools/registry.py", "tools/model_source.py",
+        "tools/env_source.py", "tools/cloud_env.py", "tools/cloud_prefetch.py",
+        "tools/start_qwen8b_r2.py", "tools/start_qwen8b_vllm.py", "tools/start_sam.py",
+        "tools/qwen8b/requirements.txt", "tools/qwen8b_vllm/requirements.txt",
         "tools/event_benchmark/run_eval.py", "tools/event_benchmark/evidence.py",
         "tools/event_benchmark/tune_threshold.py", "tools/clip_benchmark/scoring.py",
         "tools/clip_benchmark/runtime.py", "tools/clip_benchmark/base_timing.py",
         "tools/clip_benchmark/protocol.py",
     )]
-    return {str(path.relative_to(root)): path for path in sorted(paths)}
+    return {path.relative_to(root).as_posix(): path for path in sorted(paths)}
 
 
 def validate_threshold_values(thresholds, kind):
@@ -99,10 +124,14 @@ def read_receipt(path):
     return record
 
 
-def sample_times(duration):
+def sample_times(duration, *, last_frame_time=None):
     if type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0:
         raise ValueError("positive finite duration required")
-    return [float(i) for i in range(math.ceil(duration)) if i < duration]
+    if last_frame_time is not None and (type(last_frame_time) not in (int, float)
+            or not math.isfinite(last_frame_time) or last_frame_time < 0):
+        raise ValueError("nonnegative finite last frame timestamp required")
+    return [float(i) for i in range(math.ceil(duration))
+            if i < duration and (last_frame_time is None or i <= last_frame_time)]
 
 
 def finite_number(value):
@@ -171,12 +200,19 @@ def score(plan, evidence, kind, thresholds=None):
                 "accuracy_denominator": len(group),
                 "complete_only_accuracy": correct / len(complete) if complete else None,
                 "incomplete_questions": len(group) - len(complete),
+                "final_missing_unique_units": len({uid for r in group for uid in r["missing_unit_ids"]}),
                 "final_unknown_questions": sum(r["prediction"] == "unknown" for r in complete)}
-    return {"protocol": VERSION, **metrics(rows), "planned_unique_units": len(units),
+    result = {"protocol": plan.get("protocol", VERSION), **metrics(rows), "planned_unique_units": len(units),
             "final_missing_unique_units": len(missing_units),
             "valid_unit_coverage": (len(units) - len(missing_units)) / len(units) if units else None,
             "per_event": {e: metrics([r for r in rows if r["event"] == e]) for e in EVENTS},
             "questions": rows}
+    if plan.get("dataset_context"):
+        result["dataset_context"] = plan["dataset_context"]
+    if plan.get("split") == "test" and plan.get("protocol") == CURRENT_VERSION:
+        result["cohorts"] = {label: metrics([r for r in rows if start <= r["number"] <= end])
+                             for label, start, end in (("original120", 1, 120), ("robot82", 121, 202))}
+    return result
 
 
 def select_thresholds(plan, evidence, kind, model):

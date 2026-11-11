@@ -2,7 +2,6 @@
 import json
 from pathlib import Path
 import pytest
-pytest.importorskip("fcntl", reason="The durable benchmark queue currently requires Linux/macOS")
 
 from tools.unified_benchmark import adapters as a
 from tools.unified_benchmark.contract import EVENTS, aggregate, digest, sample_times, score, select_thresholds
@@ -27,6 +26,11 @@ class Clock:
 def queue(tmp_path, send, kind="choice"):
     ledger, clock = Ledger(tmp_path / "attempts.jsonl", {"frozen": 1}), Clock()
     return ledger, clock, Queue(ledger, kind, send, slots=1, clock=clock.now, sleep=clock.sleep)
+
+
+def ledger_bytes(ledger):
+    with ledger.raw_reader() as reader:
+        return reader.read()
 
 
 def test_incomplete_yes_is_not_scored():
@@ -461,8 +465,246 @@ def test_first_valid_answers_follow_attempt_order_not_append_order(tmp_path, ord
             ledger.append(base | {"type": "intent", "attempt": attempt})
         for attempt in order:
             ledger.append(base | {"type": "result", "attempt": attempt, "answers": answers[attempt]})
-        before = ledger.path.read_bytes()
+        before = ledger_bytes(ledger)
         assert ledger.state(u, kind) == (3, {"fight": later if invalid_first else first, "smoking": smoke})
-        assert ledger.path.read_bytes() == before
+        assert ledger_bytes(ledger) == before
+    finally:
+        ledger.close()
+
+
+def test_offline_report_keeps_inference_date_separate_from_report_date(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from tools.unified_benchmark import retry, workflow
+
+    ledger = Ledger(tmp_path / "attempts.jsonl", {"test": True})
+    config = {"kind": "choice", "model": "synthetic"}
+    try:
+        for timestamp, uid in ((1700000000, "u"), (1700086400, "v")):
+            monkeypatch.setattr(retry.time, "time", lambda: timestamp)
+            ledger.append({"type": "intent", "unit": uid, "attempt": 1, "request_sha256": "frozen"})
+            ledger.append({"type": "result", "unit": uid, "attempt": 1, "request_sha256": "frozen",
+                           "answers": {"fight": {"answer": "yes"}}, "complete": True, "elapsed_seconds": .5})
+        before = ledger_bytes(ledger)
+        first = workflow.report(plan(), config, ledger, None)
+        again = workflow.report(plan(), config, ledger, None)
+        expected = datetime.fromtimestamp(1700000000, timezone.utc).isoformat()
+        assert first["run_date_utc"] == again["run_date_utc"] == expected
+        assert first["report_generated_at_utc"] != expected
+        assert first["accuracy"] == again["accuracy"] == 1
+        assert ledger_bytes(ledger) == before
+    finally:
+        ledger.close()
+
+
+def test_report_without_attempts_does_not_invent_an_inference_date(tmp_path):
+    from tools.unified_benchmark.workflow import report
+    ledger = Ledger(tmp_path / "attempts.jsonl", {"test": True})
+    try:
+        result = report(plan(), {"kind": "choice", "model": "synthetic"}, ledger, None)
+        assert result["run_date_utc"] is None
+        assert result["report_generated_at_utc"]
+        assert result["unattempted_unique_units"] == 2
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize("response_case", ["invalid_json", "invalid_utf8", "oversized"])
+def test_invalid_http_json_retains_bounded_raw_receipt_and_three_attempts(tmp_path, monkeypatch, response_case):
+    import base64
+    import io
+    import threading
+    from tools.unified_benchmark import api_run
+    from tools.unified_benchmark.contract import file_hash
+
+    key = "synthetic-secret"
+    limit = 2 * 1024 * 1024
+    raw = b"<html>upstream error " + key.encode() + b"</html>"
+    oversized = response_case == "oversized"
+    if response_case == "invalid_utf8":
+        raw += b"\xff"
+    if oversized:
+        raw += b"x" * limit
+    calls = []
+    class Response(io.BytesIO):
+        status = 200
+    def urlopen(*args, **kwargs):
+        calls.append(1)
+        return Response(raw)
+    monkeypatch.setattr(api_run.urllib.request, "urlopen", urlopen)
+    (tmp_path / "f.jpg").write_bytes(b"synthetic-image")
+    config = {"model": "qwen/test", "backend": "language", "kind": "choice", "max_tokens": 30, "temperature": 0,
+              "provider_context": {"config": {"expected_provider_name": "Mock", "provider": {"only": ["mock"], "allow_fallbacks": False}}}}
+    u = unit() | {"frames": [{"path": "f.jpg", "sha256": file_hash(tmp_path / "f.jpg"), "time": 0}], "question": "Is there a fight?"}
+    u["request_sha256"] = digest(a.request_body(config, u, tmp_path)[1])
+    ledger = Ledger(tmp_path / "attempts.jsonl", {"test": True})
+    clock = Clock()
+    client = api_run.Transport(tmp_path, config, key, tmp_path / "output", ledger, threading.Event())
+    try:
+        observed = Queue(ledger, "choice", client, slots=1, clock=clock.now, sleep=clock.sleep).run([u])
+        assert observed["u"] == {} and len(calls) == 3
+        receipts = list((tmp_path / "output/receipts").glob("*.json"))
+        assert len(receipts) == 3
+        for path in receipts:
+            saved = json.loads(path.read_text())
+            assert saved["http_status"] == 200
+            assert saved["body_truncated"] is oversized
+            assert base64.b64decode(saved["body_base64"]) == raw[:limit].replace(key.encode(), b"[REDACTED]")
+            assert key not in path.read_text()
+        assert api_run.accounting(ledger)["attempts_without_cost_evidence"] == 3
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize("failure", ["incomplete", "bad_status"])
+def test_api_incomplete_http_keeps_receipt_and_retries_without_stopping_queue(tmp_path, monkeypatch, failure):
+    import base64
+    import http.client
+    import io
+    import threading
+    from tools.unified_benchmark import api_run
+    from tools.unified_benchmark.contract import file_hash
+
+    key = "synthetic-secret"
+    partial = b'{"error":"' + key.encode()
+    class Response(io.BytesIO):
+        status = 200
+    class Truncated(Response):
+        def read(self, size=-1):
+            raise http.client.IncompleteRead(partial, 10)
+    calls = []
+    def urlopen(request, **kwargs):
+        good = b"GOOD synthetic" in request.data
+        calls.append(good)
+        if good:
+            return Response(json.dumps({"provider": "Mock", "model": "qwen/test", "choices": [
+                {"finish_reason": "stop", "message": {"content": '{"answer":true}'}}]}).encode())
+        if failure == "bad_status":
+            raise http.client.BadStatusLine("synthetic")
+        return Truncated(b"")
+    monkeypatch.setattr(api_run.urllib.request, "urlopen", urlopen)
+    (tmp_path / "f.jpg").write_bytes(b"synthetic-image")
+    config = {"model": "qwen/test", "backend": "language", "kind": "choice", "max_tokens": 30, "temperature": 0,
+              "provider_context": {"config": {"expected_provider_name": "Mock", "provider": {"only": ["mock"], "allow_fallbacks": False}}}}
+    bad = unit() | {"frames": [{"path": "f.jpg", "sha256": file_hash(tmp_path / "f.jpg"), "time": 0}], "question": "Synthetic?"}
+    bad["request_sha256"] = digest(a.request_body(config, bad, tmp_path)[1])
+    good = bad | {"id": "good", "question": "GOOD synthetic?"}
+    good["request_sha256"] = digest(a.request_body(config, good, tmp_path)[1])
+    ledger, clock = Ledger(tmp_path / "attempts.jsonl", {"test": True}), Clock()
+    client = api_run.Transport(tmp_path, config, key, tmp_path / "output", ledger, threading.Event())
+    try:
+        observed = Queue(ledger, "choice", client, slots=1, clock=clock.now, sleep=clock.sleep).run([bad, good])
+        assert observed["u"] == {} and observed["good"]["fight"]["answer"] == "yes"
+        assert calls.count(False) == 3 and calls.count(True) == 1
+        receipts = [json.loads(p.read_text()) for p in (tmp_path / "output/receipts").glob("*.json")]
+        assert len(receipts) == 4
+        for saved in (r for r in receipts if r['unit'] == 'u'):
+            assert base64.b64decode(saved['body_base64']) == (partial.replace(key.encode(), b'[REDACTED]') if failure == 'incomplete' else b'')
+            assert key not in json.dumps(saved)
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize('transport_kind', ['api', 'local'])
+@pytest.mark.parametrize('status', [429, 503])
+@pytest.mark.parametrize('body_case', ['incomplete', 'timeout', 'oversized', 'oversized_partial', 'normal'])
+def test_http_error_bodies_preserve_status_receipts_and_retry(tmp_path, monkeypatch, transport_kind, status, body_case):
+    import base64
+    import http.client
+    import io
+    import threading
+    import urllib.error
+    from tools.qwen8b.eval_local import LocalTransport
+    from tools.unified_benchmark import api_run
+    from tools.unified_benchmark.contract import file_hash
+
+    key = 'synthetic-secret'
+    raw = b'error ' + key.encode() + b'\xff'
+    if body_case in ('oversized', 'oversized_partial'):
+        raw += b'x' * api_run.MAX_RESPONSE_BYTES
+    class ErrorBody(io.BytesIO):
+        def read(self, size=-1):
+            assert 0 < size <= api_run.MAX_RESPONSE_BYTES + 1
+            if body_case in ('incomplete', 'oversized_partial'):
+                raise http.client.IncompleteRead(raw, 10)
+            if body_case == 'timeout':
+                raise TimeoutError('synthetic body timeout')
+            return super().read(size)
+    class Response(io.BytesIO):
+        status = 200
+    calls = []
+    def urlopen(request, **kwargs):
+        good = b'GOOD synthetic' in request.data
+        calls.append(good)
+        if not good:
+            raise urllib.error.HTTPError(request.full_url, status, 'synthetic',
+                {'Retry-After': '91'}, ErrorBody(raw))
+        return Response(json.dumps({'provider': 'Mock', 'model': 'qwen/test', 'choices': [
+            {'finish_reason': 'stop', 'message': {'content': '{"answer":true}'}}]}).encode())
+    monkeypatch.setattr(api_run.urllib.request, 'urlopen', urlopen)
+    (tmp_path / 'f.jpg').write_bytes(b'synthetic-image')
+    config = {'model': 'qwen/test', 'backend': 'language', 'kind': 'choice', 'max_tokens': 30, 'temperature': 0,
+        'provider_context': {'config': {'expected_provider_name': 'Mock', 'provider': {'only': ['mock'], 'allow_fallbacks': False}}}}
+    bad = unit() | {'frames': [{'path': 'f.jpg', 'sha256': file_hash(tmp_path / 'f.jpg'), 'time': 0}], 'question': 'Synthetic?'}
+    bad['request_sha256'] = digest(a.request_body(config, bad, tmp_path)[1])
+    good = bad | {'id': 'good', 'question': 'GOOD synthetic?'}
+    good['request_sha256'] = digest(a.request_body(config, good, tmp_path)[1])
+    ledger, clock = Ledger(tmp_path / 'attempts.jsonl', {'test': True}), Clock()
+    output = tmp_path / 'output'
+    client = (api_run.Transport(tmp_path, config, key, output, ledger, threading.Event())
+        if transport_kind == 'api' else LocalTransport(tmp_path, config, 'http://127.0.0.1:9', output, ledger))
+    try:
+        observed = Queue(ledger, 'choice', client, slots=1, clock=clock.now, sleep=clock.sleep).run([bad, good])
+        assert observed['u'] == {} and observed['good']['fight']['answer'] == 'yes'
+        assert calls.count(False) == 3 and calls.count(True) == 1
+        failed = [r for r in ledger.rows if r['type'] == 'result' and r['unit'] == 'u']
+        assert len(failed) == 3
+        assert all(r['http_status'] == status and r['retry_after'] == 91 and not r['fatal'] for r in failed)
+        receipts = [json.loads(p.read_text()) for p in (output / 'receipts').glob('*.json')]
+        assert len(receipts) == 4
+        for saved in (r for r in receipts if r['unit'] == 'u'):
+            expected = b'' if body_case == 'timeout' else raw[:api_run.MAX_RESPONSE_BYTES]
+            if transport_kind == 'api':
+                expected = expected.replace(key.encode(), b'[REDACTED]')
+                assert key not in json.dumps(saved)
+            assert base64.b64decode(saved['body_base64']) == expected
+            assert saved['http_status'] == status and saved['retry_after'] == '91'
+            assert saved['body_truncated'] is (body_case in ('oversized', 'oversized_partial'))
+            assert saved['body_incomplete'] is (body_case in ('incomplete', 'oversized_partial', 'timeout'))
+    finally:
+        ledger.close()
+
+
+def test_truncated_billing_error_sets_stop_before_read_and_stays_fatal(tmp_path, monkeypatch):
+    import http.client
+    import io
+    import threading
+    import urllib.error
+    from tools.unified_benchmark import api_run
+    from tools.unified_benchmark.contract import file_hash
+
+    stopped = threading.Event()
+    class ErrorBody(io.BytesIO):
+        def read(self, size=-1):
+            assert stopped.is_set()
+            raise http.client.IncompleteRead(b'synthetic-secret', 10)
+    def urlopen(request, **kwargs):
+        raise urllib.error.HTTPError(request.full_url, 402, 'synthetic', {}, ErrorBody())
+    monkeypatch.setattr(api_run.urllib.request, 'urlopen', urlopen)
+    (tmp_path / 'f.jpg').write_bytes(b'synthetic-image')
+    config = {'model': 'qwen/test', 'backend': 'language', 'kind': 'choice', 'max_tokens': 30, 'temperature': 0,
+        'provider_context': {'config': {'expected_provider_name': 'Mock', 'provider': {'only': ['mock'], 'allow_fallbacks': False}}}}
+    u = unit() | {'frames': [{'path': 'f.jpg', 'sha256': file_hash(tmp_path / 'f.jpg'), 'time': 0}], 'question': 'Synthetic?'}
+    u['request_sha256'] = digest(a.request_body(config, u, tmp_path)[1])
+    ledger, clock = Ledger(tmp_path / 'attempts.jsonl', {'test': True}), Clock()
+    client = api_run.Transport(tmp_path, config, 'synthetic-secret', tmp_path / 'output', ledger, stopped)
+    try:
+        with pytest.raises(PausedRun, match='HTTP 402'):
+            Queue(ledger, 'choice', client, slots=1, clock=clock.now, sleep=clock.sleep).run([u])
+        results = [r for r in ledger.rows if r['type'] == 'result']
+        assert len(results) == 1 and results[0]['fatal'] and results[0]['http_status'] == 402
+        path, = (tmp_path / 'output/receipts').glob('*.json')
+        saved = json.loads(path.read_text())
+        assert saved['http_status'] == 402 and saved['body_incomplete']
+        assert 'synthetic-secret' not in path.read_text()
     finally:
         ledger.close()
