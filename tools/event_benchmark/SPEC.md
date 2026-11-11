@@ -97,11 +97,17 @@ rerunning candidates or changing their prompts, frames, thresholds or answers.
 
 ```sh
 # 换考生只改这一个参数：
-python tools/event_benchmark/run_eval.py --candidate luna --samples /path/to/samples.json --media /path/to/media --out outputs/event-benchmark/luna-v2.json
-python tools/event_benchmark/run_eval.py --candidate qwen --samples /path/to/samples.json --media /path/to/media --out outputs/event-benchmark/qwen-v2.json
-python tools/event_benchmark/run_eval.py --candidate gemini --samples /path/to/samples.json --media /path/to/media --out outputs/event-benchmark/gemini-v2.json
+python tools/event_benchmark/run_eval.py --legacy-baseline --candidate luna --samples /path/to/samples.json --media /path/to/media --out outputs/event-benchmark/luna-v2.json
+python tools/event_benchmark/run_eval.py --legacy-baseline --candidate qwen --samples /path/to/samples.json --media /path/to/media --out outputs/event-benchmark/qwen-v2.json
+python tools/event_benchmark/run_eval.py --legacy-baseline --candidate gemini --samples /path/to/samples.json --media /path/to/media --out outputs/event-benchmark/gemini-v2.json
 # 或自定义： --model <id> --backend <language|decision>
 # 对比口径： 默认 1fps；--interval 4（产品0.25fps）；--dense（能力上限）
 ```
+
+`--legacy-baseline` explicitly selects this default-routing baseline and records
+`v2.1-legacy-unpinned-lossless-v1`. Its scores are saved without extra rounding.
+It cannot be combined with the controlled provider/split options; it does not
+claim held-out calibration eligibility. Without this flag the controlled runner
+requires `--provider-config`, `--split-manifest` and `--split` (see CONTROLLED_RUN.md).
 
 必须显式提供 `--samples` 和 `--media`。API key 取自环境变量或仓库 `.env` 的 `OPENROUTER_API_KEY`。每次输出记录配置、逐片结果、汇总、samples/manifest/runner/spec 的 SHA-256 及每片媒体指纹；新输出保存在被 Git 忽略的 outputs/ 中。

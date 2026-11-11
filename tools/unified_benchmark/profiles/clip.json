@@ -1,0 +1,36 @@
+{
+  "alias": "clip",
+  "backend": "contrastive",
+  "kind": "margin",
+  "model": "openai/clip-vit-large-patch14",
+  "precision": "FP32; TF32 disabled",
+  "prompts": {
+    "bag_alcohol_bottle": [
+      "A bottle recognizable as an alcohol bottle is visibly exposed inside a bag or being taken out of a bag.",
+      "A bag contains ordinary items with no visible alcohol bottle."
+    ],
+    "bag_knife": [
+      "A knife is visibly exposed inside a bag or being taken out of a bag.",
+      "A bag contains ordinary items with no visible knife."
+    ],
+    "fall": [
+      "A person is losing balance and falling to the ground.",
+      "A person is standing, walking or sitting steadily."
+    ],
+    "fight": [
+      "Two people are physically fighting, punching or kicking each other.",
+      "People are walking, standing or talking peacefully."
+    ],
+    "smoking": [
+      "A person is smoking a cigarette.",
+      "A person is eating food or drinking from a cup."
+    ],
+    "weapon": [
+      "A person is holding a gun or a knife.",
+      "A person is holding an ordinary object such as a phone."
+    ]
+  },
+  "revision": "32bd64288804d66eefd0ccbe215aa642df71cc41",
+  "window_frames": 1,
+  "profile_origin": "Recorded November 2026 configuration; current provider availability and price must be rechecked."
+}

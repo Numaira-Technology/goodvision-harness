@@ -131,42 +131,8 @@ def frame_uri(jpeg_bytes):
     return "data:image/jpeg;base64," + base64.b64encode(jpeg_bytes).decode("ascii")
 
 
-def build_body(backend, model, uri):
-    if backend == "language":
-        prompt = (
-            f"{QCORE} Answer only with compact JSON: "
-            '{"answer": true} or {"answer": false}.'
-        )
-        return CHAT_URL, {
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": uri}},
-                    ],
-                }
-            ],
-            "max_tokens": runner.CHAT_MAX_TOKENS,
-            "temperature": runner.TEMPERATURE,
-        }
-    if backend == "decision":
-        return LUNA_URL, {
-            "model": model,
-            "state": [
-                "Surveillance video frame.",
-                {"type": "image_url", "image_url": {"url": uri}},
-            ],
-            "questions": {
-                "answer": {
-                    "type": "noul",
-                    "instructions": QCORE,
-                    "criteria": {"true": "Yes — " + QCORE, "false": "No — " + QCORE},
-                }
-            },
-        }
-    raise ValueError("unknown backend")
+def build_body(backend, model, uri, provider_context=None):
+    return runner.build_request(backend, model, QCORE, uri, provider_context)
 
 
 def invalid_constant(value):
@@ -218,38 +184,55 @@ def validate_answer(raw, backend):
 
 
 def one_call(url, body, key, backend):
-    """Record one attempt, including failures; never expose provider bodies/keys."""
+    """Time one attempt, then retain receipt metadata; no retries or metadata GETs here."""
     request = urllib.request.Request(
-        url,
-        data=json.dumps(body, allow_nan=False).encode("utf-8"),
-        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
-    )
+        url, data=json.dumps(body, allow_nan=False).encode("utf-8"),
+        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
     started = time.perf_counter()
+    payload, result = None, {"ok": False}
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
         if len(raw) > MAX_RESPONSE_BYTES:
             raise ValueError("oversized response")
-        validate_answer(raw, backend)
+        score = validate_answer(raw, backend)
+        result.update(ok=True, score=score)
     except urllib.error.HTTPError as error:
-        return {
-            "ok": False,
-            "elapsed_s": time.perf_counter() - started,
-            "error": "http_" + str(error.code),
+        result["error"] = "http_" + str(error.code)
+        headers = error.headers or {}
+        result["http_error_headers"] = {
+            name: str(headers[name]).replace(key, "[REDACTED]")[:512]
+            for name in ("retry-after", "x-request-id", "x-openrouter-request-id",
+                         "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset")
+            if headers.get(name) is not None
         }
+        try:
+            raw = error.read(MAX_RESPONSE_BYTES + 1)
+            if len(raw) <= MAX_RESPONSE_BYTES:
+                result["http_error_body_sha256"] = hashlib.sha256(raw).hexdigest()
+                detail = strict_json(raw).get("error", {})
+                if isinstance(detail, dict):
+                    result["http_error_detail"] = {
+                        name: str(detail[name]).replace(key, "[REDACTED]")[:1024]
+                        for name in ("code", "message", "type") if name in detail
+                    }
+                    metadata = detail.get("metadata")
+                    if isinstance(metadata, dict) and isinstance(metadata.get("provider_name"), str):
+                        result["http_error_detail"]["provider_name"] = metadata["provider_name"].replace(key, "[REDACTED]")[:256]
+        except (OSError, ValueError, TypeError, AttributeError) as detail_error:
+            result["http_error_detail_unavailable"] = type(detail_error).__name__
     except (urllib.error.URLError, OSError):
-        return {
-            "ok": False,
-            "elapsed_s": time.perf_counter() - started,
-            "error": "transport_error",
-        }
+        result["error"] = "transport_error"
     except (ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError):
-        return {
-            "ok": False,
-            "elapsed_s": time.perf_counter() - started,
-            "error": "invalid_response",
-        }
-    return {"ok": True, "elapsed_s": time.perf_counter() - started}
+        result["error"] = "invalid_response"
+    result["elapsed_s"] = time.perf_counter() - started
+    if "raw" in locals() and len(raw) <= MAX_RESPONSE_BYTES:
+        try:
+            payload = strict_json(raw)
+        except (ValueError, TypeError):
+            pass
+    result.update(runner.evidence.response_metadata(payload))
+    return result
 
 
 def pct(values, percentile):
@@ -293,7 +276,11 @@ def summarize(single, concurrent):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--candidate", choices=CANDIDATES, required=True)
+    parser.add_argument("--candidate", choices=CANDIDATES)
+    parser.add_argument("--model")
+    parser.add_argument("--backend", choices=["language", "decision"])
+    parser.add_argument("--provider-config", type=Path)
+    parser.add_argument("--preflight", action="store_true")
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument("--frame", type=Path, help="image normalized to a 720px JPEG")
     inputs.add_argument(
@@ -309,17 +296,31 @@ def main(argv=None):
         help="write provenance, attempts and conditional summary JSON",
     )
     args = parser.parse_args(argv)
-    model, backend = CANDIDATES[args.candidate]
+    if args.candidate and not (args.model or args.backend):
+        model, backend = CANDIDATES[args.candidate]
+    elif not args.candidate and args.model and args.backend:
+        model, backend = args.model, args.backend
+    else:
+        parser.error("use --candidate or --model with --backend")
     try:
+        if args.out and args.out.exists():
+            raise ValueError("output already exists")
+        context = (runner.evidence.load_provider(args.provider_config, model, backend)
+                   if args.provider_config else None)
         jpeg = prepare_frame(args.frame or args.video, video=args.video is not None)
-        key = load_key(args.env_file)
+        if not args.preflight and not context:
+            raise ValueError("controlled latency requires --provider-config")
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         parser.error("input/credential preparation failed: " + type(error).__name__)
-    url, body = build_body(backend, model, frame_uri(jpeg))
+    url, body = build_body(backend, model, frame_uri(jpeg), context)
     run_at = datetime.now(timezone.utc).isoformat()
     # Freeze provenance before the first request, not after a potentially long run.
     result = {
+        **runner.evidence.code_provenance(),
         "schema_version": "event-latency-v2",
+        "protocol_variant": runner.evidence.VARIANT,
+        "provider_context": context,
+        "evidence_sha256": sha256_bytes(Path(runner.evidence.__file__).read_bytes()),
         "spec_version": runner.SPEC_VERSION,
         "run_at": run_at,
         "candidate": args.candidate,
@@ -352,6 +353,19 @@ def main(argv=None):
         "concurrency": args.concurrency,
         "rounds": args.rounds,
     }
+    if args.preflight:
+        result.update(artifact_type="offline-latency-preflight", inference_calls=0,
+                      pending=["paid inference authorization", "live provider receipt verification"])
+        if not context:
+            result["pending"].append("frozen provider configuration")
+        if args.out:
+            runner.evidence.write_new(args.out, result)
+        print(json.dumps(result, indent=2))
+        return 0
+    try:
+        key = load_key(args.env_file)
+    except ValueError:
+        parser.error("credentials unavailable")
     single = [one_call(url, body, key, backend) for _ in range(args.single_n)]
     concurrent = []
     for _ in range(args.rounds):
@@ -361,7 +375,11 @@ def main(argv=None):
                     lambda _: one_call(url, body, key, backend), range(args.concurrency)
                 )
             )
+    runner.evidence.enrich_attempts(single + concurrent, key)
     result.update(summarize(single, concurrent))
+    result["provider_observed"] = runner.evidence.provider_summary(single + concurrent, context)
+    result["inference_complete"] = result["complete"]
+    result["complete"] = result["complete"] and result["provider_observed"]["complete"]
     print(f"{args.candidate}: {'complete' if result['complete'] else 'INCOMPLETE'}")
     print(
         f"Single: {result['single_n_ok']}/{result['single_n']} valid; "
@@ -372,10 +390,7 @@ def main(argv=None):
         f"P50 {result['p50_s']}s; P95 {result['p95_s']}s (valid responses only)"
     )
     if args.out:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(
-            json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8"
-        )
+        runner.evidence.write_new(args.out, result)
         print(f"-> {args.out}")
     return 0 if result["complete"] else 1
 

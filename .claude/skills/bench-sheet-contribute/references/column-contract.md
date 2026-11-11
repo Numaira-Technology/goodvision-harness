@@ -1,9 +1,18 @@
-# Pivoted Sheet contract: A:W
+# Historical pivoted Sheet contract: A:W
 
-Target `results` in spreadsheet `1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA`.
-Headers occupy rows 1–2; data begins at 3. Live headers checked 2026-11-01 match
-this layout. Verify again before every write; the old repository A:Q config does
-not describe this schema. Do not rebuild or migrate formatting as a contribution.
+This records `results` in spreadsheet
+`1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA` as checked on **2026-11-01**.
+It is retained to interpret historical payloads and `scripts/validate_row.py`;
+it is **not the current schema of either results or eval**. For
+`eval-2026-11-04`, use [the current eval contract](eval-column-contract.md).
+For any other destination, read its live headers before choosing a mapping.
+The current `results` A:Z mapping is recorded in
+[results-column-contract.md](results-column-contract.md).
+
+In this historical layout, headers occupy rows 1–2 and data begins at 3.
+The old repository A:Q config does not describe even this A:W schema. Do not
+rebuild or migrate formatting as a contribution. Rules below describe this
+historical contract, not a replacement for the unified-120 scoring policy.
 
 | Column | Row-2 header | Value |
 |---|---|---|
