@@ -155,7 +155,9 @@ def test_historical_formats_reparse_without_rewriting_or_resending(
     assert json.loads((output / "test/report.json").read_text())["correct"] == 120
 
 
-@pytest.mark.parametrize("field", ["fatal", "retry_after", "completed_at_unix"])
+@pytest.mark.parametrize(
+    "field", ["fatal", "retry_after", "completed_at_unix", "http_status", "error"]
+)
 def test_incomplete_legacy_missing_outcome_stops_without_inventing_metadata(
     frozen, tmp_path, field
 ):
@@ -549,3 +551,157 @@ def test_recorded_receipt_supplied_outcome_fields_are_typed(frozen, tmp_path, va
     with pytest.raises(ValueError, match="invalid receipt completed_at_unix"):
         execute(frozen, output, "decision3", "test", resume=True)
     assert not FakeBackend.instances
+
+
+def test_new_fatal_after_earlier_complete_orphan_pauses_once(frozen, tmp_path):
+    output, first, plan, cfg, unit = prepare(frozen, tmp_path)
+    later = json.loads(first.read_text())
+    later.update(
+        attempt=2,
+        response=None,
+        parsed={},
+        http_status=401,
+        error="HTTP 401",
+        fatal=True,
+    )
+    second = first.with_name(f"{digest(unit['id'])}-2.json")
+    write_new(second, later)
+    ledger = Ledger(
+        output / "test/attempts.jsonl",
+        workflow.context_for(plan, cfg, workflow.verify_bundle(frozen[0])),
+    )
+    ledger.append(
+        {
+            "type": "intent",
+            "unit": unit["id"],
+            "request_sha256": unit["request_sha256"],
+            "attempt": 2,
+        }
+    )
+    ledger.close()
+    before = first.read_bytes(), second.read_bytes()
+    with pytest.raises(PausedRun, match="newly recovered fatal"):
+        execute(frozen, output, "decision3", "test", resume=True)
+    assert not FakeBackend.instances
+    assert rows(output)[-1]["fatal"] is True
+    execute(frozen, output, "decision3", "test", resume=True)
+    assert unit["id"] not in FakeBackend.calls
+    assert before == (first.read_bytes(), second.read_bytes())
+
+
+def test_invalid_existing_phase_does_not_append_recovery(frozen, tmp_path):
+    output, receipt, plan, cfg, _ = prepare(frozen, tmp_path)
+    write_new(
+        output / "test/run.json",
+        {
+            "context": workflow.context_for(
+                plan, cfg, workflow.verify_bundle(frozen[0])
+            ),
+            "threshold_artifact_sha256": None,
+            "native_deployment_sha256": "different-deployment",
+        },
+    )
+    ledger = output / "test/attempts.jsonl"
+    before = ledger.read_bytes(), receipt.read_bytes()
+    with pytest.raises(ValueError, match="resume phase identity differs"):
+        execute(frozen, output, "decision3", "test", resume=True)
+    assert not FakeBackend.instances
+    assert ledger.read_bytes() == before[0], "incompatible phase ledger was mutated"
+    assert receipt.read_bytes() == before[1]
+    assert not (output / "invocations").exists()
+
+
+@pytest.mark.parametrize("diagnostic", [1.5, float("inf")], ids=["finite", "nonfinite"])
+def test_finite_native_score_with_nested_nonfinite_diagnostic_is_durable(
+    frozen, tmp_path, diagnostic
+):
+    def behavior(self, unit, body):
+        if self.alias != "clip":
+            return None
+        answer = unit["id"].rsplit("/", 1)[1]
+        raw = self.raw(unit, answer)
+        for value in raw.values():
+            value["optional_diagnostic"] = {"estimate": diagnostic}
+        return 200, raw, {}
+
+    FakeBackend.behavior = behavior
+    output = tmp_path / "run"
+    execute(frozen, output, "clip", "both")
+    assert json.loads((output / "test/report.json").read_text())["correct"] == 120
+    receipts = list((output / "test/receipts").glob("*.json"))
+    assert len(receipts) == 120
+    for path in receipts:
+        record = json.loads(path.read_text())
+        if diagnostic == float("inf"):
+            assert record["response_encoding"] == "json-text-nonfinite-v1"
+        else:
+            assert "response_encoding" not in record
+        decoded = read_receipt(path)
+        for event, score in record["parsed"].items():
+            assert set(score["native_scores"]) == {
+                "margin",
+                "positive_cosine",
+                "contrast_cosine",
+            }
+            assert (
+                decoded["response"][event]["optional_diagnostic"]["estimate"]
+                == diagnostic
+            )
+        json.dumps(record["parsed"], allow_nan=False)
+        assert file_hash(path)
+
+
+def test_completed_phase_anchors_checked_before_invocation_or_recovery(
+    frozen, tmp_path
+):
+    output = tmp_path / "run"
+    execute(frozen, output, "decision3", "both")
+    edit_json(output / "test/report.json", lambda r: r.update(correct=0))
+    before = {
+        p.relative_to(output): p.read_bytes() for p in output.rglob("*") if p.is_file()
+    }
+    FakeBackend.instances.clear()
+    with pytest.raises(ValueError, match="completed phase evidence differs"):
+        execute(frozen, output, "decision3", "both", resume=True)
+    assert not FakeBackend.instances
+    assert before == {
+        p.relative_to(output): p.read_bytes() for p in output.rglob("*") if p.is_file()
+    }
+
+
+def test_all_phase_identities_checked_before_first_orphan_recovery(frozen, tmp_path):
+    output, first, _, cfg, _ = prepare(frozen, tmp_path)
+    edit_json(output / "run.json", lambda r: r.update(phase="both"))
+    bundle = frozen[0]
+    plan = json.loads((bundle / "plans/decision3-validation.json").read_text())
+    unit = plan["units"][0]
+    ledger = Ledger(
+        output / "validation/attempts.jsonl",
+        workflow.context_for(plan, cfg, workflow.verify_bundle(bundle)),
+    )
+    identity = {
+        "unit": unit["id"],
+        "attempt": 1,
+        "request_sha256": unit["request_sha256"],
+    }
+    ledger.append({**identity, "type": "intent"})
+    ledger.close()
+    raw = FakeBackend("decision3", cfg, bundle, frozen[1], output, 1).raw(unit, "yes")
+    FakeBackend.instances.clear()
+    receipt = {
+        **json.loads(first.read_text()),
+        **identity,
+        "response": raw,
+        "parsed": adapters.parse_response(cfg, unit, raw),
+    }
+    write_new(output / "validation/receipts" / f"{digest(unit['id'])}-1.json", receipt)
+    write_new(output / "test/run.json", {"context": "wrong"})
+    before = {
+        p.relative_to(output): p.read_bytes() for p in output.rglob("*") if p.is_file()
+    }
+    with pytest.raises(ValueError, match="resume phase identity differs"):
+        execute(frozen, output, "decision3", "both", resume=True)
+    assert not FakeBackend.instances
+    assert before == {
+        p.relative_to(output): p.read_bytes() for p in output.rglob("*") if p.is_file()
+    }

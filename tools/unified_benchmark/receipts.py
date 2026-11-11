@@ -42,7 +42,10 @@ def read_raw_field(receipt, name):
 
 def read_receipt(path):
     """Read either historical codec without changing bytes or their hash."""
-    return read_receipt_bytes(Path(path).read_bytes())
+    try:
+        return read_receipt_bytes(Path(path).read_bytes())
+    except ValueError as error:
+        raise ValueError(f"invalid receipt {path}: {error}") from error
 
 
 FIELDS = ("response", "generation_metadata", "timings")

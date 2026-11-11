@@ -121,7 +121,15 @@ def parse_response(config, unit, response):
             p = response.get(event)
             if isinstance(p, dict) and all(_finite_number(p.get(k))
                                            for k in ("positive_cosine", "contrast_cosine", "margin")):
-                result[event] = {"score": p["margin"], "native_scores": p}
+                # Normalized evidence contains only validated score components.
+                # Optional diagnostics stay in the retained raw response, where
+                # the explicit raw codec can preserve nonfinite values safely.
+                result[event] = {
+                    "score": p["margin"],
+                    "native_scores": {k: p[k] for k in (
+                        "positive_cosine", "contrast_cosine", "margin"
+                    )},
+                }
         return result
     if any(response.get(k) != v for k, v in {"request_id": unit["id"], "model": config["model"], "revision": config["revision"]}.items()):
         raise ValueError("native response identity differs")
