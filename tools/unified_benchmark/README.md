@@ -154,8 +154,8 @@ rewrite old bundle hashes to pass the check.
 
 ## Native receipt continuation
 
-Native `--resume` validates retained receipt hashes and reparses answers before
-starting a backend. Every ledger result must have one earlier matching intent;
+Native `--resume` validates all requested phase identities/completion anchors,
+then retained receipt hashes and reparsed answers before starting a backend. Every ledger result must have one earlier matching intent;
 interrupted intents still consume the existing three-attempt budget. First valid
 answers follow attempt order, even if an older orphan is recovered later.
 A newly recovered fatal outcome is recorded and pauses this invocation before
@@ -172,7 +172,10 @@ cooldowns, including a final rate-limit response's shared delay.
 Readers accept both historical `python-json-nonfinite-v1` global and
 `json-text-nonfinite-v1` per-field raw encodings. New writes retain the per-field
 format. Diagnostic decoding neither changes original bytes nor makes nonfinite
-scores valid, and does not permit cross-source execution. Bundle checks require
+scores valid, and does not permit cross-source execution. Normalized CLIP evidence
+contains only the three validated margin/cosine components; optional diagnostics
+remain in the raw response. A differing historical normalized shape fails reparse
+rather than being rewritten. Bundle checks require
 both the complete physical inventory and recorded preflight config/plan/frame
 bindings. The existing HF-to-vLLM converter's sealed lineage preserves the original
 preflight bytes and binds only its derived serving profile/plans; it cannot repair
