@@ -3,28 +3,42 @@ name: bench-sheet-contribute
 description: >-
   Prepare, validate and publish explicitly requested GoodVision benchmark cell
   updates against live Google Sheets headers. Preserve result identity, old
-  artifacts, measurement provenance and existing formatting.
+  artifacts and measurement provenance; apply the agreed publication formatting.
 ---
 
 # Benchmark result publication
 
 Spreadsheet: `1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA`.
-Resolve the requested tab (`results`, `eval-2026-11-04`, or `threshold-tuning`),
+Resolve the requested tab (`results`, `threshold-tuning-latest` or historical
+`threshold-tuning`),
 then read live metadata, headers, model rows, formulas, notes and formatting.
 Never infer current positions from a saved column letter or a model's first match.
+`eval-2026-11-04` is retired by the user: do not read it for publication, synchronize
+to it or recreate it. Existing local snapshots remain historical evidence only.
 
-Read [eval semantics](references/eval-column-contract.md) or
-[results semantics](references/results-column-contract.md) for the destination.
+Read [results semantics](references/results-column-contract.md) for result updates.
+Read [threshold publication semantics](references/threshold-tuning-column-contract.md)
+for the latest-threshold overview, same-score comparisons and calibration details.
 The [historical A:W map](references/column-contract.md), bundled `validate_row.py`,
 and repository A:Q `sheet_config.json` do not describe the current live layout.
 There is no current-layout reusable writer/validator; retain a range-specific
 mapping and arithmetic audit instead of claiming a legacy validator covers it.
 
+This skill covers the named GoodVision workbook, not arbitrary spreadsheets.
+Results and threshold publication have field contracts. Map the saved evidence
+to live headers: calibrated numerical thresholds require a tuning artifact;
+boolean/native-argmax rows require their frozen decision configuration, not a
+nonexistent threshold artifact. An unrecognized
+tab/metric needs its meaning and source resolved before any write. Do not fill
+unsupported fields, missing measurements or unrun cohorts just to complete a row.
+
 ## Prepare the change
 
 - Use saved verified reports and source fingerprints. No model calls to fill blanks.
-- Current120 headline is **correct / all 120 planned questions**, including missing
-  questions in the denominator. Base100 and each event use their planned subset
+- Current202 headline is **correct / all 202 planned questions**, including missing
+  questions in the denominator. Report original120/robot82 separately; retain the
+  inherited-label limitation. Never put a202 headline under an all120 header.
+  Historical120 and Base100 and each event use their planned subset
   denominator. Report complete-valid counts separately. Older success-only results
   keep their original labelled identity; never silently reinterpret them.
 - Model names include selected effort, e.g. Gemini 2.5 Flash off / low. A display
@@ -42,19 +56,33 @@ mapping and arithmetic audit instead of claiming a legacy validator covers it.
   count and timing boundary. Prefer the matching measured run; when the user asks
   to retain existing speed, keep its provenance and disclose any mismatch. Twelve
   workers are not proof of twelve-camera real-time throughput.
-- Threshold values and calibration status belong in notes; don't turn Luna 0.5
-  or a previous tuned value into an unexplained default. Use bench-threshold-tune.
+- In `results`, threshold values and calibration status belong in notes; in
+  `threshold-tuning-latest`, populate its explicit threshold fields and provenance notes.
+  Don't turn Luna 0.5 or a previous tuned value into an unexplained default.
+  Use bench-threshold-tune for selection, not the publication step.
 
 ## Write and verify
 
-Save before-values and a sparse proposed cell/note diff locally. Follow the user's
+Read [publication formatting](references/publication-formatting.md): written cells
+use **Calibri, 9 pt**, and metric colors are recalculated from the current
+comparable result block on each publication. This does not authorize a live write
+when the user requested only documentation or a preview.
+
+Save before-values and a sparse proposed cell/note/format diff locally, including
+the color-scale ranges and anchors. Follow the user's
 publication authorization: prepare a preview first when requested; otherwise update
 only the agreed cells/rows. Do not add columns, tabs or duplicate rows automatically.
-`results` and `eval` are separate destinations; update both only when requested.
-For `threshold-tuning`, append below existing records when that is the requested scope.
+Publish evaluation results to `results`; do not maintain a second evaluation tab.
+For `threshold-tuning-latest`, maintain the latest verified record for each model/variant
+and its aligned comparison/detail rows. Back up the replaced values and notes.
+Append history only when specifically requested; do not grow another experiment
+block on each routine update. The original `threshold-tuning` was restored as the
+historical page; leave it unchanged unless that page is explicitly requested.
 
 Re-read target cells immediately before the write and stop on competing changes.
-Preserve formulas, existing color rules, ordinary backgrounds, headers, grouping,
-freezes and dimensions unless that specific layout change was requested. Write
+Preserve formulas, ordinary backgrounds, header layout, grouping, freezes and
+dimensions. Apply only the font and metric-color changes defined in the formatting
+reference; preserve unrelated conditional-format rules and historical blocks. Write
 literal values with RAW input and narrow note/format masks. Re-read the saved cells
-and verify values, formulas, notes and identity. Preserve all previous local results.
+and verify values, formulas, notes, font, effective colors and identity. Preserve
+all previous local results.

@@ -10,7 +10,7 @@ from PIL import Image
 
 from tools.unified_benchmark import native_deploy as deploy, native_run as run, preflight, workflow
 from tools.unified_benchmark.adapters import D3_OPTIONS, request_body
-from tools.unified_benchmark.contract import EVENTS, RULES, digest, file_hash, write_new
+from tools.unified_benchmark.contract import CURRENT_VERSION, EVENTS, RULES, digest, file_hash, rules_for, write_new
 from tools.unified_benchmark.retry import Ledger, Queue, PausedRun
 
 
@@ -270,6 +270,24 @@ def test_separate_validation_then_test_accepts_only_its_frozen_artifact(frozen, 
     path = out / "thresholds.json"
     execute(frozen, tmp_path / "test", phase="test", threshold_path=path, threshold_hash=file_hash(path))
     assert json.loads((tmp_path / "test/test/report.json").read_text())["correct"] == 120
+
+
+@pytest.mark.parametrize("alias", ["clip", "siglip2"])
+def test_validation_report_uses_selected_nonzero_thresholds(frozen, tmp_path, alias):
+    def positive_margins(self, unit, body):
+        margin = .3 if unit["id"].endswith("/yes") else .1
+        return 200, {event: {"margin": margin, "positive_cosine": .5 + margin,
+                            "contrast_cosine": .5} for event in unit["targets"]}, {}
+    FakeBackend.behavior = positive_margins
+    out = tmp_path / "validation"
+    execute(frozen, out, alias, phase="validation")
+    artifact = json.loads((out / "thresholds.json").read_text())
+    result = json.loads((out / "validation/report.json").read_text())
+    assert artifact["thresholds"]["fight"] == pytest.approx(.2)
+    assert result["thresholds"] == artifact["thresholds"]
+    assert result["threshold_artifact_sha256"] == file_hash(out / "thresholds.json")
+    assert result["correct"] == result["complete_valid_questions"] == 24
+    assert not (out / "test").exists()
 
 
 def test_startup_failure_does_not_consume_request_budget(frozen, tmp_path, monkeypatch):
@@ -972,3 +990,77 @@ def test_resume_preflight_rejects_noncanonical_later_orphan_metadata(frozen, tmp
     receipt[field] = float("nan")
     path.write_text(json.dumps(receipt))
     assert_read_only_resume_rejection(frozen, output)
+
+
+@pytest.mark.parametrize("alias", deploy.ALIASES)
+def test_native202_validation_to_test_keeps_method(frozen, tmp_path, alias):
+    """Exercise the same native pipeline with 82 extra synthetic test questions."""
+    bundle, _, _ = frozen
+    cfg = deploy.profile(alias)
+    for path in (bundle / 'plans').glob('*.json'):
+        plan = json.loads(path.read_text())
+        plan_cfg = deploy.profile(path.name.rsplit('-', 1)[0])
+        plan.update(protocol=CURRENT_VERSION, rules_sha256=digest(rules_for(CURRENT_VERSION)))
+        if plan['split'] == 'test':
+            for i in range(82):
+                event, answer = ('fall' if i < 36 else 'weapon'), ('yes' if i % 2 else 'no')
+                uid = f'test/robot/{i}/{answer}'
+                source = next(u for u in plan['units'] if event in u['targets'])
+                unit = source | {'id': uid, 'source_id': uid}
+                unit['request_sha256'] = digest(request_body(plan_cfg, unit, bundle)[1])
+                plan['units'].append(unit)
+                plan['questions'].append({'number': 121 + i, 'event': event, 'reference': answer, 'unit_ids': [uid]})
+            plan['dataset_context'] = {'review_status': 'inherited robot82 labels pending review'}
+        path.write_text(json.dumps(plan))
+    (bundle / 'rules.json').write_text(json.dumps(rules_for(CURRENT_VERSION)))
+    preflight_path = bundle / 'preflight.json'
+    manifest = json.loads(preflight_path.read_text())
+    for path in (bundle / 'plans').glob('*.json'):
+        model_alias, split = path.stem.rsplit('-', 1)
+        manifest['models'][model_alias][split]['plan_sha256'] = digest(json.loads(path.read_text()))
+    preflight_path.write_text(json.dumps(manifest))
+    seal(bundle)
+    out = tmp_path / 'run202'
+    execute(frozen, out, alias)
+    result = json.loads((out / 'test/report.json').read_text())
+    assert result['correct'] == result['accuracy_denominator'] == 202
+    assert result['cohorts']['robot82']['correct'] == 82
+    assert result['cohorts']['original120']['correct'] == 120
+    assert result['final_missing_unique_units'] == result['incomplete_questions'] == 0
+    assert len(FakeBackend.calls) == 226
+    if cfg['kind'] == 'margin':
+        artifact = json.loads((out / 'thresholds.json').read_text())
+        assert artifact['rules_sha256'] == digest(rules_for(CURRENT_VERSION))
+        assert artifact['validation_summary']['complete_valid_questions'] == 24
+
+
+def test_native_completion_and_resume_do_not_reopen_owned_ledger(frozen, tmp_path, monkeypatch):
+    """Model Windows mandatory byte locks while exercising real native receipts."""
+    owners = set()
+    original_init, original_close, original_open = Ledger.__init__, Ledger.close, Path.open
+
+    def ledger_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        if self.file is not None:
+            owners.add(self.path.resolve())
+
+    def ledger_close(self):
+        original_close(self)
+        owners.discard(self.path.resolve())
+
+    def guarded_open(path, *args, **kwargs):
+        if path.resolve() in owners:
+            raise PermissionError("synthetic mandatory lock denies second handle")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Ledger, "__init__", ledger_init)
+    monkeypatch.setattr(Ledger, "close", ledger_close)
+    monkeypatch.setattr(Path, "open", guarded_open)
+    out = tmp_path / "run"
+    execute(frozen, out, "clip")
+    calls = list(FakeBackend.calls)
+    before = {name: file_hash(out / name) for name in ("validation/attempts.jsonl", "test/attempts.jsonl")}
+    execute(frozen, out, "clip", resume=True)
+    assert FakeBackend.calls == calls
+    assert {name: file_hash(out / name) for name in before} == before
+    assert not owners

@@ -8,7 +8,7 @@ description: >-
 
 # Validation-only threshold selection
 
-Use the runner matching the saved artifact. For current120 ledgers, read
+Use the runner matching the saved artifact. For current202 or explicit legacy120 ledgers, read
 `tools/unified_benchmark/README.md` and use `tools.unified_benchmark.workflow select`
 and `report` for offline analysis. For a new CLIP/SigLIP2 GPU run, follow
 `tools/unified_benchmark/NATIVE.md`: `native_run --phase validation` (or `both`)
@@ -21,21 +21,23 @@ For the older base-four `per_video` schema, use
 mix their validation/test versions). The latter retains historical complete-only
 confusion metrics and explicitly adds all-question headline counts.
 
-For a new current120 bundle, obtain all five original JSON files from the
+For a new current202 bundle, obtain the five original files plus the three202 files
+listed in [DATASET202.md](../../../tools/unified_benchmark/DATASET202.md) from the
 restricted team Drive via [the input acquisition guide](../../../tools/unified_benchmark/README.md#get-the-frozen-inputs).
 Download with an authorized team account into a private directory, verify the
 pinned SHA-256 values, and provide that directory to preflight with `--inputs`.
 Do not reconstruct the validation split, reformat the snapshots, or substitute
 the repository's legacy manifest. An existing frozen bundle keeps its own inputs.
 
-Require reviewed data, lossless scores, full validation coverage, and compatible
+Require reviewed validation data, lossless scores, full validation coverage, and compatible
 model/provider, prompts, effort, precision, sampling, preprocessing and source
 fingerprints. Validate source-video groups across splits. Training/development,
 actor/scene and prior test-use limits must remain explicit; do not invent a clean
 training split or claim the reused test is untouched.
 
 Validation is 24 questions: six per base event, three positive and three negative.
-There is no bag validation. Incomplete validation stops calibration and test;
+There is no bag validation. The new82 questions belong only to test and have
+inherited, pending-review references; never use them for calibration. Incomplete validation stops calibration and test;
 a fixed baseline fallback needs an explicit separate experiment decision.
 The test and report entrypoints reject failed/null threshold artifacts before
 execution: successful selection, complete validation24 counts, matching frozen

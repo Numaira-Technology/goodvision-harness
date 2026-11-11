@@ -30,16 +30,16 @@ models:
       r2_prefix: models/ZhuYuhan/VideoJev-4B/1c1a253bf90dfa66176124d25a48ffb791d517d5/
     # key 2 -- a pre-built environment; eval launches {unpack_to}/bin/python
     env:
-      # Existing immutable artifact: do not overwrite it when rebuilding.
-      # build_env prints new envs/videojev/<sha256> keys for manual pin review.
-      # The remote manifest must agree with every restore field below.
+      # filled in by tools/build_env.py after the one-time build+upload:
+      #   r2_key:  envs/videojev/<tag>.tar.gz
+      #   sha256:  <tarball digest>   (verified on every pull)
       r2_key: envs/videojev/cu128-py312-torch280-ada.tar.gz
       manifest_key: envs/videojev/cu128-py312-torch280-ada.json
       sha256: 44ac889e4c3a23803099a46c76b9917ecd8c30a7b1bb391031d7b95a572cf594
       size: 4846542699                      # 4.85 GB conda-pack tarball
       unpack_to: /opt/env/videojev          # fixed prefix; built here, restored here
       activate_rel: bin/activate            # conda-pack identity; eval uses bin/python
-      compat:                               # checked before download/execution
+      compat:                               # the launcher rents a box matching this
         python: "3.12"
         cuda: "12.8"
         torch: "2.8.0"
@@ -124,3 +124,42 @@ models:
         cuda: "12.8"
         torch: "2.8.0"
         gpu_family: ada
+
+  # Second env for the same weights. New R2 objects; never overwrite qwen8b above.
+  qwen8b-vllm:
+    repo: Qwen/Qwen3-VL-8B-Instruct
+    revision: 0c351dd01ed87e9c1b53cbc748cba10e6187ff3b
+    weights:
+      r2_prefix: models/Qwen/Qwen3-VL-8B-Instruct/0c351dd01ed87e9c1b53cbc748cba10e6187ff3b/
+    env:
+      r2_key: envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz
+      manifest_key: envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.json
+      sha256: 59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b
+      size: 4252375781                       # 4.25 GB; HEAD+GET sha verified 2026-11-08
+      complete: true                         # isolated restore imported api_server + cpp_extension
+      unpack_to: /opt/env/qwen8b-vllm
+      activate_rel: bin/activate
+      build:
+        flash_attn: false                    # vLLM wheel ships attention kernels
+        install_default_torch: false         # let vllm==0.31.0 pull torch 2.13.x
+        require_cuda: false                  # pack CUDA wheels on a CPU VM; GPU only restores
+        verify_imports: [vllm, filelock, tqdm]
+        verify_modules:
+          - vllm.entrypoints.openai.api_server
+          - torch.utils.cpp_extension
+      compat:
+        python: "3.12"
+        cuda: "13.0"                         # torch 2.13.0+cu130; not the CUDA 12.8 image label
+        torch: "2.13.0"
+        gpu_family: ada
+        vllm: "0.31.0"
+      superseded:
+        r2_key: envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz
+        sha256: 2a3dcb1fc6a8d84439263512c65dae0bb576c50d4f559ae9f069407eb2e86db6
+        size: 4236991211
+        note: "kept for provenance; missing typing_extensions in the prefix"
+      incomplete_cu130:
+        r2_key: envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz
+        sha256: 24f1eb0cc264a9794979eb6c2225eca47d67d68025407d51db86aa171ce7ba7e
+        size: 4252947071
+        note: "frozen; mixed conda setuptools 84.2.1 sources + pip 80.10.2 RECORD"

@@ -5,6 +5,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import json
+import math
 import platform
 from pathlib import Path
 import shutil
@@ -14,7 +15,8 @@ import sys
 from tools.event_benchmark import evidence, run_eval
 from tools.clip_benchmark.protocol import PROMPTS, REVISIONS
 from .adapters import CURRENT_IMAGE_PROMPTS, question_core, request_body
-from .contract import EVENTS, RULES, VERSION, canonical, digest, file_hash, sample_times, source_files, write_new
+from .contract import CURRENT_VERSION, EVENTS, VERSION, canonical, digest, file_hash, rules_for, sample_times, source_files, write_new
+from .dataset202 import load_extension
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILES = Path(__file__).parent / "profiles"
@@ -27,7 +29,8 @@ PINNED_INPUTS = {
 }
 
 
-def load_inputs(out, frozen):
+def load_inputs(out, frozen, protocol=CURRENT_VERSION):
+    rules_for(protocol)
     for name, expected in PINNED_INPUTS.items():
         if file_hash(frozen / name) != expected:
             raise ValueError("frozen input changed: " + name)
@@ -56,7 +59,7 @@ def load_inputs(out, frozen):
             raise ValueError("wrong frozen cohort")
         parts[split] = {"rows": [expected[n] | {"source_video_group": groups[n]} for n in sorted(expected)],
                         "split_context": context}
-    return parts
+    return load_extension(out, frozen, parts) if protocol == CURRENT_VERSION else parts
 
 
 def model_configs(aliases, profiles=PROFILES):
@@ -67,7 +70,12 @@ def model_configs(aliases, profiles=PROFILES):
         config = json.loads((profiles / (alias + ".json")).read_text())
         if config["alias"] != alias or config["window_frames"] not in (1, 2):
             raise ValueError("profile identity/window mismatch")
-        if config["backend"] in ("language", "decision"):
+        if config.get("execution") == "self_hosted_r2":
+            if config.get("prompt_policy") != "current-image-v1":
+                raise ValueError("current-image-v1 prompt policy required")
+            if not config.get("weight_revision"):
+                raise ValueError("self-hosted profile requires a pinned weight_revision")
+        elif config["backend"] in ("language", "decision"):
             c = config["provider_context"]["config"]
             route = c["provider"]
             if (c["model"] != config["model"] or c["backend"] != config["backend"]
@@ -82,7 +90,29 @@ def model_configs(aliases, profiles=PROFILES):
     return configs
 
 
-def inspect_video(split, row, out, media):
+def probe_last_frame_time(path):
+    """Use decoded video PTS, not audio/container tail or rounded frame counts.
+
+    Input-side ffmpeg -ss is relative to the container start, so normalize PTS
+    to the same origin. Missing timestamps are a failed check, not a fallback.
+    """
+    result = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "format=start_time:frame=best_effort_timestamp_time",
+        "-of", "json", str(path)], capture_output=True, text=True, check=True, timeout=300)
+    if result.stderr.strip():
+        raise ValueError("video timestamp probe failed: " + result.stderr[-1500:])
+    data = json.loads(result.stdout)
+    start = float(data["format"]["start_time"])
+    times = [float(frame["best_effort_timestamp_time"]) for frame in data["frames"]]
+    if not times or not math.isfinite(start) or any(not math.isfinite(t) for t in times):
+        raise ValueError("missing or nonfinite decoded video timestamps")
+    last = max(times) - start
+    if not math.isfinite(last) or last < 0:
+        raise ValueError("last decoded video timestamp precedes container start")
+    return last
+
+
+def inspect_video(split, row, out, media, protocol=VERSION):
     path = (media / split / row["filename"]).resolve()
     if not path.is_relative_to((media / split).resolve()) or file_hash(path) != row["sha256"]:
         raise ValueError("missing/changed media: " + row["filename"])
@@ -91,8 +121,17 @@ def inspect_video(split, row, out, media):
                               "-map", "0:v:0", "-f", "null", "-"], capture_output=True, timeout=300)
     if decoded.returncode or decoded.stderr.strip():
         raise ValueError("full decode failure: " + row["filename"] + ": " + decoded.stderr.decode(errors="replace")[-1500:])
+    planned_times = sample_times(duration)
+    sampling_audit = None
+    if protocol == CURRENT_VERSION:
+        last = probe_last_frame_time(path)
+        bounded_times = sample_times(duration, last_frame_time=last)
+        sampling_audit = {"last_decoded_frame_time": last,
+            "container_grid_times": planned_times, "retained_times": bounded_times,
+            "excluded_tail_times": [t for t in planned_times if t > last]}
+        planned_times = bounded_times
     frames = []
-    for index, timestamp in enumerate(sample_times(duration)):
+    for index, timestamp in enumerate(planned_times):
         uri = run_eval.frame_uri(path, timestamp)
         if not uri:
             raise ValueError("planned frame unavailable: " + row["filename"] + "@" + str(timestamp))
@@ -112,11 +151,14 @@ def inspect_video(split, row, out, media):
         frames.append({"path": rel, "time": timestamp, "sha256": file_hash(dest), "size": size})
     if len(frames) < 2:
         raise ValueError("video too short for a two-frame window: " + row["filename"])
-    return {"filename": row["filename"], "sha256": row["sha256"], "duration": duration,
-            "full_decode_passed": True, "frames": frames}
+    result = {"filename": row["filename"], "sha256": row["sha256"], "duration": duration,
+              "full_decode_passed": True, "frames": frames}
+    if sampling_audit is not None:
+        result["sampling_audit"] = sampling_audit
+    return result
 
 
-def build_plan(split, rows, videos, config, bundle):
+def build_plan(split, rows, videos, config, bundle, protocol=VERSION, dataset_context=None):
     units, questions = [], []
     native = config["backend"] not in ("language", "decision")
     byfile = {}
@@ -142,7 +184,8 @@ def build_plan(split, rows, videos, config, bundle):
             questions.append({"number": q["number"], "filename": q["filename"], "event": q["event"],
                               "reference": q["proposed_answer"], "source_video_group": q["source_video_group"],
                               "unit_ids": ids})
-    return {"protocol": VERSION, "split": split, "config_sha256": digest(config), "rules_sha256": digest(RULES),
+    return {"protocol": protocol, "split": split, "config_sha256": digest(config), "rules_sha256": digest(rules_for(protocol)),
+            "dataset_context": dataset_context,
             "questions": sorted(questions, key=lambda q: q["number"]), "units": units}
 
 
@@ -161,28 +204,33 @@ def freeze_sources(out):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--inputs", type=Path, required=True, help="Private directory containing the five frozen JSON inputs")
+    parser.add_argument("--inputs", type=Path, required=True, help="Private frozen inputs: eight JSON files for 202, five for legacy120")
+    parser.add_argument("--protocol", choices=(CURRENT_VERSION, VERSION), default=CURRENT_VERSION)
     parser.add_argument("--media", type=Path, required=True, help="contains validation/ and test/ videos")
     parser.add_argument("--profiles", type=Path, default=PROFILES)
     parser.add_argument("--models", nargs="+", required=True, help="profile aliases to prepare")
     args = parser.parse_args(argv)
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
-    report = {"protocol": VERSION, "started_at": datetime.now(timezone.utc).isoformat(),
+    report = {"protocol": args.protocol, "started_at": datetime.now(timezone.utc).isoformat(),
               "inference_calls": 0, "model_downloads": 0, "network_calls": 0, "formal_run_authorized": False}
     try:
-        parts = load_inputs(out, args.inputs)
+        parts = load_inputs(out, args.inputs, args.protocol)
+        report["dataset_context"] = parts["test"].get("dataset_context")
+        write_new(out / "split-audit.json", {split: {"context": part["split_context"],
+            "members": [{k: row[k] for k in ("number", "filename", "sha256", "source_video_group", "human_review")}
+                        for row in part["rows"]]} for split, part in parts.items()})
         configs = model_configs(args.models, args.profiles)
-        write_new(out / "rules.json", RULES)
+        write_new(out / "rules.json", rules_for(args.protocol))
         tasks, inspected = [], {"validation": {}, "test": {}}
         for split, part in parts.items():
             unique = {r["filename"]: r for r in part["rows"]}
-            if len(unique) != (24 if split == "validation" else 110):
+            if len(unique) != (24 if split == "validation" else 192 if args.protocol == CURRENT_VERSION else 110):
                 raise ValueError("unique video count differs")
             tasks.extend((split, r) for r in unique.values())
         errors = []
         with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = {pool.submit(inspect_video, split, row, out, args.media): (split, row) for split, row in tasks}
+            futures = {pool.submit(inspect_video, split, row, out, args.media, args.protocol): (split, row) for split, row in tasks}
             for done, future in enumerate(as_completed(futures), 1):
                 split, row = futures[future]
                 try:
@@ -199,7 +247,7 @@ def main(argv=None):
             write_new(out / "configs" / (alias + ".json"), config)
             counts = {}
             for split, part in parts.items():
-                plan = build_plan(split, part["rows"], inspected[split], config, out)
+                plan = build_plan(split, part["rows"], inspected[split], config, out, args.protocol, part.get("dataset_context"))
                 write_new(out / "plans" / f"{alias}-{split}.json", plan)
                 counts[split] = {"questions": len(plan["questions"]), "unique_units": len(plan["units"]),
                                  "target_evaluations": sum(len(q["unit_ids"]) for q in plan["questions"]),
@@ -231,7 +279,7 @@ def main(argv=None):
         report.update(offline_passed=False, formal_ready=False, error=type(error).__name__ + ": " + str(error))
     report["finished_at"] = datetime.now(timezone.utc).isoformat()
     write_new(out / "preflight.json", report)
-    write_new(out / "bundle-files-sha256.json", {str(p.relative_to(out)): file_hash(p) for p in sorted(out.rglob("*")) if p.is_file()})
+    write_new(out / "bundle-files-sha256.json", {p.relative_to(out).as_posix(): file_hash(p) for p in sorted(out.rglob("*")) if p.is_file()})
     print(json.dumps({k: report[k] for k in ("offline_passed", "formal_ready", "inference_calls")} | {"error": report.get("error")}), flush=True)
     return 0 if report["offline_passed"] else 1
 
