@@ -206,7 +206,7 @@ def run_shard(directory: Path, index: int, count: int, seconds: float, tests=())
         str(directory),
         "-vv",
         "-o",
-        "faulthandler_timeout=60",
+        "faulthandler_timeout=0",
         "--durations=20",
         "-p",
         "tools.ci_pytest",
@@ -309,20 +309,43 @@ def run_shard(directory: Path, index: int, count: int, seconds: float, tests=())
     return record["exit_code"]
 
 
+def _install_stack_dump(path: Path) -> int:
+    # A raw faulthandler SIGUSR1 handler can traverse changing Python frames
+    # without the GIL and segfault (CPython issue 116008). Defer the dump to a
+    # Python signal handler, which runs at a safe point with the GIL held.
+    stack_fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    dump = faulthandler.dump_traceback
+
+    def requested_dump(_signum, _frame):
+        dump(file=stack_fd, all_threads=True)
+
+    try:
+        signal.signal(signal.SIGUSR1, requested_dump)
+    except BaseException:
+        os.close(stack_fd)
+        raise
+    # Keep the closure and FD until OS exit: pytest can return before Python
+    # blocks joining a leaked non-daemon thread during interpreter shutdown.
+    # A fully blocked interpreter may not service this handler; the parent
+    # still retains progress/process evidence and enforces its hard deadline.
+    return stack_fd
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "_pytest":
         # Register before importing pytest/collecting tests. Its normal capture
         # can otherwise hide a timeout stack forever when the child is killed.
-        # Keep this FD/handler until OS exit: pytest can return before Python
-        # blocks joining a leaked non-daemon thread during interpreter shutdown.
-        stack_fd = os.open(
-            Path(argv[1]) / "stacks.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600
-        )
-        faulthandler.register(signal.SIGUSR1, file=stack_fd, all_threads=True)
+        _install_stack_dump(Path(argv[1]) / "stacks.log")
         import pytest
 
-        return pytest.main(argv[2:])
+        # pytest's separate C watchdog also walks changing frames without the
+        # GIL. Keep every ordinary dump on the safe periodic/deadline path,
+        # even if a config or direct bootstrap caller requests that watchdog.
+        args = list(argv[2:])
+        end = args.index("--") if "--" in args else len(args)
+        args[end:end] = ["-o", "faulthandler_timeout=0"]
+        return pytest.main(args)
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run")

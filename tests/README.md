@@ -101,3 +101,12 @@ an all-thread stack dump, terminates its owned test descendants (including detac
 services), and fails rather than
 turning the interrupted tests into skips. A hard runner loss or external cancellation
 can still prevent upload; absence of evidence is never treated as success.
+
+Periodic and deadline SIGUSR1 stack requests use a Python signal handler so
+all-thread dumps run with the GIL, avoiding the asynchronous handler crash in
+CPython issue 116008. The bootstrap disables pytest's separate asynchronous C
+watchdog; the existing 60-second requests provide periodic slow-test stacks instead
+of per-test timer dumps. A fully deadlocked interpreter or blocking native code may
+not service this handler. In that case, incremental progress and process snapshots
+remain available and the unchanged parent deadline still fails and cleans up the
+run; a missing stack is never evidence of success.

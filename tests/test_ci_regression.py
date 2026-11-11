@@ -425,7 +425,9 @@ def test_pass_then_hang_at_shutdown():
         verify_coverage(tmp_path, 1, "success")
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="Linux stdout backpressure regression")
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="Linux stdout backpressure regression"
+)
 @pytest.mark.parametrize("finish", ["failure", "timeout"])
 def test_stalled_console_cannot_block_capture_or_watchdog(tmp_path, finish):
     (tmp_path / "test_output.py").write_text('''import os, time
@@ -434,13 +436,19 @@ def test_large_output(capfd):
         os.write(1, b"stdout-marker:" + b"X" * 400000)
         os.write(2, b"stderr-marker:" + b"Y" * 400000)
     ENDING
-'''.replace("ENDING", "time.sleep(60)" if finish == "timeout" else "assert False, 'synthetic failure'"))
+'''.replace(
+        "ENDING",
+        "time.sleep(60)"
+        if finish == "timeout"
+        else "assert False, 'synthetic failure'",
+    ))
     output = tmp_path / "stalled-console"
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     runner = subprocess.Popen(
         [sys.executable, str(ROOT / "tools/ci_regression.py"), "run",
-         "--shard=0", "--shards=1", "--seconds=3", "--output", str(output), "test_output.py"],
+         "--shard=0", "--shards=1", "--seconds=3", "--output",
+         str(output), "test_output.py"],
         cwd=tmp_path, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     try:
@@ -461,3 +469,188 @@ def test_large_output(capfd):
             runner.wait(timeout=5)
         runner.stdout.close()
         runner.stderr.close()
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux diagnostic signal")
+def test_stack_handler_defers_dump_to_python_and_keeps_descriptor(
+    tmp_path, monkeypatch
+):
+    from tools import ci_regression as runner
+
+    installed, calls = [], []
+    monkeypatch.setattr(
+        runner.signal, "signal", lambda sig, fn: installed.append((sig, fn))
+    )
+    monkeypatch.setattr(
+        runner.faulthandler, "dump_traceback", lambda **kw: calls.append(kw)
+    )
+    monkeypatch.setattr(
+        runner.faulthandler,
+        "register",
+        lambda *a, **kw: pytest.fail("asynchronous dump handler is unsafe"),
+    )
+    fd = runner._install_stack_dump(tmp_path / "stacks.log")
+    try:
+        assert installed[0][0] == signal.SIGUSR1 and callable(installed[0][1])
+        # Registration must survive return until OS exit, including pytest's
+        # return before joining leaked non-daemon threads during shutdown.
+        os.fstat(fd)
+        for _ in range(3):
+            installed[0][1](signal.SIGUSR1, None)
+        assert calls == [{"file": fd, "all_threads": True}] * 3
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux diagnostic signal")
+def test_stack_registration_failure_closes_its_descriptor(tmp_path, monkeypatch):
+    from tools import ci_regression as runner
+
+    opened, closed = [], []
+    real_open, real_close = os.open, os.close
+
+    def open_stack(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        opened.append(fd)
+        return fd
+
+    def close_stack(fd):
+        closed.append(fd)
+        real_close(fd)
+
+    def fail(*args):
+        raise OSError("synthetic signal registration failure")
+
+    monkeypatch.setattr(runner.os, "open", open_stack)
+    monkeypatch.setattr(runner.os, "close", close_stack)
+    monkeypatch.setattr(runner.signal, "signal", fail)
+    with pytest.raises(OSError, match="signal registration failure"):
+        runner._install_stack_dump(tmp_path / "stacks.log")
+    assert len(opened) == 1 and closed == opened
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux diagnostic signal")
+def test_repeated_stack_requests_during_worker_frame_churn(tmp_path):
+    (tmp_path / "pytest.ini").write_text("[pytest]\nfaulthandler_timeout = 0.03\n")
+    (tmp_path / "test_workers.py").write_text("""import threading, time
+from pathlib import Path
+
+def recurse(depth):
+    one, two, three = 1, 2, 3
+    return recurse(depth - 1) if depth else one + two + three
+
+def busy_worker(stop):
+    while not stop.is_set():
+        recurse(123)
+
+def test_active_workers(pytestconfig):
+    assert float(pytestconfig.getini("faulthandler_timeout")) == 0
+    stop = threading.Event()
+    worker = threading.Thread(target=busy_worker, args=(stop,))
+    worker.start()
+    try:
+        Path("ready").touch()
+        deadline = time.monotonic() + 20
+        while not Path("finish").exists():
+            assert time.monotonic() < deadline
+            time.sleep(.005)
+    finally:
+        stop.set()
+        worker.join(3)
+    assert not worker.is_alive()
+""")
+    output = tmp_path / "evidence"
+    output.mkdir()
+    env = dict(os.environ)
+    env["PYTEST_ADDOPTS"] = "-o faulthandler_timeout=0.02"
+    env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    stack = output / "stacks.log"
+    with (
+        (output / "stdout.log").open("wb") as stdout,
+        (output / "stderr.log").open("wb") as stderr,
+    ):
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-u",
+                "-m",
+                "tools.ci_regression",
+                "_pytest",
+                str(output),
+                "-q",
+                "test_workers.py",
+                "-o",
+                "faulthandler_timeout=0.01",
+            ],
+            cwd=tmp_path,
+            env=env,
+            stdout=stdout,
+            stderr=stderr,
+        )
+        try:
+            deadline = time.monotonic() + 10
+            while not (tmp_path / "ready").exists() and time.monotonic() < deadline:
+                assert child.poll() is None
+                time.sleep(0.01)
+            assert (tmp_path / "ready").exists()
+            for _ in range(20):
+                previous = stack.read_text().count("Current thread ")
+                assert child.poll() is None
+                os.kill(child.pid, signal.SIGUSR1)
+                deadline = time.monotonic() + 2
+                while (
+                    stack.read_text().count("Current thread ") == previous
+                    and time.monotonic() < deadline
+                ):
+                    assert child.poll() is None
+                    time.sleep(0.005)
+                assert stack.read_text().count("Current thread ") > previous
+            # Stop requesting dumps before the child begins interpreter shutdown.
+            (tmp_path / "finish").touch()
+            assert child.wait(timeout=5) == 0
+        finally:
+            (tmp_path / "finish").touch()
+            if child.poll() is None:
+                try:
+                    child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait(timeout=5)
+    assert "1 passed" in (output / "stdout.log").read_text()
+    assert (output / "stderr.log").read_bytes() == b""
+    assert stack.read_text().count("Current thread ") >= 20
+    assert "in recurse" in stack.read_text()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux diagnostic signal")
+@pytest.mark.parametrize("terminator", [False, True])
+def test_pytest_bootstrap_installs_handler_before_collection(
+    tmp_path, monkeypatch, terminator
+):
+    from tools import ci_regression as runner
+
+    calls = []
+    monkeypatch.setattr(runner, "_install_stack_dump", lambda path: calls.append(path))
+
+    def collect(args):
+        assert calls == [tmp_path / "stacks.log"]
+        expected = ["-q"]
+        if not terminator:
+            expected += ["test_example.py"]
+        expected += ["-o", "faulthandler_timeout=3"]
+        expected += ["-o", "faulthandler_timeout=0"]
+        if terminator:
+            expected += ["--", "test_example.py"]
+        assert args == expected
+        return 4
+
+    monkeypatch.setattr(pytest, "main", collect)
+    args = ["_pytest", str(tmp_path), "-q", "-o", "faulthandler_timeout=3"]
+    args += (["--"] if terminator else []) + ["test_example.py"]
+    # No terminator: injection belongs at the end of all caller arguments.
+    if not terminator:
+        args.remove("test_example.py")
+        args.insert(3, "test_example.py")
+
+    assert runner.main(args) == 4
