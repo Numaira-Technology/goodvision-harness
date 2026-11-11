@@ -1,5 +1,4 @@
 """Durable three-attempt queue. Transport is injected; importing does no IO."""
-import fcntl
 import json
 import os
 import threading
@@ -20,6 +19,21 @@ class RequestFailure(Exception):
         self.metadata = metadata or {}
 
 
+def lock_exclusive(fileobj):
+    """Nonblocking exclusive lock where the platform has flock.
+
+    Linux and macOS keep ``flock``. Windows has no equivalent that is both
+    nonblocking and safe to call from the regression job, so the ledger still
+    opens and the in-process lock stands. Cross-process exclusion stays on
+    POSIX.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        return
+    fcntl.flock(fileobj, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
 class Ledger:
     """Exclusive process lock + fsynced intent before send. Crash intents consume budget."""
     def __init__(self, path, context, *, read_only=False):
@@ -33,7 +47,7 @@ class Ledger:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self.file = self.path.open("r" if read_only else "a+", encoding="utf-8")
         try:
-            fcntl.flock(self.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_exclusive(self.file)
             self.file.seek(0)
             self.rows = [json.loads(line) for line in self.file if line.strip()]
             if any(row.get("context") != context for row in self.rows):
