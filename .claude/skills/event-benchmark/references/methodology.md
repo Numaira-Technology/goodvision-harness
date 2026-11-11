@@ -1,12 +1,15 @@
-# Frozen benchmark methodology
+For the current-frame 120-question variant, use `tools/unified_benchmark/README.md`.
+The procedure below describes the retained legacy runner.
 
-Authority: `tools/event_benchmark/SPEC.md` and `run_eval.py`, currently v2.
+# Legacy v2/v2.1 benchmark methodology
+
+Authority: `tools/event_benchmark/SPEC.md` and `run_eval.py`, currently v2.1.
 `SPEC_V1.md`, `RESULTS.md` and checked-in result JSONs are historical v1 artifacts.
 They cannot establish v2 accuracy or calibrate a v2 variant without fresh evidence.
 
 ## Inputs and provenance
 
-Before any request, require a `human_reviewed` manifest matching the exact samples
+Before any model request, require a `human_reviewed` manifest matching the exact samples
 file and every scored media file. Pass `--manifest` explicitly. Missing media,
 ambiguous filenames, changed questions/labels and hash mismatches are blockers.
 `--checksums` is a compatibility flag: hash checking is always enforced.
@@ -17,10 +20,24 @@ and result-file hash. A count such as 50 or 100 is not a dataset identity. Recor
 question count and distinct-media count separately. Do not send labels or reference
 answers to the model. Private media, keys and raw outputs stay outside Git.
 
-Current manifests: 50 is reviewed; 120 is `draft_pending_user_review`, with 100
-base-4 questions and 20 bag-search questions. Review status must be resolved by
-reviewers, not relabeled by an agent to enable a run. Bag questions allow unknown
-and require a separate versioned task/metric; the base runner filters them out.
+The current unified Drive set has 202 questions and 192 videos: 182 base-4
+questions and 20 bag-search questions. The original 120 questions remain reviewed;
+the 82 added views inherit source labels and await separate-view review. Download
+the entire media-only videos.json before filtering questions for a scoring task.
+The historical 120 set contains 100 base-4 questions and 20 bag questions. Read
+the selected manifest's status; do not relabel a draft to enable a run. Bag
+questions allow unknown and retain their separate versioned task/metric; the
+base runner filters them out. The current draft cannot pass the runner's input
+check. Downloads and inherited labels do not make it
+eligible for reviewed scoring or threshold calibration.
+
+Keep both views and other cuts from the same original recording in one split.
+The current `source_group` metadata is not a reviewed `source_video_group` mapping;
+the combined manifest lacks group fields. The 82 views come from three recordings,
+including one recording for all 36 added fall views. Weapon questions retain two
+prompt protocols, which must not be silently combined or rewritten for tuning.
+The retained historical samples also do not match the exact hash pinned by the
+committed 120 manifest. Recover the frozen bytes rather than changing that hash.
 
 ## Frozen v2 procedure
 
@@ -40,11 +57,11 @@ and require a separate versioned task/metric; the base runner filters them out.
 ## Denominators and comparison
 
 For each event: `valid=TP+FN+TN+FP`, `correct=TP+TN`,
-`attempted=valid+errors`. Report `correct/valid`, errors/attempted and coverage.
-When valid is zero, accuracy is unavailable. When negatives are absent, specificity
-is unavailable. Error clips are not true negatives. A failed model cannot appear
-better by silently dropping hard examples; disclose differing eligibility and do
-not rank incomplete runs as comparable headline results.
+`total=valid+errors`. Report `correct/total`, errors/total and coverage; use the
+same all-question denominator overall. Errors and missing answers contribute no
+correct answer and remain in the denominator. With questions but no valid answers,
+accuracy is zero; only an empty cohort has unavailable accuracy. When negatives
+are absent, specificity is unavailable. Error clips are not true negatives.
 
 CLIP unknown handling and native VideoJev window scoring may differ. Preserve
 those rules and label the cohort, unit, denominator and timing boundary. Do not

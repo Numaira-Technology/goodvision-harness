@@ -15,7 +15,7 @@
 `human_review`(审阅状态),外加顶层 `samples_json_sha256`(整份答案表的指纹)。
 
 - `manifest_50.json` — 旧 50 片(fight12 / smoking12 / fall21 / weapon5)。
-- `manifest_120.json` — 扩充 120 题 / 110 视频。注意 `status=draft_pending_user_review`:66 条 GT 还是草稿。
+- `manifest_120.json` — 扩充 120 题 / 110 视频，用户于 2026-11-01 审定，`status=human_reviewed`。
   含两类新题型 `bag_knife` / `bag_alcohol_bottle`(翻包,答案空间带 unknown),属 v1.1 单独任务,不进 base-4 二值主表。
 
 ## 冻结一个新版本怎么做

@@ -2,6 +2,7 @@
 
 import copy
 import io
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -310,14 +311,8 @@ def test_native_preview_runs_inspector_with_distinct_evidence_without_live_mutat
     )
     assert cfg.model_settings.endpoint == endpoint + "/predict"
     assert starts == ([engine] if location == "local" else [])
-    # The neural (CLIP) inspector only sends the newest image for scene labels,
-    # since the service scores images[-1]; VideoJev still sends the full window.
-    if engine == "neural":
-        assert payload["frame_times"] == [8 / 15]
-        assert len(set(payload["images"])) == 1
-    else:
-        assert payload["frame_times"] == [1 / 15, 8 / 15]
-        assert len(set(payload["images"])) == 2
+    assert payload["frame_times"] == [1 / 15, 8 / 15]
+    assert len(set(payload["images"])) == 2
     assert job.stream_session_id == result["stream_session_id"]
     assert job.diagnostics is None and job.subject_boxes == ()
     assert closed == [True]
@@ -359,8 +354,9 @@ def test_native_preview_waits_for_local_module_before_constructing_inspector(
 
 
 @pytest.mark.parametrize("engine", ["system1", "neural"])
+@pytest.mark.parametrize("cadence", [0.5, 1.25, 3.0])
 def test_live_start_routes_native_events_without_changing_shared_model(
-    rig, monkeypatch, engine
+    rig, monkeypatch, engine, cadence
 ):
     from test_vlm_independent_service import LocalBranch
 
@@ -371,11 +367,19 @@ def test_live_start_routes_native_events_without_changing_shared_model(
     monkeypatch.setattr(service, "IndependentVLMBranch", LocalBranch)
     monkeypatch.setattr(runtime, "_workflow_event_probe", lambda plan: None)
     configure(runtime, event_graph(engine))
+    runtime.config = replace(
+        runtime.config,
+        runtime=replace(runtime.config.runtime, scene_observation_fps=cadence),
+    )
     runtime.dry_run = False
     runtime._aiclub_api_key = None
     runtime.start_connected_analysis()
     assert runtime._vlm_branch.config.model == MODELS[engine]
     assert runtime._vlm_branch.config.model_settings.endpoint.endswith("/predict")
+    assert runtime._vlm_branch.config.candidate_fps == 4.0
+    assert runtime._vlm_branch.config.observation_window_frames == 2
+    assert runtime._vlm_branch.config.observation_frame_delta_seconds == 0.5
+    assert runtime._vlm_branch.config.observation_fps == cadence
     assert runtime.config.inference == shared
 
 

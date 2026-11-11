@@ -120,7 +120,7 @@ class VideoJevInspector:
         if self._http is None:
             self._http = create_vlm_http_client(trust_env=False)
 
-    def _payload(self, job):
+    def _payload(self, job, *, sampling=None):
         _validate_job(job)
         frames = self._input_frames(job)
         # The native model uses uniform FPS for positional encoding. Actual
@@ -149,6 +149,8 @@ class VideoJevInspector:
             "frame_times": [frame.timestamp_seconds for frame in frames],
             "images": images,
         }
+        if sampling is not None:
+            payload["sampling"] = sampling
         if not self._template_registered:
             payload["question_template"] = list(self._question_template)
         if job.diagnostics is not None:
