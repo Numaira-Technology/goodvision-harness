@@ -559,6 +559,10 @@ def test_stack_handler_defers_dump_to_python_and_keeps_descriptor(
     from tools import ci_regression as runner
 
     installed, calls = [], []
+    exit_callbacks = []
+    monkeypatch.setattr(
+        runner.atexit, "register", lambda *args: exit_callbacks.append(args)
+    )
     monkeypatch.setattr(
         runner.signal, "signal", lambda sig, fn: installed.append((sig, fn))
     )
@@ -573,12 +577,14 @@ def test_stack_handler_defers_dump_to_python_and_keeps_descriptor(
     fd = runner._install_stack_dump(tmp_path / "stacks.log")
     try:
         assert installed[0][0] == signal.SIGUSR1 and callable(installed[0][1])
-        # Registration must survive return until OS exit, including pytest's
-        # return before joining leaked non-daemon threads during shutdown.
+        # Registration survives return through non-daemon joins and atexit.
         os.fstat(fd)
         for _ in range(3):
             installed[0][1](signal.SIGUSR1, None)
         assert calls == [{"file": fd, "all_threads": True}] * 3
+        assert exit_callbacks == [
+            (runner.signal.signal, signal.SIGUSR1, signal.SIG_IGN)
+        ]
     finally:
         os.close(fd)
 
@@ -736,3 +742,246 @@ def test_pytest_bootstrap_installs_handler_before_collection(
         args.insert(3, "test_example.py")
 
     assert runner.main(args) == 4
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux diagnostic signal")
+def test_stack_atexit_registration_failure_restores_handler(tmp_path, monkeypatch):
+    from tools import ci_regression as runner
+
+    installed, opened = [], []
+    real_open = runner.os.open
+    previous = object()
+
+    def install(sig, handler):
+        installed.append((sig, handler))
+        return previous
+
+    def open_stack(*args):
+        fd = real_open(*args)
+        opened.append(fd)
+        return fd
+
+    def fail(*args):
+        raise RuntimeError("synthetic atexit registration failure")
+
+    monkeypatch.setattr(runner.os, "open", open_stack)
+    monkeypatch.setattr(runner.signal, "signal", install)
+    monkeypatch.setattr(runner.atexit, "register", fail)
+    with pytest.raises(RuntimeError, match="atexit registration failure"):
+        runner._install_stack_dump(tmp_path / "stacks.log")
+    assert callable(installed[0][1])
+    assert installed[-1] == (signal.SIGUSR1, previous)
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux finalization signal")
+def test_stack_signal_survives_final_gc_after_pytest_finishes(tmp_path):
+    (tmp_path / "test_final_gc.py").write_text('''import atexit, gc, os, sys, time
+
+def test_pass_then_finalize():
+    ready = os.open('late-ready', os.O_WRONLY | os.O_CREAT, 0o600)
+    done = os.open('late-complete', os.O_WRONLY | os.O_CREAT, 0o600)
+    entered = [False]
+    def early_cleanup():
+        with open('atexit-ready', 'w') as marker:
+            marker.write('ready')
+        deadline = time.monotonic() + 5
+        while not os.path.exists('atexit-release'):
+            assert time.monotonic() < deadline
+            time.sleep(.005)
+    atexit.register(early_cleanup)
+    def final_gc(phase, info, finalizing=sys.is_finalizing, write=os.write,
+                 stat=os.stat, clock=time.monotonic, sleep=time.sleep):
+        if phase != 'start' or not finalizing() or entered[0]:
+            return
+        entered[0] = True
+        write(ready, b'after-signal-fini')
+        deadline = clock() + 5
+        while clock() < deadline:
+            try:
+                stat('release')
+                write(done, b'finalizer-completed')
+                return
+            except FileNotFoundError:
+                sleep(.005)
+        write(done, b'barrier-timeout')
+    gc.callbacks.append(final_gc)
+''')
+    output = tmp_path / "evidence"
+    output.mkdir()
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    with (
+        (output / "stdout.log").open("wb") as stdout,
+        (output / "stderr.log").open("wb") as stderr,
+    ):
+        child = subprocess.Popen(
+            [sys.executable, "-u", "-m", "tools.ci_regression", "_pytest",
+             str(output), "-q", "-p", "tools.ci_pytest", "--ci-shard=0",
+             "--ci-shards=1", "--ci-evidence=" + str(output),
+             "test_final_gc.py"],
+            cwd=tmp_path, env=env, stdout=stdout, stderr=stderr,
+            start_new_session=True,
+        )
+        try:
+            early = tmp_path / "atexit-ready"
+            deadline = time.monotonic() + 10
+            while not early.exists() and time.monotonic() < deadline:
+                assert child.poll() is None
+                time.sleep(.005)
+            assert early.exists()
+            # Later-registered Python cleanup still has the safe stack handler.
+            os.kill(child.pid, signal.SIGUSR1)
+            stack = output / "stacks.log"
+            deadline = time.monotonic() + 3
+            while "in early_cleanup" not in stack.read_text():
+                assert time.monotonic() < deadline and child.poll() is None
+                time.sleep(.005)
+            (tmp_path / "atexit-release").touch()
+            ready = tmp_path / "late-ready"
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if ready.exists() and ready.stat().st_size:
+                    break
+                assert child.poll() is None
+                time.sleep(.005)
+            assert ready.read_bytes() == b"after-signal-fini"
+            rows = [
+                json.loads(line)
+                for line in (output / "progress.jsonl").read_text().splitlines()
+            ]
+            assert rows[-1]["event"] == "finished" and rows[-1]["exit_code"] == 0
+            # This is later than both threading._shutdown and normal atexit.
+            status = Path(f"/proc/{child.pid}/status").read_text()
+            ignored = next(line.split()[1] for line in status.splitlines()
+                           if line.startswith("SigIgn:"))
+            assert int(ignored, 16) & (1 << (signal.SIGUSR1 - 1))
+            os.kill(child.pid, signal.SIGUSR1)
+            (tmp_path / "release").touch()
+            assert child.wait(timeout=5) == 0
+            assert (tmp_path / "late-complete").read_bytes() == b"finalizer-completed"
+        finally:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGKILL)
+            child.wait(timeout=3)
+    assert "1 passed" in (output / "stdout.log").read_text()
+    assert (output / "stderr.log").read_bytes() == b""
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux process exit evidence")
+def test_finished_pytest_does_not_waive_real_signal_exit(tmp_path):
+    (tmp_path / "test_signal_exit.py").write_text('''import atexit, os, signal, time
+from pathlib import Path
+def test_pass_then_die():
+    def ready_to_terminate():
+        signal.signal(signal.SIGUSR1, signal.SIG_DFL)
+        Path('signal-ready.tmp').write_text(str(os.getpid()))
+        os.replace('signal-ready.tmp', 'signal-ready')
+        time.sleep(60)
+    atexit.register(ready_to_terminate)
+''')
+    output = tmp_path / "evidence"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    with (tmp_path / "runner.log").open("wb") as log:
+        runner = subprocess.Popen(
+            [sys.executable, str(ROOT / "tools/ci_regression.py"), "run",
+             "--shard=0", "--shards=1", "--seconds=30", "--output",
+             str(output), "test_signal_exit.py"],
+            cwd=tmp_path, env=env, stdout=log, stderr=log,
+            start_new_session=True,
+        )
+        child_pid, child_started = None, None
+        try:
+            # Bound startup separately from the post-pytest failure under test.
+            # The runner's 30s backstop exceeds these 10s + 5s phase limits;
+            # it is not a replacement for the existing three-second watchdog test.
+            ready = tmp_path / "signal-ready"
+            deadline = time.monotonic() + 10
+            while not ready.exists() and time.monotonic() < deadline:
+                assert runner.poll() is None
+                time.sleep(.005)
+            assert ready.exists(), "child did not reach post-pytest signal barrier"
+            rows = [
+                json.loads(line)
+                for line in (output / "progress.jsonl").read_text().splitlines()
+            ]
+            assert rows[-1]["event"] == "finished" and rows[-1]["exit_code"] == 0
+            child_pid = int(ready.read_text())
+            child_stat = Path(f"/proc/{child_pid}/stat").read_text()
+            child_started = child_stat.rsplit(") ", 1)[1].split()[19]
+            os.kill(child_pid, signal.SIGUSR1)
+            assert runner.wait(timeout=5) != 0
+        finally:
+            if runner.poll() is None:
+                runner.terminate()
+                try:
+                    runner.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    # Do not abandon the readiness-blocked child if the wrapper
+                    # itself cannot finish. Only signal its verified generation.
+                    if child_pid is not None:
+                        try:
+                            stat = Path(f"/proc/{child_pid}/stat").read_text()
+                            if stat.rsplit(") ", 1)[1].split()[19] == child_started:
+                                os.killpg(child_pid, signal.SIGKILL)
+                        except (ProcessLookupError, FileNotFoundError):
+                            pass
+                    try:
+                        runner.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        runner.kill()
+                        runner.wait(timeout=3)
+    record = json.loads((output / "run.json").read_text())
+    assert record["exit_code"] == -signal.SIGUSR1
+    assert record["timed_out"] is False and record["cancelled_signal"] is None
+    rows = [
+        json.loads(line)
+        for line in (output / "progress.jsonl").read_text().splitlines()
+    ]
+    assert rows[-1]["event"] == "finished" and rows[-1]["exit_code"] == 0
+    with pytest.raises(ValueError, match="shard did not finish successfully"):
+        verify_coverage(tmp_path, 1, "success")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux diagnostic failure")
+def test_stack_request_failure_still_cleans_and_records_failure(tmp_path, monkeypatch):
+    from tools import ci_regression as runner
+
+    cleaned = []
+
+    class Child:
+        pid = 12345
+        returncode = None
+
+        def poll(self):
+            return None
+
+    child = Child()
+
+    def cleanup(process):
+        cleaned.append(process)
+        process.returncode = -signal.SIGTERM
+
+    def fail(pid, sig):
+        assert (pid, sig) == (child.pid, signal.SIGUSR1)
+        raise OSError("synthetic diagnostic failure")
+
+    ticks = iter([0, 61, 61])
+    monkeypatch.setattr(runner, "_become_subreaper", lambda: None)
+    monkeypatch.setattr(runner, "_snapshot", lambda stream: None)
+    monkeypatch.setattr(runner, "_cleanup", cleanup)
+    monkeypatch.setattr(runner.platform, "platform", lambda: "synthetic-platform")
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **kw: child)
+    monkeypatch.setattr(runner.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(runner.signal, "signal", lambda *args: None)
+    monkeypatch.setattr(runner.os, "kill", fail)
+    output = tmp_path / "evidence"
+    with pytest.raises(OSError, match="synthetic diagnostic failure"):
+        runner.run_shard(output, 0, 1, 960)
+    record = json.loads((output / "run.json").read_text())
+    assert cleaned == [child]
+    assert record["exit_code"] == -signal.SIGTERM
+    assert record["timed_out"] is False and record["timeout_seconds"] == 960

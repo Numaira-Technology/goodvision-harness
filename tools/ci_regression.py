@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import ctypes
 import faulthandler
 import hashlib
@@ -320,12 +321,21 @@ def _install_stack_dump(path: Path) -> int:
         dump(file=stack_fd, all_threads=True)
 
     try:
-        signal.signal(signal.SIGUSR1, requested_dump)
+        previous = signal.signal(signal.SIGUSR1, requested_dump)
+        try:
+            # Register before pytest imports: this runs after later-registered
+            # atexit cleanup and non-daemon joins. CPython subsequently resets
+            # callable handlers to SIG_DFL, but preserves SIG_IGN through final
+            # GC/module teardown. Retaining the closure/FD alone is not enough.
+            atexit.register(signal.signal, signal.SIGUSR1, signal.SIG_IGN)
+        except BaseException:
+            signal.signal(signal.SIGUSR1, previous)
+            raise
     except BaseException:
         os.close(stack_fd)
         raise
-    # Keep the closure and FD until OS exit: pytest can return before Python
-    # blocks joining a leaked non-daemon thread during interpreter shutdown.
+    # Keep the closure and FD through non-daemon joins and atexit cleanup.
+    # After the final SIG_IGN transition, GC/module teardown has no stack dump.
     # A fully blocked interpreter may not service this handler; the parent
     # still retains progress/process evidence and enforces its hard deadline.
     return stack_fd
