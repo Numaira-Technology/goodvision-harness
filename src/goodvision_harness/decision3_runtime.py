@@ -180,9 +180,9 @@ class Decision3Runtime:
         started = time.perf_counter()
         if (not isinstance(payloads, (list, tuple)) or len(payloads) != 2
                 or type(fps) not in (int, float) or not math.isfinite(fps)
-                or not math.isclose(fps, 2.0, rel_tol=0, abs_tol=1e-8)
+                or fps <= 0
                 or type(max_pixels) is not int or max_pixels != MAX_PIXELS):
-            raise ValueError("provide two original JPEGs at 2 FPS with the fixed official pixel budget")
+            raise ValueError("provide two original JPEGs at positive FPS with the fixed official pixel budget")
         frames = []
         for payload in payloads:
             if not isinstance(payload, bytes):
@@ -196,7 +196,7 @@ class Decision3Runtime:
         array = np.ascontiguousarray(np.stack(frames))
         timings = {
             "input_frame_count": len(frames), "internal_temporal_padding_frames": 0,
-            "native_temporal_fps": 2.0,
+            "native_temporal_fps": float(fps),
             "source_height": array.shape[1], "source_width": array.shape[2],
         }
         prepared = _PreparedVideo(array, None, (), None, None, timings)
@@ -213,7 +213,11 @@ class Decision3Runtime:
             return prepared
         native = self.native
         # Reuse the official media planner and CPU processor without rendering questions twice.
-        media = native._prepare_videos("", {}, [], native.load_videos([prepared.frames]))
+        videos = native.load_videos([prepared.frames])
+        # The official ndarray loader defaults to 2 FPS. Retain its validation
+        # and padding, then supply the actual sampled rate through Video.metadata.
+        videos = [replace(video, fps=prepared.timings["native_temporal_fps"]) for video in videos]
+        media = native._prepare_videos("", {}, [], videos)
         if any(value.device.type != "cpu" for value in media.media.values()):
             raise ValueError("video preparation must produce CPU tensors")
         questions, texts, lengths, errors, rows, prefix_length = template.bind(self, media, times)

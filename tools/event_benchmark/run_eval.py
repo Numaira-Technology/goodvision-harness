@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Canonical event-recognition benchmark runner (see SPEC.md).
-
-A fixed exam: every knob below is frozen and identical for all candidates. The
-ONLY thing that varies between runs is the model (--candidate, or --model +
---backend). Do not add per-model prompt/threshold/sampling branches here.
-"""
+"""Common streaming event evaluation, with an explicit historical v2 mode."""
 import argparse
 import base64
 import hashlib
@@ -249,11 +244,185 @@ def frozen_inputs(samples_path, manifest_path, media_dirs):
     return samples, media_index, hashes
 
 
+def streaming_inputs(samples_path, manifest_path, media_dirs, events):
+    """Read common inputs without extending legacy dataset eligibility gates."""
+    document = json.loads(samples_path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or not isinstance(document.get("samples"), list):
+        raise ValueError("samples JSON must contain a samples list")
+    samples = [row for row in document["samples"]
+               if isinstance(row, dict) and row.get("event") in events]
+    numbers = [row.get("number") for row in samples]
+    if (not samples or any(type(number) not in (int, str) for number in numbers)
+            or len(set(numbers)) != len(numbers)):
+        raise ValueError("selected samples require unique question numbers")
+    for row in samples:
+        if (row.get("proposed_answer") not in ("yes", "no", "unknown")
+                or not isinstance(row.get("filename"), str) or not row["filename"]
+                or not isinstance(row.get("question"), str) or not row["question"].strip()):
+            raise ValueError("each sample requires a filename, question and yes/no/unknown reference")
+    source = {"path": str(manifest_path), "status": None}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(manifest, dict):
+            source.update({key: manifest.get(key) for key in ("status", "dataset", "n_questions")})
+        else:
+            source["read_error"] = "manifest metadata is not an object"
+    except (OSError, ValueError) as error:
+        source["read_error"] = str(error)
+    wanted = {row["filename"] for row in samples}
+    media_index, ambiguous, media_warnings = {}, set(), []
+    for directory in media_dirs:
+        try:
+            for path in directory.iterdir():
+                if not path.is_file() or path.name not in wanted:
+                    continue
+                if path.name in media_index and path.resolve() != media_index[path.name].resolve():
+                    ambiguous.add(path.name)
+                else:
+                    media_index[path.name] = path
+        except OSError as error:
+            media_warnings.append({"directory": str(directory), "error": str(error)})
+    for filename in ambiguous:
+        media_index.pop(filename, None)
+    if ambiguous:
+        media_warnings.append({"ambiguous_filenames": sorted(ambiguous)})
+    return samples, media_index, source, media_warnings
+
+
+def streaming_run(args, parser, model, backend):
+    """Use one input, window, clock and scoring implementation for every model."""
+    if __package__:
+        from .backends import ContrastiveBackend, RemoteBackend
+        from .realtime import BASE_EVENTS, SIX_EVENTS, run_streams
+    else:
+        from backends import ContrastiveBackend, RemoteBackend
+        from realtime import BASE_EVENTS, SIX_EVENTS, run_streams
+
+    events = []
+    for event in args.events:
+        events.extend(BASE_EVENTS if event == "base4" else SIX_EVENTS if event == "six" else [event])
+    events = list(dict.fromkeys(events))
+    if args.dense:
+        parser.error("--dense belongs to --protocol legacy-v2; streaming uses --interval")
+    if not 1 <= args.slots <= 12 or not 1 <= args.window_frames <= 4:
+        parser.error("slots must be 1..12 and window-frames must be 1..4")
+    if not math.isfinite(args.queue_age) or args.queue_age <= 0:
+        parser.error("queue-age must be positive and finite")
+    if args.load_seconds is not None and (
+        not math.isfinite(args.load_seconds) or args.load_seconds <= 0
+    ):
+        parser.error("load-seconds must be positive and finite")
+    if backend in ("videojev", "decision3", "neural") and args.window_frames < 2:
+        parser.error("native services require at least two distinct original frames")
+    if backend == "decision3" and args.window_frames != 2:
+        parser.error("the current Decision 3 runtime accepts exactly two original frames")
+    if not args.out:
+        parser.error("streaming evaluation requires --out to preserve responses as they arrive")
+    if args.out.exists() or args.out.with_name(args.out.stem + "-windows.jsonl").exists():
+        parser.error("output exists; choose a new path to preserve completed requests")
+    try:
+        samples, media_index, manifest_source, media_warnings = streaming_inputs(
+            args.samples, args.manifest, args.media, events)
+        questions, contrast_texts, question_specs = {}, {}, {}
+        for sample in samples:
+            label = sample["event"]
+            question = re.sub(r"\s*answer yes(?:\s*,\s*no\s*,?\s*or\s*unknown| or no)\.?\s*$", "",
+                              sample["question"], flags=re.I).strip()
+            if label in questions and questions[label] != question:
+                raise ValueError("multiple questions for one event require separate explicit runs: " + label)
+            questions[label] = question
+        if args.questions:
+            extra = json.loads(args.questions.read_text(encoding="utf-8"))
+            question_specs = extra
+            if not isinstance(extra, dict):
+                raise ValueError("--questions must be an event-keyed JSON object")
+            for label, spec in extra.items():
+                question = spec.get("question") if isinstance(spec, dict) else spec
+                if not isinstance(label, str) or not isinstance(question, str) or not question.strip():
+                    raise ValueError("every question requires a nonempty label and question string")
+                if label in questions and questions[label] != question:
+                    raise ValueError("extra questions must not override dataset question semantics: " + label)
+                if label in events:
+                    questions[label] = question
+                    if isinstance(spec, dict) and ("positive" in spec or "contrast" in spec):
+                        pair = [spec.get("positive"), spec.get("contrast")]
+                        if any(not isinstance(text, str) or not text.strip() for text in pair):
+                            raise ValueError("contrastive overrides require positive and contrast strings: " + label)
+                        contrast_texts[label] = pair
+        missing = set(events) - set(questions)
+        defaults = {
+            "fight": "Does any fighting occur in this video?",
+            "smoking": "Does this video show a person smoking?",
+            "fall": "Does a person fall in this video?",
+            "weapon": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person?",
+            "bag_knife": "Is a knife visibly exposed inside the bag or taken out of it in this video?",
+            "bag_alcohol_bottle": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only.",
+        }
+        for label in missing:
+            if label not in defaults:
+                raise ValueError("no dataset question or --questions definition for " + label)
+            questions[label] = defaults[label]
+        questions = {label: questions[label] for label in events}
+        thresholds = None
+        if args.thresholds:
+            thresholds = json.loads(args.thresholds.read_text(encoding="utf-8"))
+            if isinstance(thresholds, dict) and model in thresholds:
+                thresholds = thresholds[model]
+            if not isinstance(thresholds, dict):
+                raise ValueError("thresholds must be an event-keyed or model-keyed JSON object")
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        parser.error(str(error))
+    if backend == "contrastive":
+        runtime = ContrastiveBackend(model, questions, cache_dir=args.cache_dir,
+                                     thresholds=thresholds, contrast_texts=contrast_texts)
+    else:
+        if args.thresholds:
+            parser.error("--thresholds applies only to cosine-margin backends, never native choices")
+        key = load_key(args.env_file) if backend in ("language", "decision") else ""
+        runtime = RemoteBackend(model, backend, questions, key=key,
+                                endpoint=args.endpoint, timeout=TIMEOUT)
+    out = None
+    try:
+        out = run_streams(samples, media_index, questions, runtime, args.out,
+                          slots=args.slots, workers=args.workers, interval=args.interval,
+                          window_frames=args.window_frames, frame_width=FRAME_WIDTH,
+                          queue_age=args.queue_age, load_seconds=args.load_seconds)
+    finally:
+        try:
+            runtime.close()
+        except Exception as error:
+            if out is None:
+                raise
+            out["shared_errors"].append("backend_close_failed: " + str(error))
+            out["execution_complete"] = False
+    out.update(candidate=args.candidate, samples_source=str(args.samples),
+               manifest_source=manifest_source, media_directories=[str(path) for path in args.media],
+               media_warnings=media_warnings, run_at=datetime.now(timezone.utc).isoformat(),
+               runner_commit=subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO,
+                                             capture_output=True, text=True).stdout.strip() or None)
+    if args.questions:
+        out["question_specs"] = question_specs
+    args.out.write_text(json.dumps(out, ensure_ascii=False, indent=1, allow_nan=False), encoding="utf-8")
+    counts = out["overall"]
+    print(f"{args.candidate or model}: {counts['correct']}/{counts['total']}, "
+          f"unknown={counts['unknown']}, execution_complete={out['execution_complete']}")
+    print(f"-> {args.out}")
+    return out
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Frozen clip-level event benchmark (see SPEC.md)")
-    ap.add_argument("--candidate", choices=CANDIDATES, help="named model+backend preset")
+    if __package__:
+        from .backends import CANDIDATES as STREAM_CANDIDATES
+    else:
+        from backends import CANDIDATES as STREAM_CANDIDATES
+
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--protocol", choices=["streaming-v3", "legacy-v2"], default="legacy-v2",
+                    help="preserve historical commands; select streaming-v3 for common real-time windows")
+    ap.add_argument("--candidate", choices=STREAM_CANDIDATES, help="named model+backend preset")
     ap.add_argument("--model", help="explicit model id (with --backend)")
-    ap.add_argument("--backend", choices=["language", "decision"], help="explicit backend class")
+    ap.add_argument("--backend", choices=["language", "decision", "videojev", "decision3", "contrastive", "neural"],
+                    help="explicit backend class; neural uses the product CLIP service's fixed prompts")
     ap.add_argument("--samples", type=Path, required=True)
     ap.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     ap.add_argument("--media", type=Path, nargs="+", required=True,
@@ -261,15 +430,29 @@ def main():
                          "(the dataset may be split across folders)")
     ap.add_argument("--env-file", type=Path, default=REPO / ".env")
     ap.add_argument("--workers", type=int, default=12,
-                    help="parallelism, default 12 to align with the 12-stream product "
-                         "(does NOT affect scoring)")
+                    help="bounded inference parallelism; input slots are independent")
+    ap.add_argument("--slots", type=int, default=12, help="simultaneous original-speed video inputs")
+    ap.add_argument("--window-frames", type=int, default=2,
+                    help="distinct sampled original frames in each sliding window; default 2")
+    ap.add_argument("--queue-age", type=float, default=2.0,
+                    help="drop an unsent window after this many queued seconds")
+    ap.add_argument("--load-seconds", type=float,
+                    help="streaming-v3 filler horizon from first paced input; primary videos always finish")
+    ap.add_argument("--events", nargs="+", default=["six"],
+                    help="base4, six, or explicit labels; unsupported neural events stay not_sent; PPE/litter use ppe_violation ground_litter")
+    ap.add_argument("--questions", type=Path,
+                    help="event-keyed JSON: question strings or {question, positive, contrast} specs; neural uses fixed server text")
+    ap.add_argument("--endpoint", help="API endpoint; videojev, decision3 and neural use http://host:port/predict")
+    ap.add_argument("--cache-dir", type=Path, default=Path.home() / ".cache/huggingface/hub")
+    ap.add_argument("--thresholds", type=Path,
+                    help="pre-frozen cosine margins; omitted means explicit untuned zero baseline")
     ap.add_argument("--interval", type=float, default=1.0,
                     help="seconds between sampled frames; default 1.0 (= 1 fps, the "
                          "frozen spec cadence). e.g. 4 = 0.25 fps product cadence.")
     ap.add_argument("--dense", action="store_true",
                     help="ignore --interval; use the capped dense rule "
                          "(max 14 uniform frames) instead of 1 fps")
-    ap.add_argument("--checksums", action="store_true", help="compatibility flag; checksums are always verified")
+    ap.add_argument("--checksums", action="store_true", help="legacy-v2 compatibility flag; unused in streaming-v3")
     ap.add_argument("--out", type=Path, help="write full result JSON here")
     a = ap.parse_args()
     if a.workers < 1 or not math.isfinite(a.interval) or a.interval <= 0:
@@ -278,12 +461,16 @@ def main():
         ap.error("use --candidate or --model with --backend, not both")
 
     if a.candidate:
-        model, backend = CANDIDATES[a.candidate]
+        model, backend = STREAM_CANDIDATES[a.candidate]
     elif a.model and a.backend:
         model, backend = a.model, a.backend
     else:
         ap.error("give --candidate, or both --model and --backend")
 
+    if a.protocol == "streaming-v3":
+        return streaming_run(a, ap, model, backend)
+    if backend not in ("language", "decision"):
+        ap.error("legacy-v2 supports only language and noul decision backends")
     interval = None if a.dense else a.interval  # None -> dense rule
     try:
         samples, media_index, hashes = frozen_inputs(a.samples, a.manifest, a.media)
@@ -353,4 +540,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    result = main()
+    if result.get("spec_version") == "streaming-v3" and not result.get("execution_complete"):
+        sys.exit(1)
