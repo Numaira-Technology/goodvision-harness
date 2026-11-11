@@ -25,6 +25,7 @@ from goodvision_harness.model_api import ModelAPISettings
 from tools.benchmark_runtime.scene_model import _ResponseValidationError
 from tools.benchmark_runtime.vlm_event_policy import event_policy_text
 from tools.benchmark_runtime.vlm_independent import IndependentEventState
+from tools.synthetic_evidence import register_synthetic_evidence
 from tools.tracked_grounding.detector import DetectorBroker, validate_snapshot
 from tools.tracked_grounding.inspector import (
     TrackedPersonInspector,
@@ -464,7 +465,7 @@ def offline_inspector(config, *, broker_url):
 @pytest.mark.parametrize("mode", ["events", "compact", "parallel"])
 @pytest.mark.parametrize("load_profile", ["historical", "four-second"])
 def test_twelve_sources_through_http_broker_and_spawned_workers(
-    tmp_path, fake_models, monkeypatch, mode, load_profile
+    tmp_path, fake_models, monkeypatch, mode, load_profile, request
 ):
     url, calls = fake_models
     args = arguments(load_profile=load_profile)
@@ -485,6 +486,9 @@ def test_twelve_sources_through_http_broker_and_spawned_workers(
         aiclub=ModelAPISettings(provider="local", endpoint=url + "/chat/completions"),
     )
     monkeypatch.delenv("LOCAL_VLM_API_KEY", raising=False)
+    source_diagnostics = {}
+    diagnostic = {"source": source_diagnostics, "detector_keys": calls["detector"]}
+    register_synthetic_evidence(request.node, tmp_path, diagnostic)
     with DetectorBroker(url, tmp_path) as broker:
         result = run_stage(
             args,
@@ -495,9 +499,11 @@ def test_twelve_sources_through_http_broker_and_spawned_workers(
             1,
             inspector_factory=partial(offline_inspector, broker_url=broker.endpoint),
             source_hook=broker.submit,
+            source_diagnostics=source_diagnostics,
         )
         # Model windows can finish before the detector-only source tail.
         detector_counts = broker.drain()
+        diagnostic["drain_counts"] = detector_counts
     assert result["input_timing_valid"], {
         "sender_missed_samples": result["sender_missed_samples"],
         "sender_missed_samples_by_stream": result["sender_missed_samples_by_stream"],

@@ -87,3 +87,57 @@ class TimedSourceFeeder:
             self.thread.join(timeout=5)
         if self.thread.is_alive():
             raise RuntimeError("source feeder did not stop")
+
+    def diagnostics(self):
+        """Reconstruct measurements after shutdown; never observe the hot path.
+
+        A measured non-drop only proves the drop check passed, not that offer or
+        the source hook completed. On errors the final measured action may fail.
+        """
+        if self.thread.is_alive():
+            raise RuntimeError("source diagnostics require a stopped feeder")
+        planned = [
+            {
+                "camera": camera,
+                "tick": tick,
+                "stream_session_id": self.branches[camera].config.stream_session_id,
+                "source_timestamp_seconds": tick / self.sample_fps,
+                "planned_monotonic_due": self.started + release_at,
+            }
+            for release_at, actions in self.releases
+            for camera, tick in actions
+        ]
+        for row, lag in zip(planned, self.release_lags, strict=False):
+            row.update(
+                measured_lag_seconds=lag,
+                derived_measured_release=row["planned_monotonic_due"] + lag,
+                source_drop=lag > 1 / self.sample_fps,
+            )
+        derived_drops = [0] * len(self.branches)
+        for row in planned:
+            if row.get("source_drop"):
+                derived_drops[row["camera"]] += 1
+        reconciled = (
+            sum(derived_drops) == self.missed and derived_drops == self.missed_by_stream
+        )
+        return {
+            "scope": "source drop check only; non-drop does not prove submission",
+            "planned_count": len(planned),
+            "measured_count": len(self.release_lags),
+            "complete": (
+                len(planned) == len(self.release_lags)
+                and self.error is None
+                and reconciled
+            ),
+            "missed": self.missed,
+            "missed_by_stream": list(self.missed_by_stream),
+            "offer_rejected": list(self.offer_rejected),
+            "derived_drop_count": sum(derived_drops),
+            "derived_drops_by_stream": derived_drops,
+            "drop_counters_reconciled": reconciled,
+            "feeder_error_type": type(self.error).__name__ if self.error else None,
+            "unmatched_measurement_count": max(
+                0, len(self.release_lags) - len(planned)
+            ),
+            "samples": planned,
+        }
