@@ -1,11 +1,14 @@
 """Durable three-attempt queue. Transport is injected; importing does no IO."""
+import hashlib
 import json
 import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from .contract import canonical, valid_value
+from .locking import lock_exclusive
 
 
 class PausedRun(RuntimeError):
@@ -59,6 +62,25 @@ class Ledger:
     def close(self):
         if self.file is not None:
             self.file.close()
+
+    @contextmanager
+    def raw_reader(self):
+        """Read exact persisted bytes through the still-locked owning handle."""
+        with self.lock:
+            self.file.flush()
+            position = self.file.tell()
+            try:
+                self.file.seek(0)
+                yield self.file.buffer
+            finally:
+                self.file.seek(position)
+
+    def file_hash(self):
+        checksum = hashlib.sha256()
+        with self.raw_reader() as reader:
+            for block in iter(lambda: reader.read(1024 * 1024), b""):
+                checksum.update(block)
+        return checksum.hexdigest()
 
     def append(self, row):
         if self.read_only:

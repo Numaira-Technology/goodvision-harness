@@ -1,0 +1,15 @@
+# siglip2 -- google/siglip2-base-patch16-224 inference env.
+#
+# A SigLIP2 ViT encoder (no runtime module imports it yet; pinned via
+# tools/model_source.py _KNOWN). NO flash-attn -- set env.build.flash_attn: false
+# so the build skips the nvcc compile-once step.
+#
+# Install into a NEW Python 3.12 / CUDA 12.8 env AFTER torch==2.8.0 +
+# torchvision==0.23.0 (installed from the cu128 wheel index by tools/build_env.py).
+# transformers 5.x has SigLIP2 (added upstream in 4.49); pin tracks the `neural` extra.
+transformers==5.14.1
+safetensors==0.8.0
+numpy==2.2.6
+pillow==11.3.0
+# SigLIP2's processor uses a Gemma tokenizer; sentencepiece backs the slow path.
+sentencepiece==0.2.0

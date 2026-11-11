@@ -1,6 +1,6 @@
 # Four self-hosted models: reproducible execution
 
-This is the native execution path for **unified-frame-120-v2**, alongside the API
+This is the native execution path for **unified-frame-202-v1** (explicit legacy120 remains supported), alongside the API
 runner in [README.md](README.md). Run commands from the repository root. The
 installer and runner are opt-in; importing them or running offline preflight
 loads no models. The portable flow is covered by synthetic offline tests; a new
@@ -26,14 +26,18 @@ first valid target answers. Retry invalid/missing responses after the original
 
 A question needs every planned target response. For complete evidence: any yes
 means yes, otherwise any no means no, otherwise unknown. Headline accuracy is
-correct / **120**, with incomplete questions still in the denominator. Report
+correct / **202**, with incomplete questions still in the denominator. Report
 missing units, incomplete questions and unknowns separately. A native window is
 two frames, so missing windows and missing single-frame calls are different units.
 This does not establish twelve-camera real-time throughput.
 
+The additional82 labels remain inherited and pending single-view review; retain
+[the dataset limitations](DATASET202.md) in reports. Validation24 and model settings
+are unchanged. Changing test membership is not new calibration evidence.
+
 ## 1. Inputs, media and offline preflight
 
-Obtain the five private JSON inputs and original videos as described in
+Obtain the eight private JSON inputs and original videos as described in
 [the input guide](README.md#get-the-frozen-inputs). Use Python 3.12, Pillow,
 certifi, FFmpeg and ffprobe for preflight. Keep inputs, generated JPEGs and raw
 receipts private. Model requests do not contain reference answers; the frozen
@@ -115,13 +119,13 @@ First check the execution inputs offline. The command below intentionally omits
 /workspace/goodvision-native/clip/env/bin/python -m tools.unified_benchmark.native_run \
   --model clip --bundle /private/native-bundle \
   --deployment /workspace/goodvision-native --deployment-sha256 DEPLOYMENT_SHA256 \
-  --phase both --output /workspace/results/clip-current120
+  --phase both --output /workspace/results/clip-current202
 ```
 
 Once the **validation and test** run is authorized, append:
 
 ```sh
-  --authorization-note 'Approved native validation24 and test120 scope' --execute
+  --authorization-note 'Approved native validation24 and test202 scope' --execute
 ```
 
 Use the same command for each model, with a distinct output directory and these
@@ -130,10 +134,10 @@ overlapping runner processes. Stop unrelated services using the same GPU first.
 
 | Alias | Python executable | Suggested output |
 |---|---|---|
-| `clip` | `/workspace/goodvision-native/clip/env/bin/python` | `/workspace/results/clip-current120` |
-| `siglip2` | `/workspace/goodvision-native/clip/env/bin/python` | `/workspace/results/siglip2-current120` |
-| `videojev` | `/workspace/goodvision-native/videojev/env/bin/python` | `/workspace/results/videojev-current120` |
-| `decision3` | `/workspace/goodvision-native/decision3/env/bin/python` | `/workspace/results/decision3-current120` |
+| `clip` | `/workspace/goodvision-native/clip/env/bin/python` | `/workspace/results/clip-current202` |
+| `siglip2` | `/workspace/goodvision-native/clip/env/bin/python` | `/workspace/results/siglip2-current202` |
+| `videojev` | `/workspace/goodvision-native/videojev/env/bin/python` | `/workspace/results/videojev-current202` |
+| `decision3` | `/workspace/goodvision-native/decision3/env/bin/python` | `/workspace/results/decision3-current202` |
 
 The native runner starts its own loopback service; no externally exposed inference
 port is needed. `--port` defaults to 8093 and must be free. Startup checks GPU,
@@ -173,6 +177,7 @@ recovers a valid receipt saved just before an interruption, skips completed unit
 and phases, and preserves frozen thresholds. An interrupted intent without a
 recoverable receipt consumes one attempt. A unit already at three attempts cannot
 be sent a fourth time. Do not use a new output directory to evade that limit.
+
 Every result must match one preceding intent for the same unit, request and attempt;
 duplicate or unmatched results stop recovery before backend startup. First valid
 answers are selected in original attempt order, even if an older orphan receipt is
@@ -203,7 +208,7 @@ peak allocation records and `result-files-sha256.json`. Verify that inventory af
 copying results locally, before releasing a GPU with unbacked-up files. The inventory
 excludes itself; earlier inventory snapshots remain in continuation records.
 
-The test report includes combined120 and per-event results, missing units,
+The test report includes combined202, original120/robot82 cohorts and per-event results, missing units,
 incomplete questions and successful-attempt P50/P95. Latency excludes worker queue
 and retry backoff; CLIP's preprocessing/GPU-lock wait/readback are retained separately
 inside each receipt. Restarts can change cache warmth and are recorded. These are

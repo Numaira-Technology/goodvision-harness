@@ -1,6 +1,6 @@
 # Model interfaces and protocol identity
 
-For new current-120 runs use `tools/unified_benchmark/README.md`. All adapters share
+For new current202 or explicitly selected current120 runs use `tools/unified_benchmark/README.md`. All adapters share
 1 FPS JPEG input, but APIs/CLIP/SigLIP2 consume one frame while VideoJev/Decision3
 consume adjacent two-frame windows. Native precision is retained and recorded.
 The four native models now have a portable deployment and execution path in

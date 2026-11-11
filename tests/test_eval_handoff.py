@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 
 import pytest
-pytest.importorskip("fcntl", reason="Durable benchmark execution requires Linux/macOS")
 
 from tools.unified_benchmark import adapters, preflight
 from tools.unified_benchmark.contract import EVENTS, file_hash, score
@@ -70,12 +69,12 @@ def test_explicit_private_inputs_are_hashed_and_joined(tmp_path, monkeypatch):
                                       for r in rows]}
     (source / "validation_split.json").write_text(json.dumps(sidecar))
     monkeypatch.setattr(preflight, "PINNED_INPUTS", {p.name: file_hash(p) for p in source.iterdir()})
-    parts = preflight.load_inputs(tmp_path / "bundle", source)
+    parts = preflight.load_inputs(tmp_path / "bundle", source, protocol="unified-frame-120-v2")
     assert [len(parts[s]["rows"]) for s in ("validation", "test")] == [24, 120]
     assert all(file_hash(tmp_path / "bundle" / "inputs" / name) == expected for name, expected in preflight.PINNED_INPUTS.items())
     (source / "test-samples.json").write_text("{}")
     with pytest.raises(ValueError, match="frozen input changed"):
-        preflight.load_inputs(tmp_path / "changed-bundle", source)
+        preflight.load_inputs(tmp_path / "changed-bundle", source, protocol="unified-frame-120-v2")
 
 
 def test_profiles_freeze_effort_and_native_windows():
