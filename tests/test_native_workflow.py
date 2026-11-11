@@ -652,3 +652,323 @@ def test_late_orphan_keeps_first_attempt_answer_in_actual_native_resume(frozen, 
     execute(frozen, output, "decision3", "test", resume=True)
     assert len(FakeBackend.calls) == 119
     assert (output / "test/attempts.jsonl").read_bytes() == completed
+
+
+def output_snapshot(output):
+    """Detect changed bytes and new files/directories at failed resume boundaries."""
+    return {str(p.relative_to(output)): file_hash(p) if p.is_file() else None
+            for p in output.rglob("*")}
+
+
+def seed_resume_phase(frozen, output, alias, split, *, attempt=1, status=200):
+    from types import SimpleNamespace
+    from tools.unified_benchmark.adapters import parse_response
+    bundle, _, deployment_sha = frozen
+    cfg = deploy.profile(alias)
+    plan = json.loads((bundle / f"plans/{alias}-{split}.json").read_text())
+    unit = plan["units"][0]
+    context = workflow.context_for(plan, cfg, workflow.verify_bundle(bundle))
+    identity = {"context": context, "threshold_artifact_sha256": None,
+                "native_deployment_sha256": deployment_sha}
+    ledger = Ledger(output / split / "attempts.jsonl", context)
+    try:
+        ledger.append({"type": "intent", "unit": unit["id"], "attempt": attempt,
+                       "request_sha256": unit["request_sha256"]})
+    finally:
+        ledger.close()
+    raw = (FakeBackend.raw(SimpleNamespace(cfg=cfg, alias=alias), unit, "yes")
+           if status == 200 else {"error": "synthetic failure"})
+    receipt = {"unit": unit["id"], "attempt": attempt, "request_sha256": unit["request_sha256"],
+        "config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]],
+        "http_status": status, "error": None if status == 200 else f"HTTP {status}",
+        "fatal": status in (401, 403), "response": raw,
+        "parsed": parse_response(cfg, unit, raw) if status == 200 else {},
+        "transport_seconds": .01, "completed_at_unix": 1000, "retry_after": 0}
+    path = output / split / "receipts" / f"{digest(unit['id'])}-{attempt}.json"
+    write_new(path, receipt)
+    return identity, unit, path
+
+
+def seed_both_resume(frozen, output, alias="decision3"):
+    write_new(output / "run.json", {"model": alias, "phase": "both",
+        "bundle_sha256": workflow.verify_bundle(frozen[0]), "deployment_sha256": frozen[2],
+        "initial_threshold_sha256": None})
+    identity, _, _ = seed_resume_phase(frozen, output, alias, "validation")
+    write_new(output / "validation/run.json", identity)
+
+
+def assert_read_only_resume_rejection(frozen, output, alias="decision3", phase="both"):
+    before = output_snapshot(output)
+    FakeBackend.calls.clear()
+    FakeBackend.instances.clear()
+    with pytest.raises(ValueError):
+        execute(frozen, output, alias, phase, resume=True)
+    assert not FakeBackend.calls and not FakeBackend.instances
+    assert output_snapshot(output) == before
+
+
+@pytest.mark.parametrize("mutation", ["context", "list", "null", "json", "receipt"])
+def test_resume_preflight_validates_later_phase_before_recovering_earlier(frozen, tmp_path, mutation):
+    output = tmp_path / "resume"
+    seed_both_resume(frozen, output)
+    identity, _, receipt = seed_resume_phase(frozen, output, "decision3", "test")
+    if mutation == "context":
+        identity["context"]["plan_sha256"] = "0" * 64
+    elif mutation == "list":
+        identity = []
+    elif mutation == "null":
+        identity = None
+    write_new(output / "test/run.json", identity)
+    if mutation == "json":
+        (output / "test/run.json").write_text("{")
+    elif mutation == "receipt":
+        data = json.loads(receipt.read_text())
+        data["request_sha256"] = "0" * 64
+        receipt.write_text(json.dumps(data))
+    assert_read_only_resume_rejection(frozen, output)
+
+
+@pytest.mark.parametrize("mutation", ["bad_hash", "empty", "missing_ledger_anchor", "list",
+                                      "missing_files", "not_finished", "escape", "missing_ledger"])
+def test_resume_preflight_rejects_invalid_later_completion_without_mutation(frozen, tmp_path, mutation):
+    output = tmp_path / "resume"
+    seed_both_resume(frozen, output)
+    identity, _, _ = seed_resume_phase(frozen, output, "decision3", "test")
+    write_new(output / "test/run.json", identity)
+    write_new(output / "test/report.json", {})
+    files = {f"test/{name}": file_hash(output / "test" / name)
+             for name in ("run.json", "report.json", "attempts.jsonl")}
+    done = {"execution_finished": True, "files": files}
+    if mutation == "bad_hash": files["test/report.json"] = "0" * 64
+    elif mutation == "empty": files.clear()
+    elif mutation == "missing_ledger_anchor": files.pop("test/attempts.jsonl")
+    elif mutation == "list": done = []
+    elif mutation == "missing_files": done.pop("files")
+    elif mutation == "not_finished": done["execution_finished"] = False
+    elif mutation == "escape":
+        outside = tmp_path / "outside.json"
+        write_new(outside, {})
+        files["../outside.json"] = file_hash(outside)
+    elif mutation == "missing_ledger": (output / "test/attempts.jsonl").unlink()
+    write_new(output / "test/completion.json", done)
+    assert_read_only_resume_rejection(frozen, output)
+
+
+@pytest.mark.parametrize("mutation", ["list", "json", "deployment", "evidence", "threshold"])
+def test_resume_preflight_rejects_saved_calibration_before_validation_calls(frozen, tmp_path, mutation):
+    complete = tmp_path / "calibration-control"
+    execute(frozen, complete, phase="validation")
+    artifact = json.loads((complete / "thresholds.json").read_text())
+    output = tmp_path / "resume"
+    seed_both_resume(frozen, output, "clip")
+    if mutation == "list": artifact = []
+    elif mutation == "deployment": artifact["native_deployment_sha256"] = "0" * 64
+    elif mutation == "evidence": artifact["validation_evidence_sha256"] = "0" * 64
+    elif mutation == "threshold": artifact["thresholds"]["fight"] = .8
+    write_new(output / "thresholds.json", artifact)
+    if mutation == "json": (output / "thresholds.json").write_text("{")
+    assert_read_only_resume_rejection(frozen, output, "clip")
+
+
+@pytest.mark.parametrize("anchored", [False, True])
+def test_resume_preflight_never_recovers_orphans_into_completed_phase(frozen, tmp_path, anchored):
+    output = tmp_path / "completed"
+    execute(frozen, output, "decision3", "test")
+    seed_resume_phase(frozen, output, "decision3", "test", attempt=2, status=503)
+    path = output / "test/completion.json"
+    if anchored:
+        done = json.loads(path.read_text())
+        done["files"]["test/attempts.jsonl"] = file_hash(output / "test/attempts.jsonl")
+        path.write_text(json.dumps(done))
+        assert all(file_hash(output / name) == sha for name, sha in done["files"].items())
+    assert_read_only_resume_rejection(frozen, output, phase="test")
+
+
+def test_resume_preflight_does_not_create_absent_earlier_ledger(frozen, tmp_path):
+    output = tmp_path / "resume"
+    seed_both_resume(frozen, output)
+    (output / "validation/attempts.jsonl").unlink()
+    identity, _, _ = seed_resume_phase(frozen, output, "decision3", "test")
+    identity["context"]["bundle_sha256"] = "0" * 64
+    write_new(output / "test/run.json", identity)
+    assert_read_only_resume_rejection(frozen, output)
+
+
+@pytest.mark.parametrize("diagnostic", [1.5, float("nan"), float("inf"), float("-inf")],
+                         ids=["finite", "nan", "positive_inf", "negative_inf"])
+@pytest.mark.parametrize("alias", ["clip", "siglip2"])
+def test_optional_contrastive_diagnostics_are_raw_only_and_resume(frozen, tmp_path, alias, diagnostic):
+    import math
+    from tools.unified_benchmark.contract import read_receipt
+    target = "validation/fight/0/yes"
+    def behavior(self, unit, body):
+        if unit["id"] == target:
+            raw = self.raw(unit, "yes")
+            raw["fight"]["optional_diagnostic"] = diagnostic
+            return 200, raw, {}
+    FakeBackend.behavior = behavior
+    output = tmp_path / "diagnostics"
+    execute(frozen, output, alias, "validation")
+    receipt_path = output / "validation/receipts" / f"{digest(target)}-1.json"
+    receipt = read_receipt(receipt_path)
+    observed = receipt["response"]["fight"]["optional_diagnostic"]
+    assert math.isnan(observed) if math.isnan(diagnostic) else observed == diagnostic
+    native = receipt["parsed"]["fight"]["native_scores"]
+    assert set(native) == {"margin", "positive_cosine", "contrast_cosine"}
+    assert native["margin"] == receipt["parsed"]["fight"]["score"] == .3
+    assert json.loads((output / "validation/report.json").read_text())["correct"] == 24
+    before = output_snapshot(output)
+    execute(frozen, output, alias, "validation", resume=True)
+    assert len(FakeBackend.calls) == 24
+    assert all(file_hash(output / name) == sha for name, sha in before.items()
+               if sha and name.startswith("validation/"))
+
+
+@pytest.mark.parametrize("fatal_attempt", [2, 3])
+def test_recovered_fatal_attempt_has_own_completeness_and_no_latency_sample(frozen, tmp_path, fatal_attempt):
+    output = tmp_path / "fatal"
+    unit, first = seeded_native_resume(frozen, output, fatal=False)
+    first.unlink()
+    ledger_path = output / "test/attempts.jsonl"
+    # Re-seed the first intent as a complete orphan, followed by failed sends.
+    ledger_path.write_text("")
+    seed_resume_phase(frozen, output, "decision3", "test")
+    for attempt in range(2, fatal_attempt + 1):
+        seed_resume_phase(frozen, output, "decision3", "test", attempt=attempt,
+                          status=401 if attempt == fatal_attempt else 503)
+    hashes = {p: file_hash(p) for p in (output / "test/receipts").glob("*.json")}
+    with pytest.raises(PausedRun, match="newly recovered fatal receipt"):
+        execute(frozen, output, "decision3", "test", resume=True)
+    assert not FakeBackend.calls and not FakeBackend.instances
+    rows = [json.loads(line) for line in ledger_path.read_text().splitlines()]
+    results = [r for r in rows if r["type"] == "result"]
+    assert [r["attempt"] for r in results] == list(range(1, fatal_attempt + 1))
+    assert [r["complete"] for r in results] == [True] + [False] * (fatal_attempt - 1)
+    assert results[-1]["fatal"] is True and results[-1]["answers"] == {}
+    if fatal_attempt == 3:
+        assert results[1]["cooldown_until"] == 1060
+    execute(frozen, output, "decision3", "test", resume=True)
+    assert len(FakeBackend.calls) == 119 and unit["id"] not in FakeBackend.calls
+    assert all(file_hash(path) == sha for path, sha in hashes.items())
+    result = json.loads((output / "test/report.json").read_text())
+    assert result["correct"] == result["accuracy_denominator"] == 120
+    assert result["test_attempt_latency"]["n"] == 120
+    before = ledger_path.read_bytes()
+    execute(frozen, output, "decision3", "test", resume=True)
+    assert ledger_path.read_bytes() == before and len(FakeBackend.calls) == 119
+
+
+def test_completed_phase_rejects_receipt_without_matching_intent(frozen, tmp_path):
+    output = tmp_path / "stray-receipt"
+    execute(frozen, output, "decision3", "test")
+    ledger_path = output / "test/attempts.jsonl"
+    before = ledger_path.read_bytes()
+    seed_resume_phase(frozen, output, "decision3", "test", attempt=2, status=503)
+    ledger_path.write_bytes(before)
+    done = json.loads((output / "test/completion.json").read_text())
+    assert all(file_hash(output / name) == sha for name, sha in done["files"].items())
+    assert_read_only_resume_rejection(frozen, output, phase="test")
+
+
+def test_completed_phase_keeps_exhausted_intents_without_receipts(frozen, tmp_path):
+    output = tmp_path / "exhausted"
+    unit, path = seeded_native_resume(frozen, output)
+    path.unlink()
+    bundle = frozen[0]
+    cfg = deploy.profile("decision3")
+    plan = json.loads((bundle / "plans/decision3-test.json").read_text())
+    ledger = Ledger(output / "test/attempts.jsonl", workflow.context_for(plan, cfg, workflow.verify_bundle(bundle)))
+    try:
+        for attempt in (2, 3):
+            ledger.append({"type": "intent", "unit": unit["id"], "attempt": attempt,
+                           "request_sha256": unit["request_sha256"]})
+    finally:
+        ledger.close()
+    execute(frozen, output, "decision3", "test", resume=True)
+    assert len(FakeBackend.calls) == 119 and unit["id"] not in FakeBackend.calls
+    result = json.loads((output / "test/report.json").read_text())
+    assert result["correct"] == 119 and result["accuracy_denominator"] == 120
+    assert result["incomplete_questions"] == result["final_missing_unique_units"] == 1
+    before = output_snapshot(output / "test")
+    execute(frozen, output, "decision3", "test", resume=True)
+    assert output_snapshot(output / "test") == before and len(FakeBackend.calls) == 119
+
+
+@pytest.mark.parametrize("phase", ["validation", "both"])
+def test_saved_calibration_before_completion_resumes_without_inference(frozen, tmp_path, phase):
+    output = tmp_path / "calibrated"
+    execute(frozen, output, "clip", phase)
+    (output / "validation/completion.json").unlink()
+    hashes = {p: file_hash(p) for p in (output / "thresholds.json", output / "validation/attempts.jsonl")}
+    FakeBackend.calls.clear()
+    FakeBackend.instances.clear()
+    execute(frozen, output, "clip", phase, resume=True)
+    assert not FakeBackend.calls and not FakeBackend.instances
+    assert all(file_hash(path) == sha for path, sha in hashes.items())
+    assert (output / "validation/completion.json").is_file()
+    result = json.loads((output / "validation/report.json").read_text())
+    assert result["correct"] == result["accuracy_denominator"] == 24
+
+
+@pytest.mark.parametrize("mutation", ["threshold", "evidence"])
+def test_saved_calibration_must_match_complete_validation_ledger(frozen, tmp_path, mutation):
+    output = tmp_path / "calibration-mismatch"
+    execute(frozen, output, "clip", "validation")
+    (output / "validation/completion.json").unlink()
+    path = output / "thresholds.json"
+    artifact = json.loads(path.read_text())
+    if mutation == "threshold": artifact["thresholds"]["fight"] = .8
+    else: artifact["validation_evidence_sha256"] = "0" * 64
+    path.write_text(json.dumps(artifact))
+    assert_read_only_resume_rejection(frozen, output, "clip", "validation")
+
+
+@pytest.mark.parametrize("kind", ["file", "outside_directory", "dangling_symlink"])
+def test_resume_preflight_rejects_invalid_later_phase_path_without_mutation(frozen, tmp_path, kind):
+    output = tmp_path / "invalid-phase-path"
+    seed_both_resume(frozen, output)
+    path = output / "test"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if kind == "file": path.write_text("not a phase directory")
+    elif kind == "outside_directory": path.symlink_to(outside, target_is_directory=True)
+    else: path.symlink_to(output / "missing-phase", target_is_directory=True)
+    before_outside = output_snapshot(outside)
+    assert_read_only_resume_rejection(frozen, output)
+    assert output_snapshot(outside) == before_outside
+
+
+@pytest.mark.parametrize("name", ["run.json", "completion.json"])
+def test_resume_preflight_rejects_dangling_later_evidence_marker(frozen, tmp_path, name):
+    output = tmp_path / "dangling-evidence"
+    seed_both_resume(frozen, output)
+    (output / "test").mkdir()
+    (output / "test" / name).symlink_to(output / "missing-evidence.json")
+    assert_read_only_resume_rejection(frozen, output)
+
+
+def test_resume_preflight_rejects_receipts_file_before_earlier_work(frozen, tmp_path):
+    output = tmp_path / "invalid-receipts"
+    seed_both_resume(frozen, output)
+    (output / "test").mkdir()
+    (output / "test/receipts").write_text("not a receipt directory")
+    assert_read_only_resume_rejection(frozen, output)
+
+
+def test_resume_preflight_rejects_dangling_calibration_before_validation(frozen, tmp_path):
+    output = tmp_path / "dangling-calibration"
+    seed_both_resume(frozen, output, "clip")
+    (output / "thresholds.json").symlink_to(output / "missing-thresholds.json")
+    assert_read_only_resume_rejection(frozen, output, "clip")
+
+
+@pytest.mark.parametrize("field", ["transport_seconds", "retry_after", "http_status", "fatal"])
+def test_resume_preflight_rejects_noncanonical_later_orphan_metadata(frozen, tmp_path, field):
+    output = tmp_path / "invalid-orphan-metadata"
+    seed_both_resume(frozen, output)
+    identity, _, path = seed_resume_phase(frozen, output, "decision3", "test", status=503)
+    write_new(output / "test/run.json", identity)
+    receipt = json.loads(path.read_text())
+    receipt[field] = float("nan")
+    path.write_text(json.dumps(receipt))
+    assert_read_only_resume_rejection(frozen, output)

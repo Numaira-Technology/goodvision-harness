@@ -412,17 +412,99 @@ def wait_forever():
 def test_pass_then_hang_at_shutdown():
     threading.Thread(target=wait_forever, daemon=False).start()
 """)
+    # Preserve this node's real three-second watchdog and fail-closed gate.
+    # Startup may consume that budget, so finished-session/shutdown-stack
+    # assertions live in the readiness-gated bootstrap lifecycle test below.
     result, output = invoke(tmp_path, 0, 1, ["test_shutdown.py"], seconds=3)
     assert result.returncode == 124
-    progress = [
-        json.loads(line)
-        for line in (output / "progress.jsonl").read_text().splitlines()
-    ]
-    assert progress[-1]["event"] == "finished" and progress[-1]["exit_code"] == 0
-    stacks = (output / "stacks.log").read_text()
-    assert "wait_forever" in stacks and "_shutdown" in stacks
+    record = json.loads((output / "run.json").read_text())
+    assert record["timed_out"] is True and record["timeout_seconds"] == 3
     with pytest.raises(ValueError):
         verify_coverage(tmp_path, 1, "success")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux shutdown signal")
+def test_bootstrap_retains_stacks_after_pytest_session_finishes(tmp_path):
+    (tmp_path / "test_shutdown.py").write_text("""import threading, time
+from pathlib import Path
+
+def wait_forever():
+    time.sleep(60)
+
+def test_pass_then_hang_at_shutdown():
+    # This callback runs inside the real threading._shutdown, before it joins
+    # our non-daemon thread. Normal atexit callbacks would run too late.
+    threading._register_atexit(lambda: Path("shutdown-ready").touch())
+    threading.Thread(target=wait_forever, daemon=False).start()
+""")
+    output = tmp_path / "evidence"
+    output.mkdir()
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    ready, stack = tmp_path / "shutdown-ready", output / "stacks.log"
+    with (
+        (output / "stdout.log").open("wb") as stdout,
+        (output / "stderr.log").open("wb") as stderr,
+    ):
+        child = subprocess.Popen(
+            [
+                sys.executable, "-u", "-m", "tools.ci_regression", "_pytest",
+                str(output), "-q", "-p", "tools.ci_pytest", "--ci-shard=0",
+                "--ci-shards=1", "--ci-evidence=" + str(output),
+                "--junitxml=" + str(output / "junit.xml"), "test_shutdown.py",
+            ],
+            cwd=tmp_path, env=env, stdout=stdout, stderr=stderr,
+            start_new_session=True,
+        )
+        try:
+            deadline = time.monotonic() + 10
+            while not ready.exists() and time.monotonic() < deadline:
+                assert child.poll() is None, "bootstrap exited before shutdown"
+                time.sleep(0.01)
+            assert ready.exists(), "bootstrap did not reach shutdown within 10s"
+            progress = [
+                json.loads(line)
+                for line in (output / "progress.jsonl").read_text().splitlines()
+            ]
+            assert (
+                progress[-1]["event"] == "finished"
+                and progress[-1]["exit_code"] == 0
+            )
+            assert child.poll() is None
+            os.kill(child.pid, signal.SIGUSR1)
+            deadline = time.monotonic() + 3
+            stacks, frames = "", set()
+            while time.monotonic() < deadline:
+                stacks = stack.read_text()
+                frames = {
+                    line.rsplit(" in ", 1)[-1]
+                    for line in stacks.splitlines()
+                    if line.lstrip().startswith("File ") and " in " in line
+                }
+                if {"wait_forever", "_shutdown"} <= frames:
+                    break
+                assert child.poll() is None, "bootstrap exited before stack dump"
+                time.sleep(0.01)
+            assert "wait_forever" in stacks and "_shutdown" in stacks
+            assert {"wait_forever", "_shutdown"} <= frames
+        finally:
+            # The owned session contains only this bootstrap and its thread.
+            # Keep cleanup bounded even when readiness or stack assertions fail.
+            if child.poll() is None:
+                try:
+                    os.killpg(child.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    child.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    child.wait(timeout=5)
+            else:
+                child.wait(timeout=5)
 
 
 @pytest.mark.skipif(
