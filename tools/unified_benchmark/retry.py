@@ -52,7 +52,7 @@ def validate_rows(rows):
         else:
             key = unit, attempt
             if attempt not in used or key in results:
-                raise ValueError("result requires one prior matching intent")
+                raise ValueError("result requires one prior matching intent; result has no unique preceding intent or duplicate result")
             if not isinstance(row.get("answers"), dict):
                 raise ValueError("ledger result answers must be an object")
             for field in ("cooldown_until", "retry_after"):
@@ -72,10 +72,16 @@ def validate_rows(rows):
 
 class Ledger:
     """Exclusive process lock + fsynced intent before send. Crash intents consume budget."""
-    def __init__(self, path, context):
-        self.path, self.context = Path(path), context
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.file = self.path.open("a+", encoding="utf-8")
+    def __init__(self, path, context, *, read_only=False):
+        self.path, self.context, self.read_only = Path(path), context, read_only
+        self.lock = threading.RLock()
+        self.rows = []
+        self.file = None
+        if read_only and not self.path.exists():
+            return
+        if not read_only:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.file = self.path.open("r" if read_only else "a+", encoding="utf-8")
         try:
             fcntl.flock(self.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.file.seek(0)
@@ -89,9 +95,12 @@ class Ledger:
         self.lock = threading.RLock()
 
     def close(self):
-        self.file.close()
+        if self.file is not None:
+            self.file.close()
 
     def append(self, row):
+        if self.read_only:
+            raise ValueError("cannot append to read-only ledger")
         with self.lock:
             row = {**row, "context": self.context, "at_unix": time.time()}
             validate_rows([r for r in self.rows if r["unit"] == row["unit"]] + [row])

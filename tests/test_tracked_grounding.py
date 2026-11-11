@@ -498,7 +498,12 @@ def test_twelve_sources_through_http_broker_and_spawned_workers(
         )
         # Model windows can finish before the detector-only source tail.
         detector_counts = broker.drain()
-    assert result["input_timing_valid"]
+    assert result["input_timing_valid"], {
+        "sender_missed_samples": result["sender_missed_samples"],
+        "sender_missed_samples_by_stream": result["sender_missed_samples_by_stream"],
+        "input_release_lag_seconds": result["input_release_lag_seconds"],
+        "offer_rejected_by_stream": result["offer_rejected_by_stream"],
+    }
     assert result["all_drained"] and result["result_records_missing"] == 0
     assert result["result_retention"]["valid"]
     expected = 24 if low_rate else 12

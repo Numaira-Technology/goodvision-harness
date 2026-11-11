@@ -12,9 +12,9 @@ description: >-
 For the legacy runner, use `tools/event_benchmark/SPEC.md` as the authority: **v2.1**,
 with strict answers, complete frame evidence and reviewed input hashes. Historical
 v1 outputs are not v2 evidence. Inspect the current spec and runner before a run.
-For the controlled evidence contract and its implementation limits, also read
-`tools/event_benchmark/CONTROLLED_RUN.md`. This checkout has no controlled legacy
-accuracy collector; the implemented current120 and controlled latency paths are separate.
+For the controlled provider-pinned, lossless accuracy and latency variant, read
+`tools/event_benchmark/CONTROLLED_RUN.md`. The implemented current120 pipeline and
+legacy unpinned baseline remain separately identified protocols.
 These instructions do not authorize paid inference, downloads, uploads or publishing;
 use the user's authorized scope and budget.
 
@@ -138,14 +138,15 @@ centered sampling and the original strict parser do not reproduce the frozen
    cuts from one recording must not cross splits. Missing onset/person annotations
    do not establish reaction-time or track-ID accuracy. Never assume a colleague's
    Desktop path exists.
-   For offline media checks, use the downloader `--check-only` command below.
-   The legacy accuracy CLI has no `--preflight` or provider/split-sidecar support.
-2. **Run legacy accuracy from the repository root**, only after authorization for calls.
-   This default-routing, rounded-score output cannot be used for controlled calibration:
+   `--preflight` checks inputs offline without credentials or inference. Keep its
+   pending-provider/hardware/authorization items distinct from input validity.
+2. **Run accuracy from the repository root**, only after authorization for calls:
    ```sh
    python tools/event_benchmark/run_eval.py --candidate luna \
      --samples /path/to/samples.json --manifest /path/to/reviewed-manifest.json \
      --media /path/to/media1 /path/to/media2 \
+     --provider-config /path/to/frozen-provider.json \
+     --split-manifest /path/to/validation_split.json --split test \
      --interval 1.0 --workers 12 --out outputs/event-benchmark/luna-v2.json
    ```
    Repeat with qwen and gemini on identical inputs. Capture the source commit and
@@ -155,7 +156,7 @@ centered sampling and the original strict parser do not reproduce the frozen
    ```sh
    python .claude/skills/event-benchmark/scripts/latency_bench.py \
      --candidate luna --video /path/to/representative-clip.mp4 \
-     --provider-config /path/to/reviewed-frozen-provider.json \
+     --provider-config /path/to/the-same-frozen-provider.json \
      --concurrency 12 --rounds 6 --out outputs/event-benchmark/lat-luna.json
    ```
    This is single-frame, single-predicate request latency, not product latency or
@@ -219,6 +220,21 @@ exact samples hash pinned by the committed 120-question manifest. Reproduction
 requires recovering those original bytes, not replacing the frozen hash. Downloading
 media does not certify label review, scoring eligibility or model performance.
 
+For the original default-provider v2.1 baseline without a validation24/test120
+sidecar, add `--legacy-baseline` to the accuracy command and omit the controlled
+provider/split options. It preserves centered sampling, the strict parser and
+fixed gate, and records `v2.1-legacy-unpinned-lossless-v1`. Do not use that output
+for validation threshold selection. The controlled workflow above still requires
+the provider configuration and split sidecar. Keep supplementary cohorts separate
+from existing result blocks and report their own full denominators.
+
+```sh
+python tools/event_benchmark/run_eval.py --legacy-baseline --candidate qwen \
+  --samples /path/to/samples.json --manifest /path/to/reviewed-manifest.json \
+  --media /path/to/media --interval 1.0 --workers 12 \
+  --out outputs/event-benchmark/legacy-qwen.json
+```
+
 ## Reviewed robot videos: 41-question supplement
 
 Use `tools/event_benchmark/datasets/samples_robot41.json` with
@@ -267,18 +283,19 @@ The second command uses the same input loader as the evaluator and should report
 not start a model. For an authorized accuracy run, use the explicit cohort:
 
 ```sh
-python tools/event_benchmark/run_eval.py --candidate qwen \
+python tools/event_benchmark/run_eval.py --legacy-baseline --candidate qwen \
   --samples tools/event_benchmark/datasets/samples_robot41.json \
   --manifest tools/event_benchmark/datasets/manifest_robot41.json \
   --media outputs/robot41/media --interval 1.0 --workers 12 \
   --out outputs/event-benchmark/robot41-qwen.json
 ```
 
-This command uses the existing default-provider v2.1 baseline with centered
-sampling, strict parsing and fixed gate. Its rounded clip output is not controlled
-lossless evidence and cannot drive the controlled threshold selector. There is no
-`--legacy-baseline`, provider/split-sidecar or `--preflight` option in this CLI.
-Use `download_media.py --check-only` above for offline input verification.
+This explicitly unpinned baseline retains centered sampling, strict parsing and
+the fixed gate. It records lossless received scores under
+`v2.1-legacy-unpinned-lossless-v1`, not controlled provider/split evidence, and cannot
+drive the controlled threshold selector. Historical rounded outputs remain
+unchanged and ineligible. Use `download_media.py --check-only` above for offline
+input verification, or the runner's `--preflight` without authorizing inference.
 
 Report this as a separate robot41 cohort with full denominators 18, 23 and 41.
 The existing Sheet's 50/100/120 blocks are not robot41 result cells. Availability
