@@ -173,6 +173,13 @@ def test_twelve_sources_native_decisions_and_person_reports(
             else "    assert True\n"
         )
     )
+    # CI runs `python -m` from the checkout, which puts the repo on sys.path
+    # only for that process. This child uses a temporary cwd, so give it the
+    # checkout explicitly. Collection stays on the temporary tests/ directory.
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = os.environ.copy()
+    prior = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = repo if not prior else repo + os.pathsep + prior
     result = subprocess.run(
         [
             sys.executable,
@@ -186,6 +193,7 @@ def test_twelve_sources_native_decisions_and_person_reports(
             "tests",
         ],
         cwd=tmp_path,
+        env=env,
         capture_output=True,
         text=True,
         timeout=30,
