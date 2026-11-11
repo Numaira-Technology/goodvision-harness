@@ -1,0 +1,56 @@
+{
+  "alias": "luna",
+  "backend": "decision",
+  "current_access_verified": false,
+  "kind": "probability",
+  "max_tokens": 30,
+  "model": "openai/gpt-6-luna-decisions",
+  "precision": "provider unverified; catalog=unknown",
+  "provider_context": {
+    "config": {
+      "backend": "decision",
+      "catalog_pricing": {
+        "completion": "0",
+        "discount": 0,
+        "input_cache_read": "0",
+        "input_cache_write": "0",
+        "prompt": "0.0000001",
+        "web_search": "0.01"
+      },
+      "catalog_quantization": "unknown",
+      "expected_provider_name": "OpenAI",
+      "limits": [
+        "Published latency is not this benchmark's measured end-to-end latency.",
+        "Actual provider/model must be checked from inference receipts.",
+        "Catalog precision is not independent proof of actual served weights or precision."
+      ],
+      "model": "openai/gpt-6-luna-decisions",
+      "provider": {
+        "allow_fallbacks": false,
+        "only": [
+          "openai"
+        ],
+        "require_parameters": true
+      },
+      "schema_version": 1,
+      "selected_at": "2026-11-04T19:04:10.618503+00:00",
+      "selection": {
+        "catalog_sha256": "22c20d0d49d68ca4558de06956825973f6075cea44c04bfc6ffb4c0b75877974",
+        "eligible_endpoints": [
+          "openai"
+        ],
+        "method": "only_eligible_endpoint_not_a_speed_comparison",
+        "published_latency": null
+      }
+    },
+    "historical_source_file_sha256": "60f70678e279fda69505bf0fd212fa61ed35ee3f97c51723583217b70ba05641",
+    "sha256": "40c3dd8fe7faa6635d2d20fe1f055d38fd498da9fa04c9e2b5311f15f98004b8",
+    "sha256_encoding": "canonical JSON of config"
+  },
+  "selection": "preserve prior pinned endpoint; not remeasured fastest",
+  "temperature": null,
+  "weight_revision": null,
+  "window_frames": 1,
+  "profile_origin": "Recorded November 2026 configuration; current provider availability and price must be rechecked.",
+  "prompt_policy": "current-image-v1"
+}
