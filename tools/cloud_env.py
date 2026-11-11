@@ -16,6 +16,7 @@ from pathlib import Path
 
 from tools import registry
 from tools.cloud_prefetch import R2_KEYS, credential_blob
+from tools.env_source import restore_identity
 
 TOOLS = Path(__file__).resolve().parent
 UPLOAD = ("model_source.py", "registry.py", "env_source.py", "models.yaml")
@@ -111,6 +112,7 @@ def restore_env(
     env = registry.env_of(name)
     if env is None:
         raise registry.RegistryError(f"model {name!r} has no packed environment")
+    expected_identity = restore_identity(env)
     if not isinstance(remote_dir, str) or not remote_dir.startswith("/"):
         raise ValueError("remote_dir must be an absolute POSIX path")
     registry.relative_path(remote_dir[1:])
@@ -126,20 +128,38 @@ def restore_env(
         out = runner(ssh, input=blob, timeout=timeout)
         expected_activate = f"{env['unpack_to']}/{env['activate_rel']}"
         expected_python = f"{env['unpack_to']}/bin/python"
-        for line in reversed((out or "").splitlines()):
-            try:
-                info = json.loads(line)
-            except ValueError:
-                continue
-            if (
-                isinstance(info, dict)
-                and info.get("name") == name
-                and info.get("source") in ("local", "r2")
-                and info.get("activate") == expected_activate
-                and info.get("python") == expected_python
-            ):
-                return expected_python
-        raise RuntimeError("env_source did not report the expected packed python path")
+        # Only the final acknowledgement is authoritative. An earlier success
+        # must not hide a subsequent failure or a different selected prefix.
+        line = next(
+            (line for line in reversed((out or "").splitlines()) if line.strip()), ""
+        )
+        try:
+            info = json.loads(line)
+        except ValueError:
+            raise RuntimeError(
+                "env_source final reply did not report the expected packed python path"
+            ) from None
+        if not (
+            isinstance(info, dict)
+            and info.get("name") == name
+            and info.get("source") in ("local", "r2")
+            and info.get("activate") == expected_activate
+            and info.get("python") == expected_python
+        ):
+            raise RuntimeError(
+                "env_source did not report the expected packed python path"
+            )
+        try:
+            reported_identity = registry.validate_env(info.get("identity"))
+        except registry.RegistryError:
+            raise RuntimeError(
+                "env_source did not report a valid packed environment identity"
+            ) from None
+        if reported_identity != expected_identity:
+            raise RuntimeError(
+                "env_source reported a different packed environment identity"
+            )
+        return expected_python
     finally:
         try:
             cleaner(ssh_options, host, port, reader_dir)

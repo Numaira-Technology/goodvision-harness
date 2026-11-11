@@ -484,10 +484,11 @@ def test_publication_failure_never_deletes_competing_files(
 
     def fail_rename(source, target):
         if competing:
+            Path(target).mkdir()
             (Path(target) / "someone-elses-file").write_text("keep")
         raise OSError("synthetic publication failure")
 
-    monkeypatch.setattr(Path, "rename", fail_rename)
+    monkeypatch.setattr(es, "_publish_prefix", fail_rename)
     with pytest.raises(OSError, match="publication"):
         pull(pack, tmp_path)
     if competing:

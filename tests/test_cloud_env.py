@@ -34,6 +34,7 @@ def test_restore_env_carries_secret_only_on_stdin_and_cleans():
                 "source": "r2",
                 "activate": ACTIVATE,
                 "python": PYTHON,
+                "identity": ce.restore_identity(ce.registry.env_of("videojev")),
             }
         )
 

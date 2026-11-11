@@ -6,6 +6,7 @@ An existing prefix is either a matching completed restore or is left untouched;
 operators must move an old/damaged prefix aside before restoring a different pin.
 """
 
+import ctypes
 import hashlib
 import json
 import os
@@ -185,6 +186,17 @@ def launch_argv(env, *args):
 
 def _identity(env):
     return {key: env[key] for key in IDENTITY_FIELDS}
+
+
+def restore_identity(env):
+    """Bind the SSH acknowledgement to both the artifact and selected manifest.
+
+    Completion markers keep their existing format; the handoff additionally
+    identifies the manifest location so a changed uploaded registry cannot be
+    acknowledged merely because it restores into the same absolute prefix.
+    """
+    registry.validate_env(env)
+    return {**_identity(env), "manifest_key": env["manifest_key"]}
 
 
 def subprocess_env(prefix=None):
@@ -431,6 +443,34 @@ def _run_unpack(prefix):
     )
 
 
+def _publish_prefix(staged, prefix):
+    """Atomically move the owned stage without replacing any existing prefix.
+
+    Linux restores require libc/kernel/filesystem RENAME_NOREPLACE support.
+    macOS's equivalent permits offline synthetic tests. Never fall back to
+    ordinary rename: it can replace another writer's empty directory.
+    """
+    library = ctypes.CDLL(None, use_errno=True)
+    source, target = os.fsencode(staged), os.fsencode(prefix)
+    if sys.platform == "linux":
+        rename = getattr(library, "renameat2", None)
+        arguments = [-100, source, -100, target, 1]  # AT_FDCWD, RENAME_NOREPLACE
+        types = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                 ctypes.c_char_p, ctypes.c_uint]
+    elif sys.platform == "darwin":
+        rename = getattr(library, "renamex_np", None)
+        arguments = [source, target, 4]  # RENAME_EXCL
+        types = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+    else:
+        rename = None
+    if rename is None:
+        raise RuntimeError("atomic no-replace environment publication unavailable")
+    rename.argtypes, rename.restype = types, ctypes.c_int
+    if rename(*arguments) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(staged), None, str(prefix))
+
+
 def _restore(env, *, prefer_local, client=None, bucket=None, scratch=None):
     registry.validate_env(env)
     check_compatibility(env)
@@ -468,13 +508,11 @@ def _restore(env, *, prefer_local, client=None, bucket=None, scratch=None):
             ) as stage:
                 staged = Path(stage) / "env"
                 _safe_extract(tarball, staged)
-                # Reserve without replacing even an empty directory created
-                # by a noncooperating writer.
+                # Capture ownership before publication. No empty public reservation
+                # is left unowned if a signal arrives between mkdir and stat.
                 owned = staged.stat()
-                prefix.mkdir()
-                reserved = prefix.stat()
                 try:
-                    staged.rename(prefix)
+                    _publish_prefix(staged, prefix)
                     _run_unpack(prefix)  # relocation must run at the final prefix
                     _critical_files(prefix)
                     marker = {"identity": _identity(env), "restored_utc": time.time()}
@@ -489,14 +527,6 @@ def _restore(env, *, prefer_local, client=None, bucket=None, scratch=None):
                             owned.st_ino,
                         ):
                             shutil.rmtree(prefix)
-                        elif (current.st_dev, current.st_ino) == (
-                            reserved.st_dev,
-                            reserved.st_ino,
-                        ):
-                            try:
-                                prefix.rmdir()  # preserves a now nonempty reservation
-                            except OSError:
-                                pass
                     raise
     packed_python(env)
     return _activate_path(env), "r2"
@@ -521,6 +551,7 @@ def ensure_env(name, *, prefer_local=True, scratch=None, registry_path=None):
         "activate": activate,
         "unpack_to": env["unpack_to"],
         "compat": env["compat"],
+        "identity": restore_identity(env),
         "source": source,
     }
 
