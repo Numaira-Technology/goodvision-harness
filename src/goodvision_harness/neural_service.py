@@ -7,6 +7,7 @@ import binascii
 import io
 import json
 import math
+import os
 import queue
 import threading
 import time
@@ -17,8 +18,17 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from PIL import Image, ImageOps
 
-MODEL = "openai/clip-vit-large-patch14"
-REVISION = "32bd64288804d66eefd0ccbe215aa642df71cc41"
+from .neural_calibration import (
+    CALIBRATED_PROMPTS,
+    MODEL,
+    REVISION,
+    FrozenThresholds,
+    calibrated_choice,
+    load_thresholds,
+    valid_margin,
+    valid_sampling,
+)
+
 PROMPTS = {
     "fight": (
         "People are physically fighting, punching or kicking each other.",
@@ -48,7 +58,11 @@ PROMPTS = {
 
 
 class Encoder:
-    def __init__(self, cache_dir):
+    def __init__(self, cache_dir, thresholds=None):
+        if thresholds is not None and not isinstance(thresholds, FrozenThresholds):
+            raise ValueError("load a versioned frozen threshold artifact first")
+        self.thresholds = thresholds
+        self.prompts = {**PROMPTS, **CALIBRATED_PROMPTS} if thresholds else PROMPTS
         import torch
         from transformers import AutoModel, AutoProcessor
 
@@ -70,8 +84,14 @@ class Encoder:
         # processor/model interface. Do not publish ready until inference works.
         labels = list(PROMPTS)
         pairs = self.scores(Image.new("RGB", (224, 224)), labels)
-        if len(pairs) != len(labels) or not all(_valid_pair(pair) for pair in pairs):
-            raise ValueError("invalid model scores during warmup")
+        try:
+            for label, pair in zip(labels, pairs, strict=True):
+                if isinstance(pair, dict):
+                    calibrated_choice(pair, label, frame_count=1)
+                elif not _valid_pair(pair):
+                    raise ValueError("invalid pair")
+        except (TypeError, ValueError):
+            raise ValueError("invalid model scores during warmup") from None
 
     def scores(self, image, labels):
         return self.score_batch([self.prepare(image)], [labels])[0]
@@ -90,10 +110,14 @@ class Encoder:
     def score_batch(self, pixels, labels):
         torch = self.torch
         counts = [item.shape[0] for item in pixels]
+        if len(counts) != len(labels) or not counts or any(
+            not 1 <= count <= 4 for count in counts
+        ):
+            raise ValueError("invalid model window batch")
         with torch.inference_mode():
             if self._text_features is None:
                 inputs = self.processor(
-                    text=[text for pair in PROMPTS.values() for text in pair],
+                    text=[text for pair in self.prompts.values() for text in pair],
                     return_tensors="pt", padding=True, truncation=True,
                 )
                 pooled = self.model.text_model(
@@ -106,17 +130,42 @@ class Encoder:
             ).pooler_output
             images = self.model.visual_projection(pooled)
             images = images / images.norm(dim=-1, keepdim=True)
-            logits = (
-                self.model.logit_scale.exp()
-                * (self._text_features @ images.t()).t()
-            )
+            cosine = (self._text_features @ images.t()).t()
+            logits = self.model.logit_scale.exp() * cosine
             pairs = logits.reshape(-1, len(PROMPTS), 2).softmax(dim=-1)
             pairs = pairs.cpu().tolist()
+            margins = None
+            if self.thresholds:
+                scores = cosine.reshape(-1, len(PROMPTS), 2)
+                margins = (scores[:, :, 0] - scores[:, :, 1]).cpu().tolist()
         indices = {label: index for index, label in enumerate(PROMPTS)}
         result, offset = [], 0
         for count, requested in zip(counts, labels, strict=True):
             window = _window_pairs(pairs[offset:offset + count])
-            result.append([window[indices[label]] for label in requested])
+            selected = []
+            for label in requested:
+                index = indices[label]
+                if self.thresholds is None or label not in self.thresholds.values:
+                    selected.append(window[index])
+                    continue
+                values = [row[index] for row in margins[offset:offset + count]]
+                if any(not valid_margin(value) for value in values) or not all(
+                    _valid_pair(row[index]) for row in pairs[offset:offset + count]
+                ):
+                    # Fail this entire request in infer(), without discarding
+                    # valid neighboring requests from the same model batch.
+                    selected.append(None)
+                    continue
+                winner = max(range(count), key=values.__getitem__)
+                selected.append({
+                    "score_kind": "cosine_margin", "score": values[winner],
+                    "threshold": self.thresholds.values[label], "image_index": winner,
+                    "frame_scores": values,
+                    "probabilities": [*pairs[offset + winner][index], 0.0],
+                    "thresholds_sha256": self.thresholds.sha256,
+                    "sampling": dict(self.thresholds.sampling),
+                })
+            result.append(selected)
             offset += count
         return result
 
@@ -180,8 +229,8 @@ class _BatchWorker:
 
 def _valid_pair(pair):
     return (
-        len(pair) == 2
-        and all(math.isfinite(p) and 0 <= p <= 1 for p in pair)
+        isinstance(pair, (list, tuple)) and len(pair) == 2
+        and all(type(p) in (int, float) and 0 <= p <= 1 for p in pair)
         and abs(sum(pair) - 1) <= 1e-5
     )
 
@@ -277,6 +326,28 @@ def create_app(encoder, *, max_batch_size=4):
                 or not 1 <= len(payload["request_id"]) <= 256
             ):
                 raise ValueError("invalid request id")
+            thresholds = getattr(encoder, "thresholds", None)
+            if thresholds is not None and any(
+                label in thresholds.values for label in labels
+            ):
+                sampling = payload.get("sampling")
+                times = payload.get("frame_times")
+                if (
+                    not valid_sampling(sampling)
+                    or sampling != thresholds.sampling
+                    or len(images) != sampling["observation_window_frames"]
+                    or not isinstance(times, list)
+                    or len(times) != len(images)
+                    or any(
+                        type(at) not in (int, float)
+                        or not 0 <= at < 1e12 or not math.isfinite(at)
+                        for at in times
+                    )
+                    # The selector permits at most half the target spacing of
+                    # error for irregular arrivals; it never duplicates frames.
+                    or not 0.25 - 1e-9 <= times[1] - times[0] <= 0.75 + 1e-9
+                ):
+                    raise ValueError("incompatible threshold sampling")
             def prepare():
                 decoded = []
                 for encoded in images:
@@ -307,6 +378,16 @@ def create_app(encoder, *, max_batch_size=4):
                     raise error
                 rows = []
                 for question, pair in zip(questions, pairs, strict=True):
+                    if isinstance(pair, dict):
+                        index = calibrated_choice(
+                            pair, question["id"].removeprefix("scene/"), len(images),
+                            sampling=(thresholds.sampling if thresholds else None),
+                        )
+                        rows.append({
+                            **pair, "id": question["id"], "task": "choice",
+                            "answer_index": index, "answer": question["options"][index],
+                        })
+                        continue
                     try:
                         if not _valid_pair(pair):
                             raise ValueError("invalid model scores")
@@ -440,10 +521,17 @@ def main():
     parser.add_argument("--port", type=int, default=8094)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--max-batch-size", type=int, choices=(1, 2, 3, 4), default=4)
+    parser.add_argument(
+        "--thresholds", default=os.environ.get("NEURAL_THRESHOLDS_FILE"),
+        help="versioned JSON artifact of validation-frozen core-event cosine margins",
+    )
     args = parser.parse_args()
     import uvicorn
 
-    encoder = Encoder(args.cache_dir)
+    encoder = (
+        Encoder(args.cache_dir, load_thresholds(args.thresholds))
+        if args.thresholds is not None else Encoder(args.cache_dir)
+    )
     encoder.warmup()
     uvicorn.run(
         create_app(encoder, max_batch_size=args.max_batch_size),
