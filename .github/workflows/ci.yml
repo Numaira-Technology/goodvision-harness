@@ -13,25 +13,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  tests:
-    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
+  linux-tests:
+    name: Linux regression shard ${{ matrix.shard }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            python: '3.11'
-            timeout_minutes: 20
-          - os: windows-latest
-            python: '3.12'
-            timeout_minutes: 25
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.timeout_minutes }}
+        shard: [0, 1]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: '3.11'
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Fetch pinned historical benchmark source objects
@@ -54,10 +48,71 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install ".[dev,webrtc,vlm]"
       - name: Install video encoder (Linux)
-        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Run regression suite (no models or service credentials)
+        # Leave time to upload evidence before the unchanged 20-minute job limit.
+        run: python tools/ci_regression.py run --shard ${{ matrix.shard }} --shards 2 --seconds 960 --output outputs/ci/linux-${{ matrix.shard }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: regression-linux-${{ matrix.shard }}
+          path: outputs/ci/linux-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 7
+
+  tests:
+    # Keep the existing required Linux check name. A failed/cancelled shard or
+    # incomplete collection must fail this gate, never become a successful skip.
+    name: Tests (ubuntu-latest, Python 3.11)
+    if: always()
+    needs: linux-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: regression-linux-*
+          path: outputs/ci-downloaded
+      - name: Require all Linux tests and exact-once coverage
+        env:
+          LINUX_RESULT: ${{ needs.linux-tests.result }}
+        run: python tools/ci_regression.py verify --shards 2 --result "$LINUX_RESULT" outputs/ci-downloaded
+
+  windows-tests:
+    name: Tests (windows-latest, Python 3.12)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Fetch pinned historical benchmark source objects
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          sources = json.loads(Path("tools/unified_benchmark/native_assets/sources.json").read_text())
+          for commit in sorted({source["commit"] for source in sources.values()}):
+              subprocess.run(["git", "fetch", "--no-tags", "--depth=1", "origin", commit], check=True)
+          PY
+      - name: Check repository hygiene
+        run: python tools/check_repo_hygiene.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install test dependencies
+        run: python -m pip install ".[dev,webrtc,vlm]"
       - name: Install video encoder (Windows)
-        if: runner.os == 'Windows'
         run: choco install ffmpeg --no-progress -y
       - name: Run regression suite (no models or service credentials)
         run: python -m pytest -vv -o faulthandler_timeout=60 --durations=20
