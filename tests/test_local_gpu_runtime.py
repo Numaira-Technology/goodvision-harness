@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from fake_session_owner import FakeSessionOwner
 from fastapi.testclient import TestClient
 
 from goodvision_harness.config import load_config
@@ -204,7 +205,7 @@ def test_console_sampling_updates_runtime_persists_and_rejects_active_change(rig
     assert restarted.deployment_settings()["tracking_sample_fps"] == 1.5
 
 
-def test_local_start_needs_no_cloud_key(rig, monkeypatch):
+def test_local_start_needs_no_cloud_key(rig, monkeypatch, request):
     runtime = rig.make()
     runtime.update_deployment_settings({"local_inference_enabled": True})
     runtime.config = replace(
@@ -212,15 +213,15 @@ def test_local_start_needs_no_cloud_key(rig, monkeypatch):
     )
     runtime._scene_mode = "disabled"
     runtime._scene_enabled = False
-    monkeypatch.setattr(
-        "goodvision_harness.pipeline.StreamingSession.start", lambda _: None
-    )
+    owner = FakeSessionOwner(runtime, monkeypatch, request)
     with TestClient(create_app(lambda: runtime)) as client:
         reply = client.post(
             "/v1/sessions/start", json={"features": ["smoking"], "dry_run": False}
         )
         assert reply.status_code == 200, reply.text
         assert client.get("/v1/ui/info").json()["api_key_required"] is False
+        assert owner.workers == [runtime._identity_worker]
+        assert owner.sessions == [runtime._session]
 
 
 def test_gpu_host_assignment(monkeypatch):

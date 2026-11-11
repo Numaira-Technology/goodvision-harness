@@ -3,11 +3,11 @@
 from dataclasses import replace
 from pathlib import Path
 
+from fake_session_owner import FakeSessionOwner
 from fastapi.testclient import TestClient
 
 from goodvision_harness.config import load_config
 from goodvision_harness.deployment_settings import DeploymentSettingsStore
-from goodvision_harness.pipeline import StreamingSession
 from goodvision_harness.privacy import PUBLIC_MISSING_API_KEY_ERROR
 from goodvision_harness.service import HarnessRuntime, create_app
 
@@ -90,7 +90,7 @@ def test_production_reads_dotenv_storage_and_ignores_saved_synthetic_mode(
     assert not (tmp_path / ".goodvision" / "deployment-settings.json").exists()
 
 
-def test_no_env_console_key_save_and_restart(tmp_path, monkeypatch):
+def test_no_env_console_key_save_and_restart(tmp_path, monkeypatch, request):
     monkeypatch.chdir(tmp_path)
     for name in ("INFERENCE_API_KEY", "OPENROUTER_API_KEY", "AICLUB_API_KEY", "MODEL_API_KEY",
                  "DASHSCOPE_API_KEY", "HARNESS_STREAM_URL", "RTSP_URL"):
@@ -106,7 +106,7 @@ def test_no_env_console_key_save_and_restart(tmp_path, monkeypatch):
     config = replace(config, events=replace(config.events, directory=tmp_path / "events"))
     store = DeploymentSettingsStore(tmp_path / "data" / "settings.json")
     runtime = HarnessRuntime(config, deployment_store=store)
-    monkeypatch.setattr(StreamingSession, "start", lambda self: None)
+    first_owner = FakeSessionOwner(runtime, monkeypatch, request)
     with TestClient(create_app(lambda: runtime)) as client:
         assert client.get("/").status_code == 200
         assert "save-api-key-button" in client.get("/").text
@@ -135,8 +135,14 @@ def test_no_env_console_key_save_and_restart(tmp_path, monkeypatch):
         # No frames are supplied: real client construction, with no external API calls.
         started = client.post("/v1/sessions/start", json={"features": ["smoking"], "dry_run": False})
         assert started.status_code == 200
+        assert first_owner.workers == [runtime._identity_worker]
+        assert first_owner.sessions == [runtime._session]
     restored = HarnessRuntime(config, deployment_store=store)
+    restored_owner = FakeSessionOwner(restored, monkeypatch, request)
     with TestClient(create_app(lambda: restored)) as client:
         assert client.get("/v1/ui/info").json()["api_key_present"]
         assert client.post("/v1/sessions/start", json={"features": ["smoking"], "dry_run": False}).status_code == 200
+        assert restored_owner.workers == [restored._identity_worker]
+        assert restored_owner.sessions == [restored._session]
+        assert restored_owner.workers[0] is not first_owner.workers[0]
     assert not (tmp_path / ".env").exists()
