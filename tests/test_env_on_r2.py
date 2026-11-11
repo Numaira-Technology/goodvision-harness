@@ -10,9 +10,10 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from env_build_helpers import completed_probe, runtime_facts
 
-from tools import build_env, env_source as es
-from tools import registry
+from tools import build_env, registry
+from tools import env_source as es
 
 
 def test_registry_ships_and_parses():
@@ -515,10 +516,11 @@ def test_publication_failure_never_deletes_competing_files(
 
     def fail_rename(source, target):
         if competing:
+            Path(target).mkdir()
             (Path(target) / "someone-elses-file").write_text("keep")
         raise OSError("synthetic publication failure")
 
-    monkeypatch.setattr(Path, "rename", fail_rename)
+    monkeypatch.setattr(es, "_publish_prefix", fail_rename)
     with pytest.raises(OSError, match="publication"):
         pull(pack, tmp_path)
     if competing:
@@ -691,10 +693,10 @@ def test_launch_argv_aborts_when_sys_prefix_does_not_match(tmp_path):
     prefix = tmp_path / "opt/env"
     (prefix / "bin").mkdir(parents=True)
     python = prefix / "bin/python"
-    python.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n")
+    python.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
     python.chmod(0o755)
     env = _launch_spec(prefix)
-    with pytest.raises(RuntimeError, match="sys.prefix"):
+    with pytest.raises(RuntimeError, match=r"sys\.prefix"):
         es.launch_argv(env)
 
 
@@ -708,7 +710,12 @@ def test_eval_subprocess_env_disables_user_site_and_drops_injection():
 
 def _captured_build_prefix(tmp_path, monkeypatch, flash_attn):
     calls = []
-    monkeypatch.setattr(build_env, "_run", lambda argv, **kw: calls.append(argv))
+
+    def run(argv, **kw):
+        calls.append(argv)
+        return completed_probe(flash_attn)
+
+    monkeypatch.setattr(build_env, "_run", run)
     prefix = tmp_path / "env"
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("numpy\n")
@@ -749,7 +756,8 @@ def test_build_prefix_always_installs_torch_and_requirements(tmp_path, monkeypat
             "torch==2.8.0" in call and "torchvision==0.23.0" in call for call in calls
         )
         assert any(
-            "-r" in call and str(tmp_path / "requirements.txt") in call for call in calls
+            "-r" in call and str(tmp_path / "requirements.txt") in call
+            for call in calls
         )
         assert all(call[0] in {str(tmp_path / "conda"), python} for call in calls)
 
@@ -771,14 +779,21 @@ def test_skip_and_upload_only_are_mutually_exclusive(tmp_path):
 def test_upload_only_requires_existing_tarball(tmp_path):
     missing = tmp_path / "nope.tar.gz"
     with pytest.raises(SystemExit):
-        build_env.main(
-            ["--model", "videojev", "--upload-only", "--out", str(missing)]
-        )
+        build_env.main(["--model", "videojev", "--upload-only", "--out", str(missing)])
 
 
 def test_upload_only_uploads_without_building(tmp_path, monkeypatch, capsys):
     tarball = tmp_path / "videojev-env.tar.gz"
-    tarball.write_bytes(b"packed-env-bytes")
+    archive(tarball)
+    env = registry.env_of("videojev")
+    build_env._new_record(
+        env,
+        "videojev",
+        tarball,
+        "@".join(registry.weights_of("videojev")),
+        build_env._sha256(build_env._requirements("videojev")),
+        runtime_facts(),
+    )
     calls = []
 
     class FakeR2:

@@ -178,10 +178,20 @@ def client_and_request():
             provider="local", endpoint="http://localhost:8094"
         ),
         output_mode="events",
+        candidate_fps=4.0,
+        observation_window_frames=2,
+        observation_frame_delta_seconds=0.5,
     )
     inspector = _inspector(cfg)
     assert isinstance(inspector, NeuralInspector)
-    body, expected = inspector._payload(job(cfg, 1, 2))
+    inspection = job(cfg, 1, 2)
+    inspection = replace(
+        inspection,
+        frames=(replace(inspection.frames[0], timestamp_seconds=0.5),
+                inspection.frames[1]),
+        request=replace(inspection.request, start_seconds=0.5),
+    )
+    body, expected = inspector._payload(inspection)
     return inspector, json.loads(body), expected
 
 
@@ -444,6 +454,10 @@ def test_encoder_keeps_mixed_window_frames_and_reuses_fixed_text(monkeypatch):
     encoder = object.__new__(ModelEncoder)
     encoder.torch = torch
     encoder._text_features = None
+    from goodvision_harness.neural_service import PROMPTS
+
+    encoder.prompts = PROMPTS
+    encoder.thresholds = None
     text_calls = []
 
     def text_model(**kwargs):

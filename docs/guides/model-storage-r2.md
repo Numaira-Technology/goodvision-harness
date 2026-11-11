@@ -251,6 +251,44 @@ python -m tools.build_env --model videojev \
 #   --miniforge-sha256 <独立核验过的完整摘要>
 ```
 
+构建器按 `--model` 选择默认 requirements，不会把 VideoJev 配方用于其他模型：
+
+| 模型 | 默认配方 |
+| --- | --- |
+| `videojev` | `tools/videojev_probe/requirements.txt` |
+| `clip` | `tools/clip/requirements.txt` |
+| `siglip2` | `tools/siglip2/requirements.txt` |
+| `d3-nano` | `tools/d3_nano/requirements.txt` |
+| `qwen8b` | `tools/qwen8b/requirements.txt` |
+
+成功构建并打包后，会以独占创建方式写入 `<out>.build.json`。该记录绑定 tarball
+的 SHA256/大小、模型 revision、目标 prefix、GPU 家族、flash-attn 开关、顶层
+requirements 文件摘要、构建器源码摘要，以及包内解释器实测的 Python/torch/CUDA
+版本、GPU compute capability 和所需扩展版本。构建或打包失败不会生成有效记录；
+已有 tarball 或记录均不会被覆盖。
+
+可以先构建，再在没有 GPU 的上传机上上传；须一起保留并移动 tarball 和同名记录：
+
+```bash
+python -m tools.build_env --model qwen8b --conda-home /opt/miniforge3 \
+  --out /tmp/qwen8b-new.tar.gz --skip-upload
+# 上传机需持有同一配方；只使用已授权的 R2 写凭据。
+python -m tools.build_env --model qwen8b \
+  --out /tmp/qwen8b-new.tar.gz --upload-only
+```
+
+`--requirements PATH` 可显式覆盖默认配方，后续 `--upload-only` 也必须提供内容
+相同的配方。上传前核对构建记录、当前选定的模型/配方、tarball 摘要和归档必要文件；
+不会执行 tarball，也不会用上传机的信息补造构建事实。缺少记录、错模型、改过的包、
+损坏或不完整归档都会在创建 R2 客户端前拒绝。旧包没有这种记录时须重新构建，不能
+靠手写记录获得验收。上传 manifest 会保留构建记录，供后续审查。
+
+记录由受信任的构建流程产生，不是数字签名，也不是依赖锁文件或独立的 ABI 验收。
+顶层 requirements 摘要不等于完整传递依赖锁定；主机/版本检查也不证明实际 CUDA
+内核或模型推理可用。真实包的来源、恢复、依赖及 ABI 验收仍须单独完成。恢复端的
+完整安全解包检查继续适用。条件写入失败或结果不确定时仍需检查远端对象，
+`--upload-only` 不会覆盖既有对象或自动删除部分上传。
+
 构建/解包子进程不继承 R2/HF/cloud 凭据或 `PYTHONPATH`。路径通过 argv 传递；
 `conda-pack` 不使用 `--ignore-missing-files` 或 `--force`。
 
@@ -260,6 +298,10 @@ python -m tools.build_env --model videojev \
 `tar`（仅用于上传小型 reader 文件）和 `nvidia-smi`。大包解压不调用系统 tar。
 `cloud_env` 将 reader 文件上传到独立临时目录，R2 **只读** key 仅经 SSH stdin
 传入，结束后清理 reader。返回的是远端 `{unpack_to}/bin/python`，不能在本机执行：
+远端必须同时回报所选包的 key、SHA256、大小、前缀、兼容性及 manifest key，
+并与控制机启动前捕获的身份完全一致；缺少身份或仅路径相同都不能作为成功回执。
+只验证 stdout 最后一条非空回执；后续错误、错误路径或错误身份不能被较早的成功
+输出掩盖。完成标记的旧格式保持不变。
 
 ```bash
 # 在控制机运行；先通过安全的既有方式导出四个只读 R2_* 变量。
@@ -275,6 +317,12 @@ PYTHONNOUSERSITE=1 /opt/env/videojev/bin/python -s -c 'import sys; assert sys.pr
 SHA256/size 校验 → 安全临时解包 → 放到固定前缀 → 用包内 `bin/python -I`
 运行 `bin/conda-unpack` → 写完成标记 → 返回包内 `bin/python`。允许安全内部软/硬链接；
 拒绝路径逃逸、链接父目录、设备/FIFO、重复路径和包内伪造的完成标记。
+发布前缀使用原子 no-replace rename，不会创建等待确认所有权的空公开目录，也不会
+替换其他进程刚创建的空目录。Linux 主机的 libc、内核及文件系统必须支持
+[`renameat2(RENAME_NOREPLACE)`](https://man7.org/linux/man-pages/man2/rename.2.html)；
+不支持时直接报错，不退回可能覆盖目标的普通 rename。macOS 的
+[`RENAME_EXCL`](https://developer.apple.com/documentation/foundation/urlresourcekey/volumesupportsexclusiverenamingkey)
+仅用于离线合成恢复测试，不代表 Linux/GPU 验收。
 
 匹配的完成标记和必要文件允许本地复用；这不是对整个已使用环境的重新取证校验。
 任何其他已有前缀（包括旧版本、损坏、旧格式标记或无标记目录）都被保留并拒绝覆盖。
