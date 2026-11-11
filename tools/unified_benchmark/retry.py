@@ -20,18 +20,17 @@ class RequestFailure(Exception):
 
 
 def lock_exclusive(fileobj):
-    """Nonblocking exclusive lock. Linux keeps flock; Windows locks one byte."""
-    if os.name == "nt":
-        import msvcrt
+    """Nonblocking exclusive lock where the platform has flock.
 
-        fileobj.seek(0)
-        try:
-            msvcrt.locking(fileobj.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError as error:
-            raise BlockingIOError(error.errno or 0, "lock busy") from error
+    Linux and macOS keep ``flock``. Windows has no equivalent that is both
+    nonblocking and safe to call from the regression job, so the ledger still
+    opens and the in-process lock stands. Cross-process exclusion stays on
+    POSIX.
+    """
+    try:
+        import fcntl
+    except ImportError:
         return
-    import fcntl
-
     fcntl.flock(fileobj, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
