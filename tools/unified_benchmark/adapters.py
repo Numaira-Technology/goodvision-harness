@@ -8,7 +8,7 @@ from pathlib import Path
 
 from tools.event_benchmark import run_eval as original
 
-from .contract import EVENTS, canonical, file_hash, valid_value
+from .contract import EVENTS, canonical, file_hash, finite_number, valid_value
 
 CURRENT_IMAGE_PROMPTS = {'fight': 'Is any fighting visible in the current image? Judge only the current image. Do not '
           'infer events before or after this image.',
@@ -106,20 +106,20 @@ def parse_response(config, unit, response):
             if type(v) is not bool and not (event.startswith("bag_") and v == "unknown"):
                 raise ValueError("only explicit boolean or unknown is valid; null/refusal is not unknown")
             return {event: {"answer": "yes" if v is True else "no" if v is False else "unknown"}}
-        answer = response["answers"]["answer"]
-        if not isinstance(answer, dict):
-            raise ValueError("decision answer must be an object")
+        envelope = response.get("answers")
+        if not isinstance(envelope, dict) or not isinstance(envelope.get("answer"), dict):
+            raise ValueError("invalid decision answer envelope")
+        answer = envelope["answer"]
         score = answer.get("noul")
         if (answer.get("type") != "noul" or answer.get("error") is not None
-                or type(score) not in (int, float) or not 0 <= score <= 1
-                or not math.isfinite(score)):
+                or not finite_number(score) or not 0 <= score <= 1):
             raise ValueError("decision answer must be a probability in [0, 1]")
         return {event: {"score": score}}
     if backend == "contrastive":
         result = {}
         for event in unit["targets"]:
             p = response.get(event)
-            if isinstance(p, dict) and all(_finite_number(p.get(k))
+            if isinstance(p, dict) and all(finite_number(p.get(k))
                                            for k in ("positive_cosine", "contrast_cosine", "margin")):
                 # Normalized evidence contains only validated score components.
                 # Optional diagnostics stay in the retained raw response, where
@@ -172,16 +172,7 @@ def parse_response(config, unit, response):
     return answers
 
 
-def _finite_number(value):
-    if type(value) not in (int, float):
-        return False
-    try:
-        return math.isfinite(value)
-    except OverflowError:
-        return False
-
-
 def _probabilities(probs):
     return (isinstance(probs, list) and len(probs) == 3
-            and all(_finite_number(p) and 0 <= p <= 1 for p in probs)
+            and all(finite_number(p) and 0 <= p <= 1 for p in probs)
             and math.isclose(sum(probs), 1, abs_tol=1e-4))

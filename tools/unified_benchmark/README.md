@@ -12,9 +12,10 @@ separate legacy v2.1 runner; it is not the current-frame 120-question entrypoint
   frozen JSON files are private team inputs, not published in this public repository.
   Download the original files from the [restricted team Drive](#get-the-frozen-inputs)
   below; do not regenerate their labels.
-- Twelve recorded profiles: qwen8b, qwen235b, maverick, luna, gemini25_off,
+- Thirteen recorded profiles: qwen8b, qwen235b, maverick, luna, gemini25_off,
   gemini25_low, gemini38_low, clip, siglip2, videojev, decision3, plus
-  `qwen8b_r2_host` (self-hosted R2 packed env on one 4090; not OpenRouter).
+  `qwen8b_r2_host` and `qwen8b_r2_vllm` (independent self-hosted R2 engines;
+  not OpenRouter).
 - Offline input/media/frame/request preflight; lossless receipt/score retention;
   cumulative three-attempt queue; validation threshold selection and test reporting.
 - API execution with an explicit selected credential file or per-model file mapping.

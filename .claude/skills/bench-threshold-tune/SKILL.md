@@ -8,13 +8,12 @@ description: >-
 
 # Validation-only threshold selection
 
-For the older controlled v2 API protocol, this checkout provides evidence validation
-and threshold consumers, but no controlled accuracy collector or provider-catalog
-preparation tool. The legacy `run_eval.py` output is rounded and lacks the required
-receipt/split evidence. Do not upgrade its labels or precision marker. Use eligible
-retained records with their matching source snapshot, or wait for an implemented
-producer; current120 has its separate documented pipeline.
-
+For the older controlled v2 API protocol, use the implemented provider-pinned,
+lossless collector and catalog preparation described in
+`tools/event_benchmark/CONTROLLED_RUN.md`. Historical rounded legacy output remains
+ineligible: do not upgrade its labels or precision marker. The separate
+`--legacy-baseline` path is explicitly unpinned and cannot drive controlled tuning.
+Use retained records only with their matching source snapshot.
 
 Use the runner matching the saved artifact. For current120 ledgers, read
 `tools/unified_benchmark/README.md` and use `tools.unified_benchmark.workflow select`

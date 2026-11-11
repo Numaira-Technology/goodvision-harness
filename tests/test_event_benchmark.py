@@ -101,7 +101,11 @@ def test_complete_run_records_frozen_provenance_and_errors(tmp_path, monkeypatch
     monkeypatch.setattr(runner.sys, "argv", [
         "run_eval.py", "--candidate", "qwen", "--samples", str(dataset.samples),
         "--manifest", str(dataset.manifest), "--media", str(dataset.media), "--out", str(output),
+        "--provider-config", "synthetic-provider.json", "--split-manifest", "synthetic-split.json", "--split", "test",
     ])
+    monkeypatch.setattr(runner.evidence, "load_provider", lambda *args: {
+        "sha256": "a" * 64, "config": {"expected_provider_name": "Provider A"}})
+    monkeypatch.setattr(runner.evidence, "split_groups", lambda *args: ({1: "source-a"}, {"sha256": "b" * 64}))
     monkeypatch.setattr(runner, "load_key", lambda _: "offline")
     monkeypatch.setattr(runner, "eval_video", lambda backend, model, sample, *args: (sample, {"error": "offline failure"}))
     result = runner.main()

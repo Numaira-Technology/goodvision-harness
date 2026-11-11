@@ -123,7 +123,18 @@ def test_newly_recovered_fatal_pauses_before_backend_then_explicit_resume(
     with pytest.raises(PausedRun, match="newly recovered fatal"):
         execute(frozen, output, "decision3", "test", resume=True)
     assert not FakeBackend.instances and not FakeBackend.calls
-    assert not (output / "invocations").exists()
+    partials = list(output.glob("invocations/*/test-partial-report.json"))
+    assert len(partials) == 1
+    assert {p.name for p in partials[0].parent.iterdir()} == {
+        "run.json", "failure.json", "test-partial-report.json"
+    }
+    assert receipt.read_bytes() == original
+    partial = json.loads(partials[0].read_text())
+    assert partial["accuracy_denominator"] == 120
+    assert partial["correct"] == 0
+    assert partial["unattempted_unique_units"] == 119
+    assert partial["final_missing_unique_units"] == 120
+    assert partial["test_attempt_latency"]["n"] == 0
     recovered = rows(output)
     assert len(recovered) == 2 and recovered[1]["fatal"] is True
     assert recovered[1]["http_status"] == 401

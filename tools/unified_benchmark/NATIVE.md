@@ -173,11 +173,29 @@ recovers a valid receipt saved just before an interruption, skips completed unit
 and phases, and preserves frozen thresholds. An interrupted intent without a
 recoverable receipt consumes one attempt. A unit already at three attempts cannot
 be sent a fourth time. Do not use a new output directory to evade that limit.
+Every result must match one preceding intent for the same unit, request and attempt;
+duplicate or unmatched results stop recovery before backend startup. First valid
+answers are selected in original attempt order, even if an older orphan receipt is
+recovered after a later result. Historical ledger rows and receipt files are not rewritten.
+
+A fatal receipt discovered during recovery is recorded and pauses that invocation
+before backend startup. Diagnose it before a subsequent explicit `--resume`, which
+may retry an already recorded fatal response using only the remaining attempt budget.
+An incomplete legacy receipt, including a fatal orphan, must retain its
+authoritative recovery fields and a finite `completed_at_unix`. Missing or invalid
+timing stops recovery without inventing a completion time or resetting attempts.
+Complete legacy receipts need no retry time.
 
 Each continuation retains its own startup, telemetry and failure records.
 An incomplete final result is still incomplete; `completed` means the bounded
 queue finished, not that every question succeeded. There is no automatic infinite
 retry loop. Inspect `status.json` and the current invocation's logs before resuming.
+
+Receipts remain strict JSON. Readers accept both historical
+`python-json-nonfinite-v1` global and `json-text-nonfinite-v1` per-field raw
+encodings through the strict receipt decoder. New writes retain the per-field
+format. Raw nonfinite values remain lossless diagnostics, never valid scores;
+optional invalid cost metadata remains unknown. Preserve original receipt bytes.
 
 For each phase, keep `run.json`, `attempts.jsonl`, `receipts/`, `report.json` and
 `completion.json`; a failed stage leaves a partial report in its invocation.

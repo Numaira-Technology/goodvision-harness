@@ -70,6 +70,28 @@ def write_new(path, value):
         f.write(data)
 
 
+def write_receipt(path, record):
+    """Keep decoded nonfinite raw fields losslessly inside a strict JSON record."""
+    record = dict(record)
+    for field in ("response", "generation_metadata"):
+        value = record.get(field)
+        try:
+            canonical(value)
+        except ValueError:
+            # Python decodes JSON 1e400 as inf. Store its decoded representation
+            # as text rather than losing the receipt or treating it as evidence.
+            record["raw_json_encoding"] = "python-json-nonfinite-v1"
+            record[field + "_json"] = json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=True)
+            record[field] = None
+    write_new(path, record)
+
+
+def read_receipt(path):
+    """Compatibility entry point using the strict dual historical-codec reader."""
+    from .receipts import read_receipt as read_strict_receipt
+    return read_strict_receipt(path)
+
+
 def sample_times(duration):
     if type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0:
         raise ValueError("positive finite duration required")
