@@ -5,6 +5,7 @@ import io
 import json
 import shutil
 import subprocess
+import sys
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,26 @@ SCRIPT = (
 spec = importlib.util.spec_from_file_location("skill_latency", SCRIPT)
 latency = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(latency)
+
+
+@pytest.fixture(autouse=True)
+def forbid_real_network(monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("latency regressions must not contact a real endpoint")
+    monkeypatch.setattr(latency.urllib.request, "urlopen", forbidden)
+    monkeypatch.setattr("socket.create_connection", forbidden)
+
+
+@pytest.fixture
+def provider_config(tmp_path):
+    path = tmp_path / "provider.json"
+    path.write_text(json.dumps({
+        "schema_version": 1, "model": latency.CANDIDATES["qwen"][0],
+        "backend": "language", "expected_provider_name": "Synthetic Provider",
+        "provider": {"only": ["synthetic-endpoint"], "allow_fallbacks": False},
+        "selection": "offline test fixture", "selected_at": "2026-11-10T00:00:00Z",
+    }))
+    return path
 
 
 def chat(content='{"answer":false}', finish="stop"):
@@ -237,12 +258,14 @@ def test_invalid_prepared_dimensions_or_codec_fail(monkeypatch, stream):
 
 @pytest.mark.parametrize("complete", [False, True])
 def test_cli_writes_provenance_and_returns_failure_for_incomplete_run(
-    tmp_path, monkeypatch, complete
+    tmp_path, monkeypatch, complete, provider_config
 ):
     jpeg = b"synthetic prepared image"
     monkeypatch.setattr(latency, "prepare_frame", lambda *a, **k: jpeg)
     monkeypatch.setattr(latency, "load_key", lambda *a: "synthetic-key")
-    attempts = iter([{"ok": complete, "elapsed_s": 1}, {"ok": True, "elapsed_s": 2}])
+    metadata = {"actual_provider": "Synthetic Provider", "actual_model": latency.CANDIDATES["qwen"][0]}
+    attempts = iter([{"ok": complete, "elapsed_s": 1, "generation_id": "single-1", **metadata},
+                     {"ok": True, "elapsed_s": 2, "generation_id": "concurrent-1", **metadata}])
     monkeypatch.setattr(latency, "one_call", lambda *a: next(attempts))
     output = tmp_path / "nested" / "result.json"
     exit_code = latency.main(
@@ -251,6 +274,8 @@ def test_cli_writes_provenance_and_returns_failure_for_incomplete_run(
             "qwen",
             "--frame",
             "synthetic.jpg",
+            "--provider-config",
+            str(provider_config),
             "--single-n",
             "1",
             "--concurrency",
@@ -264,6 +289,8 @@ def test_cli_writes_provenance_and_returns_failure_for_incomplete_run(
     result = json.loads(output.read_text())
     assert exit_code == (0 if complete else 1)
     assert result["complete"] is complete
+    assert result["provider_observed"]["complete"] is True
+    assert result["provider_context"]["config"]["provider"]["allow_fallbacks"] is False
     assert result["frame_sha256"] == latency.sha256_bytes(jpeg)
     assert result["runner_sha256"] == latency.sha256_bytes(
         latency.RUNNER_PATH.read_bytes()
@@ -313,3 +340,75 @@ def test_real_ffmpeg_normalizes_synthetic_image_and_video(tmp_path):
             assert image.format == "JPEG"
             assert image.width == 720
             assert image.height > 0 and image.height % 2 == 0
+
+
+@pytest.mark.parametrize("with_provider", [False, True])
+def test_offline_preflight_never_loads_credentials_or_calls_provider(
+    tmp_path, monkeypatch, provider_config, with_provider
+):
+    monkeypatch.setattr(latency, "prepare_frame", lambda *a, **k: b"synthetic frame")
+    monkeypatch.setattr(latency, "load_key", lambda *a: pytest.fail("preflight read credentials"))
+    output = tmp_path / "preflight.json"
+    args = ["--candidate", "qwen", "--frame", "synthetic.jpg", "--preflight", "--out", str(output)]
+    if with_provider:
+        args += ["--provider-config", str(provider_config)]
+    assert latency.main(args) == 0
+    result = json.loads(output.read_text())
+    assert result["inference_calls"] == 0
+    assert result["artifact_type"] == "offline-latency-preflight"
+    assert bool(result["provider_context"]) is with_provider
+    assert result["evidence_sha256"] == latency.sha256_bytes(
+        Path(latency.runner.evidence.__file__).read_bytes())
+
+
+def test_live_cli_requires_frozen_provider_before_credentials(monkeypatch):
+    monkeypatch.setattr(latency, "prepare_frame", lambda *a, **k: b"synthetic frame")
+    monkeypatch.setattr(latency, "load_key", lambda *a: pytest.fail("read credentials"))
+    with pytest.raises(SystemExit) as error:
+        latency.main(["--candidate", "qwen", "--frame", "synthetic.jpg"])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("mismatch", ["provider", "model"])
+def test_identity_mismatch_keeps_successful_inference_but_fails_controlled_run(
+    tmp_path, monkeypatch, provider_config, mismatch
+):
+    monkeypatch.setattr(latency, "prepare_frame", lambda *a, **k: b"synthetic frame")
+    monkeypatch.setattr(latency, "load_key", lambda *a: "synthetic-key")
+    requests = []
+
+    def respond(request, **kwargs):
+        body = json.loads(request.data)
+        assert body["provider"] == {"only": ["synthetic-endpoint"], "allow_fallbacks": False}
+        requests.append(request)
+        receipt = json.loads(chat())
+        receipt.update(id="synthetic-" + str(len(requests)),
+                       provider="Wrong Provider" if mismatch == "provider" else "Synthetic Provider",
+                       model="other/model" if mismatch == "model" else body["model"])
+        return io.BytesIO(json.dumps(receipt).encode())
+
+    monkeypatch.setattr(latency.urllib.request, "urlopen", respond)
+    output = tmp_path / "mismatch.json"
+    assert latency.main(["--candidate", "qwen", "--frame", "synthetic.jpg",
+                         "--provider-config", str(provider_config), "--single-n", "1",
+                         "--concurrency", "1", "--rounds", "1", "--out", str(output)]) == 1
+    result = json.loads(output.read_text())
+    assert result["inference_complete"] is True and result["complete"] is False
+    assert result["provider_observed"]["provider_mismatch"] is (mismatch == "provider")
+    if mismatch == "model":
+        assert result["provider_observed"]["actual_models"] == ["other/model"]
+    assert len(requests) == 2  # no retries or unnecessary metadata requests
+
+
+def test_standalone_isolated_import_supports_controlled_request(tmp_path, provider_config):
+    # -I excludes the repository from sys.path, just like a standalone skill CLI.
+    code = """
+import json, runpy, sys
+module = runpy.run_path(sys.argv[1])
+model = module["CANDIDATES"]["qwen"][0]
+context = module["runner"].evidence.load_provider(sys.argv[2], model, "language")
+url, body = module["build_body"]("language", model, "synthetic-uri", context)
+assert body["provider"] == {"only": ["synthetic-endpoint"], "allow_fallbacks": False}
+"""
+    subprocess.run([sys.executable, "-I", "-c", code, str(SCRIPT), str(provider_config)],
+                   cwd=tmp_path, check=True, capture_output=True, timeout=30)

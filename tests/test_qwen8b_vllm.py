@@ -84,7 +84,7 @@ def test_eligible_offers_reject_expensive_or_multi_gpu():
     assert [o["id"] for o in ok] == [1]
 
 
-def test_prepare_vllm_bundle_preserves_request_hashes(tmp_path):
+def test_prepare_vllm_bundle_refuses_incomplete_unsealed_source(tmp_path):
     from tools.qwen8b.prepare_vllm_bundle import prepare
     src = tmp_path / "host"
     (src / "plans").mkdir(parents=True)
@@ -104,9 +104,7 @@ def test_prepare_vllm_bundle_preserves_request_hashes(tmp_path):
         (src / "plans" / f"qwen8b_r2_host-{split}.json").write_text(json.dumps(p))
     (src / "bundle-files-sha256.json").write_text("{}")
     dest = tmp_path / "vllm"
-    info = prepare(src, dest)
-    plan = json.loads((dest / "plans" / "qwen8b_r2_vllm-validation.json").read_text())
-    assert plan["units"][0]["request_sha256"] == host_plan["units"][0]["request_sha256"]
-    assert plan["units"][0]["frames"][0]["sha256"] == "0" * 64
-    assert info["exam_unchanged"] is True
-    assert (dest / "configs" / "qwen8b_r2_vllm.json").is_file()
+    with pytest.raises((ValueError, FileNotFoundError)):
+        prepare(src, dest)
+    assert not dest.exists()
+    assert (src / "bundle-files-sha256.json").read_text() == "{}"

@@ -351,3 +351,213 @@ def test_offline_native_cli_no_runtime(frozen, tmp_path, capsys):
               "--deployment-sha256", sha, "--output", str(tmp_path / "untouched")])
     assert json.loads(capsys.readouterr().out)["inference_calls"] == 0
     assert not (tmp_path / "untouched").exists()
+
+
+@pytest.mark.parametrize(
+    "name", ["plans/decision3-test.json", "configs/decision3.json", "frame-0.jpg"]
+)
+def test_native_inputs_reject_consumed_but_unsealed_files(frozen, tmp_path, name):
+    bundle, _, deployment_sha = frozen
+    seal_path = bundle / "bundle-files-sha256.json"
+    hashes = json.loads(seal_path.read_text())
+    del hashes[name]
+    seal_path.write_text(json.dumps(hashes))
+    with pytest.raises(ValueError, match="unsealed"):
+        run.validate_inputs(bundle, "decision3", "test", deployment_sha)
+    assert not FakeBackend.calls
+
+
+@pytest.mark.parametrize("change", ["edit", "delete"])
+def test_resume_rejects_changed_failed_receipt_without_resealing(
+    frozen, tmp_path, change
+):
+    uid = "test/fight/0/yes"
+    FakeBackend.behavior = lambda self, unit, body: (
+        (503, {"error": "fixture"}, {}) if unit["id"] == uid else None
+    )
+    out = tmp_path / "run"
+    execute(frozen, out, "decision3", "test")
+    path = out / "test/receipts" / f"{digest(uid)}-1.json"
+    results = [
+        json.loads(row)
+        for row in (out / "test/attempts.jsonl").read_text().splitlines()
+    ]
+    failed = next(
+        row for row in results if row["type"] == "result" and row["unit"] == uid
+    )
+    assert failed["metadata"]["receipt_sha256"] == file_hash(path)
+    if change == "edit":
+        record = json.loads(path.read_text())
+        record["response"] = {"error": "rewritten failure"}
+        path.write_text(json.dumps(record))
+    else:
+        path.unlink()
+    before = {p.relative_to(out): p.read_bytes() for p in out.rglob("*") if p.is_file()}
+    calls = list(FakeBackend.calls)
+    with pytest.raises((ValueError, FileNotFoundError)):
+        execute(frozen, out, "decision3", "test", resume=True)
+    assert FakeBackend.calls == calls
+    assert {
+        p.relative_to(out): p.read_bytes() for p in out.rglob("*") if p.is_file()
+    } == before
+
+
+def test_receipt_metadata_cannot_reference_another_attempt(frozen, tmp_path):
+    out = tmp_path / "run"
+    execute(frozen, out, "decision3", "test")
+    bundle = frozen[0]
+    cfg = deploy.profile("decision3")
+    plan = json.loads((bundle / "plans/decision3-test.json").read_text())
+    ledger = Ledger(
+        out / "test/attempts.jsonl",
+        workflow.context_for(plan, cfg, workflow.verify_bundle(bundle)),
+    )
+    try:
+        results = [row for row in ledger.rows if row["type"] == "result"]
+        results[0]["metadata"] = dict(results[1]["metadata"])
+        with pytest.raises(ValueError, match="path differs"):
+            run.reconcile_receipts(out / "test", ledger, plan, cfg, out)
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        [],
+        "bad",
+        {"answers": None},
+        {"answers": []},
+        {"answers": {"fight": None}},
+        {"answers": {"fight": {"probabilities": None}}},
+    ],
+)
+def test_malformed_decision3_response_retries_and_keeps_receipts(frozen, tmp_path, raw):
+    uid = "test/fight/0/yes"
+
+    def behavior(self, unit, body):
+        if unit["id"] == uid and Counter(self.calls)[uid] == 1:
+            response = self.raw(unit, "yes")
+            response["raw"] = raw
+            return 200, response, {}
+
+    FakeBackend.behavior = behavior
+    out = tmp_path / "run"
+    execute(frozen, out, "decision3", "test")
+    assert Counter(FakeBackend.calls)[uid] == 2
+    assert json.loads((out / "test/report.json").read_text())["correct"] == 120
+    assert all(instance.closed for instance in FakeBackend.instances)
+    execute(frozen, out, "decision3", "test", resume=True)
+    assert Counter(FakeBackend.calls)[uid] == 2
+
+
+@pytest.mark.parametrize("failure", ["write", "torch_query", "torch_import"])
+def test_encoder_closes_even_when_memory_report_fails(tmp_path, monkeypatch, failure):
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    backend = run.NativeBackend("clip", {}, tmp_path, tmp_path, tmp_path, 1)
+    backend.encoder = Mock()
+    backend.monitor = Mock()
+    backend.log = Mock()
+    query = Mock(return_value=0)
+    if failure == "torch_query":
+        query.side_effect = RuntimeError("synthetic query failure")
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        None
+        if failure == "torch_import"
+        else SimpleNamespace(
+            cuda=SimpleNamespace(max_memory_allocated=query, max_memory_reserved=query)
+        ),
+    )
+    write = run.write_new
+
+    def output(path, value):
+        if failure == "write" and path.name == "memory.json":
+            raise OSError("synthetic report failure")
+        return write(path, value)
+
+    monkeypatch.setattr(run, "write_new", output)
+    with pytest.raises((OSError, RuntimeError, ModuleNotFoundError)):
+        backend.close()
+    backend.encoder.close.assert_called_once()
+    backend.log.close.assert_called_once()
+    assert backend.stop.is_set()
+    backend.monitor.join.assert_called_once_with(5)
+
+
+def test_legacy_failed_receipt_requires_the_retained_seal(frozen, tmp_path):
+    uid = "test/fight/0/yes"
+    FakeBackend.behavior = lambda self, unit, body: (
+        (503, {"error": "fixture"}, {}) if unit["id"] == uid else None
+    )
+    out = tmp_path / "run"
+    execute(frozen, out, "decision3", "test")
+    bundle = frozen[0]
+    cfg = deploy.profile("decision3")
+    plan = json.loads((bundle / "plans/decision3-test.json").read_text())
+    ledger = Ledger(
+        out / "test/attempts.jsonl",
+        workflow.context_for(plan, cfg, workflow.verify_bundle(bundle)),
+    )
+    try:
+        for row in ledger.rows:
+            if row["type"] == "result" and row.get("error"):
+                row.pop("metadata")  # old failure rows had no receipt anchor
+        run.reconcile_receipts(
+            out / "test", ledger, plan, cfg, out, run._verify_sealed_receipts(out)
+        )
+        with pytest.raises(ValueError, match="lacks an integrity anchor"):
+            run.reconcile_receipts(out / "test", ledger, plan, cfg, out)
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize("alias", ["decision3", "videojev", "clip"])
+@pytest.mark.parametrize(
+    "bad", [10**1000, -(10**1000)], ids=["large-positive", "large-negative"]
+)
+def test_oversized_native_numbers_retry_without_pausing_run(
+    frozen, tmp_path, alias, bad
+):
+    uid = "validation/fight/0/yes"
+
+    def behavior(self, unit, body):
+        if unit["id"] != uid or Counter(self.calls)[uid] != 1:
+            return None
+        raw = self.raw(unit, "yes")
+        if alias == "decision3":
+            raw["raw"]["answers"]["fight"]["probabilities"][D3_OPTIONS[0]] = bad
+        elif alias == "videojev":
+            raw["raw"][0]["probabilities"][0] = bad
+        else:
+            raw["fight"]["margin"] = bad
+        return 200, raw, {}
+
+    FakeBackend.behavior = behavior
+    out = tmp_path / "run"
+    execute(frozen, out, alias)
+    assert Counter(FakeBackend.calls)[uid] == 2
+    assert json.loads((out / "test/report.json").read_text())["correct"] == 120
+    rows = [
+        json.loads(line)
+        for line in (out / "validation/attempts.jsonl").read_text().splitlines()
+    ]
+    first = next(row for row in rows if row["type"] == "result" and row["unit"] == uid)
+    assert first["complete"] is False and not first.get("fatal")
+    assert first["metadata"]["receipt_sha256"]
+    assert all(backend.closed for backend in FakeBackend.instances)
+    execute(frozen, out, alias, resume=True)
+    assert Counter(FakeBackend.calls)[uid] == 2
+
+
+def test_contrastive_parser_keeps_unbounded_finite_margins():
+    from tools.unified_benchmark.adapters import parse_response
+
+    config = deploy.profile("clip")
+    raw = {"fight": {"margin": 3.5, "positive_cosine": 4.0, "contrast_cosine": 0.5}}
+    assert parse_response(config, {"targets": ["fight"]}, raw)["fight"]["score"] == 3.5

@@ -7,7 +7,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .contract import EVENTS, RULES, digest, file_hash, score, select_thresholds, source_files, validate_threshold_values, write_new
 from .retry import Ledger
@@ -16,12 +16,30 @@ from .retry import Ledger
 def verify_bundle(bundle):
     bundle = Path(bundle)
     hashes = json.loads((bundle / "bundle-files-sha256.json").read_text())
+    if not isinstance(hashes, dict):
+        raise ValueError("bundle integrity record must be a mapping")
+    inventory = set()
+    for path in bundle.rglob("*"):
+        if path.is_symlink() or not (path.is_file() or path.is_dir()):
+            raise ValueError(
+                "bundle requires regular files, not links or special files"
+            )
+        if path.is_file() and path != bundle / "bundle-files-sha256.json":
+            inventory.add(path.relative_to(bundle).as_posix())
+    if inventory != set(hashes):
+        raise ValueError("bundle inventory contains unsealed or missing files")
     for name, expected in hashes.items():
-        path = (bundle / name).resolve()
-        if not path.is_relative_to(bundle.resolve()) or file_hash(path) != expected:
+        relative = PurePosixPath(name)
+        if relative.is_absolute() or ".." in relative.parts or str(relative) != name:
+            raise ValueError("invalid bundle path: " + name)
+        path = bundle / name
+        if file_hash(path) != expected:
             raise ValueError("bundle file differs: " + name)
     if json.loads((bundle / "rules.json").read_text()) != RULES:
-        raise ValueError("bundle protocol differs; use its retained source snapshot for historical replay")
+        raise ValueError(
+            "bundle protocol differs; use its retained source snapshot "
+            "for historical replay"
+        )
     report = json.loads((bundle / "preflight.json").read_text())
     if not report.get("offline_passed"):
         raise ValueError("offline preflight not passed")
@@ -30,14 +48,19 @@ def verify_bundle(bundle):
     sources = json.loads((bundle / "source-hashes.json").read_text())
     active = source_files()
     if set(sources) != set(active) or report.get("sources_sha256") != digest(sources):
-        raise ValueError("frozen source inventory differs; rebuild preflight with the intended code")
+        raise ValueError(
+            "frozen source inventory differs; rebuild preflight with the intended code"
+        )
     for name, path in active.items():
         snapshot = "source-snapshot/" + name
         if hashes.get(snapshot) != sources[name]:
             raise ValueError("source snapshot fingerprint differs: " + name)
         if file_hash(path) != sources[name]:
-            raise ValueError("active source differs from frozen bundle: " + name
-                             + "; use the retained code for replay or build a new bundle")
+            raise ValueError(
+                "active source differs from frozen bundle: "
+                + name
+                + "; use the retained code for replay or build a new bundle"
+            )
     return file_hash(bundle / "bundle-files-sha256.json")
 
 

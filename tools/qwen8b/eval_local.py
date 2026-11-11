@@ -17,6 +17,7 @@ import urllib.request
 from tools.unified_benchmark.adapters import parse_response, request_body
 from tools.unified_benchmark.api_run import accounting, atomic, retry_after
 from tools.unified_benchmark.contract import EVENTS, canonical, digest, file_hash, score, write_new
+from tools.unified_benchmark.receipts import raw_fields
 from tools.unified_benchmark.retry import Ledger, Queue, RequestFailure
 from tools.unified_benchmark.workflow import collect, context_for, report, verify_bundle
 
@@ -61,13 +62,17 @@ class LocalTransport:
                 "unit": unit["id"], "request_sha256": unit["request_sha256"]})
             raise RequestFailure(type(error).__name__) from error
         write_new(self.output / "receipts" / (prefix + ".json"), {
-            "response": payload, "unit": unit["id"], "request_sha256": unit["request_sha256"]})
+            **raw_fields(response=payload), "unit": unit["id"],
+            "request_sha256": unit["request_sha256"]})
+        actual_model = payload.get("model") if isinstance(payload, dict) else None
+        if not isinstance(actual_model, str) or not actual_model.strip():
+            raise RequestFailure("actual model identity missing or invalid", fatal=True)
+        if actual_model != self.expected_model:
+            raise RequestFailure("actual model mismatch: " + repr(actual_model)[:512], fatal=True)
         metadata = {
             "actual_provider": "self-hosted-r2-4090",
-            "actual_model": payload.get("model") or self.expected_model,
+            "actual_model": actual_model,
         }
-        if metadata["actual_model"] != self.expected_model:
-            raise RequestFailure("actual model mismatch: " + metadata["actual_model"], fatal=True)
         try:
             answers = parse_response(self.config, unit, payload)
         except (ValueError, KeyError, TypeError, IndexError) as error:

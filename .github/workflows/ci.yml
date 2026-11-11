@@ -34,6 +34,8 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: pyproject.toml
+      - name: Fetch pinned native regression source
+        run: python -m tools.unified_benchmark.fetch_native_sources
       - name: Check repository hygiene
         run: python tools/check_repo_hygiene.py
       - uses: actions/setup-node@v4

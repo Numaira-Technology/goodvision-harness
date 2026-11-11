@@ -8,6 +8,7 @@ ONLY thing that varies between runs is the model (--candidate, or --model +
 import argparse
 import base64
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -45,8 +46,14 @@ CANDIDATES = {
 }
 
 REPO = Path(__file__).resolve().parents[2]
+# Load the sibling by path so standalone scripts (including python -I) use the
+# same evidence API without depending on the caller's working directory.
+_evidence_spec = importlib.util.spec_from_file_location(
+    "event_benchmark_evidence", Path(__file__).with_name("evidence.py"))
+evidence = importlib.util.module_from_spec(_evidence_spec)
+_evidence_spec.loader.exec_module(evidence)
 DEFAULT_MANIFEST = Path(__file__).parent / "datasets/manifest_50.json"
-SPEC_VERSION = "v2"
+SPEC_VERSION = "v2.1"
 
 
 def load_key(env_file):
@@ -130,7 +137,9 @@ def build_request(backend, model, qcore, uri, provider_context=None):
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": uri}}]}],
             "max_tokens": CHAT_MAX_TOKENS, "temperature": TEMPERATURE}
-        url = os.environ.get("GOODVISION_CHAT_URL", CHAT_URL)
+        # Local serving uses eval_local's explicit endpoint and local credential.
+        # An ambient override must never redirect the selected OpenRouter key.
+        url = CHAT_URL
     elif backend == "decision":
         body = {"model": model,
                 "state": ["Surveillance video frame.",
@@ -141,7 +150,6 @@ def build_request(backend, model, qcore, uri, provider_context=None):
     else:
         raise ValueError("unknown backend " + backend)
     if provider_context:
-        from tools.event_benchmark import evidence
         pb = evidence.provider_body(provider_context)
         if pb is not None:
             body["provider"] = pb
@@ -326,8 +334,10 @@ def main():
             results.append(f.result())
 
     # ---- score (§7)
-    cnt = defaultdict(lambda: {"TP": 0, "FN": 0, "TN": 0, "FP": 0, "err": 0})
-    oc = ot = 0
+    cnt = defaultdict(lambda: {"TP": 0, "FN": 0, "TN": 0, "FP": 0, "err": 0, "total": 0})
+    for s in samples:
+        cnt[s["event"]]["total"] += 1
+    oc, ot = 0, len(samples)
     for s, r in results:
         ev = s["event"]
         if "error" in r:
@@ -336,13 +346,13 @@ def main():
         gt, pred = s["proposed_answer"], r["pred"]
         key_ = ("TP" if pred == "yes" else "FN") if gt == "yes" else ("FP" if pred == "yes" else "TN")
         cnt[ev][key_] += 1
-        oc += r["correct"]; ot += 1
+        oc += r["correct"]
 
     samp = "dense(≤14)" if interval is None else f"{interval}s (~{1/interval:.3g}fps)"
     print(f"\n=== {a.candidate or model}  (backend={backend}, gate={GATE}, sampling={samp}) ===")
     print(f"{'event':8s} {'acc':>7s} {'TP':>4s} {'FN':>4s} {'TN':>4s} {'FP':>4s} {'err':>4s}  specificity")
     for ev in SCORED_EVENTS:
-        c = cnt[ev]; n = c["TP"] + c["FN"] + c["TN"] + c["FP"]
+        c = cnt[ev]; n = c["total"]
         acc = f"{c['TP']+c['TN']}/{n}" if n else "0/0"
         spec = f"{c['TN']}/{c['TN']+c['FP']}" if (c["TN"] + c["FP"]) else "—(无负例)"
         print(f"{ev:8s} {acc:>7s} {c['TP']:>4d} {c['FN']:>4d} {c['TN']:>4d} {c['FP']:>4d} {c['err']:>4d}  {spec}")
@@ -362,7 +372,8 @@ def main():
                    "workers": a.workers,
                    "frame_width": FRAME_WIDTH, "temperature": TEMPERATURE,
                    "retries": RETRIES, "timeout": TIMEOUT, "decision": "max-frame-score >= gate"},
-        "overall": {"correct": oc, "total": ot, "attempted": len(samples), "errors": len(samples) - ot},
+        "overall": {"correct": oc, "total": ot, "attempted": ot,
+                    "errors": sum(c["err"] for c in cnt.values())},
         "per_event": {ev: dict(cnt[ev]) for ev in SCORED_EVENTS},
         "per_video": [{"number": s["number"], "filename": s["filename"], "event": s["event"],
                        "gt": s["proposed_answer"],

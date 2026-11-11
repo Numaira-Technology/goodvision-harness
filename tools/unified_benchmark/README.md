@@ -208,6 +208,13 @@ keys `VAST_API_KEY`, `SAM_SSH_KEY`, `R2_ENDPOINT`, `R2_BUCKET`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`. Attach SSH immediately after create;
 always release the labelled instance. Headline scoring remains correct/all.
 
+The active HF and vLLM profiles now include a typed `env_artifact` identity.
+Prepare a fresh bundle for those active profiles; retain historical bundles and
+their original source snapshots. The launcher captures the selected environment
+before preflight, and restore must acknowledge that same artifact, manifest,
+prefix and compatibility. A registry change during preparation fails closed
+before serving or evaluation and still attempts confirmed instance cleanup.
+
 vLLM (independent engine, same exam):
 
 ```sh
@@ -220,9 +227,14 @@ PYTHONPATH=. python -m tools.start_qwen8b_vllm \
 
 `eval_local` still uses 12 slots. vLLM may batch those 12 internally. Do not
 change JPEG size, prompts, max_tokens, or client concurrency to fit VRAM.
-Pack the vLLM conda env on a CPU VM and store it at
-`envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz`; the 4090 only restores that
-object plus the existing weight prefix. Do not overwrite the HF qwen8b pack.
+The source profile retains the published
+`envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz` identity. That key and the HF
+pack are frozen. Rebuilds require a reviewed successor entry, fresh prefix and
+new immutable identity; follow the [local build and provenance procedure](../qwen8b_vllm/BUILD.md).
+CPU import evidence is not GPU acceptance. The launcher checks sealed profile
+and request identities before rental and again before inference, and retains a
+separate synthetic 720px smoke receipt outside the scored ledger. Changed active
+profiles require new bundles; preserve historical bundles byte-for-byte.
 
 Hard-answer profiles omit the threshold flags. Use a fresh output path per phase;
 the public CLI refuses an existing run. The ledger supports bounded continuation,

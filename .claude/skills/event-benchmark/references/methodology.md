@@ -9,7 +9,7 @@ They cannot establish v2 accuracy or calibrate a v2 variant without fresh eviden
 
 ## Inputs and provenance
 
-Before any request, require a `human_reviewed` manifest matching the exact samples
+Before any model request, require a `human_reviewed` manifest matching the exact samples
 file and every scored media file. Pass `--manifest` explicitly. Missing media,
 ambiguous filenames, changed questions/labels and hash mismatches are blockers.
 `--checksums` is a compatibility flag: hash checking is always enforced.
@@ -20,10 +20,23 @@ and result-file hash. A count such as 50 or 100 is not a dataset identity. Recor
 question count and distinct-media count separately. Do not send labels or reference
 answers to the model. Private media, keys and raw outputs stay outside Git.
 
-Read the actual reviewed status and hash of each manifest. The 120 cohort has 100
-base-4 questions and 20 bag-search questions. Review status must be resolved by
-reviewers, not relabeled by an agent to enable a run. Bag questions allow unknown
-and require a separate versioned task/metric; the base runner filters them out.
+The current unified Drive set has 202 questions and 192 videos: 182 base-4
+questions and 20 bag-search questions. The original 120 questions remain reviewed;
+the 82 added views inherit source labels and await separate-view review. Download
+the entire media-only videos.json before filtering questions for a scoring task.
+The historical 120 set contains 100 base-4 questions and 20 bag questions. Read
+the selected manifest's status; do not relabel a draft to enable a run. Bag
+questions retain their separate versioned task/metric. The current draft cannot
+pass the runner's input check. Downloads and inherited labels do not make it
+eligible for reviewed scoring or threshold calibration.
+
+Keep both views and other cuts from the same original recording in one split.
+The current `source_group` metadata is not a reviewed `source_video_group` mapping;
+the combined manifest lacks group fields. The 82 views come from three recordings,
+including one recording for all 36 added fall views. Weapon questions retain two
+prompt protocols, which must not be silently combined or rewritten for tuning.
+The retained historical samples also do not match the exact hash pinned by the
+committed 120 manifest. Recover the frozen bytes rather than changing that hash.
 
 ## Frozen v2 procedure
 

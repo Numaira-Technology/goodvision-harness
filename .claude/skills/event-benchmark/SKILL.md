@@ -1,25 +1,64 @@
 ---
 name: event-benchmark
 description: >-
-  Prepare, run and report the surveillance event benchmark and reviewed robot-video
-  supplement (fight/smoking/fall/weapon).
-  Use for benchmark/model comparisons, 跑一下测评, 测速, or preparing benchmark tables.
-  Preserves reviewed inputs, protocol versions, fixed baselines and measured provenance.
+  Use when preparing or evaluating GoodVision event benchmarks, downloading the
+  202-question dataset, or reporting model comparisons across surveillance events
+  and bag-search tasks.
+  Preserves reviewed inputs, protocol versions and measured provenance.
 ---
 
 # Event-recognition benchmark
 
-Use `tools/event_benchmark/SPEC.md` as the authority. Current checkout: **v2.1**,
+For the legacy runner, use `tools/event_benchmark/SPEC.md` as the authority: **v2.1**,
 with strict answers, complete frame evidence and reviewed input hashes. Historical
 v1 outputs are not v2 evidence. Inspect the current spec and runner before a run.
-For the locally authorized controlled rerun, also read
-`tools/event_benchmark/CONTROLLED_RUN.md` (named routing/storage variant).
+For the controlled evidence contract and its implementation limits, also read
+`tools/event_benchmark/CONTROLLED_RUN.md`. This checkout has no controlled legacy
+accuracy collector; the implemented current120 and controlled latency paths are separate.
 These instructions do not authorize paid inference, downloads, uploads or publishing;
 use the user's authorized scope and budget.
 
-## Choose the protocol before running
+## Current dataset: 202 questions, 192 videos
 
-For this team's current 120-question rerun, use **unified-frame-120-v2** in
+Use the [unified Drive folder](https://drive.google.com/drive/folders/1kOyH59vxBp3uppyEoeyMjTMUa_CalTdh).
+Its current `samples.json`, `videos.json` and `manifest_202.json` combine the
+original 120 questions with 82 single-view questions. The old `samples_120.json`
+and `videos_120.json` are historical snapshots, not the current download list.
+
+| Existing event key | Questions |
+|---|---:|
+| fight | 32 |
+| smoking | 22 |
+| fall | 62 |
+| weapon | 66 |
+| bag_knife | 10 |
+| bag_alcohol_bottle | 10 |
+
+Read all 202 entries from `samples` and group by `event`. The base-4 runner
+reads 182 questions; the 20 bag questions retain their separate task and metric.
+Video filenames deduplicate to 192 because the bag clips have two questions each.
+Source and `view` fields are metadata, not new categories or model branches.
+Keep related views/cuts from the same original recording in one split. Existing
+`source_group` metadata alone does not establish reviewed train/validation/test
+isolation: the current samples lack `source_video_group`, and the combined
+manifest has no group mapping. Do not invent or silently rewrite these fields.
+
+The original 120 questions are reviewed. The 82 derived views inherit source
+labels and remain `pending_view_review`; preserve the combined draft status.
+Media preparation does not require changing these labels or starting inference.
+The combined set is not ready for threshold calibration: weapon questions retain
+two different prompt protocols, and the added 82 views come from only three
+original recordings (all 36 added fall views share one). Human visibility review,
+reviewed source isolation and compatible frozen prompts remain separate gates.
+
+The 202-question download list does not extend the frozen runner below. Its
+validation24/test120 input hashes, plans and denominators remain unchanged; the
+202-question set needs its own reviewed protocol and execution support before
+scoring. Do not edit historical hashes or relabel old results to fit it.
+
+## Historical 120-question execution contract
+
+For reproduction of the team's frozen 120-question runs, use **unified-frame-120-v2** in
 [the portable handoff](../../../tools/unified_benchmark/README.md) (path relative
 from the repository root: `tools/unified_benchmark/README.md`). Its command-line
 entrypoint and recorded model profiles are included in this branch. Download the
@@ -47,14 +86,17 @@ OpenRouter `qwen8b` Parasail cell for that comparison.
 
 An independently authorized serving engine is profile `qwen8b_r2_vllm` via
 `tools.start_qwen8b_vllm` (vLLM OpenAI server, same R2 weights revision, bf16).
-Pack that env on a CPU VM onto `envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz`;
-the 4090 only restores it. Do not overwrite the HF qwen8b pack. It does not
-replace or relabel the HF run. Unified-frame-120-v2 exam rules stay
-exactly as below: frozen JPEGs, prompts, parser, temperature, max_tokens=30,
-thresholds, retries, and **12 queue slots**. Do not lower client concurrency,
-shrink images, truncate context, or shorten outputs to fit a GPU.
+The source branch declares `envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz`.
+This published identity is frozen; rebuilds require a new reviewed key and actual
+artifact/runtime evidence. The launcher checks the active source profile and
+sealed request bundle before rental and again before inference. A separate
+synthetic 720px smoke is retained outside the scoring ledger. Preserve historical
+bundles; changed active profiles require fresh bundles. This path does not relabel
+the HF run, and CPU imports do not establish GPU acceptance. Frozen JPEGs, prompts,
+parser, temperature, max_tokens=30, thresholds, retries and 12 queue slots remain
+unchanged. Do not shrink inputs or reduce concurrency to fit a GPU.
 
-The current variant uses exact 1 FPS shared 720px JPEGs, current-image API prompts,
+This historical variant uses exact 1 FPS shared 720px JPEGs, current-image API prompts,
 explicit effort settings when supported, and exact JSON string `"true"`/`"false"`
 normalization (never general truthiness). Accuracy is correct/all planned questions
 (120 for the whole test); missing questions remain in the denominator and are
@@ -69,7 +111,7 @@ creates a new recorded variant. Historical bundles need their retained source
 snapshot; do not relabel their protocol or silently re-score old output files.
 
 The legacy v2.1 API runner and robot41 workflow below remain separate protocols:
-centered sampling and the original strict parser do not reproduce the current
+centered sampling and the original strict parser do not reproduce the frozen
 120-question variant. Never mix their hashes or denominators in one result row.
 
 ## Workflow
@@ -78,19 +120,27 @@ centered sampling and the original strict parser do not reproduce the current
    manifest, media directories and output path. Verify manifest review status,
    samples hash, question/label identities and media hashes. The runner does this
    before requests. Do not change a draft status to bypass review.
-   Read each manifest's actual status and fingerprint; `manifest_120.json`
-   includes 100 base-event questions plus 20 separate bag-search questions.
-   Question count is not unique-video count. Larger sets require their own reviewed
-   manifest. Never assume a colleague's Desktop path exists.
-   `--preflight` checks inputs offline without credentials or inference. Keep its
-   pending-provider/hardware/authorization items distinct from input validity.
-2. **Run accuracy from the repository root**, only after authorization for calls:
+   For the current set, obtain `manifest_202.json` and its matching `samples.json`
+   from the unified Drive entry below. Committed manifests in
+   `tools/event_benchmark/datasets/` describe historical cohorts.
+   Read review status from the selected manifest and its cohort metadata. The
+   current set has 182 base-event questions and 20 bag-search questions; the
+   historical 120 set has 100 and 20 respectively. Question count is not video count.
+   Categories, questions, answers and source details come from the selected samples.
+   Video source does not change the scoring workflow. Keep each cohort separately
+   identified; supplementary data does not extend an existing result block.
+   Preserve source groups across train/development, validation and test splits:
+   cuts from one recording must not cross splits. Missing onset/person annotations
+   do not establish reaction-time or track-ID accuracy. Never assume a colleague's
+   Desktop path exists.
+   For offline media checks, use the downloader `--check-only` command below.
+   The legacy accuracy CLI has no `--preflight` or provider/split-sidecar support.
+2. **Run legacy accuracy from the repository root**, only after authorization for calls.
+   This default-routing, rounded-score output cannot be used for controlled calibration:
    ```sh
    python tools/event_benchmark/run_eval.py --candidate luna \
      --samples /path/to/samples.json --manifest /path/to/reviewed-manifest.json \
      --media /path/to/media1 /path/to/media2 \
-     --provider-config /path/to/frozen-provider.json \
-     --split-manifest /path/to/validation_split.json --split test \
      --interval 1.0 --workers 12 --out outputs/event-benchmark/luna-v2.json
    ```
    Repeat with qwen and gemini on identical inputs. Capture the source commit and
@@ -100,14 +150,69 @@ centered sampling and the original strict parser do not reproduce the current
    ```sh
    python .claude/skills/event-benchmark/scripts/latency_bench.py \
      --candidate luna --video /path/to/representative-clip.mp4 \
-     --provider-config /path/to/the-same-frozen-provider.json \
+     --provider-config /path/to/reviewed-frozen-provider.json \
      --concurrency 12 --rounds 6 --out outputs/event-benchmark/lat-luna.json
    ```
    This is single-frame, single-predicate request latency, not product latency or
    twelve-camera throughput. Inspect failures and completion status before reporting.
+   Controlled latency does not turn the legacy accuracy output into a controlled run.
 4. **Report** using `references/report-format.md`, including coverage and provenance.
    Use `bench-sheet-contribute` only when publishing is requested. Its default
    preparation is an offline preview, with no sheet write.
+
+## Download media when needed
+
+Download **all 192 videos** from the unified media-only `videos.json`; do not
+filter this list by the four scored events or append the old stereo cohort.
+On the machine storing media (the GPU machine when using Vast), use an existing
+rclone Drive remote. Replace `TEAM_DRIVE` with its configured name:
+
+```sh
+mkdir -p outputs/event-benchmark/202
+rclone backend copyid TEAM_DRIVE: 1cJhdVSiiVBOId6M6cybBJctNyJbS4e6u \
+  outputs/event-benchmark/202/videos.json
+python tools/event_benchmark/download_media.py \
+  --videos outputs/event-benchmark/202/videos.json \
+  --output outputs/event-benchmark/202/videos --drive-remote TEAM_DRIVE
+```
+
+On the offline scoring host, obtain the matching question and manifest files:
+
+```sh
+mkdir -p outputs/event-benchmark/202
+rclone backend copyid TEAM_DRIVE: 1xzpCEgKtoQ26NbNOMc-85KxPiogjIzXr \
+  outputs/event-benchmark/202/samples.json
+rclone backend copyid TEAM_DRIVE: 1Hj8TjxeIeN9AH5bIZjww4BbjieojMz6S \
+  outputs/event-benchmark/202/manifest_202.json
+```
+
+The downloader accepts `url`/`video_url` Drive references or `drive_file_id`, with
+optional `size_bytes`. Existing `--samples`, `GOOGLE_DRIVE_ACCESS_TOKEN` and private
+`--links` maps remain supported. It downloads unique filenames from every category,
+retains existing nonempty files (also requiring the listed size when supplied),
+and reports transfer failures without calling a model. These size checks do not
+verify file identity or media hashes. Explicit temporary links take precedence,
+then `--drive-remote`, then the environment token. Remote names refer only to an
+existing configuration; the downloader does not configure authentication.
+Keep credentials and temporary links outside Git; reference answers stay with the
+offline scorer and never enter model requests.
+
+After review and authorization for the existing input check, the scoring path is:
+
+```sh
+python tools/event_benchmark/download_media.py \
+  --samples /path/to/samples.json --manifest /path/to/reviewed-manifest.json \
+  --output /path/to/media --check-only
+```
+
+`--check-only` retains the evaluator's reviewed-manifest rules and checks only the
+base-4 scoring cohort, not the complete 192-video download. The current draft
+manifest is rejected before counts are reported. Once all input gates are met,
+this set would contain 182 scored base questions; bag questions remain separate.
+The retained `samples_120.json` is semantically historical but does not match the
+exact samples hash pinned by the committed 120-question manifest. Reproduction
+requires recovering those original bytes, not replacing the frozen hash. Downloading
+media does not certify label review, scoring eligibility or model performance.
 
 ## Reviewed robot videos: 41-question supplement
 
@@ -142,9 +247,14 @@ expired entries, and keep the map and credentials outside Git. Private Drive
 view links are not anonymous media download URLs.
 
 ```sh
-python tools/event_benchmark/download_media.py --output outputs/robot41/media \
-  --links /path/to/private-temporary-links.json
-python tools/event_benchmark/download_media.py --output outputs/robot41/media --check-only
+python tools/event_benchmark/download_media.py \
+  --samples tools/event_benchmark/datasets/samples_robot41.json \
+  --manifest tools/event_benchmark/datasets/manifest_robot41.json \
+  --output outputs/robot41/media --links /path/to/private-temporary-links.json
+python tools/event_benchmark/download_media.py \
+  --samples tools/event_benchmark/datasets/samples_robot41.json \
+  --manifest tools/event_benchmark/datasets/manifest_robot41.json \
+  --output outputs/robot41/media --check-only
 ```
 
 The second command uses the same input loader as the evaluator and should report
@@ -152,19 +262,18 @@ The second command uses the same input loader as the evaluator and should report
 not start a model. For an authorized accuracy run, use the explicit cohort:
 
 ```sh
-python tools/event_benchmark/run_eval.py --legacy-baseline --candidate qwen \
+python tools/event_benchmark/run_eval.py --candidate qwen \
   --samples tools/event_benchmark/datasets/samples_robot41.json \
   --manifest tools/event_benchmark/datasets/manifest_robot41.json \
   --media outputs/robot41/media --interval 1.0 --workers 12 \
   --out outputs/event-benchmark/robot41-qwen.json
 ```
 
-`--legacy-baseline` explicitly uses the original default-provider v2.1 baseline
-without the validation24/test120 sidecar. It preserves the centered sampling,
-strict parser and fixed gate, and records `v2.1-legacy-unpinned-lossless-v1`.
-Do not mix it with controlled provider/split options or use its output for
-validation threshold selection. The controlled workflow above still requires
-the provider configuration and split sidecar. Add `--preflight` for offline checks.
+This command uses the existing default-provider v2.1 baseline with centered
+sampling, strict parsing and fixed gate. Its rounded clip output is not controlled
+lossless evidence and cannot drive the controlled threshold selector. There is no
+`--legacy-baseline`, provider/split-sidecar or `--preflight` option in this CLI.
+Use `download_media.py --check-only` above for offline input verification.
 
 Report this as a separate robot41 cohort with full denominators 18, 23 and 41.
 The existing Sheet's 50/100/120 blocks are not robot41 result cells. Availability

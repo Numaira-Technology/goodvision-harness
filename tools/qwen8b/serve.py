@@ -84,12 +84,19 @@ def generate(processor, model, body):
     with torch.inference_mode():
         out = model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
     trimmed = out[:, inputs["input_ids"].shape[1]:]
+    eos_ids = model.generation_config.eos_token_id
+    if isinstance(eos_ids, int):
+        eos_ids = [eos_ids]
+    # EOS can itself be the final allowed token. Only budget exhaustion without
+    # EOS is a truncated answer; the benchmark parser rejects that receipt.
+    ended_on_eos = bool(trimmed.shape[1] and trimmed[0, -1].item() in (eos_ids or []))
+    finish_reason = "length" if trimmed.shape[1] >= max_tokens and not ended_on_eos else "stop"
     answer = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
     return {
         "id": "qwen8b-r2-host",
         "model": MODEL_ID,
         "object": "chat.completion",
-        "choices": [{"index": 0, "finish_reason": "stop",
+        "choices": [{"index": 0, "finish_reason": finish_reason,
                      "message": {"role": "assistant", "content": answer, "refusal": None}}],
         "provider": "self-hosted-r2-4090",
     }

@@ -74,6 +74,15 @@ def provider_body(context):
     return dict(config["provider"])
 
 
+def _finite_number(value):
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def response_metadata(payload):
     """Allowlist metadata, never save keys, image payloads or provider error text."""
     if not isinstance(payload, dict):
@@ -89,12 +98,22 @@ def response_metadata(payload):
         result["usage"] = {key: value for key, value in usage.items()
                            if key in {"prompt_tokens", "completion_tokens", "total_tokens",
                                       "input_tokens", "output_tokens", "cost"}
-                           and type(value) in (int, float) and math.isfinite(value)}
+                           and _finite_number(value)}
     for key in ("total_cost", "native_tokens_prompt", "native_tokens_completion"):
         value = payload.get(key)
-        if type(value) in (int, float) and math.isfinite(value):
+        if _finite_number(value):
             result[key] = value
     return result
+
+
+class _NoMetadataRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # The bearer token belongs only to the fixed metadata endpoint.
+        return None
+
+
+def _metadata_open(request):
+    return urllib.request.build_opener(_NoMetadataRedirects()).open(request, timeout=15)
 
 
 def enrich_attempts(attempts, key):
@@ -109,12 +128,13 @@ def enrich_attempts(attempts, key):
                 request = urllib.request.Request(
                     "https://openrouter.ai/api/v1/generation?id=" + urllib.parse.quote(generation_id, safe=""),
                     headers={"Authorization": "Bearer " + key})
-                with urllib.request.urlopen(request, timeout=15) as response:
+                with _metadata_open(request) as response:
                     raw = response.read(1024 * 1024 + 1)
                 if len(raw) > 1024 * 1024:
                     raise ValueError("oversized metadata")
-                data = json.loads(raw)["data"]
-                if data.get("id") != generation_id:
+                payload = json.loads(raw)
+                data = payload.get("data") if isinstance(payload, dict) else None
+                if not isinstance(data, dict) or data.get("id") != generation_id:
                     raise ValueError("metadata generation id differs")
                 cache[generation_id] = response_metadata(data)
             except (OSError, ValueError, KeyError, TypeError):
@@ -125,6 +145,7 @@ def enrich_attempts(attempts, key):
 
 def provider_summary(attempts, context):
     expected = context["config"]["expected_provider_name"] if context else None
+    expected_model = context["config"].get("model") if context else None
     providers = sorted({a["actual_provider"] for a in attempts if a.get("actual_provider")})
     models = sorted({a["actual_model"] for a in attempts if a.get("actual_model")})
     successful = [a for a in attempts if a.get("ok")]
@@ -133,8 +154,10 @@ def provider_summary(attempts, context):
     return {"actual_providers": providers, "actual_models": models,
             "successful_attempts": len(successful), "successful_attempts_missing_metadata": missing,
             "provider_mismatch": bool(expected and any(p != expected for p in providers)),
+            # Controlled configs freeze an exact model ID, with no implicit aliases.
+            # Keep raw receipt names and the existing summary schema for replay.
             "complete": bool(context and successful and not missing and providers == [expected]
-                             and len(models) == 1),
+                             and models == [expected_model]),
             "actual_endpoint_verified": False, "actual_precision": None,
             "server_weight_revision": None,
             "limits": "Actual provider/model come from receipts. Endpoint, precision and weight revision are not independently attested."}

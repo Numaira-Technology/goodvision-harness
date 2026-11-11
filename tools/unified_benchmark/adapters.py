@@ -96,13 +96,20 @@ def parse_response(config, unit, response):
             if type(v) is not bool and not (event.startswith("bag_") and v == "unknown"):
                 raise ValueError("only explicit boolean or unknown is valid; null/refusal is not unknown")
             return {event: {"answer": "yes" if v is True else "no" if v is False else "unknown"}}
-        score = original.parse_answer(response, backend)
-        return {event: {"score": score} if backend == "decision" else {"answer": "yes" if score else "no"}}
+        answer = response["answers"]["answer"]
+        if not isinstance(answer, dict):
+            raise ValueError("decision answer must be an object")
+        score = answer.get("noul")
+        if (answer.get("type") != "noul" or answer.get("error") is not None
+                or type(score) not in (int, float) or not 0 <= score <= 1
+                or not math.isfinite(score)):
+            raise ValueError("decision answer must be a probability in [0, 1]")
+        return {event: {"score": score}}
     if backend == "contrastive":
         result = {}
         for event in unit["targets"]:
             p = response.get(event)
-            if isinstance(p, dict) and all(type(p.get(k)) in (int, float) and math.isfinite(p[k])
+            if isinstance(p, dict) and all(_finite_number(p.get(k))
                                            for k in ("positive_cosine", "contrast_cosine", "margin")):
                 result[event] = {"score": p["margin"], "native_scores": p}
         return result
@@ -127,9 +134,15 @@ def parse_response(config, unit, response):
                 continue
             answers[event] = {"answer": ("yes", "no", "unknown")[index], "probabilities": probs}
     else:
+        if not isinstance(raw, dict) or not isinstance(raw.get("answers"), dict):
+            raise ValueError("invalid native choice answers")
         for event in unit["targets"]:
-            item = raw.get("answers", {}).get(event, {})
+            item = raw["answers"].get(event, {})
+            if not isinstance(item, dict):
+                continue
             p = item.get("probabilities", {})
+            if not isinstance(p, dict):
+                continue
             if item.get("type") != "choice" or item.get("error") is not None or set(p) != set(D3_OPTIONS):
                 continue
             probs = [p[o] for o in D3_OPTIONS]
@@ -141,7 +154,16 @@ def parse_response(config, unit, response):
     return answers
 
 
+def _finite_number(value):
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _probabilities(probs):
     return (isinstance(probs, list) and len(probs) == 3
-            and all(type(p) in (int, float) and math.isfinite(p) and 0 <= p <= 1 for p in probs)
+            and all(_finite_number(p) and 0 <= p <= 1 for p in probs)
             and math.isclose(sum(probs), 1, abs_tol=1e-4))
