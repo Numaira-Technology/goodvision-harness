@@ -235,7 +235,6 @@ def run_shard(directory: Path, index: int, count: int, seconds: float, tests=())
     record_path = directory / "run.json"
     record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     started = time.monotonic()
-    next_stack = started + 60
     with (
         (directory / "stdout.log").open("wb") as stdout,
         (directory / "stderr.log").open("wb") as stderr,
@@ -259,12 +258,11 @@ def run_shard(directory: Path, index: int, count: int, seconds: float, tests=())
         try:
             while child.poll() is None:
                 _snapshot(processes)
-                if time.monotonic() >= next_stack:
-                    try:
-                        os.kill(child.pid, signal.SIGUSR1)
-                    except ProcessLookupError:
-                        pass
-                    next_stack = time.monotonic() + 60
+                # Do not poke SIGUSR1 on a timer. A dump pauses every thread and
+                # a second signal while the handler runs uses the default
+                # terminate action, so a finished successful session can die
+                # with status -SIGUSR1. The timeout path below still asks for
+                # one stack before the hard stop.
                 remaining = seconds - (time.monotonic() - started)
                 if remaining <= 0:
                     record["timed_out"] = True
@@ -290,14 +288,26 @@ def run_shard(directory: Path, index: int, count: int, seconds: float, tests=())
             except Exception as error:
                 record["cleanup_error"] = str(error)
             _snapshot(processes)
+            code = (
+                128 + record["cancelled_signal"]
+                if record["cancelled_signal"]
+                else 124
+                if record["timed_out"]
+                else child.returncode
+            )
+            # A diagnostic signal that lands after pytest has already recorded
+            # success must not fail the shard.
+            if (
+                code not in (124,)
+                and not record["cancelled_signal"]
+                and child.returncode is not None
+                and child.returncode < 0
+                and -child.returncode == signal.SIGUSR1
+                and _session_exit(directory) == 0
+            ):
+                code = 0
             record.update(
-                exit_code=(
-                    128 + record["cancelled_signal"]
-                    if record["cancelled_signal"]
-                    else 124
-                    if record["timed_out"]
-                    else child.returncode
-                ),
+                exit_code=code,
                 elapsed_seconds=time.monotonic() - started,
                 finished_unix=time.time(),
             )
@@ -307,6 +317,21 @@ def run_shard(directory: Path, index: int, count: int, seconds: float, tests=())
             for sig, handler in handlers.items():
                 signal.signal(sig, handler)
     return record["exit_code"]
+
+
+def _session_exit(directory: Path):
+    path = directory / "progress.jsonl"
+    if not path.exists():
+        return None
+    finished = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if row.get("event") == "finished":
+            finished = row.get("exit_code")
+    return finished
 
 
 def _install_stack_dump(path: Path) -> int:
