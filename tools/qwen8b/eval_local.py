@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import http.client
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -34,9 +35,17 @@ class LocalTransport:
             data=canonical(body),
             headers={"Content-Type": "application/json", "Authorization": "Bearer local"},
         )
-        with urllib.request.urlopen(req, timeout=90) as response:
-            status = response.status
-            raw = response.read(MAX_RESPONSE_BYTES + 1)
+        status = None
+        try:
+            with urllib.request.urlopen(req, timeout=90) as response:
+                status = response.status
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+        except http.client.HTTPException as error:
+            partial = getattr(error, "partial", b"")
+            if not isinstance(partial, bytes):
+                partial = b""
+            raise InvalidResponse("invalid or incomplete HTTP response", status,
+                partial[:MAX_RESPONSE_BYTES], truncated=len(partial) > MAX_RESPONSE_BYTES) from error
         if len(raw) > MAX_RESPONSE_BYTES:
             raise InvalidResponse("oversized response", status, raw[:MAX_RESPONSE_BYTES], truncated=True)
         try:

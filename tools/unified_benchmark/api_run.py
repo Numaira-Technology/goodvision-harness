@@ -1,6 +1,7 @@
 """Explicitly authorized OpenRouter execution of the frozen offline bundle."""
 import argparse
 import base64
+import http.client
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -70,9 +71,17 @@ class Transport:
     def call(self, url, body=None):
         req = urllib.request.Request(url, data=canonical(body) if body is not None else None,
             headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, context=self.ssl, timeout=90) as response:
-            status = response.status
-            raw = response.read(MAX_RESPONSE_BYTES + 1)
+        status = None
+        try:
+            with urllib.request.urlopen(req, context=self.ssl, timeout=90) as response:
+                status = response.status
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+        except http.client.HTTPException as error:
+            partial = getattr(error, "partial", b"")
+            if not isinstance(partial, bytes):
+                partial = b""
+            raise InvalidResponse("invalid or incomplete HTTP response", status,
+                partial[:MAX_RESPONSE_BYTES], truncated=len(partial) > MAX_RESPONSE_BYTES) from error
         if len(raw) > MAX_RESPONSE_BYTES:
             raise InvalidResponse("oversized response", status, raw[:MAX_RESPONSE_BYTES], truncated=True)
         try:

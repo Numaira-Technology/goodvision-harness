@@ -72,17 +72,25 @@ def test_local_model_identity_is_never_invented(host, monkeypatch, model):
 
 
 @pytest.mark.parametrize('bad_body', [b'[]', b'null', b'{"model":"qwen/qwen3-vl-8b-instruct","x":NaN}',
-                                     b'<html>bad upstream</html>', b'\xff', b'x' * (2 * 1024 * 1024 + 1)])
+                                     b'<html>bad upstream</html>', b'\xff', b'x' * (2 * 1024 * 1024 + 1),
+                                     'incomplete_http', 'bad_status'])
 def test_local_bad_responses_retry_three_times_without_stopping_good_units(host, monkeypatch, bad_body):
     bundle, config, unit, ledger, client = host
     good = unit | {'id': 'good', 'question': 'GOOD synthetic question'}
     good['request_sha256'] = digest(request_body(config, good, bundle)[1])
     class Response(io.BytesIO):
         status = 200
+    class Truncated(Response):
+        def read(self, size=-1):
+            raise eval_local.http.client.IncompleteRead(b'{"model":', 10)
     calls = []
     def urlopen(request, **kwargs):
         is_good = b'GOOD synthetic question' in request.data
         calls.append(is_good)
+        if not is_good and bad_body == 'incomplete_http':
+            return Truncated(b'')
+        if not is_good and bad_body == 'bad_status':
+            raise eval_local.http.client.BadStatusLine('synthetic invalid status')
         return Response(json.dumps(good_response(config['model'])).encode() if is_good else bad_body)
     monkeypatch.setattr(eval_local.urllib.request, 'urlopen', urlopen)
     now = [0.0]
