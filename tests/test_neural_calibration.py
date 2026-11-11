@@ -125,7 +125,8 @@ def test_artifact_rejects_invalid_thresholds(tmp_path, value):
         '{"thresholds":{"fight":0,"fight":1}}',
         '{"number":NaN}',
         '{"number":Infinity}',
-        " " * (64 * 1024 + 1),
+        # Keep PYTEST_CURRENT_TEST below Windows' environment value limit.
+        pytest.param(" " * (64 * 1024 + 1), id="oversized-whitespace"),
     ],
 )
 def test_artifact_rejects_ambiguous_or_unversioned_json(tmp_path, raw):
