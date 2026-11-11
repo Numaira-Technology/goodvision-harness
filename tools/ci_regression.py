@@ -13,7 +13,6 @@ import platform
 import signal
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -244,28 +243,12 @@ def run_shard(directory: Path, index: int, count: int, seconds: float, tests=())
     ):
         child = subprocess.Popen(
             command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # Durable files are the child's direct sinks. Console backpressure
+            # must never block draining or Python's final stdout lock/flush.
+            stdout=stdout,
+            stderr=stderr,
             start_new_session=True,
         )
-
-        def copy(pipe, target, console):
-            for chunk in iter(lambda: pipe.read1(65536), b""):
-                target.write(chunk)
-                target.flush()
-                console.buffer.write(chunk)
-                console.flush()
-
-        threads = [
-            threading.Thread(
-                target=copy, args=(child.stdout, stdout, sys.stdout), daemon=True
-            ),
-            threading.Thread(
-                target=copy, args=(child.stderr, stderr, sys.stderr), daemon=True
-            ),
-        ]
-        for thread in threads:
-            thread.start()
 
         def cancel(signum, frame):
             raise RunCancelled(signum)
@@ -306,8 +289,6 @@ def run_shard(directory: Path, index: int, count: int, seconds: float, tests=())
                 _cleanup(child)
             except Exception as error:
                 record["cleanup_error"] = str(error)
-            for thread in threads:
-                thread.join(timeout=5)
             _snapshot(processes)
             record.update(
                 exit_code=(

@@ -179,7 +179,7 @@ def test_real_shards_emit_complete_collection_progress_and_junit(tmp_path):
     for index in range(2):
         result, output = invoke(tmp_path, index, 2, list(files.values()))
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "2 passed" in result.stdout
+        assert "2 passed" in (output / "stdout.log").read_text()
         assert (output / "junit.xml").exists()
         progress = [
             json.loads(line)
@@ -423,3 +423,41 @@ def test_pass_then_hang_at_shutdown():
     assert "wait_forever" in stacks and "_shutdown" in stacks
     with pytest.raises(ValueError):
         verify_coverage(tmp_path, 1, "success")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux stdout backpressure regression")
+@pytest.mark.parametrize("finish", ["failure", "timeout"])
+def test_stalled_console_cannot_block_capture_or_watchdog(tmp_path, finish):
+    (tmp_path / "test_output.py").write_text('''import os, time
+def test_large_output(capfd):
+    with capfd.disabled():
+        os.write(1, b"stdout-marker:" + b"X" * 400000)
+        os.write(2, b"stderr-marker:" + b"Y" * 400000)
+    ENDING
+'''.replace("ENDING", "time.sleep(60)" if finish == "timeout" else "assert False, 'synthetic failure'"))
+    output = tmp_path / "stalled-console"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    runner = subprocess.Popen(
+        [sys.executable, str(ROOT / "tools/ci_regression.py"), "run",
+         "--shard=0", "--shards=1", "--seconds=3", "--output", str(output), "test_output.py"],
+        cwd=tmp_path, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    try:
+        # Deliberately do not drain either console pipe until the wrapper exits.
+        assert runner.wait(timeout=15) == (124 if finish == "timeout" else 1)
+        record = json.loads((output / "run.json").read_text())
+        assert record["timed_out"] == (finish == "timeout")
+        assert record["elapsed_seconds"] < 15
+        assert b"stdout-marker:" + b"X" * 400000 in (output / "stdout.log").read_bytes()
+        assert b"stderr-marker:" + b"Y" * 400000 in (output / "stderr.log").read_bytes()
+        if finish == "timeout":
+            assert "test_large_output" in (output / "stacks.log").read_text()
+        else:
+            assert (output / "junit.xml").exists()
+    finally:
+        if runner.poll() is None:
+            runner.kill()
+            runner.wait(timeout=5)
+        runner.stdout.close()
+        runner.stderr.close()

@@ -173,6 +173,15 @@ recovers a valid receipt saved just before an interruption, skips completed unit
 and phases, and preserves frozen thresholds. An interrupted intent without a
 recoverable receipt consumes one attempt. A unit already at three attempts cannot
 be sent a fourth time. Do not use a new output directory to evade that limit.
+Every result must match one preceding intent for the same unit, request and attempt;
+duplicate or unmatched results stop recovery before backend startup.
+
+A fatal receipt discovered during recovery is recorded and pauses that invocation
+before backend startup. Diagnose it before a subsequent explicit `--resume`, which
+may retry an already recorded fatal response using only the remaining attempt budget.
+An incomplete legacy receipt that needs a retry cooldown must retain a finite
+`completed_at_unix`; missing or invalid timing stops recovery without inventing a
+completion time or resetting attempts. Complete legacy receipts need no retry time.
 
 Each continuation retains its own startup, telemetry and failure records.
 An incomplete final result is still incomplete; `completed` means the bounded

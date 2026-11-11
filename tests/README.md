@@ -92,7 +92,11 @@ Windows retains its unpartitioned suite and existing check name and time limit.
 Linux shards use a 16-minute test-process deadline inside the unchanged 20-minute
 job limit, leaving time for `always()` artifact upload. The `regression-linux-*`
 artifacts contain raw output, incremental test/stage progress, collection coverage,
-process snapshots and JUnit when pytest completes. On deadline, the runner requests
+process snapshots and JUnit when pytest completes. Test stdout/stderr go directly
+to artifact files rather than synchronously mirroring to the job console: a stalled
+console must not block capture, deadline cleanup or interpreter shutdown. Consult
+`stdout.log`, `stderr.log` and `progress.jsonl` for test-by-test details.
+On deadline, the runner requests
 an all-thread stack dump, terminates its owned test descendants (including detached
 services), and fails rather than
 turning the interrupted tests into skips. A hard runner loss or external cancellation

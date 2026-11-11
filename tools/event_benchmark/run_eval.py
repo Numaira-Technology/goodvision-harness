@@ -162,7 +162,10 @@ def parse_answer(payload, backend):
                 or type(answer["answer"]) is not bool):
             raise ValueError("language answer must be a JSON boolean")
         return float(answer["answer"])
-    answer = payload["answers"]["answer"]
+    answers = payload.get("answers")
+    if not isinstance(answers, dict) or not isinstance(answers.get("answer"), dict):
+        raise ValueError("invalid decision answer envelope")
+    answer = answers["answer"]
     score = answer.get("noul")
     if (answer.get("type") != "noul" or answer.get("error") is not None
             or not evidence.finite_number(score)

@@ -497,3 +497,114 @@ def test_oversized_native_numbers_use_bounded_retries(frozen, tmp_path, alias, h
     assert len(list((out / "test/receipts").glob(f"{digest(target)}-*.json"))) == count
     execute(frozen, out, alias, resume=True)
     assert Counter(FakeBackend.calls)[target] == count
+
+
+def seeded_native_resume(frozen, output, *, fatal=True, completed_at=1000, recorded=False):
+    """Crash boundary: durable intent and receipt, optionally its ledger result."""
+    bundle, deployment, deployment_sha = frozen
+    cfg = deploy.profile("decision3")
+    plan = json.loads((bundle / "plans/decision3-test.json").read_text())
+    unit = plan["units"][0]
+    context = workflow.context_for(plan, cfg, workflow.verify_bundle(bundle))
+    write_new(output / "run.json", {"model": "decision3", "phase": "test",
+        "bundle_sha256": workflow.verify_bundle(bundle), "deployment_sha256": deployment_sha,
+        "initial_threshold_sha256": None})
+    ledger = Ledger(output / "test/attempts.jsonl", context)
+    base = {"unit": unit["id"], "request_sha256": unit["request_sha256"], "attempt": 1}
+    ledger.append(base | {"type": "intent"})
+    receipt = base | {"config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]],
+        "response": None, "parsed": {}, "http_status": 401 if fatal else 503,
+        "error": "HTTP 401" if fatal else "HTTP 503", "transport_seconds": .01,
+        "fatal": fatal, "retry_after": 0}
+    if completed_at != "missing":
+        receipt["completed_at_unix"] = completed_at
+    path = output / "test/receipts" / f"{digest(unit['id'])}-1.json"
+    write_new(path, receipt)
+    if recorded:
+        ledger.append(base | {"type": "result", "answers": {}, "complete": False,
+            "elapsed_seconds": .01, "error": receipt["error"], "fatal": fatal,
+            "http_status": receipt["http_status"], "metadata": {
+                "receipt": str(path.relative_to(output)), "receipt_sha256": file_hash(path)}})
+    ledger.close()
+    return unit, path
+
+
+def test_newly_recovered_fatal_pauses_before_backend_then_explicit_resume(frozen, tmp_path):
+    output = tmp_path / "recover-fatal"
+    unit, path = seeded_native_resume(frozen, output, completed_at="missing")
+    receipt_hash = file_hash(path)
+    intent_bytes = (output / "test/attempts.jsonl").read_bytes()
+    with pytest.raises(PausedRun, match="newly recovered fatal receipt"):
+        execute(frozen, output, "decision3", "test", resume=True)
+    assert not FakeBackend.instances and not FakeBackend.calls
+    rows = [json.loads(line) for line in (output / "test/attempts.jsonl").read_text().splitlines()]
+    assert len(rows) == 2 and rows[-1]["fatal"] is True
+    assert rows[-1]["metadata"]["receipt_sha256"] == receipt_hash == file_hash(path)
+    assert rows[-1]["metadata"]["recovered_receipt"] is True
+    assert (output / "test/attempts.jsonl").read_bytes().startswith(intent_bytes)
+    assert list(output.glob("invocations/*/test-partial-report.json"))
+    assert not (output / "test/completion.json").exists()
+    # A subsequent explicit resume acknowledges the now recorded stop, not a
+    # permanent prohibition or a fresh three-attempt budget.
+    execute(frozen, output, "decision3", "test", resume=True)
+    assert len(FakeBackend.calls) == 120 and Counter(FakeBackend.calls)[unit["id"]] == 1
+    rows = [json.loads(line) for line in (output / "test/attempts.jsonl").read_text().splitlines()]
+    assert [r["attempt"] for r in rows if r["type"] == "intent" and r["unit"] == unit["id"]] == [1, 2]
+    assert file_hash(path) == receipt_hash
+    assert json.loads((output / "test/report.json").read_text())["correct"] == 120
+
+
+def test_already_recorded_fatal_allows_explicit_resume(frozen, tmp_path):
+    output = tmp_path / "recorded-fatal"
+    unit, path = seeded_native_resume(frozen, output, recorded=True)
+    before = (output / "test/attempts.jsonl").read_bytes()
+    receipt_hash = file_hash(path)
+    execute(frozen, output, "decision3", "test", resume=True)
+    assert len(FakeBackend.calls) == 120
+    assert (output / "test/attempts.jsonl").read_bytes().startswith(before)
+    assert file_hash(path) == receipt_hash
+    assert json.loads((output / "test/report.json").read_text())["correct"] == 120
+
+
+@pytest.mark.parametrize("bad_time", ["missing", None, False, "1000", float("inf"), float("nan"), 10 ** 400],
+                         ids=["missing", "null", "boolean", "string", "infinite", "nan", "oversized"])
+def test_incomplete_orphan_requires_reliable_completion_time_before_backend(frozen, tmp_path, bad_time):
+    output = tmp_path / "legacy-incomplete"
+    _, path = seeded_native_resume(frozen, output, fatal=False)
+    receipt = json.loads(path.read_text())
+    if bad_time == "missing":
+        receipt.pop("completed_at_unix")
+    else:
+        receipt["completed_at_unix"] = bad_time
+    # Legacy/corrupt external receipt, including noncanonical numeric tokens.
+    path.write_text(json.dumps(receipt))
+    before = (output / "test/attempts.jsonl").read_bytes()
+    receipt_hash = file_hash(path)
+    with pytest.raises(ValueError, match="saved incomplete receipt requires finite completed_at_unix"):
+        execute(frozen, output, "decision3", "test", resume=True)
+    assert not FakeBackend.instances and not FakeBackend.calls
+    assert (output / "test/attempts.jsonl").read_bytes() == before
+    assert file_hash(path) == receipt_hash
+    assert not (output / "test/completion.json").exists()
+
+
+@pytest.mark.parametrize("corruption", ["unmatched", "result_first", "duplicate"])
+def test_invalid_result_identity_stops_actual_native_resume_before_backend(frozen, tmp_path, corruption):
+    output = tmp_path / "invalid-result"
+    unit, path = seeded_native_resume(frozen, output, recorded=True)
+    ledger_path = output / "test/attempts.jsonl"
+    rows = [json.loads(line) for line in ledger_path.read_text().splitlines()]
+    if corruption == "unmatched":
+        rows[-1]["attempt"] = 2
+        rows[-1]["answers"] = {"fight": {"answer": "yes"}}
+    elif corruption == "result_first":
+        rows.reverse()
+    else:
+        rows.append(rows[-1])
+    ledger_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    before = ledger_path.read_bytes()
+    with pytest.raises(ValueError, match="result.*preceding intent|duplicate result"):
+        execute(frozen, output, "decision3", "test", resume=True)
+    assert not FakeBackend.instances and not FakeBackend.calls
+    assert ledger_path.read_bytes() == before
+    assert not (output / "test/completion.json").exists()

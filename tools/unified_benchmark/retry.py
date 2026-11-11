@@ -54,13 +54,24 @@ class Ledger:
             records = [r for r in self.rows if r["unit"] == unit["id"]]
             if any(r["request_sha256"] != unit["request_sha256"] for r in records):
                 raise ValueError("cannot resume a changed request")
+            if any(type(r.get("attempt")) is not int or not 1 <= r["attempt"] <= 3 for r in records):
+                raise ValueError("invalid ledger attempt identity")
             intents = [r for r in records if r["type"] == "intent"]
             if [r["attempt"] for r in intents] != list(range(1, len(intents) + 1)) or len(intents) > 3:
                 raise ValueError("invalid cumulative attempt sequence")
-            answers = {}
+            answers, preceding, completed = {}, set(), set()
             for row in records:
-                if row["type"] != "result":
+                attempt = row["attempt"]
+                if row["type"] == "intent":
+                    preceding.add(attempt)
                     continue
+                if row["type"] != "result":
+                    raise ValueError("invalid ledger record type")
+                if attempt not in preceding:
+                    raise ValueError("result has no matching preceding intent")
+                if attempt in completed:
+                    raise ValueError("duplicate result for intent")
+                completed.add(attempt)
                 for event, value in row.get("answers", {}).items():
                     if event in unit["targets"] and valid_value(value, kind):
                         answers.setdefault(event, value)

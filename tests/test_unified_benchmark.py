@@ -377,3 +377,65 @@ def test_api_generation_metadata_shape_preserves_inference_receipt(tmp_path, bac
         assert ledger.rows[-1]["metadata"]["receipt_sha256"] == file_hash(receipt_path)
     finally:
         ledger.close()
+
+
+@pytest.mark.parametrize("envelope", [None, [], "invalid", {}, {"answer": []}, {"answer": None},
+                                      {"answer": "invalid"}, {"answer": 1}],
+                         ids=["null", "array", "string", "missing", "answer-array", "answer-null", "answer-string", "answer-number"])
+def test_malformed_luna_envelope_retains_receipt_and_retries_in_transport_queue(tmp_path, envelope):
+    import threading
+    from tools.unified_benchmark.api_run import Transport
+    from tools.unified_benchmark.contract import file_hash
+    (tmp_path / "f.jpg").write_bytes(b"synthetic-image")
+    config = {"model": "test/model", "backend": "decision", "kind": "probability",
+              "provider_context": {"config": {"expected_provider_name": "Mock", "provider": {"only": ["mock"]}}}}
+    u = unit() | {"frames": [{"path": "f.jpg", "sha256": file_hash(tmp_path / "f.jpg"), "time": 0}], "question": "Fight?"}
+    u["request_sha256"] = digest(a.request_body(config, u, tmp_path)[1])
+    ledger = Ledger(tmp_path / "attempts.jsonl", {"test": True})
+    transport = Transport(tmp_path, config, "synthetic-key", tmp_path / "out", ledger, threading.Event())
+    calls = []
+    def call(url, body=None):
+        calls.append(body)
+        return {"answers": envelope if len(calls) == 1 else {"answer": {"type": "noul", "noul": .7}},
+                "model": "test/model", "provider": "Mock"}
+    transport.call = call
+    clock = Clock()
+    queue = Queue(ledger, "probability", transport, clock=clock.now, sleep=clock.sleep)
+    try:
+        _, answers = queue.one(u)
+        assert answers == {"fight": {"score": .7}} and len(calls) == 2
+        results = [r for r in ledger.rows if r["type"] == "result"]
+        assert results[0]["answers"] == {} and not results[0]["complete"]
+        assert "decision answer envelope" in results[0]["metadata"]["answer_error"]
+        assert [r["attempt"] for r in results] == [1, 2]
+        for row in results:
+            path = tmp_path / "out" / row["metadata"]["receipt"]
+            assert file_hash(path) == row["metadata"]["receipt_sha256"]
+        assert len(list((tmp_path / "out/receipts").glob("*.json"))) == 2
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize("bad_attempt", [True, 1.0, "1", 0, 4])
+def test_ledger_rejects_invalid_result_attempt_identity(tmp_path, bad_attempt):
+    ledger, _, _ = queue(tmp_path, lambda u: ({}, {}))
+    try:
+        base = {"unit": "u", "request_sha256": "frozen"}
+        ledger.append(base | {"type": "intent", "attempt": 1})
+        ledger.append(base | {"type": "result", "attempt": bad_attempt, "answers": {"fight": {"answer": "yes"}}})
+        with pytest.raises(ValueError, match="invalid ledger attempt|result.*preceding intent"):
+            ledger.state(unit(), "choice")
+    finally:
+        ledger.close()
+
+
+def test_late_receipt_result_for_preceding_crash_intent_keeps_first_answer(tmp_path):
+    ledger, _, _ = queue(tmp_path, lambda u: ({}, {}))
+    try:
+        base = {"unit": "u", "request_sha256": "frozen"}
+        ledger.append(base | {"type": "intent", "attempt": 1})
+        ledger.append(base | {"type": "intent", "attempt": 2})
+        ledger.append(base | {"type": "result", "attempt": 1, "answers": {"fight": {"answer": "yes"}}})
+        assert ledger.state(unit(), "choice") == (2, {"fight": {"answer": "yes"}})
+    finally:
+        ledger.close()

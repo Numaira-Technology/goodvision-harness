@@ -24,9 +24,9 @@ import urllib.request
 import uuid
 
 from .adapters import frame_bytes, parse_response, request_body
-from .contract import EVENTS, RULES, canonical, digest, file_hash, read_receipt, select_thresholds, write_new, write_receipt
+from .contract import EVENTS, RULES, canonical, digest, file_hash, finite_number, read_receipt, select_thresholds, write_new, write_receipt
 from .native_deploy import ALIASES, environment_for, profile, verify_deployment
-from .retry import Ledger, Queue, RequestFailure
+from .retry import Ledger, PausedRun, Queue, RequestFailure
 from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
 
 
@@ -319,9 +319,16 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output):
                          "receipt_sha256": file_hash(path), "recovered_receipt": True}}
         if (not recovered["complete"] and not recovered["fatal"]
                 and (row["attempt"] < 3 or recovered["http_status"] == 429)):
+            if not finite_number(receipt.get("completed_at_unix")):
+                raise ValueError("saved incomplete receipt requires finite completed_at_unix; cannot restore cooldown")
             recovered["cooldown_until"] = receipt["completed_at_unix"] + max(
                 recovered["retry_after"], 30 if row["attempt"] == 1 else 60)
         ledger.append(recovered)
+        if recovered["fatal"]:
+            # This invocation has only just learned of the fatal response. Record
+            # it durably and stop before startup; a later explicit --resume may
+            # retry the already observed failure with the remaining budget.
+            raise PausedRun("newly recovered fatal receipt: " + str(recovered["error"]))
 
 
 def execute(alias, bundle, deployment, output, deployment_hash, *, phase, threshold_path=None,
