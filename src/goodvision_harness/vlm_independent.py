@@ -426,6 +426,7 @@ def run_vlm_process(
     thread_state, clients = local(), []
     last_sequence, last_endpoint, next_due = -1, -1, -math.inf
     pending_event_window = False
+    sampling_window_state = "collecting"
     last_status = 0.0
     source_finished = False
     executors = {
@@ -647,6 +648,7 @@ def run_vlm_process(
             },
             "reorder_capacity": REORDER_CAPACITY * len(lanes),
             "pending_observation_windows": int(pending_event_window),
+            "sampling_window_state": sampling_window_state,
             "reorder_capacity_per_lane": REORDER_CAPACITY,
             "reorder_buffer_full": all(
                 counts["active_requests"] >= REORDER_CAPACITY
@@ -840,6 +842,16 @@ def run_vlm_process(
                     if config.observation_frame_delta_seconds is not None
                     else len(window) >= 2
                     and window[-1].timestamp_seconds - window[0].timestamp_seconds >= 0.75
+                )
+                sampling_window_state = (
+                    "ready" if window_ready else
+                    "unavailable" if (
+                        config.observation_frame_delta_seconds is not None
+                        and len(history) >= 2
+                        and frame.timestamp_seconds - history[0].frame.timestamp_seconds
+                        >= (config.observation_window_frames - 1)
+                        * config.observation_frame_delta_seconds
+                    ) else "collecting"
                 )
                 if (
                     window_ready

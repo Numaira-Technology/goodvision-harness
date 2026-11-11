@@ -6,6 +6,7 @@ import base64
 import binascii
 import io
 import json
+import math
 import os
 import queue
 import threading
@@ -25,6 +26,7 @@ from .neural_calibration import (
     calibrated_choice,
     load_thresholds,
     valid_margin,
+    valid_sampling,
 )
 
 PROMPTS = {
@@ -161,6 +163,7 @@ class Encoder:
                     "frame_scores": values,
                     "probabilities": [*pairs[offset + winner][index], 0.0],
                     "thresholds_sha256": self.thresholds.sha256,
+                    "sampling": dict(self.thresholds.sampling),
                 })
             result.append(selected)
             offset += count
@@ -323,6 +326,28 @@ def create_app(encoder, *, max_batch_size=4):
                 or not 1 <= len(payload["request_id"]) <= 256
             ):
                 raise ValueError("invalid request id")
+            thresholds = getattr(encoder, "thresholds", None)
+            if thresholds is not None and any(
+                label in thresholds.values for label in labels
+            ):
+                sampling = payload.get("sampling")
+                times = payload.get("frame_times")
+                if (
+                    not valid_sampling(sampling)
+                    or sampling != thresholds.sampling
+                    or len(images) != sampling["observation_window_frames"]
+                    or not isinstance(times, list)
+                    or len(times) != len(images)
+                    or any(
+                        type(at) not in (int, float)
+                        or not 0 <= at < 1e12 or not math.isfinite(at)
+                        for at in times
+                    )
+                    # The selector permits at most half the target spacing of
+                    # error for irregular arrivals; it never duplicates frames.
+                    or not 0.25 - 1e-9 <= times[1] - times[0] <= 0.75 + 1e-9
+                ):
+                    raise ValueError("incompatible threshold sampling")
             def prepare():
                 decoded = []
                 for encoded in images:
@@ -356,6 +381,7 @@ def create_app(encoder, *, max_batch_size=4):
                     if isinstance(pair, dict):
                         index = calibrated_choice(
                             pair, question["id"].removeprefix("scene/"), len(images),
+                            sampling=(thresholds.sampling if thresholds else None),
                         )
                         rows.append({
                             **pair, "id": question["id"], "task": "choice",

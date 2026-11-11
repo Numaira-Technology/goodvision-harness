@@ -20,6 +20,7 @@ from starlette.websockets import WebSocketDisconnect
 from .gateway_video import CONNECT, DISCONNECT, GatewayVideo
 from .local_camera import install_local_camera_routes
 from .relay_auth import strip_relay_header
+from .result_websocket import RESULT_SOCKET_PATHS, proxy_results, reject_subscription
 from .service_locations import _service_origin
 
 HOP_HEADERS = {
@@ -270,6 +271,21 @@ def create_app(origin=None, *, controller=None, transport=None):
                 await socket.close(code=1013)
             except RuntimeError:
                 pass
+
+    async def result_socket(socket: WebSocket):
+        await socket.accept()
+        try:
+            await require_remote()
+        except HTTPException:
+            await reject_subscription(socket, "result service unavailable", 1013)
+            return
+        await proxy_results(socket, origin, socket.scope["path"])
+
+    for suffix in RESULT_SOCKET_PATHS:
+        app.add_api_websocket_route("/v1" + suffix, result_socket)
+        app.add_api_websocket_route(
+            "/v1/fleet/cameras/{camera_id}" + suffix, result_socket,
+        )
 
     @app.api_route(
         "/{path:path}",

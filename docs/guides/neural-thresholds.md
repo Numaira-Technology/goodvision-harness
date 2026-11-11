@@ -13,19 +13,47 @@ clients validate answers against the probability argmax and can reject a valid
 threshold-based negative or unknown answer. The updated client still accepts
 unconfigured services' legacy responses.
 
+Local CLIP now selects two distinct source frames from 4 FPS candidates, targeting
+0.5 seconds between frames. Observation cadence is unchanged (by default 1.25
+observations per second). Schema-v1 artifacts are rejected before model loading:
+their four-image or otherwise unspecified calibration cannot be reused for this
+policy. Obtain separately reviewed validation evidence for the new policy; changing
+the version or adding metadata to old scores does not make them compatible.
+
 The file must have exactly these fields:
 
 | Field | Required value |
 | --- | --- |
-| `schema_version` | Integer `1` |
+| `schema_version` | Integer `2` |
 | `model` | `openai/clip-vit-large-patch14` |
 | `revision` | `32bd64288804d66eefd0ccbe215aa642df71cc41` |
 | `prompts` | Object mapping the four events to the exact two strings below |
 | `preprocessing` | `rgb-bicubic-proportional-pad-224-fill-123-117-104-clip-processor-v1` |
 | `aggregation` | `max_all_images` |
 | `comparison` | `>` |
+| `sampling` | The exact policy and cadence described below |
 | `thresholds` | Exactly the four event keys; each value is a finite number in `[-2, 2]` or `null` |
 | `provenance` | Exactly the four fields listed below |
+
+`sampling` has exactly five fields: `policy: "two-frame-target-spacing-v1"`,
+`candidate_fps: 4.0`, `observation_window_frames: 2`,
+`observation_frame_delta_seconds: 0.5`, and `observation_fps` equal to the reviewed
+configured cadence (a finite number in `(0, 3]`, normally `1.25`). The client sends
+its configured sampling with each request. For core-event requests, a configured
+service rejects missing or mismatched sampling, image count, or timestamps before
+preprocessing/inference.
+Each calibrated response includes `sampling`, which the client checks too; older
+calibrated services without this field are incompatible. This check also rejects
+draft previews with a different sampling policy. Unconfigured services retain
+their existing request/response behavior.
+
+The target spacing is not timestamp rewriting. The selector chooses arrived
+originals within its cadence-dependent tolerance (at most ±0.25 seconds); the
+service requires finite, increasing source timestamps with actual separation in
+`[0.25, 0.75]` seconds. Sparse sources such as 1 FPS cannot supply these windows.
+Their live status reports `sampling_window_state: unavailable` and readiness
+`source_window_unavailable`, recovering when suitable frames arrive. No duplicate
+frames, widened windows, model requests, or negative detections are substituted.
 
 The `prompts` object uses ordered positive/negative arrays:
 
@@ -71,7 +99,9 @@ Validation must match the full service preprocessing: incoming RGB JPEGs,
 proportional bicubic padding to 224 by 224 with fill `(123, 117, 104)`, then the
 processor from the pinned model revision. Upstream image selection, JPEG resizing,
 window cadence and source grouping also need to match the reviewed validation
-protocol; this file does not reconfigure or certify them. Center-cropped validation
+protocol. The sampling contract checks configured policy and received timestamps;
+it does not certify upstream delivery, source grouping, or validation evidence.
+Center-cropped validation
 is incompatible with the full-frame production path. Use the pinned neural extra
 versions; offline tests exercise PyTorch 2.8.0 and Transformers 5.14.1 interfaces
 with tiny random CPU weights, which does not establish GPU or model accuracy.
