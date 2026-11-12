@@ -83,6 +83,43 @@ NEAR_BUCKET = (
 )
 NEAR_BUCKET_PRICE_TOLERANCE = 0.10  # pay at most 10% more per hour for proximity
 
+# Some hosts bill inbound traffic per GB (offer field inet_down_cost, $/GB).
+# One run pulls the packed env plus weights (~22 GB for Qwen3-VL-8B), so a
+# cheap hourly price can still be the most expensive run: on 2026-11-08 the
+# download fee was $0.883 of a $1.201 rental. Compare offers by an estimated
+# whole-run total instead of the hourly price alone.
+RUN_DOWNLOAD_GB = 25.0
+RUN_HOURS = 0.6
+RUN_COST_TOLERANCE = 0.10
+
+
+def estimated_run_cost(offer, *, download_gb=RUN_DOWNLOAD_GB, hours=RUN_HOURS):
+    return float(offer["dph_total"]) * hours + float(
+        offer.get("inet_down_cost") or 0.0
+    ) * download_gb
+
+
+def drop_costly_downloads(offers, *, tolerance=RUN_COST_TOLERANCE):
+    """Keep offers whose estimated whole-run cost is near the cheapest.
+
+    Removes hosts whose per-GB download fee outweighs a low hourly price. Falls
+    back to the caller's list when the offers cannot be priced.
+    """
+    try:
+        costs = [estimated_run_cost(o) for o in offers]
+        best = min(costs)
+    except (TypeError, KeyError, ValueError):
+        return offers
+    kept = [o for o, c in zip(offers, costs) if c <= best * (1 + tolerance)]
+    if len(kept) < len(offers):
+        print(
+            f"Skipping {len(offers) - len(kept)} offer(s) whose download fees make "
+            f"the run cost more than ${best * (1 + tolerance):.3f} "
+            f"(estimate: {RUN_DOWNLOAD_GB:.0f} GB in, {RUN_HOURS:.1f} h)",
+            flush=True,
+        )
+    return kept or offers
+
 
 def prefer_near_bucket(offers, *, tolerance=NEAR_BUCKET_PRICE_TOLERANCE):
     """Keep offers near the R2 bucket when they cost at most ``tolerance`` more.
@@ -494,7 +531,7 @@ def main() -> int:
                 raise RuntimeError("No eligible RTX 4090 / CUDA 12.8 offer available.")
             creation_attempted = True
             instance_id = S.create_from_offers(
-                vast, prefer_near_bucket(offers), disk_gb=args.disk_gb, label=label
+                vast, prefer_near_bucket(drop_costly_downloads(offers)), disk_gb=args.disk_gb, label=label
             )
             print(f"Created instance: {instance_id}", flush=True)
 

@@ -533,7 +533,7 @@ def main() -> int:
             )
             if not offers:
                 raise RuntimeError("No eligible RTX 4090 / CUDA 12.8 offer available.")
-            chosen = H.prefer_near_bucket(_eligible_offers(offers))
+            chosen = H.prefer_near_bucket(H.drop_costly_downloads(_eligible_offers(offers)))
             cheapest = min(float(o["dph_total"]) for o in chosen)
             print(
                 f"{len(chosen)} single-GPU 4090 offers <= ${MAX_DPH}/hr; "

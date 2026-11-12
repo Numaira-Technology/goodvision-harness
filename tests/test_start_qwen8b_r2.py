@@ -226,3 +226,23 @@ def test_prefer_near_bucket_falls_back_when_east_is_too_expensive():
     ]
     assert host.prefer_near_bucket(offers) == offers
     assert host.prefer_near_bucket([]) == []
+
+
+def test_download_fees_outweigh_a_cheap_hourly_price():
+    from tools import start_qwen8b_r2 as launcher
+
+    texas = {"id": 1, "dph_total": 0.136, "inet_down_cost": 0.0391, "geolocation": "Texas, US"}
+    virginia = {"id": 2, "dph_total": 0.301, "inet_down_cost": 0.0026, "geolocation": "Virginia, US"}
+    washington = {"id": 3, "dph_total": 0.401, "inet_down_cost": 0.0, "geolocation": "Washington, US"}
+    kept = launcher.drop_costly_downloads([texas, virginia, washington])
+    # Texas: 0.136*0.6 + 0.0391*25 = $1.06 per run; Virginia ~$0.25; Washington ~$0.24.
+    assert texas not in kept and virginia in kept and washington in kept
+    assert launcher.prefer_near_bucket(kept) == [virginia]
+
+
+def test_unpriced_offers_are_left_unchanged():
+    from tools import start_qwen8b_r2 as launcher
+
+    offers = [{"id": 1, "dph_total": "n/a"}]
+    assert launcher.drop_costly_downloads(offers) is offers
+    assert launcher.drop_costly_downloads([{"id": 2, "dph_total": 0.3}]) == [{"id": 2, "dph_total": 0.3}]
