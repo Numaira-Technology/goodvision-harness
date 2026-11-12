@@ -1,0 +1,73 @@
+{
+  "alias": "qwen235b",
+  "backend": "language",
+  "current_access_verified": false,
+  "kind": "choice",
+  "max_tokens": 30,
+  "model": "qwen/qwen3-vl-235b-a22b-instruct",
+  "precision": "provider unverified; catalog=fp8",
+  "provider_context": {
+    "config": {
+      "backend": "language",
+      "catalog_pricing": {
+        "completion": "0.0000019",
+        "discount": 0,
+        "input_cache_read": "0.0000001",
+        "prompt": "0.00000021"
+      },
+      "catalog_quantization": "fp8",
+      "expected_provider_name": "Parasail",
+      "limits": [
+        "Published latency is not this benchmark's measured end-to-end latency.",
+        "Actual provider/model must be checked from inference receipts.",
+        "Catalog precision is not independent proof of actual served weights or precision."
+      ],
+      "model": "qwen/qwen3-vl-235b-a22b-instruct",
+      "provider": {
+        "allow_fallbacks": false,
+        "only": [
+          "parasail/fp8"
+        ],
+        "require_parameters": true
+      },
+      "schema_version": 1,
+      "selected_at": "2026-11-03T23:54:48.643543+00:00",
+      "selection": {
+        "excluded_incomplete_endpoints": [
+          "venice/fp8"
+        ],
+        "method": "measured_pilot_complete_candidates_concurrent_p50_then_p95",
+        "pilot_artifact": "Private team artifact; request using pilot_sha256.",
+        "pilot_sha256": "22317c5cf355ce6f91b30a4d6a3a6358066b048f78b1a94f57dfdd78369dd783",
+        "protocol": {
+          "chat_max_tokens": 30,
+          "concurrency": 12,
+          "frame_width": 720,
+          "question": "Does any fighting occur in this image?",
+          "retries": 0,
+          "rounds": 6,
+          "single_n": 20,
+          "temperature": 0,
+          "timeout_seconds": 90,
+          "timing_boundary": "client HTTP through answer validation; no frame prep or metadata GET timing",
+          "video_timestamp_seconds": 0.5
+        },
+        "ranked_complete_endpoints": [
+          "parasail/fp8",
+          "deepinfra/fp8"
+        ],
+        "scope": "Fastest P50 among routes completing all 92 valid requests in this pilot. Failed routes are not ranked as slower. Does not establish sustained camera throughput."
+      }
+    },
+    "historical_source_file_sha256": "1754a30d1d5ea4f220b2dcd471112833f95efd66589ecfadf133ab9b56fd7e4e",
+    "sha256": "710ba2339d32c0052936cb002b1eb91e5af00e8b2b47a84e29e400c70692366f",
+    "sha256_encoding": "canonical JSON of config"
+  },
+  "selection": "preserve prior pinned endpoint; not remeasured fastest",
+  "temperature": 0,
+  "weight_revision": null,
+  "window_frames": 1,
+  "profile_origin": "Recorded November 2026 configuration; current provider availability and price must be rechecked.",
+  "prompt_policy": "current-image-v1",
+  "answer_parser": "boolean-string-v1"
+}

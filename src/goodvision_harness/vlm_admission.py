@@ -7,14 +7,41 @@ volume for containers). This is not a distributed/NFS lock or a GPU scheduler.
 
 from __future__ import annotations
 
+import logging
 import math
+import os
 import sqlite3
 import time
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Event, Thread
+from threading import BoundedSemaphore, Condition, Event, Lock, Thread, current_thread
 from uuid import uuid4
+
+# Cleanup resources, not admission capacity. Bound totals across gate instances
+# and databases; exhausted bookkeeping leaves the original lease conservative.
+_CLEANUP_LIMIT = 128
+
+
+def _reset_cleanup_budgets():
+    global _cleanup_tokens, _cleanup_workers, _cleanup_reset_lock
+    _cleanup_tokens = BoundedSemaphore(_CLEANUP_LIMIT)
+    _cleanup_workers = BoundedSemaphore(_CLEANUP_LIMIT)
+    _cleanup_reset_lock = Lock()
+
+
+_reset_cleanup_budgets()
+if hasattr(os, "register_at_fork"):
+    # One module callback, never one bound callback retaining every gate.
+    os.register_at_fork(after_in_child=_reset_cleanup_budgets)
+
+
+def _cleanup_warning(message):
+    try:
+        logging.getLogger(__name__).warning(message)
+    except Exception:
+        # A broken logging handler must not replace a model result/exception.
+        pass
 
 
 class AdmissionError(RuntimeError):
@@ -59,6 +86,7 @@ class SharedAdmission:
 
     def __init__(self, settings: AdmissionSettings):
         self.settings = settings
+        self._reset_cleanup_state()
         path = Path(settings.database)
         path.parent.mkdir(parents=True, exist_ok=True)
         # Waiting readers must not prevent another process from releasing a
@@ -121,6 +149,22 @@ class SharedAdmission:
                 db.execute("DELETE FROM streams")
                 db.execute("UPDATE policy SET next_grant=0 WHERE id=1")
 
+    def _reset_cleanup_state(self):
+        self._cleanup_condition = Condition()
+        self._pending_releases = {}
+        self._cleanup_thread = None
+        self._cleanup_token_budget = _cleanup_tokens
+        self._cleanup_worker_budget = _cleanup_workers
+        self._cleanup_pid = os.getpid()
+
+    def _ensure_cleanup_process(self):
+        if self._cleanup_pid != os.getpid():
+            # Never take an inherited gate lock: its owning thread may not
+            # exist after fork. The module's child callback resets this lock.
+            with _cleanup_reset_lock:
+                if self._cleanup_pid != os.getpid():
+                    self._reset_cleanup_state()
+
     @contextmanager
     def _transaction(self, timeout=0.1):
         db = sqlite3.connect(
@@ -146,7 +190,9 @@ class SharedAdmission:
         )
 
     def snapshot(self):
-        with self._transaction() as db:
+        # A cleanup transaction can hold the writer briefly. A 0.1s read
+        # timeout turns that into "database is locked" instead of the count.
+        with self._transaction(timeout=5.0) as db:
             self._reap(db, time.monotonic())
             active, waiting = db.execute(
                 "SELECT COALESCE(SUM(active),0), COALESCE(SUM(1-active),0) FROM tickets"
@@ -171,9 +217,111 @@ class SharedAdmission:
             try:
                 with self._transaction() as db:
                     db.execute("DELETE FROM tickets WHERE id=?", (token,))
-                return
+                return True
             except sqlite3.OperationalError:
                 time.sleep(0.01)
+        return False
+
+    def _defer_completed_release(self, token, deadline):
+        warning = None
+        with self._cleanup_condition:
+            if token in self._pending_releases:
+                return  # Never extend an existing absolute cleanup deadline.
+            if time.monotonic() >= deadline:
+                warning = "Completed VLM release exceeded its cleanup horizon"
+            elif not self._cleanup_token_budget.acquire(blocking=False):
+                warning = "Completed VLM release exceeds cleanup token budget"
+            elif self._cleanup_thread is not None:
+                try:
+                    self._pending_releases[token] = deadline
+                except Exception:
+                    self._cleanup_token_budget.release()
+                    raise
+                self._cleanup_condition.notify_all()
+            elif not self._cleanup_worker_budget.acquire(blocking=False):
+                self._cleanup_token_budget.release()
+                warning = "Completed VLM release exceeds cleanup worker budget"
+            else:
+                worker = None
+                try:
+                    self._pending_releases[token] = deadline
+                    worker = Thread(
+                        target=self._cleanup_completed,
+                        name="vlm-admission-cleanup",
+                        daemon=False,
+                    )
+                    self._cleanup_thread = worker
+                    worker.start()
+                except Exception:
+                    # A start wrapper can report an error after actually
+                    # starting. In that case the worker still owns cleanup.
+                    if worker is None or worker.ident is None:
+                        self._cleanup_thread = None
+                        self._pending_releases.pop(token, None)
+                        self._cleanup_token_budget.release()
+                        self._cleanup_worker_budget.release()
+                    warning = "Completed VLM release cleanup could not start normally"
+        if warning:
+            _cleanup_warning(warning)
+
+    def _cleanup_completed(self):
+        worker = current_thread()
+        try:
+            while True:
+                with self._cleanup_condition:
+                    now = time.monotonic()
+                    expired = [
+                        token
+                        for token, deadline in self._pending_releases.items()
+                        if deadline <= now
+                    ]
+                    for token in expired:
+                        del self._pending_releases[token]
+                        self._cleanup_token_budget.release()
+                    batch = sorted(
+                        self._pending_releases.items(), key=lambda item: item[1]
+                    )[: self.settings.global_limit]
+                    if not batch:
+                        # Enqueue and this handoff share the same lock. A new
+                        # enqueue starts a new worker, never a lost old queue.
+                        self._cleanup_thread = None
+                if expired:
+                    _cleanup_warning("Completed VLM release cleanup horizon exhausted")
+                if not batch:
+                    return
+                try:
+                    remaining = batch[0][1] - time.monotonic()
+                    if remaining <= 0:
+                        continue
+                    with self._transaction(timeout=min(0.1, remaining)) as db:
+                        db.executemany(
+                            "DELETE FROM tickets WHERE id=? AND active=1",
+                            [(token,) for token, _ in batch],
+                        )
+                except sqlite3.OperationalError:
+                    with self._cleanup_condition:
+                        self._cleanup_condition.wait(
+                            min(0.01, max(0, batch[0][1] - time.monotonic()))
+                        )
+                else:
+                    # Only a successful transaction acknowledges deletion.
+                    # Retrying after rollback/uncertain commit is idempotent.
+                    with self._cleanup_condition:
+                        for token, _ in batch:
+                            del self._pending_releases[token]
+                            self._cleanup_token_budget.release()
+        except Exception:
+            _cleanup_warning("Completed VLM release cleanup failed; lease retained")
+        finally:
+            with self._cleanup_condition:
+                if self._cleanup_thread is worker:
+                    # Unexpected worker failure leaves no unserviceable queue.
+                    for _ in self._pending_releases:
+                        self._cleanup_token_budget.release()
+                    self._pending_releases.clear()
+                    self._cleanup_thread = None
+            # A late finalizer must not clear a replacement worker's queue.
+            self._cleanup_worker_budget.release()
 
     def _candidate(self, db, now):
         return db.execute(
@@ -214,6 +362,8 @@ class SharedAdmission:
         # count all lanes against the same source and global capacity budgets.
         if lane not in {"default", "events", "compact", "full"}:
             raise ValueError("invalid VLM admission lane")
+        self._ensure_cleanup_process()
+        owner_pid = os.getpid()
         token = uuid4().hex
         started = time.monotonic()
         deadline = min(source_deadline, started + self.settings.queue_timeout_seconds)
@@ -319,8 +469,19 @@ class SharedAdmission:
             heartbeat.start()
             yield time.monotonic() - started
         finally:
-            heartbeat_stop.set()
-            if heartbeat is not None:
-                heartbeat.join(0.3)
-            if registered:
-                self._remove(token)
+            # An inherited context in a forked child does not own parent work.
+            if os.getpid() == owner_pid:
+                completed = time.monotonic()
+                heartbeat_stop.set()
+                if heartbeat is not None:
+                    heartbeat.join(0.3)
+                if registered and not self._remove(token) and acquired:
+                    # Results retain the short release path. Normal process
+                    # exit waits for this non-daemon cleanup, for at most the
+                    # remaining 60 s horizon; forced death keeps crash leases.
+                    try:
+                        self._defer_completed_release(
+                            token, completed + self.LEASE_SECONDS
+                        )
+                    except Exception:
+                        _cleanup_warning("Completed VLM release could not be scheduled")
