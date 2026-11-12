@@ -536,3 +536,77 @@ def test_broken_process_pool_falls_back_to_threads(tmp_path, monkeypatch):
     ms.pull_from_r2(REPO, REV, snap, client=client, bucket="b")
     assert client.gets == len(FILES)  # every file fetched once, in threads
     assert ms.verify_snapshot(snap, manifest)
+
+
+class RangedS3(FakeS3):
+    """Serves get_object(Range=...) like S3, counting ranged requests."""
+
+    def __init__(self, objects):
+        super().__init__(objects)
+        self.ranges = []
+
+    def get_object(self, Bucket, Key, Range=None):
+        data = self.objects[Key]
+        if Range:
+            a, b = map(int, Range.removeprefix("bytes=").split("-"))
+            self.ranges.append((a, b))
+            data = data[a : b + 1]
+        return {"Body": io.BytesIO(data)}
+
+
+def test_download_object_writes_every_range_in_place(tmp_path, monkeypatch):
+    monkeypatch.setattr(ms, "PART_SIZE", 1000)
+    data = bytes(range(256)) * 41  # 10496 bytes -> 11 ranges, last one short
+    client = RangedS3({"envs/x.tar.gz": data})
+    dest = tmp_path / "env.tar.gz"
+    assert ms.download_object(client, "b", "envs/x.tar.gz", dest, len(data)) == len(
+        data
+    )
+    assert dest.read_bytes() == data
+    assert len(client.ranges) == 11 and client.ranges[-1] == (10000, 10495)
+
+
+def test_download_object_uses_processes_for_real_clients(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(ms, "PART_SIZE", 1000)
+    data = b"z" * 4500
+    for k in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+        monkeypatch.setenv(k, "x")
+    monkeypatch.delenv("R2_PULL_PROCESSES", raising=False)
+    pools = []
+
+    class InlinePool(ThreadPoolExecutor):
+        def __init__(self, max_workers, mp_context=None):
+            pools.append(max_workers)
+            super().__init__(max_workers=max_workers)
+
+    class BotoRanged(RangedS3):
+        pass
+
+    BotoRanged.__module__ = "botocore.client"
+    monkeypatch.setattr(ms, "ProcessPoolExecutor", InlinePool)
+    monkeypatch.setattr(ms, "r2_client", lambda: BotoRanged({"k": data}))
+    dest = tmp_path / "out"
+    ms.download_object(BotoRanged({"k": data}), "b", "k", dest, len(data))
+    assert pools == [4]  # 5 ranges, capped at DEFAULT_PROCESSES
+    assert dest.read_bytes() == data
+
+
+def test_download_object_retries_a_failed_range(tmp_path, monkeypatch):
+    monkeypatch.setattr(ms, "PART_SIZE", 1000)
+    monkeypatch.setattr(ms.time, "sleep", lambda s: None)
+    data = b"q" * 2500
+
+    class Flaky(RangedS3):
+        failed = False
+
+        def get_object(self, Bucket, Key, Range=None):
+            if Range == "bytes=1000-1999" and not Flaky.failed:
+                Flaky.failed = True
+                raise OSError("connection reset")
+            return super().get_object(Bucket, Key, Range)
+
+    dest = tmp_path / "out"
+    ms.download_object(Flaky({"k": data}), "b", "k", dest, len(data))
+    assert dest.read_bytes() == data

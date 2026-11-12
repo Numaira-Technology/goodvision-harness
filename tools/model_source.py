@@ -254,6 +254,94 @@ def _run_pool(pool, order, submit):
     return pulled
 
 
+# ----------------------------------------------------- one large object, ranged
+
+
+def _is_real_client(client):
+    return type(client).__module__.startswith("botocore")
+
+
+def _get_range(client, bucket, key, dest, start, end, attempts=3):
+    """GET bytes [start, end] and write them at their offset in ``dest``."""
+    for attempt in range(attempts):
+        try:
+            body = client.get_object(
+                Bucket=bucket, Key=key, Range=f"bytes={start}-{end}"
+            )["Body"]
+            offset = start
+            with open(dest, "r+b") as f:
+                while chunk := body.read(1 << 20):
+                    f.seek(offset)
+                    f.write(chunk)
+                    offset += len(chunk)
+            if offset != end + 1:
+                raise OSError("short range read")
+            return end + 1 - start
+        except Exception:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(1 + attempt)
+    return 0
+
+
+def _ranges_in_threads(client, bucket, key, dest, ranges, streams):
+    with ThreadPoolExecutor(max_workers=streams) as pool:
+        futures = [
+            pool.submit(_get_range, client, bucket, key, dest, a, b) for a, b in ranges
+        ]
+        try:
+            return sum(f.result() for f in as_completed(futures))
+        except BaseException:
+            for f in futures:
+                f.cancel()
+            raise
+
+
+def _ranges_in_child(bucket, key, dest, ranges, streams):
+    """Process-pool entry point: own client, a share of the byte ranges."""
+    client = r2_client()
+    if client is None:
+        raise RuntimeError("R2 credentials not configured")
+    return _ranges_in_threads(client, bucket, key, dest, ranges, streams)
+
+
+def download_object(client, bucket, key, dest, size):
+    """Download one (large) object to ``dest`` as parallel byte ranges.
+
+    Same parallelism as the weight pull: R2_PULL_PROCESSES processes, each
+    with R2_PULL_STREAMS ranged GETs, every part written at its own offset.
+    Only a real boto3 client with R2_* in the environment uses processes;
+    anything else (tests, injected clients) uses threads, and a pool that
+    cannot start falls back to threads too. The caller verifies the result.
+    """
+    dest = Path(dest)
+    with open(dest, "wb") as f:
+        f.truncate(size)
+    ranges = [
+        (start, min(start + PART_SIZE, size) - 1) for start in range(0, size, PART_SIZE)
+    ]
+    if not ranges:
+        return 0
+    _, streams = _parallelism()
+    processes = min(_processes(), len(ranges))
+    if processes > 1 and _r2_env_ready() and _is_real_client(client):
+        shares = [ranges[i::processes] for i in range(processes)]
+        try:
+            pool = ProcessPoolExecutor(
+                max_workers=processes, mp_context=multiprocessing.get_context("spawn")
+            )
+            return _run_pool(
+                pool,
+                [(i, share) for i, share in enumerate(shares)],
+                lambda pool, _i, share: pool.submit(
+                    _ranges_in_child, bucket, key, str(dest), share, streams
+                ),
+            )
+        except BrokenProcessPool:
+            _log("process pool unavailable; continuing with threads")
+    return _ranges_in_threads(client, bucket, key, dest, ranges, streams * 2)
+
+
 def pull_from_r2(repo, revision, snap, *, client=None, bucket=None):
     """Download models/<repo>/<revision>/ from R2 into ``snap``; return its manifest.
 
