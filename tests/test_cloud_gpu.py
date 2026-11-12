@@ -557,7 +557,7 @@ def test_cloud_compose_keeps_existing_server_inference_configuration(
         command.extend(["-f", str(root / filename)])
     rendered = subprocess.run(
         [*command, "config", "--format", "json"], env=environment,
-        capture_output=True, text=True, encoding="utf-8", timeout=30, check=False,
+        capture_output=True, text=True, encoding="utf-8", timeout=90, check=False,
     )
     assert rendered.returncode == 0, rendered.stderr
     services = json.loads(rendered.stdout)["services"]

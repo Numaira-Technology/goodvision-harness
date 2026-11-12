@@ -128,7 +128,9 @@ class LocalTransport:
             })
             raise RequestFailure(type(error).__name__, metadata=metadata) from error
         metadata = save({"http_status": 200, **raw_fields(response=payload)})
-        actual_model = payload.get("model") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            raise RequestFailure("invalid response envelope", metadata=metadata)
+        actual_model = payload.get("model")
         if isinstance(actual_model, str) and actual_model.strip():
             metadata["actual_model"] = actual_model
         metadata["actual_provider"] = "self-hosted-r2-4090"

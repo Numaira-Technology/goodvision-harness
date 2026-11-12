@@ -76,6 +76,13 @@ def relative_path(value):
     return PurePosixPath(value)
 
 
+def _absolute_unpack_prefix(prefix: str) -> bool:
+    """Published pins are POSIX. A Windows build test may use a local absolute path."""
+    if prefix.startswith("/") and not prefix.startswith("//"):
+        return True
+    return os.name == "nt" and Path(prefix).is_absolute()
+
+
 def validate_env(env):
     """Require a trusted pin and complete metadata before any filesystem/network IO."""
     if not isinstance(env, dict):
@@ -98,9 +105,14 @@ def validate_env(env):
     if type(env.get("size")) is not int or env["size"] <= 0:
         raise RegistryError("env size must be a positive integer")
     prefix = env.get("unpack_to")
-    if not isinstance(prefix, str) or not prefix.startswith("/"):
+    if not isinstance(prefix, str) or not _absolute_unpack_prefix(prefix):
         raise RegistryError("unpack_to must be an absolute POSIX prefix")
-    if len(relative_path(prefix[1:]).parts) < 2:
+    parts = (
+        relative_path(prefix[1:]).parts
+        if prefix.startswith("/") and not prefix.startswith("//")
+        else Path(prefix).parts
+    )
+    if len(parts) < 2:
         raise RegistryError("unpack_to must name a dedicated environment directory")
     relative_path(env.get("activate_rel"))
     if env["activate_rel"] != "bin/activate":
