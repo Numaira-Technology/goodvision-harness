@@ -16,11 +16,12 @@ so nothing breaks for models not yet mirrored to R2.
 
 import hashlib
 import json
+import multiprocessing
 import os
 import shutil
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory, mkdtemp
@@ -35,6 +36,9 @@ MANIFEST_NAME = "MANIFEST.json"
 # and within each large file STREAMS byte-range parts in parallel. The HTTP
 # connection pool must hold every stream that can be open at the same time.
 # Overridable per run (e.g. a slow box): R2_PULL_FILE_WORKERS, R2_PULL_STREAMS.
+# R2_PULL_PROCESSES > 1 moves each file into its own Python process instead of
+# a thread, so TLS decryption and response copying are not serialized by one
+# interpreter lock (experimental; measure before making it the default).
 DEFAULT_FILE_WORKERS = 4
 DEFAULT_STREAMS = 16
 PART_SIZE = 64 * 1024 * 1024
@@ -53,6 +57,10 @@ def _parallelism():
         _env_int("R2_PULL_FILE_WORKERS", DEFAULT_FILE_WORKERS),
         _env_int("R2_PULL_STREAMS", DEFAULT_STREAMS),
     )
+
+
+def _processes():
+    return _env_int("R2_PULL_PROCESSES", 1, hi=32)
 
 
 def _transfer_config(streams):
@@ -159,10 +167,14 @@ def verify_snapshot(snap, manifest):
     return True
 
 
+def _r2_env_ready():
+    need = ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY")
+    return all(os.environ.get(k) for k in need)
+
+
 def r2_client():
     """boto3 S3 client for R2, or None when credentials are not configured."""
-    need = ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY")
-    if not all(os.environ.get(k) for k in need):
+    if not _r2_env_ready():
         return None
     import boto3
     from botocore.config import Config
@@ -186,6 +198,36 @@ def _log(*a):
     print(
         f"[model_source {time.strftime('%H:%M:%S')}]", *a, flush=True, file=sys.stderr
     )
+
+
+def _fetch_one(client, bucket, key, dest, rel, meta, extra):
+    """Download one file (unless already correct) and verify it; bytes pulled."""
+    dest = Path(dest)
+    if (
+        dest.is_file()
+        and dest.stat().st_size == meta["size"]
+        and _sha256(dest) == meta["sha256"]
+    ):
+        return 0  # resume: keep already-correct files
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    client.download_file(bucket, key, str(dest), **extra)
+    # Hashing one file overlaps with other files still on the wire.
+    if dest.stat().st_size != meta["size"] or _sha256(dest) != meta["sha256"]:
+        raise ValueError(f"checksum/size mismatch after R2 download: {rel}")
+    _log(f"pulled {rel} ({meta['size'] / 1e6:.1f} MB)")
+    return meta["size"]
+
+
+def _fetch_in_child(bucket, key, dest, rel, meta, streams):
+    """Process-pool entry point: own client, own connection pool."""
+    client = r2_client()
+    if client is None:
+        raise RuntimeError("R2 credentials not configured")
+    extra = {}
+    config = _transfer_config(streams)
+    if config is not None:
+        extra["Config"] = config
+    return _fetch_one(client, bucket, key, dest, rel, meta, extra)
 
 
 def pull_from_r2(repo, revision, snap, *, client=None, bucket=None):
@@ -223,40 +265,43 @@ def pull_from_r2(repo, revision, snap, *, client=None, bucket=None):
             raise ValueError(f"unsafe path in manifest: {rel!r}")
 
     file_workers, streams = _parallelism()
-    extra = {}
-    config = _transfer_config(streams)
-    if config is not None:
-        extra["Config"] = config
-
-    def fetch(rel, meta):
-        """Download one file (unless already correct) and verify it; bytes pulled."""
-        dest = snap / rel
-        if (
-            dest.is_file()
-            and dest.stat().st_size == meta["size"]
-            and _sha256(dest) == meta["sha256"]
-        ):
-            return 0  # resume: keep already-correct files
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        client.download_file(bucket, prefix + rel, str(dest), **extra)
-        # Hashing one file overlaps with other files still on the wire.
-        if dest.stat().st_size != meta["size"] or _sha256(dest) != meta["sha256"]:
-            raise ValueError(f"checksum/size mismatch after R2 download: {rel}")
-        _log(f"pulled {rel} ({meta['size'] / 1e6:.1f} MB)")
-        return meta["size"]
-
+    processes = _processes()
     started = time.monotonic()
     pulled = 0
     # Largest first so the long shards start early and small files fill gaps.
     order = sorted(files.items(), key=lambda kv: kv[1]["size"], reverse=True)
-    with ThreadPoolExecutor(max_workers=file_workers) as pool:
-        futures = [pool.submit(fetch, rel, meta) for rel, meta in order]
+    use_processes = processes > 1 and _r2_env_ready()
+    if use_processes:
+        # Children build their own client from the inherited environment;
+        # credentials never travel through argv or the task arguments.
+        file_workers, unit = processes, "processes"
+        pool = ProcessPoolExecutor(
+            max_workers=processes, mp_context=multiprocessing.get_context("spawn")
+        )
+    else:
+        unit = "files"
+        extra = {}
+        config = _transfer_config(streams)
+        if config is not None:
+            extra["Config"] = config
+        pool = ThreadPoolExecutor(max_workers=file_workers)
+
+    def submit(rel, meta):
+        key, dest = prefix + rel, snap / rel
+        if use_processes:
+            return pool.submit(
+                _fetch_in_child, bucket, key, str(dest), rel, meta, streams
+            )
+        return pool.submit(_fetch_one, client, bucket, key, dest, rel, meta, extra)
+
+    with pool:
+        futures = [submit(rel, meta) for rel, meta in order]
         try:
             for future in as_completed(futures):
                 pulled += future.result()
         except BaseException:
             # Stop queued files; leaving the with-block waits for running ones,
-            # so no thread writes into staging after the caller cleans it up.
+            # so no worker writes into staging after the caller cleans it up.
             for future in futures:
                 future.cancel()
             raise
@@ -265,7 +310,7 @@ def pull_from_r2(repo, revision, snap, *, client=None, bucket=None):
         _log(
             f"R2 pull {pulled / 1e6:.1f} MB in {elapsed:.1f}s "
             f"({pulled / 1e6 / elapsed:.1f} MB/s, "
-            f"{file_workers} files x {streams} streams)"
+            f"{file_workers} {unit} x {streams} streams)"
         )
 
     marker.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")

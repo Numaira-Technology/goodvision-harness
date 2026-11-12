@@ -436,3 +436,51 @@ def test_parallelism_env_is_clamped(monkeypatch):
     assert ms._parallelism() == (1, ms.DEFAULT_STREAMS)
     monkeypatch.setenv("R2_PULL_FILE_WORKERS", "100000")
     assert ms._parallelism()[0] == 128
+
+
+def test_process_mode_uses_one_process_per_file_with_own_client(tmp_path, monkeypatch):
+    """R2_PULL_PROCESSES routes each file through _fetch_in_child, never argv."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    objects, manifest = _bucket(REPO, REV, FILES)
+    for k, v in {
+        "R2_ENDPOINT": "https://example.invalid",
+        "R2_BUCKET": "b",
+        "R2_ACCESS_KEY_ID": "id",
+        "R2_SECRET_ACCESS_KEY": "secret",
+        "R2_PULL_PROCESSES": "3",
+    }.items():
+        monkeypatch.setenv(k, v)
+    pools = []
+
+    class InlinePool(ThreadPoolExecutor):
+        """Stands in for ProcessPoolExecutor; spawn cannot see monkeypatches."""
+
+        def __init__(self, max_workers, mp_context=None):
+            assert mp_context is not None and mp_context.get_start_method() == "spawn"
+            pools.append(max_workers)
+            super().__init__(max_workers=max_workers)
+
+    children = []
+    monkeypatch.setattr(ms, "ProcessPoolExecutor", InlinePool)
+    monkeypatch.setattr(ms, "r2_client", lambda: children.append(1) or FakeS3(objects))
+    snap = ms.snapshot_dir(tmp_path, REPO, REV)
+    ms.pull_from_r2(REPO, REV, snap, bucket="b")
+    assert pools == [3]
+    # One client for the manifest, one per child-side file fetch.
+    assert len(children) == 1 + len(FILES)
+    assert ms.verify_snapshot(snap, manifest)
+
+
+def test_process_mode_needs_env_credentials(tmp_path, monkeypatch):
+    """Without R2_* in the environment children could not log in: use threads."""
+    objects, manifest = _bucket(REPO, REV, FILES)
+    for k in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("R2_PULL_PROCESSES", "4")
+    monkeypatch.setattr(
+        ms, "ProcessPoolExecutor", lambda **kw: pytest.fail("must not spawn")
+    )
+    snap = ms.snapshot_dir(tmp_path, REPO, REV)
+    ms.pull_from_r2(REPO, REV, snap, client=FakeS3(objects), bucket="b")
+    assert ms.verify_snapshot(snap, manifest)

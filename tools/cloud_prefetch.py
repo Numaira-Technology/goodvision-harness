@@ -11,6 +11,7 @@ the uploaded tools/model_source.py, which verifies against the bucket MANIFEST a
 falls back to a normal HF download when R2 is not reachable.
 """
 
+import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -36,6 +37,21 @@ def credential_blob(r2_env, hf_token=None):
     return "\n".join(lines) + "\n"
 
 
+# Non-secret download tuning knobs forwarded from the controller's environment
+# (see model_source.py): integers only, so they are safe on the command line.
+PULL_TUNING = ("R2_PULL_FILE_WORKERS", "R2_PULL_STREAMS", "R2_PULL_PROCESSES")
+
+
+def pull_tuning(environ=None):
+    environ = os.environ if environ is None else environ
+    parts = [
+        f"{name}={environ[name]} "
+        for name in PULL_TUNING
+        if str(environ.get(name, "")).isdigit()
+    ]
+    return "".join(parts)
+
+
 def remote_command(
     cache_dir,
     repo,
@@ -52,7 +68,7 @@ def remote_command(
     """
     script = f"{remote_dir}/{module}"
     inner = (
-        f"{shlex.quote(python)} {shlex.quote(script)} "
+        f"{pull_tuning()}{shlex.quote(python)} {shlex.quote(script)} "
         f"--repo {shlex.quote(repo)} --revision {shlex.quote(revision)} "
         f"--cache-dir {shlex.quote(str(cache_dir))}"
     )
