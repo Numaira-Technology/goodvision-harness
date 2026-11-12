@@ -124,9 +124,20 @@ jobs:
         run: |
           $evidence = "outputs/ci/windows-${{ matrix.shard }}"
           New-Item -ItemType Directory -Force -Path $evidence | Out-Null
-          python -u -m pytest -vv -o faulthandler_timeout=60 --durations=20 -p tools.ci_pytest --ci-shard ${{ matrix.shard }} --ci-shards 2 --ci-evidence $evidence --junitxml="$evidence/junit.xml"
-          $testExitCode = $LASTEXITCODE
-          @{exit_code=$testExitCode; timed_out=$false} | ConvertTo-Json | Set-Content -Encoding utf8NoBOM "$evidence/run.json"
+          $arguments = @('-u', '-m', 'pytest', '-vv', '-o', 'faulthandler_timeout=60', '--durations=20', '-p', 'tools.ci_pytest', '--ci-shard', '${{ matrix.shard }}', '--ci-shards', '2', '--ci-evidence', $evidence, "--junitxml=$evidence/junit.xml")
+          # Direct file sinks avoid runner-console backpressure. The parent
+          # deadline leaves time to stop descendants and upload partial evidence.
+          $process = Start-Process -FilePath (Get-Command python).Source -ArgumentList $arguments -NoNewWindow -PassThru -RedirectStandardOutput "$evidence/stdout.log" -RedirectStandardError "$evidence/stderr.log"
+          $timedOut = -not $process.WaitForExit(960000)
+          if ($timedOut) {
+            taskkill /F /T /PID $process.Id
+            $testExitCode = 124
+          } else {
+            $testExitCode = $process.ExitCode
+          }
+          @{exit_code=$testExitCode; timed_out=$timedOut} | ConvertTo-Json | Set-Content -Encoding utf8NoBOM "$evidence/run.json"
+          Get-Content "$evidence/stdout.log" -Tail 80
+          Get-Content "$evidence/stderr.log" -Tail 80
           exit $testExitCode
       - uses: actions/upload-artifact@v4
         if: always()

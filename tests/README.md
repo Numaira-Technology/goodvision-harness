@@ -90,8 +90,10 @@ test was executed exactly once. Legitimate recorded setup skips remain skips.
 Windows also uses two shards with the same partition and evidence plugin. Its
 existing `Tests (windows-latest, Python 3.12)` check independently verifies all
 Windows tests were covered exactly once. Each Windows shard retains the 25-minute
-job limit and bounds the test step to 20 minutes, leaving time to upload its
-collection, incremental stage ledger and JUnit. A timed-out step or missing
+job limit and bounds the test step to 20 minutes. Its parent process stops the
+test process tree after 16 minutes; stdout/stderr go to files so console output
+cannot block pytest shutdown. This leaves time to upload collection, incremental
+stage records, logs and JUnit. A timed-out step or missing
 completion record fails the aggregate gate; it never becomes a successful skip.
 
 Linux shards use a 16-minute test-process deadline inside the unchanged 20-minute

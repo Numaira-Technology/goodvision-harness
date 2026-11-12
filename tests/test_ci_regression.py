@@ -277,6 +277,11 @@ def test_workflow_preserves_required_names_limits_and_optional_jobs():
                      if "--ci-evidence" in step.get("run", ""))
     assert execution["timeout-minutes"] == 20
     assert "exit $testExitCode" in execution["run"]
+    assert "WaitForExit(960000)" in execution["run"]
+    assert "taskkill /F /T /PID $process.Id" in execution["run"]
+    assert '-RedirectStandardOutput "$evidence/stdout.log"' in execution["run"]
+    assert '-RedirectStandardError "$evidence/stderr.log"' in execution["run"]
+    assert "timed_out=$timedOut" in execution["run"]
     linux = jobs["linux-tests"]
     assert linux["timeout-minutes"] == 20 and linux["strategy"]["fail-fast"] is False
     assert linux["strategy"]["matrix"]["shard"] == [0, 1]
