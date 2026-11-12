@@ -24,6 +24,20 @@ from tools import env_source, model_source, registry
 # R2 documents create-once PutObject; do not assume multipart completion supports it.
 # https://developers.cloudflare.com/r2/api/s3/extensions/#conditional-operations-in-putobject
 MAX_PUT_SIZE = 5 * 1024**3 - 5 * 1024**2
+# Published objects. A new pack needs a new key; these must not be replaced.
+FROZEN_R2_KEYS = (
+    "envs/qwen8b/cu128-py312-torch280-ada.tar.gz",
+    "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz",
+    "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz",
+    "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz",
+    "envs/videojev/cu128-py312-torch280-ada.tar.gz",
+    "envs/clip/cu128-py312-torch280-ada.tar.gz",
+)
+
+
+def _refuse_frozen_key(r2_key: str) -> None:
+    if r2_key in FROZEN_R2_KEYS:
+        sys.exit(f"refusing to upload over frozen env key {r2_key}")
 MAX_BUILD_RECORD_SIZE = 64 * 1024
 REQUIREMENTS_DIRS = {
     "videojev": "videojev_probe",
@@ -435,6 +449,7 @@ def _upload(env_spec, name, tarball, compat, repo_rev, *, record, recipe_sha):
     for author inspection rather than risking deletion of a committed artifact.
     """
     registry.validate_env(env_spec)
+    _refuse_frozen_key(env_spec["r2_key"])
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
         raise ValueError("invalid model name")
     if compat != env_spec["compat"]:
