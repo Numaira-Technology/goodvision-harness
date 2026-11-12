@@ -78,24 +78,43 @@ def test_twelve_sources_native_decisions_and_person_reports(
     source_diagnostics = {}
     diagnostic = {"source": source_diagnostics, "detector_keys": calls}
     register_synthetic_evidence(request.node, tmp_path, diagnostic)
-    with DetectorBroker("http://127.0.0.1:1", tmp_path, transport=detector) as broker:
-        result = run_stage(
-            args,
-            base,
-            12,
-            [[jpeg()] * 4],
-            tmp_path,
-            1,
-            inspector_factory=partial(
-                offline_inspector,
-                broker_url=broker.endpoint,
-                audit_dir=tmp_path / "api-audit",
-            ),
-            source_hook=broker.submit,
-            source_diagnostics=source_diagnostics,
-        )
-        detector_counts = broker.drain()
-        diagnostic["drain_counts"] = detector_counts
+    def run_once(output):
+        calls.clear()
+        source_diagnostics.clear()
+        with DetectorBroker(
+            "http://127.0.0.1:1", output, transport=detector
+        ) as broker:
+            stage = run_stage(
+                args,
+                base,
+                12,
+                [[jpeg()] * 4],
+                output,
+                1,
+                inspector_factory=partial(
+                    offline_inspector,
+                    broker_url=broker.endpoint,
+                    audit_dir=output / "api-audit",
+                ),
+                source_hook=broker.submit,
+                source_diagnostics=source_diagnostics,
+            )
+            diagnostic["drain_counts"] = broker.drain()
+        return stage
+
+    output = tmp_path
+    result = run_once(output)
+    if not result["input_timing_valid"]:
+        # A starved feeder thread on a shared CI runner skips late source
+        # samples, which then reach neither the detector nor the lanes. That
+        # measures the host, not routing: re-run once in a fresh directory.
+        # A real regression fails both runs; the assertions are unchanged.
+        diagnostic["first_run_input_release_lag_seconds"] = result[
+            "input_release_lag_seconds"
+        ]
+        output = tmp_path / "retry"
+        output.mkdir()
+        result = run_once(output)
     assert result["all_drained"] and not result["result_records_missing"]
     assert result["result_retention"]["valid"]
     assert len(calls) == len(set(calls)) == 48
@@ -109,11 +128,11 @@ def test_twelve_sources_native_decisions_and_person_reports(
     assert_admission_drained(result, args, 12 * len(result["lanes"]))
     records = [
         json.loads(s)["report"]
-        for s in (tmp_path / "streams-12-repeat-1/reports.jsonl")
+        for s in (output / "streams-12-repeat-1/reports.jsonl")
         .read_text()
         .splitlines()
     ]
-    assert audit_coverage(records, audit_rows(tmp_path))["valid"]
+    assert audit_coverage(records, audit_rows(output))["valid"]
     for row in records:
         if report_lane(row) == "grounding":
             assert row["subject_id_scope"] == "stream_session"
