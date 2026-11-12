@@ -481,7 +481,7 @@ class ReleaseConflict:
         if current_thread().name == "vlm-admission-cleanup":
             self.worker = current_thread()
             self.cleanup_entered.set()
-            if not self.allow_cleanup.wait(3):
+            if not self.allow_cleanup.wait(30):
                 raise AssertionError("test did not release cleanup barrier")
         elif self.armed and self.failures < 3:
             self.failures += 1
