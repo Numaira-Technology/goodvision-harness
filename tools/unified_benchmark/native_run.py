@@ -526,7 +526,8 @@ def _verify_completion(output, phase_dir, *, calibration=False):
     done = json.loads(path.read_text())
     files = done.get("files") if isinstance(done, dict) else None
     required = {
-        str((phase_dir / name).relative_to(output))
+        # completion.json keys are written with as_posix(); match on Windows too.
+        (phase_dir / name).relative_to(output).as_posix()
         for name in ("attempts.jsonl", "report.json", "run.json")
     }
     if calibration:
