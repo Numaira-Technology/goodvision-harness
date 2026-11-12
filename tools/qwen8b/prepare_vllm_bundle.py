@@ -44,7 +44,7 @@ def _plans(bundle, alias, config, hashes):
     config_name = f"configs/{alias}.json"
     if (
         config_name not in hashes
-        or json.loads((bundle / config_name).read_text()) != config
+        or json.loads((bundle / config_name).read_text(encoding="utf-8")) != config
     ):
         raise ValueError("source profile differs from the reviewed configuration")
     plans = {}
@@ -52,7 +52,7 @@ def _plans(bundle, alias, config, hashes):
         name = f"plans/{alias}-{split}.json"
         if name not in hashes:
             raise ValueError("plan is not sealed: " + name)
-        plan = json.loads((bundle / name).read_text())
+        plan = json.loads((bundle / name).read_text(encoding="utf-8"))
         if (
             plan.get("protocol") != VERSION
             or plan.get("split") != split
