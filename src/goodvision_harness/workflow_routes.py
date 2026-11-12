@@ -280,6 +280,7 @@ def install_workflow_routes(application):
         try:
             async with fleet.control_lock:
                 await control.require_stopped([payload["camera_id"]])
+                await fleet.synchronize_summary_service(index)
                 operation = asyncio.create_task(
                     fleet.request_json(
                         index,

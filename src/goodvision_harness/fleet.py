@@ -748,6 +748,22 @@ class FleetController:
             )
             if response.status_code != 200:
                 raise HTTPException(409, "视频通道的大模型线路同步失败。请重试。")
+        await self.synchronize_summary_service(index)
+
+    async def synchronize_summary_service(self, index: int) -> None:
+        if index == self.camera_index:
+            return
+        settings = getattr(
+            self.application.state.runtime, "_summary_service_settings", None,
+        )
+        if not callable(settings):
+            return
+        response = await self.request_json(
+            index, "PUT", "/v1/deployment/summary-service", settings(),
+            coordinated=True,
+        )
+        if response.status_code != 200:
+            raise HTTPException(409, "视频通道的总结服务同步失败。请重试。")
 
 
 

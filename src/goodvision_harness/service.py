@@ -2217,9 +2217,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     and summary_config.model_api.provider != "local"):
                 raise MissingAPIKeyError(PUBLIC_MISSING_API_KEY_ERROR)
             if (not self.dry_run
-                    and (any(item in model_labels for item in features)
-                         or bool(self._workflow_plan
-                                 and self._workflow_plan["summaries"]))
+                    and any(item in model_labels for item in features)
                     and not self._aiclub_api_key
                     and self._workflow_event_configuration().model_api.provider
                     != "local"):
@@ -5522,6 +5520,25 @@ def create_app(
             _runtime(request).workflow_summary_results(limit=limit, node_id=node_id),
             headers={"Cache-Control": "no-store"},
         )
+
+    @application.get("/v1/deployment/summary-service")
+    def workflow_summary_service(request: Request) -> JSONResponse:
+        # Operator-entered connection values must round-trip verbatim. Only the
+        # key-presence flag is returned; credentials never enter workflow graphs.
+        return JSONResponse(
+            _runtime(request).workflow_summary_service(),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.put("/v1/deployment/summary-service")
+    async def update_workflow_summary_service(request: Request) -> Any:
+        payload = await camera_payload(request)
+        async with application.state.fleet.control_lock:
+            await application.state.fleet.assert_can_disable_multicamera()
+            result = await camera_action(
+                _runtime(request).update_workflow_summary_service, payload,
+            )
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
     @application.put("/v1/analysis/settings")
     async def update_analysis_settings(request: Request) -> dict[str, Any]:
