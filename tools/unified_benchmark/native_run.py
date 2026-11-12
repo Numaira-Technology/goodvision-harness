@@ -627,6 +627,13 @@ def _reconcile_existing_phases(bundle, output, splits, cfg, bundle_digest, seale
             ledger.close()
 
 
+def _output_file_hash(path, ledger):
+    """Hash evidence. The open ledger is locked; Windows rejects a second open."""
+    if Path(path) == Path(ledger.path) and getattr(ledger, "file", None) is not None:
+        return ledger.file_hash()
+    return file_hash(path)
+
+
 def execute(alias, bundle, deployment, output, deployment_hash, *, phase, threshold_path=None,
             threshold_hash=None, port=8093, authorization, resume=False,
             backend_factory=NativeBackend, queue_factory=Queue):
@@ -778,7 +785,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     write_new(completion_path, {"execution_finished": True,
                         "final_missing_unique_units": result["final_missing_unique_units"],
                         "incomplete_questions": result["incomplete_questions"],
-                        "files": {str(p.relative_to(output)): file_hash(p) for p in files}, "at": stamp()})
+                        "files": {p.relative_to(output).as_posix(): _output_file_hash(p, ledger) for p in files}, "at": stamp()})
                 completed.append(split)
             except BaseException:
                 # Per-invocation partial report: never overwrite completed evidence.
