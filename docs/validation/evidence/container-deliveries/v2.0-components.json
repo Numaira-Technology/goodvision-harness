@@ -1,0 +1,101 @@
+{
+  "main": {
+    "name": "goodvision-main",
+    "version": "v2.0",
+    "image_build_version": "pr75-603f20d",
+    "images": [
+      {
+        "image": "goodvision-main:pr75-603f20d",
+        "image_id": "sha256:26b03fbe21d6be0f704554189abc5487e9997ca3129eead1ba093f67f548f307",
+        "revision": "603f20dc0089cc0b0f21429d8432f3c32aa4b2a6",
+        "size": 676032554
+      }
+    ],
+    "update_package": "goodvision-main-v2.0.zip",
+    "baseline_archive": "goodvision-pr75-amd64-complete.tar.gz"
+  },
+  "contour": {
+    "name": "goodvision-contour",
+    "version": "v2.0",
+    "image_build_version": "pr75-4c10721",
+    "images": [
+      {
+        "image": "goodvision-contour:pr75-4c10721-api",
+        "image_id": "sha256:6c2d506fa31da8699d9ba62db97f9171e609f635f2bc477e5f9dad34844a546c",
+        "revision": "4c1072144a7dc1241bccf35cc2941efb23c48125",
+        "size": 50748683
+      },
+      {
+        "image": "goodvision-contour:pr75-4c10721-engine",
+        "image_id": "sha256:a13ccf02181466e7cd4d3ec236b8ac336e816064be1917e2151f62a6ba537548",
+        "revision": "4c1072144a7dc1241bccf35cc2941efb23c48125",
+        "size": 9749960859
+      }
+    ],
+    "update_package": null,
+    "baseline_archive": "goodvision-pr75-amd64-complete.tar.gz"
+  },
+  "bbox": {
+    "name": "goodvision-bbox",
+    "version": "v2.0",
+    "image_build_version": "pr75-9a7dd24",
+    "images": [
+      {
+        "image": "goodvision-bbox:pr75-9a7dd24-cuda-amd64",
+        "image_id": "sha256:bedcc097ae196b9d2271cafd1cac3a944c19e7cb26b8332a9646ba41660f7141",
+        "revision": "9a7dd242960d57aa6c0dd264638031823e3c7e81",
+        "size": 9713476771
+      },
+      {
+        "image": "goodvision-bbox:pr75-9a7dd24-cpu-arm64",
+        "image_id": "sha256:2db54689806f03528a02ba4f6335a8ca8feb9bf4625d5855cf0c5ffc1de1ad04",
+        "revision": "9a7dd242960d57aa6c0dd264638031823e3c7e81",
+        "size": 501361466
+      },
+      {
+        "image": "goodvision-bbox:pr75-9a7dd24-cpu-amd64",
+        "image_id": "sha256:7b183bd0ed28723739c9371d049f17308f5ab7f8b21551c01d137fa89ae55c13",
+        "revision": "9a7dd242960d57aa6c0dd264638031823e3c7e81",
+        "size": 573602796
+      }
+    ],
+    "update_package": "goodvision-bbox-v2.0.zip",
+    "baseline_archive": "goodvision-pr75-amd64-complete.tar.gz"
+  },
+  "system1": {
+    "name": "goodvision-system1",
+    "version": "v2.0",
+    "image_build_version": "pr75-603f20d",
+    "images": [
+      {
+        "image": "goodvision-system1:pr75-603f20d",
+        "image_id": "sha256:b7e2098b9aa4e6dcf98810797d490df5993027db31e476ad22d326e73750f779",
+        "revision": "603f20dc0089cc0b0f21429d8432f3c32aa4b2a6",
+        "size": 10123564394
+      }
+    ],
+    "update_package": "goodvision-system1-v2.0.zip",
+    "baseline_archive": "goodvision-pr75-amd64-complete.tar.gz"
+  },
+  "gpu-runtime": {
+    "name": "goodvision-gpu-runtime",
+    "version": "v2.0",
+    "image_build_version": "pr75-4c10721",
+    "images": [
+      {
+        "image": "goodvision-gpu-runtime:pr75-4c10721-torch2.10-cu128",
+        "image_id": "sha256:b60f2440b80eb3483e7aaacdba3fb8e0a19b36e894c930ab904660e9ec081acf",
+        "revision": "4c1072144a7dc1241bccf35cc2941efb23c48125",
+        "size": 9525779053
+      },
+      {
+        "image": "goodvision-gpu-runtime:pr75-4c10721-torch2.8-cu128",
+        "image_id": "sha256:61d629ebeb68ac0700c396d325f04a650f1dde6253920acabdf88d231245ea98",
+        "revision": "4c1072144a7dc1241bccf35cc2941efb23c48125",
+        "size": 9311846725
+      }
+    ],
+    "update_package": null,
+    "baseline_archive": "goodvision-pr75-amd64-complete.tar.gz"
+  }
+}

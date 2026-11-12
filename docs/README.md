@@ -70,7 +70,7 @@
 
 | 资料 | 用途 |
 | --- | --- |
-| [Docker 模块命名目录](internal/docker-module-catalog.md) | `goodvision-xxx` 统一模块名称、安装器短 ID、镜像与源码映射、持久化位置及更新兼容边界。 |
+| [Docker 模块目录与版本 tracker](internal/docker-module-catalog.md) | `goodvision-xxx` 名称与职责、各模块独立版本、镜像 tag/ID、源码构建关系、变更、验证与部署状态；统一维护配置映射与历史兼容边界。 |
 | [推理路线目录](internal/route-catalog.md) | 内部映射与历史供应商比较，与客户文档分开维护。 |
 
 ## 新文档放哪里
