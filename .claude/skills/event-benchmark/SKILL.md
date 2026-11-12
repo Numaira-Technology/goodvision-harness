@@ -36,7 +36,9 @@ Another agent must read this file and its selected execution guide; discovering
 2. **Environment:** follow the execution route below. Verify pinned versions,
    credentials/access and hardware; do the authorized original warmup/smoke before
    evaluation. Offline checks do not prove a new GPU deployment can run.
-3. **Validation:** run the same frozen configuration on validation24. Preserve
+3. **Validation:** use validation24 by default. For a requested CLIP/SigLIP2
+   [bag validation supplement](../../../tools/unified_benchmark/NATIVE.md#optional-clipsiglip2-bag-validation),
+   use the frozen 44-question plan on 34 videos. Preserve
    receipts, complete scores, missing units and run identity.
 4. **Thresholds, when applicable:** use `bench-threshold-tune` and the route's own
    selector for Luna/CLIP/SigLIP2; require complete validation, then freeze the
@@ -50,7 +52,7 @@ Another agent must read this file and its selected execution guide; discovering
    Retain raw receipts, frozen inputs/configs and historical results.
 
 The [202 dataset guide](../../../tools/unified_benchmark/DATASET202.md) defines
-questions1–120 unchanged plus82 single views in test, while validation stays24.
+questions1–120 unchanged plus82 single views in test, with 24 base validation questions.
 Keep inherited/unreviewed labels explicit; preflight is not human review. Report
 original120 and robot82 separately alongside correct/202, and never count the old41
 stereo sources again. Do not tune on the new test questions.

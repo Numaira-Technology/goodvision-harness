@@ -35,12 +35,15 @@ fingerprints. Validate source-video groups across splits. Training/development,
 actor/scene and prior test-use limits must remain explicit; do not invent a clean
 training split or claim the reused test is untouched.
 
-Validation is 24 questions: six per base event, three positive and three negative.
-There is no bag validation. The new82 questions belong only to test and have
+Default validation is 24 questions: six per base event, three positive and three negative.
+The optional [CLIP/SigLIP2 bag supplement](../../../tools/unified_benchmark/NATIVE.md#optional-clipsiglip2-bag-validation)
+adds 20 validation questions on ten source clips. It requires complete validation44
+to freeze six per-event midpoints and records the supplement's reference provenance.
+The new82 questions belong only to test and have
 inherited, pending-review references; never use them for calibration. Incomplete validation stops calibration and test;
 a fixed baseline fallback needs an explicit separate experiment decision.
 The test and report entrypoints reject failed/null threshold artifacts before
-execution: successful selection, complete validation24 counts, matching frozen
+execution: successful selection, complete counts for the selected validation cohort, matching frozen
 plan/evidence identity and six finite event thresholds are required. The current
 execution/selection code must also match the bundle's frozen source fingerprints.
 
@@ -51,7 +54,7 @@ execution/selection code must also match the bundle's frozen source fingerprints
 | Qwen / Gemini / Llama | Hard boolean output; no numerical threshold to tune. Validation compares prompt/effort settings. |
 | VideoJev / Decision3 | Native yes/no/unknown argmax; no scalar threshold. |
 
-Bag thresholds stay Luna 0.5 and CLIP/SigLIP2 0, explicitly uncalibrated. Do not
+With default validation24, bag thresholds stay Luna 0.5 and CLIP/SigLIP2 0, explicitly uncalibrated. Do not
 borrow a base-class threshold or label these bag settings validation-selected.
 See [algorithm details](references/protocol.md) for interval boundaries.
 
