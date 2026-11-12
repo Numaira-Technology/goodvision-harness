@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tarfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -900,3 +901,94 @@ def test_real_client_downloads_env_in_parallel_ranges(pack, tmp_path, monkeypatc
     es.pull_env(env, client=boto, bucket="synthetic", scratch=tmp_path / "scratch")
     assert len(boto.ranges) == -(-len(data) // 97)
     assert es._already_restored(env)
+
+
+def _gz_tar(path, entries, *, members=1):
+    """Write a tar of (TarInfo, data) entries, gzip-compressed in ``members`` parts."""
+    import gzip
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tf:
+        for info, data in entries:
+            tf.addfile(info, io.BytesIO(data) if data is not None else None)
+    raw = buf.getvalue()
+    step = -(-len(raw) // members)
+    with open(path, "wb") as out:
+        for i in range(0, len(raw), step):
+            out.write(gzip.compress(raw[i : i + step]))
+    return raw
+
+
+def _file(name, data=b"x", mode=0o644):
+    info = tarfile.TarInfo(name)
+    info.size, info.mode = len(data), mode
+    return info, data
+
+
+def _core(extra=()):
+    return [
+        _file("bin/python", b"synthetic Python", 0o755),
+        _file("bin/conda-unpack", b"#!/bin/sh\n", 0o755),
+        _file("bin/activate", b"# activate\n"),
+        *extra,
+    ]
+
+
+@pytest.mark.parametrize("members", [1, 3])
+def test_inflater_streams_single_and_multi_member_gzip(tmp_path, members):
+    raw = _gz_tar(
+        tmp_path / "a.tar.gz",
+        _core([_file("big", os.urandom(300_000))]),
+        members=members,
+    )
+    with es._Inflater(tmp_path / "a.tar.gz") as reader:
+        assert reader.read() == raw
+
+
+@pytest.mark.parametrize(
+    "damage, error", [("truncate", EOFError), ("corrupt", zlib.error)]
+)
+def test_inflater_rejects_damaged_stream(tmp_path, damage, error):
+    path = tmp_path / "a.tar.gz"
+    _gz_tar(path, _core([_file("big", os.urandom(300_000))]))
+    data = bytearray(path.read_bytes())
+    if damage == "truncate":
+        data = data[: len(data) // 2]
+    else:
+        data[len(data) // 2] ^= 0xFF
+    path.write_bytes(bytes(data))
+    with pytest.raises(error), es._Inflater(path) as reader:
+        reader.read()
+    # tarfile may see the damage first as a bad header; either way it fails.
+    with pytest.raises((error, tarfile.ReadError)):
+        es._safe_extract(path, tmp_path / "out")
+
+
+def test_inflater_close_stops_helper_thread_early(tmp_path):
+    path = tmp_path / "a.tar.gz"
+    _gz_tar(path, _core([_file("big", os.urandom(4_000_000))]))
+    reader = es._Inflater(path)
+    reader.read(10)
+    reader.close()
+    assert not reader._thread.is_alive()
+
+
+def test_child_written_before_its_non_directory_parent_is_rejected(tmp_path):
+    path = tmp_path / "a.tar.gz"
+    _gz_tar(path, _core([_file("lib/x/y"), _file("lib/x")]))
+    with pytest.raises(ValueError, match="non-directory parent"):
+        es._safe_extract(path, tmp_path / "out")
+
+
+def test_directory_attributes_are_applied_after_contents_and_links(tmp_path):
+    path = tmp_path / "a.tar.gz"
+    share = tarfile.TarInfo("share")
+    share.type, share.mtime = tarfile.DIRTYPE, 1_000_000
+    alias = tarfile.TarInfo("share/alias")
+    alias.type, alias.linkname = tarfile.SYMTYPE, "doc"
+    _gz_tar(path, _core([(share, None), _file("share/doc"), (alias, None)]))
+    out = tmp_path / "out"
+    es._safe_extract(path, out)
+    assert (out / "share/alias").read_bytes() == b"x"
+    # Writing doc and alias would bump the mtime had it been set first.
+    assert (out / "share").stat().st_mtime == 1_000_000
