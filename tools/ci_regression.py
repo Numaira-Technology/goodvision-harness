@@ -266,12 +266,13 @@ def run_shard(directory: Path, index: int, count: int, seconds: float, tests=())
                 # one stack before the hard stop.
                 remaining = seconds - (time.monotonic() - started)
                 if remaining <= 0:
-                    record["timed_out"] = True
+                    # A failed diagnostic signal is not a completed timeout.
                     # Bootstrap keeps timeout stacks outside pytest capture.
                     try:
                         os.kill(child.pid, signal.SIGUSR1)
                     except ProcessLookupError:
                         pass
+                    record["timed_out"] = True
                     time.sleep(1)
                     break
                 try:
@@ -296,17 +297,6 @@ def run_shard(directory: Path, index: int, count: int, seconds: float, tests=())
                 if record["timed_out"]
                 else child.returncode
             )
-            # A diagnostic signal that lands after pytest has already recorded
-            # success must not fail the shard.
-            if (
-                code not in (124,)
-                and not record["cancelled_signal"]
-                and child.returncode is not None
-                and child.returncode < 0
-                and -child.returncode == signal.SIGUSR1
-                and _session_exit(directory) == 0
-            ):
-                code = 0
             record.update(
                 exit_code=code,
                 elapsed_seconds=time.monotonic() - started,

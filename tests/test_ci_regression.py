@@ -969,7 +969,7 @@ def test_stack_request_failure_still_cleans_and_records_failure(tmp_path, monkey
         assert (pid, sig) == (child.pid, signal.SIGUSR1)
         raise OSError("synthetic diagnostic failure")
 
-    ticks = iter([0, 61, 61])
+    ticks = iter([0, 961, 961])
     monkeypatch.setattr(runner, "_become_subreaper", lambda: None)
     monkeypatch.setattr(runner, "_snapshot", lambda stream: None)
     monkeypatch.setattr(runner, "_cleanup", cleanup)

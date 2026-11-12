@@ -21,12 +21,16 @@ def test_registry_ships_and_parses():
         "1c1a253bf90dfa66176124d25a48ffb791d517d5",
     )
     assert registry.env_of("videojev")["compat"]["gpu_family"] == "ada"
-    assert registry.env_of("clip") is None
+    clip = registry.env_of("clip")
+    assert clip["r2_key"] == "envs/clip/cu128-py312-torch280-ada.tar.gz"
+    assert clip["sha256"] == (
+        "7920dbee3e4f271434936e887ad39ab05bdb760c2f31adf8fdaac6ee864b06fa"
+    )
     assert "videojev" in registry.model_names()
     with pytest.raises(registry.RegistryError):
         registry.weights_of("does-not-exist")
     with pytest.raises(registry.RegistryError):
-        es.ensure_env("clip")
+        es.ensure_env("does-not-exist")
 
 
 @pytest.mark.parametrize(
