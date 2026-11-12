@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from PIL import Image, ImageOps
+from PIL import Image
 
 from .neural_calibration import (
     CALIBRATED_PROMPTS,
@@ -98,14 +98,7 @@ class Encoder:
 
     def prepare(self, image):
         images = [image] if isinstance(image, Image.Image) else image
-        padded = [
-            ImageOps.pad(
-                frame, (224, 224), method=Image.Resampling.BICUBIC,
-                color=(123, 117, 104),
-            )
-            for frame in images
-        ]
-        return self.processor(images=padded, return_tensors="pt")["pixel_values"]
+        return self.processor(images=images, return_tensors="pt")["pixel_values"]
 
     def score_batch(self, pixels, labels):
         torch = self.torch

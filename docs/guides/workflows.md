@@ -155,7 +155,7 @@ goodvision-neural --cache-dir /path/to/persistent/model-cache --port 8094
 
 This classifier compares fixed positive/negative visual prompts on every supplied
 image (one to four per window), retaining the strongest evidence for each event.
-It preserves the entire image with proportional 224-pixel padding. Similarity
+The pinned CLIP processor resizes and center-crops each decoded image. Similarity
 scores are not calibrated confidence and are not returned as event confidence.
 It does not reason about temporal motion or apply VLM instruction policies.
 The existing event confirmation pipeline still consumes its observations.
