@@ -40,7 +40,7 @@ def seal(bundle):
     manifest.write_text(
         json.dumps(
             {
-                str(p.relative_to(bundle)): file_hash(p)
+                p.relative_to(bundle).as_posix(): file_hash(p)
                 for p in bundle.rglob("*")
                 if p.is_file() and p != manifest
             }
@@ -145,14 +145,14 @@ def test_even_resealed_stale_or_changed_profiles_fail(frozen, change):
     report_path.write_text(json.dumps(report))
     seal(frozen)
     before = {
-        str(p.relative_to(frozen)): file_hash(p)
+        p.relative_to(frozen).as_posix(): file_hash(p)
         for p in frozen.rglob("*")
         if p.is_file()
     }
     with pytest.raises(ValueError, match="profile differs"):
         launcher._verify_eval_bundle(frozen, "both", registry.env_of("qwen8b-vllm"))
     assert before == {
-        str(p.relative_to(frozen)): file_hash(p)
+        p.relative_to(frozen).as_posix(): file_hash(p)
         for p in frozen.rglob("*")
         if p.is_file()
     }
