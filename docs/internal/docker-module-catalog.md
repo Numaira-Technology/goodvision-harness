@@ -166,7 +166,7 @@ Main 发布 V2.1 不会使 VideoJev、Bbox、Contour、CLIP 或 GPU 底座自动
 | `goodvision-bbox` | V2.0 | `goodvision-bbox:pr75-9a7dd24-{cuda-amd64,cpu-amd64,cpu-arm64}` | YOLO26-S 检测与追踪；`goodvision-bbox` | 已构建、已交付；CUDA/amd64 的 V2.0 GPU 推理与重启通过；其余类型不沿用此 GPU 结论 | 未核实 |
 | `goodvision-contour` | V2.0 | `goodvision-contour:pr75-4c10721-api` 与 `:pr75-4c10721-engine` | API 与推理引擎；`goodvision-contour-api`、`goodvision-contour-engine` | 两镜像已构建、已交付；V2.0 GPU 推理与重启通过 | 未核实 |
 | `goodvision-gpu-runtime` | V2.0 | `goodvision-gpu-runtime:pr75-4c10721-torch2.10-cu128` 与 `:pr75-4c10721-torch2.8-cu128` | PyTorch/CUDA 依赖镜像；**无常驻容器** | 已构建、已交付；RTX 5090 CUDA 算子检查通过，底座本身不代表业务模型推理通过 | 未核实镜像是否已导入 |
-| `goodvision-neural` | **V2.0**（首次独立交付） | `goodvision-neural:v2.0-603f20d-20261112` | `neural_service`、CLIP ViT-L/14；`goodvision-neural`，8098 | 已构建；本轮增补 ZIP 已生成并提供；139 项相关检查通过、2 项跳过；新容器真实 GPU 推理未验收 | 未安装验证；现场部署未知 |
+| `goodvision-neural` | **V2.0**（安装器交付修订 r2） | `goodvision-neural:v2.0-603f20d-20261112` | `neural_service`、CLIP ViT-L/14；`goodvision-neural`，8098 | 已构建；r2 修复首次失败后的端口重试；144 项相关检查通过、2 项跳过；新容器真实 GPU 推理未验收 | 未安装验证；现场部署未知 |
 
 `system1` 在旧安装器中是模块短 ID；服务是 VideoJev。旧共享镜像同时携带 CLIP 代码，
 但不会同时运行两个服务。V2.1 包的 `system1/update.json` 确实标记 artifact 版本 `v2.1`；
@@ -231,6 +231,20 @@ Main 发布 V2.1 不会使 VideoJev、Bbox、Contour、CLIP 或 GPU 底座自动
 VideoJev、Bbox、Contour 的配置、数据卷及密钥；不能因新增模块要求重新下载整包。
 
 ## 本轮独立 CLIP 构建与交付
+
+当前交付修订为 **V2.0-r2**，仅修复安装器在首次失败后调整宿主端口重试的流程。
+服务版本与镜像 ID 保持 V2.0；已成功、被自行修改或属于其他安装的配置仍会拒绝覆盖。
+[PR #109](https://github.com/Numaira-Technology/goodvision-harness/pull/109) 审阅指出此问题，
+修复提交为 `69e45012c2dbb94ef4f71489278cbd8d413ecca8`；新增五项回归测试，
+相关检查共 144 项通过、2 项跳过。r2 使用独立文件名，原包及原校验记录保留。
+[r2 发布清单](../validation/evidence/container-deliveries/neural-v2.0-r2-release.json)、
+[r2 交付校验](../validation/evidence/container-deliveries/neural-v2.0-r2-handoff.json)、
+[r2 验证范围](../validation/neural-container-v2.0-r2.json)。
+
+当前包：`dist/GoodVision-Neural-V2.0-r2.zip`，105854 bytes。
+SHA-256：`03a20c49ffdcbe1f4b59adbf804e46dede9a75ca2c0466b6136c304f3d17417d`。
+
+以下为首次交付的历史记录：
 
 交付文件为 `dist/GoodVision-Neural-V2.0.zip`，102,330 bytes（约 100 KB）。
 SHA-256：`d34923e75a921c7bda54dfe864702e5edf815d0605d9043fa82cb0da59b44de3`。
