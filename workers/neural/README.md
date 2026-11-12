@@ -3,6 +3,7 @@
 首次补装 `goodvision-neural`，运行 `openai/clip-vit-large-patch14`，服务端口 8098。
 沿用原 V2.0 CLIP 应用和模型，本次不升级 CLIP 算法。VideoJev 仍由
 `goodvision-system1` 独立运行，端口 8097。
+当前交付修订为 `V2.0-r2`：修复首次安装失败后的端口调整重试，服务和镜像仍为 V2.0。
 
 ## 安装
 
@@ -36,6 +37,8 @@ ID 及本包预构建 ID，服务版本均为 V2.0。
 安装会读取原 `state/settings.json` 和 `state/compose.main.json`，沿用原 GPU 编号、
 共享网络、Main 的 neural 网络别名和绑定地址。默认增加宿主端口 28098，
 如被其他程序占用，可在 install/start/status 命令均加 `--host-port 其他端口`。
+首次安装因端口占用失败后，可用新的 `--host-port` 重新执行 install；仅允许
+调整本安装器记录为未完成的配置中的宿主端口。已成功运行或自行修改的配置会保留。
 可先执行 `python neural_container.py plan --goodvision-dir "原目录"` 查看配置。
 
 安装器只生成 `state/compose.neural.json` 和 `state/neural-deployment.json`，
@@ -88,7 +91,8 @@ docker build --platform linux/amd64 --network none --pull=false \
 python3 tools/package_neural_container.py \
   --image goodvision-neural:v2.0-603f20d-20261112 \
   --baseline "/path/to/original/GoodVision/goodvision-system1-v2.0.zip" \
-  --output dist/GoodVision-Neural-V2.0
+  --output dist/GoodVision-Neural-V2.0-r2 \
+  --validation docs/validation/neural-container-v2.0-r2.json
 ```
 
 工具拒绝覆盖既有目录或 ZIP。后续版本独立发布，已交付包不覆盖同名重发。

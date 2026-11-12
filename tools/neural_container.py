@@ -7,6 +7,7 @@ The existing installer, settings, other containers and models are never rewritte
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import ipaddress
 import json
@@ -549,6 +550,27 @@ def verify_built_image(found, baseline):
     }
 
 
+def retry_port_change(saved, existing, document, info):
+    """Recover an unfinished install, allowing only its published port to change."""
+    if (
+        saved.get("status") not in ("prepared", "startup_failed")
+        or saved.get("module") != MODULE
+        or saved.get("version") != info["version"]
+        or saved.get("image") != info["image"]
+        or saved.get("compose") != existing
+    ):
+        return False
+    candidate = copy.deepcopy(document)
+    try:
+        previous_port = existing["services"]["neural"]["ports"][0]["published"]
+        if not 1 <= int(previous_port) <= 65535:
+            return False
+        candidate["services"]["neural"]["ports"][0]["published"] = previous_port
+    except (KeyError, IndexError, TypeError, ValueError):
+        return False
+    return candidate == existing
+
+
 def install(
     goodvision_dir,
     directory,
@@ -566,16 +588,19 @@ def install(
         state, document = deployment(goodvision_dir, info, host_port)
         compose = state / "compose.neural.json"
         marker = state / "neural-deployment.json"
+        write_configuration = not compose.exists()
         if compose.exists() or marker.exists():
-            if (
-                not compose.is_file()
-                or not marker.is_file()
-                or read(compose) != document
-                or read(marker).get("compose") != document
-            ):
+            if not compose.is_file() or not marker.is_file():
                 raise ValueError(
                     "Existing neural configuration differs; files left unchanged"
                 )
+            existing, saved = read(compose), read(marker)
+            if existing != document or saved.get("compose") != document:
+                if start_only or not retry_port_change(saved, existing, document, info):
+                    raise ValueError(
+                        "Existing neural configuration differs; files left unchanged"
+                    )
+                write_configuration = True
         elif start_only:
             raise ValueError("Install the independent neural container first")
         engine = docker.json(["info", "--format", "{{json .}}"])
@@ -646,7 +671,7 @@ def install(
         else:
             docker.image(info["image"])
         expected = actual or info["image"]
-        if not compose.exists():
+        if write_configuration:
             write_json(
                 marker,
                 record(info, document, "prepared", mode=mode, actual_image=actual),

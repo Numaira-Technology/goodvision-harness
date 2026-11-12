@@ -408,6 +408,46 @@ def test_customized_neural_config_is_not_overwritten(kit):
     assert neural.read(state / "compose.neural.json") == {"keep": "custom"}
 
 
+def test_failed_initial_install_can_retry_with_a_free_host_port(kit):
+    goodvision, state, directory, _ = kit
+    original = (state / "settings.json").read_bytes()
+    docker = FakeDocker(state)
+    docker.fail_up = True
+    with pytest.raises(subprocess.CalledProcessError):
+        neural.install(goodvision, directory, docker)
+    docker.fail_up = False
+    neural.install(goodvision, directory, docker, host_port=29098)
+    compose = neural.read(state / "compose.neural.json")
+    assert compose["services"]["neural"]["ports"][0]["published"] == "29098"
+    saved = neural.read(state / "neural-deployment.json")
+    assert saved["status"] == "healthy" and saved["compose"] == compose
+    assert (state / "settings.json").read_bytes() == original
+    neural.install(goodvision, directory, docker, start_only=True, host_port=29098)
+
+
+@pytest.mark.parametrize("mutation", ["healthy", "custom_mount", "foreign", "start"])
+def test_port_retry_does_not_replace_running_or_custom_deployments(kit, mutation):
+    goodvision, state, directory, info = kit
+    _, document = neural.deployment(goodvision, info)
+    saved = neural.record(info, document, "startup_failed")
+    if mutation == "healthy":
+        saved["status"] = "healthy"
+    elif mutation == "custom_mount":
+        document["services"]["neural"]["volumes"][0]["source"] = "/custom/models"
+    neural.write_json(state / "compose.neural.json", document)
+    neural.write_json(state / "neural-deployment.json", saved)
+    before = (state / "compose.neural.json").read_bytes()
+    docker = FakeDocker(state)
+    docker.foreign = mutation == "foreign"
+    with pytest.raises(ValueError):
+        neural.install(goodvision, directory, docker, host_port=29098,
+                       start_only=mutation == "start")
+    assert (state / "compose.neural.json").read_bytes() == before
+    assert not any(
+        call[0] in ("load", "build") or "up" in call for call in docker.calls
+    )
+
+
 @pytest.mark.parametrize(
     "mutation",
     ["main_url", "missing_model", "missing_person_model", "ambiguous_network"],
