@@ -449,7 +449,6 @@ def _upload(env_spec, name, tarball, compat, repo_rev, *, record, recipe_sha):
     for author inspection rather than risking deletion of a committed artifact.
     """
     registry.validate_env(env_spec)
-    _refuse_frozen_key(env_spec["r2_key"])
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
         raise ValueError("invalid model name")
     if compat != env_spec["compat"]:
@@ -458,6 +457,8 @@ def _upload(env_spec, name, tarball, compat, repo_rev, *, record, recipe_sha):
         _validate_record(record, env_spec, name, tarball, repo_rev, recipe_sha)
         sha, size = record["sha256"], record["size"]
         key = f"envs/{name}/{sha}.tar.gz"
+        # Refuse only the object about to be written. A new sha is a successor.
+        _refuse_frozen_key(key)
         manifest_key = f"envs/{name}/{sha}.json"
         manifest = {
             "name": name,
