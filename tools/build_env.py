@@ -27,6 +27,15 @@ from tools import env_source, model_source, registry
 # R2 documents create-once PutObject; do not assume multipart completion supports it.
 # https://developers.cloudflare.com/r2/api/s3/extensions/#conditional-operations-in-putobject
 MAX_PUT_SIZE = 5 * 1024**3 - 5 * 1024**2
+# Published objects. A new pack needs a new key; these must not be replaced.
+FROZEN_R2_KEYS = (
+    "envs/qwen8b/cu128-py312-torch280-ada.tar.gz",
+    "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz",
+    "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz",
+    "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz",
+    "envs/videojev/cu128-py312-torch280-ada.tar.gz",
+    "envs/clip/cu128-py312-torch280-ada.tar.gz",
+)
 MAX_BUILD_RECORD_SIZE = 64 * 1024
 REQUIREMENTS_DIRS = {
     "videojev": "videojev_probe",
@@ -43,6 +52,11 @@ FROZEN_R2_KEYS = (
     "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz",
 )
 _sha256 = env_source._sha256
+
+
+def _refuse_frozen_key(r2_key: str) -> None:
+    if r2_key in FROZEN_R2_KEYS:
+        sys.exit(f"refusing to upload over frozen env key {r2_key}")
 
 
 def _log(*a):
