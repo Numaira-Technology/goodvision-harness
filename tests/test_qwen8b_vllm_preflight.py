@@ -182,7 +182,7 @@ def test_changed_request_plan_fails_before_sending(frozen, change):
     if change == "unsealed":
         manifest = frozen / "bundle-files-sha256.json"
         hashes = json.loads(manifest.read_text())
-        del hashes[str(path.relative_to(frozen))]
+        del hashes[path.relative_to(frozen).as_posix()]
         manifest.write_text(json.dumps(hashes))
     with pytest.raises(ValueError):
         launcher._verify_eval_bundle(frozen, "both", registry.env_of("qwen8b-vllm"))
