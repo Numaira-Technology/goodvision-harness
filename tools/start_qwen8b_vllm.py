@@ -559,30 +559,32 @@ def main() -> int:
         print("Uploading repo...", flush=True)
         H._upload_repo(ssh)
         print(
-            "Prefetching pinned weights from R2 (same revision as HF run)...",
+            "Prefetching pinned weights (same revision as HF run) and restoring "
+            "the versioned vLLM packed env from R2, side by side...",
             flush=True,
         )
-        prefetch_models(
-            ssh_options=options,
-            host=host,
-            port=port,
-            remote_dir=H.REPO,
-            models=[(repo, rev)],
-            cache_dir=H.CACHE,
-            r2_env=r2_env,
-            python="python3",
-        )
-        print("Restoring versioned vLLM packed env from R2 (no GPU pip)...", flush=True)
-        activate = restore_env(
-            ssh_options=options,
-            host=host,
-            port=port,
-            name=ENV_NAME,
-            expected_env=env_spec,
-            remote_dir=H.REPO,
-            r2_env=r2_env,
-            python="python3",
-        )
+        activate = H.run_side_by_side(
+            weights=lambda: prefetch_models(
+                ssh_options=options,
+                host=host,
+                port=port,
+                remote_dir=H.REPO,
+                models=[(repo, rev)],
+                cache_dir=H.CACHE,
+                r2_env=r2_env,
+                python="python3",
+            ),
+            env=lambda: restore_env(
+                ssh_options=options,
+                host=host,
+                port=port,
+                name=ENV_NAME,
+                expected_env=env_spec,
+                remote_dir=H.REPO,
+                r2_env=r2_env,
+                python="python3",
+            ),
+        )["env"]
         _verify_restored_env(ssh, activate)
 
         snapshot = _remote_snapshot(ssh)

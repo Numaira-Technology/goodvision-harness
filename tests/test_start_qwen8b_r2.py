@@ -158,3 +158,48 @@ def test_provider_body_skips_selfhost_routing():
         {"config": {"transport": "openrouter", "provider": {"only": ["parasail"], "allow_fallbacks": False}}},
     )
     assert routed["provider"]["only"] == ["parasail"]
+
+
+def test_run_side_by_side_overlaps_env_and_weights():
+    """Env restore and weight prefetch must run at the same time."""
+    import threading
+
+    from tools import start_qwen8b_r2 as host
+
+    both = threading.Barrier(2, timeout=5)
+
+    def env():
+        both.wait()  # times out if the steps run one after another
+        return "/opt/env/bin/activate"
+
+    def weights():
+        both.wait()
+
+    assert host.run_side_by_side(env=env, weights=weights) == {
+        "env": "/opt/env/bin/activate",
+        "weights": None,
+    }
+
+
+def test_run_side_by_side_raises_first_failure_without_waiting():
+    import threading
+    import time
+
+    import pytest
+
+    from tools import start_qwen8b_r2 as host
+
+    release = threading.Event()
+
+    def weights():
+        raise RuntimeError("prefetch failed")
+
+    def env():
+        release.wait(5)
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="prefetch failed"):
+        host.run_side_by_side(env=env, weights=weights)
+    # The caller gets the error at once and can release the instance.
+    assert time.monotonic() - started < 2
+    release.set()

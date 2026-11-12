@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, build_opener
@@ -43,6 +44,26 @@ python3 -m pip install --break-system-packages --no-cache-dir \\
   boto3==1.43.123 PyYAML==6.0.2
 mkdir -p {REPO} {CACHE}
 """
+
+
+def run_side_by_side(**steps):
+    """Run independent remote setup steps at once; return results by name.
+
+    Restoring the packed env and prefetching weights use separate SSH
+    sessions and separate directories, so neither needs to wait for the
+    other: the env's unpack time hides behind the weight download. The first
+    failure is raised right away; the caller's cleanup releases the instance,
+    which also ends the other step's SSH session.
+    """
+    pool = ThreadPoolExecutor(max_workers=len(steps))
+    futures = {pool.submit(step): name for name, step in steps.items()}
+    try:
+        results = {}
+        for future in as_completed(futures):
+            results[futures[future]] = future.result()
+        return results
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _public_key(key_path: Path) -> str:
@@ -418,29 +439,34 @@ def main() -> int:
         S.run([*ssh, "bash -s"], input=BOOTSTRAP, timeout=15 * 60)
         print("Uploading repo...", flush=True)
         _upload_repo(ssh)
-        print("Restoring qwen8b packed env from R2...", flush=True)
-        activate = restore_env(
-            ssh_options=options,
-            host=host,
-            port=port,
-            name="qwen8b",
-            expected_env=env_spec,
-            remote_dir=REPO,
-            r2_env=r2_env,
-            python="python3",
+        print(
+            "Restoring qwen8b packed env and prefetching weights from R2 "
+            "(side by side)...",
+            flush=True,
         )
+        activate = run_side_by_side(
+            env=lambda: restore_env(
+                ssh_options=options,
+                host=host,
+                port=port,
+                name="qwen8b",
+                expected_env=env_spec,
+                remote_dir=REPO,
+                r2_env=r2_env,
+                python="python3",
+            ),
+            weights=lambda: prefetch_models(
+                ssh_options=options,
+                host=host,
+                port=port,
+                remote_dir=REPO,
+                models=[(repo, rev)],
+                cache_dir=CACHE,
+                r2_env=r2_env,
+                python="python3",
+            ),
+        )["env"]
         print(f"env python: {_packed_python(activate)}", flush=True)
-        print("Prefetching qwen8b weights from R2...", flush=True)
-        prefetch_models(
-            ssh_options=options,
-            host=host,
-            port=port,
-            remote_dir=REPO,
-            models=[(repo, rev)],
-            cache_dir=CACHE,
-            r2_env=r2_env,
-            python="python3",
-        )
         worker = _server_process(ssh, activate)
         state = _wait_ready(worker)
         print(
