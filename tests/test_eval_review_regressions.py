@@ -20,7 +20,7 @@ def no_network(monkeypatch):
 
 def seal(bundle):
     path = bundle / "bundle-files-sha256.json"
-    path.write_text(json.dumps({str(p.relative_to(bundle)): file_hash(p)
+    path.write_text(json.dumps({p.relative_to(bundle).as_posix(): file_hash(p)
                                for p in bundle.rglob("*") if p.is_file() and p != path}))
 
 
