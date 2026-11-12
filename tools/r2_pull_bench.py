@@ -4,6 +4,10 @@ Answers "is the remaining ceiling our Python downloader or the network?" by
 pulling the same pinned model several ways on the same machine:
 
     threads:FxS   model_source.pull_from_r2, F files in threads x S streams
+    env:NAME      env_source restore of NAME's packed env from models.yaml, timed
+                  per step (download, verify, extract, conda-unpack)
+    both:NAME     that env restore and the weight pull at the same time, as the
+                  qwen8b launchers now do
     procs:PxS     model_source.pull_from_r2, P processes x S streams
     s5cmd:WxC     s5cmd (Go) with W workers x C parts per file, then the same
                   size+sha256 check model_source does (timed separately)
@@ -56,6 +60,10 @@ S5CMD_SHA256 = "de0fdbfa3aceae55e069ba81a0fc17b2026567637603734a387b2fca06c299b4
 
 def parse_variant(text):
     kind, _, shape = text.partition(":")
+    if kind in {"env", "both"}:
+        if not shape or not all(c.isalnum() or c in "-_" for c in shape):
+            raise argparse.ArgumentTypeError(f"bad variant {text!r} (e.g. env:qwen8b)")
+        return kind, shape, None
     a, _, b = shape.partition("x")
     if kind not in {"threads", "procs", "s5cmd"} or not (a.isdigit() and b.isdigit()):
         raise argparse.ArgumentTypeError(f"bad variant {text!r} (e.g. threads:4x16)")
@@ -146,8 +154,8 @@ def box(argv):
     args = ap.parse_args(argv)
     os.environ.update(json.loads(sys.stdin.readline()))  # R2_* only, via stdin
     here = Path(__file__).resolve().parent
-    sys.path.insert(0, str(here))
-    import model_source as ms
+    sys.path.insert(0, str(here))  # uploaded tools/ package lives next to us
+    from tools import model_source as ms
 
     print(f"cpus={os.cpu_count()} disk={shutil.disk_usage(here).free / 1e9:.0f}GB")
     out = here / "bench-out"
@@ -157,6 +165,9 @@ def box(argv):
             os.environ.pop(name, None)
         note = ""
         t = time.monotonic()
+        if kind in {"env", "both"}:
+            _env_variant(kind, a, ms, args, out)
+            continue
         try:
             if kind == "s5cmd":
                 manifest, download = _pull_s5cmd(
@@ -182,6 +193,89 @@ def box(argv):
             flush=True,
         )
     shutil.rmtree(out, ignore_errors=True)
+
+
+def _env_variant(kind, name, ms, args, out):
+    """Time a packed-env restore, alone or beside the weight pull."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tools import env_source as es
+
+    env = es.registry.env_of(name)
+    prefix = Path(env["unpack_to"])
+    # Timing only: the cheap benchmark box need not match env.compat.gpu_family;
+    # download, verify, extract and conda-unpack do not touch the GPU.
+    es.check_compatibility = lambda env: None
+    steps, lock = {}, threading.Lock()
+
+    def timed(label, fn):
+        def wrapper(*a, **kw):
+            start = time.monotonic()
+            try:
+                return fn(*a, **kw)
+            finally:
+                with lock:
+                    steps[label] = steps.get(label, 0) + time.monotonic() - start
+
+        return wrapper
+
+    labels = {
+        "_sha256": "verify",
+        "_safe_extract": "extract",
+        "_run_unpack": "conda-unpack",
+    }
+    # Keep the originals once, so repeated variants never wrap a wrapper.
+    originals = es.__dict__.setdefault(
+        "_bench_originals", {attr: getattr(es, attr) for attr in labels}
+    )
+    for attr, label in labels.items():
+        setattr(es, attr, timed(label, originals[attr]))
+
+    class TimedClient:
+        def __init__(self, client):
+            self._client = client
+            self.download_file = timed("download", client.download_file)
+
+        def __getattr__(self, attr):
+            return getattr(self._client, attr)
+
+    def restore():
+        es.pull_env(env, client=TimedClient(ms.r2_client()))
+        return time.monotonic() - start
+
+    def weights():
+        for knob in ("R2_PULL_FILE_WORKERS", "R2_PULL_STREAMS", "R2_PULL_PROCESSES"):
+            os.environ.pop(knob, None)
+        ms.pull_from_r2(args.repo, args.revision, out)
+        return time.monotonic() - start
+
+    start = time.monotonic()
+    try:
+        shutil.rmtree(prefix, ignore_errors=True)
+        prefix.parent.mkdir(parents=True, exist_ok=True)
+        start = time.monotonic()
+        if kind == "env":
+            env_s = restore()
+            detail = ""
+        else:
+            with ThreadPoolExecutor(2) as pool:
+                env_f, w_f = pool.submit(restore), pool.submit(weights)
+                env_s, w_s = env_f.result(), w_f.result()
+            detail = f"; weights done at {w_s:.0f}s"
+    except Exception as e:  # no exception text (secrets)
+        print(f"RESULT {kind}:{name}: FAILED {type(e).__name__}", flush=True)
+        return
+    finally:
+        shutil.rmtree(prefix, ignore_errors=True)
+        shutil.rmtree(out, ignore_errors=True)
+    total = time.monotonic() - start
+    parts = ", ".join(f"{k} {v:.0f}s" for k, v in steps.items())
+    print(
+        f"RESULT {kind}:{name}: total {total:.0f}s; env done at {env_s:.0f}s "
+        f"({env['size'] / 1e9:.2f} GB: {parts}){detail}",
+        flush=True,
+    )
 
 
 # ------------------------------------------------------------------ laptop side
@@ -294,7 +388,8 @@ def rent(argv):
                 "-p",
                 str(port),
                 f"root@{host}",
-                f"mkdir -p {remote} && python3 -m pip install -q boto3 >/dev/null 2>&1",
+                f"mkdir -p {remote}/tools && touch {remote}/tools/__init__.py && "
+                "python3 -m pip install -q boto3 PyYAML >/dev/null 2>&1",
             ],
             timeout=600,
         )
@@ -304,13 +399,33 @@ def rent(argv):
                 *opts,
                 "-P",
                 str(port),
+                *(
+                    str(root / "tools" / name)
+                    for name in (
+                        "model_source.py",
+                        "env_source.py",
+                        "registry.py",
+                        "models.yaml",
+                    )
+                ),
+                f"root@{host}:{remote}/tools/",
+            ],
+            timeout=120,
+        )
+        S.run(
+            [
+                "scp",
+                *opts,
+                "-P",
+                str(port),
                 str(Path(__file__).resolve()),
-                str(root / "tools" / "model_source.py"),
                 f"root@{host}:{remote}/",
             ],
             timeout=120,
         )
-        variants = " ".join(f"{k}:{a}x{b}" for k, a, b in args.variants)
+        variants = " ".join(
+            f"{k}:{a}" if b is None else f"{k}:{a}x{b}" for k, a, b in args.variants
+        )
         creds = json.dumps({k: env[k] for k in R2_KEYS}) + "\n"
         S.run(
             [

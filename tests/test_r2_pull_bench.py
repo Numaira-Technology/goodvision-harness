@@ -11,9 +11,13 @@ def test_parse_variant_accepts_known_shapes():
     assert bench.parse_variant("threads:4x16") == ("threads", 4, 16)
     assert bench.parse_variant("procs:4x8") == ("procs", 4, 8)
     assert bench.parse_variant("s5cmd:16x16") == ("s5cmd", 16, 16)
+    assert bench.parse_variant("env:qwen8b") == ("env", "qwen8b", None)
+    assert bench.parse_variant("both:qwen8b-vllm") == ("both", "qwen8b-vllm", None)
 
 
-@pytest.mark.parametrize("bad", ["threads", "gpu:4x4", "procs:4", "s5cmd:ax2", ""])
+@pytest.mark.parametrize(
+    "bad", ["threads", "gpu:4x4", "procs:4", "s5cmd:ax2", "", "env:", "env:a;b"]
+)
 def test_parse_variant_rejects_garbage(bad):
     with pytest.raises(argparse.ArgumentTypeError):
         bench.parse_variant(bad)
