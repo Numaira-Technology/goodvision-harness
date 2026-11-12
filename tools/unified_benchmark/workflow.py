@@ -65,7 +65,7 @@ def verify_bundle(bundle):
                     if hashes.get(frame["path"]) != frame["sha256"]:
                         raise ValueError("unsealed bundle frame: " + frame["path"])
     for directory, expected in (("configs", expected_configs), ("plans", expected_plans)):
-        actual = {str(p.relative_to(bundle)) for p in (bundle / directory).glob("*.json")}
+        actual = {p.relative_to(bundle).as_posix() for p in (bundle / directory).glob("*.json")}
         if actual != expected:
             raise ValueError("bundle has unrecorded or missing " + directory)
     return file_hash(bundle / "bundle-files-sha256.json")

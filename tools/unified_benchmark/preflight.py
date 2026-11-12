@@ -231,7 +231,7 @@ def main(argv=None):
         report.update(offline_passed=False, formal_ready=False, error=type(error).__name__ + ": " + str(error))
     report["finished_at"] = datetime.now(timezone.utc).isoformat()
     write_new(out / "preflight.json", report)
-    write_new(out / "bundle-files-sha256.json", {str(p.relative_to(out)): file_hash(p) for p in sorted(out.rglob("*")) if p.is_file()})
+    write_new(out / "bundle-files-sha256.json", {p.relative_to(out).as_posix(): file_hash(p) for p in sorted(out.rglob("*")) if p.is_file()})
     print(json.dumps({k: report[k] for k in ("offline_passed", "formal_ready", "inference_calls")} | {"error": report.get("error")}), flush=True)
     return 0 if report["offline_passed"] else 1
 
