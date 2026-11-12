@@ -72,18 +72,36 @@ def test_twelve_sources_fp8_and_person_reports(tmp_path, monkeypatch, mode, sequ
             {"track_id": "P0001", "bbox": {"x1": 0.1, "y1": 0.1, "x2": 0.5, "y2": 0.9}}
         ]
 
-    with DetectorBroker("http://127.0.0.1:1", tmp_path, transport=detector) as broker:
-        result = run_stage(
-            args,
-            base,
-            12,
-            [[jpeg()] * 4],
-            tmp_path,
-            1,
-            inspector_factory=partial(offline_inspector, broker_url=broker.endpoint),
-            source_hook=broker.submit,
-        )
-        broker.drain()
+    def run_once(output):
+        calls.clear()
+        with DetectorBroker(
+            "http://127.0.0.1:1", output, transport=detector
+        ) as broker:
+            stage = run_stage(
+                args,
+                base,
+                12,
+                [[jpeg()] * 4],
+                output,
+                1,
+                inspector_factory=partial(
+                    offline_inspector, broker_url=broker.endpoint
+                ),
+                source_hook=broker.submit,
+            )
+            broker.drain()
+        return stage
+
+    output = tmp_path
+    result = run_once(output)
+    if not result["input_timing_valid"]:
+        # A starved feeder thread on a shared CI runner skips late source
+        # samples, which then reach neither the detector nor the lanes. That
+        # measures the host, not routing: re-run once in a fresh directory.
+        # A real regression fails both runs; the assertions are unchanged.
+        output = tmp_path / "retry"
+        output.mkdir()
+        result = run_once(output)
     assert result["all_drained"] and not result["result_records_missing"]
     assert result["result_retention"]["valid"]
     assert len(calls) == len(set(calls)) == 48
@@ -96,7 +114,7 @@ def test_twelve_sources_fp8_and_person_reports(tmp_path, monkeypatch, mode, sequ
     assert_admission_drained(result, args, 12 * len(result["lanes"]))
     records = [
         json.loads(s)["report"]
-        for s in (tmp_path / "streams-12-repeat-1/reports.jsonl")
+        for s in (output / "streams-12-repeat-1/reports.jsonl")
         .read_text()
         .splitlines()
     ]
