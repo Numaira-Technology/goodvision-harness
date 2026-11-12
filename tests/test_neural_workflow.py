@@ -604,6 +604,30 @@ def test_malformed_requests_fail_without_model_calls(mutation):
         assert client.post("/predict", json=payload).status_code == 400
 
 
+@pytest.mark.parametrize("size,status", [
+    ((318, 1), 200), ((1, 318), 200),
+    ((319, 1), 400), ((1, 319), 400),
+    ((4096, 1), 400), ((1, 4096), 400),
+])
+def test_checkpoint_resize_budget_is_checked_before_preprocessing(size, status):
+    _, payload, _ = client_and_request()
+    encoded = BytesIO()
+    Image.new("RGB", size).save(encoded, "JPEG")
+    payload["images"][0] = base64.b64encode(encoded.getvalue()).decode()
+    observed = []
+
+    class RecordingEncoder(Encoder):
+        def prepare(self, images):
+            observed.append([image.size for image in images])
+            return super().prepare(images)
+
+    with TestClient(create_app(RecordingEncoder())) as client:
+        assert client.post("/predict", json=payload).status_code == status
+    assert bool(observed) is (status == 200)
+    if observed:
+        assert observed[0][0] == size
+
+
 def test_invalid_model_scores_do_not_publish_negative_detection():
     _, payload, _ = client_and_request()
 

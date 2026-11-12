@@ -29,6 +29,10 @@ from .neural_calibration import (
     valid_sampling,
 )
 
+# Pinned CLIP checkpoint resizes the shortest edge before center cropping.
+_CLIP_RESIZE_EDGE = 224
+_MAX_IMAGE_PIXELS = 16_000_000
+
 PROMPTS = {
     "fight": (
         "People are physically fighting, punching or kicking each other.",
@@ -349,7 +353,10 @@ def create_app(encoder, *, max_batch_size=4):
                     ) as source:
                         if (
                             source.format != "JPEG"
-                            or source.width * source.height > 16_000_000
+                            or source.width * source.height > _MAX_IMAGE_PIXELS
+                            # Tiny extreme-aspect JPEGs can expand before cropping.
+                            or _CLIP_RESIZE_EDGE ** 2 * max(source.size)
+                            > _MAX_IMAGE_PIXELS * min(source.size)
                         ):
                             raise ValueError("invalid JPEG")
                         decoded.append(source.convert("RGB"))
