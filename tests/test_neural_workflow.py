@@ -14,7 +14,7 @@ import httpx
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
-from PIL import Image, ImageDraw
+from PIL import Image
 from test_vlm_independent import config, job
 
 from goodvision_harness.model_api import ModelAPISettings
@@ -45,88 +45,53 @@ def scene_processor_input(image):
     return observed if isinstance(image, list) else observed[0]
 
 
-@pytest.mark.parametrize("size,bounds", [
-    ((640, 360), (0, 49, 224, 175)),
-    ((360, 640), (49, 0, 175, 224)),
-    ((641, 359), (0, 50, 224, 175)),
-    ((80, 45), (0, 49, 224, 175)),
-    ((224, 224), (0, 0, 224, 224)),
-    ((448, 448), (0, 0, 224, 224)),
+@pytest.mark.parametrize("size", [
+    (640, 360), (360, 640), (641, 359), (80, 45), (224, 224), (448, 448),
 ])
-def test_scene_encoder_preserves_edges_and_proportions(size, bounds):
+def test_scene_encoder_passes_original_rgb_to_processor(size):
     width, height = size
     image = Image.new("RGB", size)
-    draw = ImageDraw.Draw(image)
-    colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
-    for (x, y), color in zip(
-        [(0, 0), (7 * width // 8, 0),
-         (0, 7 * height // 8), (7 * width // 8, 7 * height // 8)],
-        colors, strict=True,
-    ):
-        draw.rectangle((x, y, x + width // 8, y + height // 8), fill=color)
-    radius = min(size) // 8
-    draw.rectangle(
-        (width // 2 - radius, height // 2 - radius,
-         width // 2 + radius, height // 2 + radius), fill="white",
-    )
+    image.putpixel((0, 0), (255, 0, 0))
+    image.putpixel((width - 1, height - 1), (0, 255, 0))
     original = image.tobytes()
 
     processed = scene_processor_input(image)
 
     assert processed.mode == "RGB"
-    assert processed.size == (224, 224)
-    assert image.size == size and image.tobytes() == original
-    pixels = np.asarray(processed)
-    content = np.any(pixels != (123, 117, 104), axis=-1)
-    ys, xs = np.nonzero(content)
-    assert (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1) == bounds
-    left, top, right, bottom = bounds
-    for (x, y), color in zip(
-        [(left + 2, top + 2), (right - 3, top + 2),
-         (left + 2, bottom - 3), (right - 3, bottom - 3)],
-        colors, strict=True,
-    ):
-        assert processed.getpixel((x, y)) == color
-    # A square landmark must remain square, including on portrait inputs.
-    ys, xs = np.nonzero(np.all(pixels > 245, axis=-1))
-    assert abs((xs.max() - xs.min()) - (ys.max() - ys.min())) <= 1
+    assert processed.size == size
+    assert processed.tobytes() == original
 
 
-def test_scene_padding_keeps_the_manually_selected_stereo_view():
+@pytest.mark.parametrize("mode,start", [("left_half", 0), ("right_half", 640)])
+def test_scene_encoder_passes_selected_stereo_view_to_processor(mode, start):
     from goodvision_harness.frame_crop import FrameCropSelector
     from goodvision_harness.video_to_stream import LiveFrame
 
     stereo = np.zeros((360, 1280, 3), dtype=np.uint8)
-    stereo[:, :320] = (0, 0, 255)  # Left edge of the chosen view, in BGR.
-    stereo[:, 320:640] = (0, 255, 0)  # Right edge of the same view.
-    stereo[:, 640:] = (255, 0, 0)  # Other camera; must not reach CLIP.
-    frame, = FrameCropSelector("left_half").frames(
+    stereo[:, :320] = (0, 0, 255)
+    stereo[:, 320:640] = (0, 255, 0)
+    stereo[:, 640:960] = (255, 0, 0)
+    stereo[:, 960:] = (0, 255, 255)
+    expected_rgb = stereo[:, start:start + 640, ::-1].copy()
+    frame, = FrameCropSelector(mode).frames(
         iter([LiveFrame(7, 1.5, stereo)]), stopped=lambda: False,
     )
     processed = scene_processor_input(Image.fromarray(frame.bgr[:, :, ::-1]))
 
     assert (frame.index, frame.timestamp_seconds) == (7, 1.5)
-    assert processed.size == (224, 224)
-    assert processed.getpixel((0, 112)) == (255, 0, 0)
-    assert processed.getpixel((223, 112)) == (0, 255, 0)
-    assert not np.any(np.all(np.asarray(processed) == (0, 0, 255), axis=-1))
+    assert processed.size == (640, 360)
+    np.testing.assert_array_equal(np.asarray(processed), expected_rgb)
 
 
-def test_scene_encoder_pads_every_frame_in_a_mixed_window():
+def test_scene_encoder_passes_window_frames_in_order():
     colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
     sizes = [(640, 360), (360, 640), (224, 224), (80, 45)]
     images = [Image.new("RGB", size, color)
               for size, color in zip(sizes, colors, strict=True)]
     processed = scene_processor_input(images)
 
-    assert len(processed) == len(images)
-    for image, color in zip(processed, colors, strict=True):
-        assert image.mode == "RGB"
-        assert image.size == (224, 224)
-        assert image.getpixel((112, 112)) == color
-    assert processed[0].getpixel((112, 0)) == (123, 117, 104)
-    assert processed[1].getpixel((0, 112)) == (123, 117, 104)
-    assert [image.size for image in images] == sizes
+    assert [frame.size for frame in processed] == sizes
+    assert [frame.getpixel((0, 0)) for frame in processed] == colors
 
 
 @pytest.mark.parametrize("failure", [False, True])
