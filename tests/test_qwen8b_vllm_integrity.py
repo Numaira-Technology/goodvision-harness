@@ -36,7 +36,7 @@ def no_external_calls(monkeypatch):
 
 def seal(bundle):
     manifest = bundle / "bundle-files-sha256.json"
-    manifest.write_text(json.dumps({str(p.relative_to(bundle)): file_hash(p)
+    manifest.write_text(json.dumps({p.relative_to(bundle).as_posix(): file_hash(p)
         for p in bundle.rglob("*") if p.is_file() and p != manifest}))
 
 
@@ -177,7 +177,7 @@ def test_changed_request_plan_fails_before_sending(frozen, change):
     if change == "unsealed":
         manifest = frozen / "bundle-files-sha256.json"
         hashes = json.loads(manifest.read_text())
-        del hashes[str(path.relative_to(frozen))]
+        del hashes[path.relative_to(frozen).as_posix()]
         manifest.write_text(json.dumps(hashes))
     expected = {
         "request": "request fingerprint differs",

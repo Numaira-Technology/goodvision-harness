@@ -36,7 +36,7 @@ def _model_records(bundle, report, hashes):
     lineage_name = "provenance/vllm-bundle-conversion.json"
     if lineage_name not in hashes:
         return models
-    lineage = json.loads((bundle / lineage_name).read_text())
+    lineage = json.loads((bundle / lineage_name).read_text(encoding="utf-8"))
     source_seal = "provenance/source-bundle-files-sha256.json"
     host, target = "qwen8b_r2_host", "qwen8b_r2_vllm"
     if (
@@ -48,7 +48,7 @@ def _model_records(bundle, report, hashes):
         or target in models
     ):
         raise ValueError("invalid derived preflight lineage")
-    inherited = json.loads((bundle / source_seal).read_text())
+    inherited = json.loads((bundle / source_seal).read_text(encoding="utf-8"))
     additions = {lineage_name, source_seal, f"configs/{target}.json"} | {
         f"plans/{target}-{split}.json" for split in ("validation", "test")
     }
@@ -60,8 +60,8 @@ def _model_records(bundle, report, hashes):
         raise ValueError("derived bundle changed inherited evidence")
     if inherited.get("preflight.json") != hashes["preflight.json"]:
         raise ValueError("derived preflight differs from source")
-    source_cfg = json.loads((bundle / f"configs/{host}.json").read_text())
-    target_cfg = json.loads((bundle / f"configs/{target}.json").read_text())
+    source_cfg = json.loads((bundle / f"configs/{host}.json").read_text(encoding="utf-8"))
+    target_cfg = json.loads((bundle / f"configs/{target}.json").read_text(encoding="utf-8"))
     if (
         lineage.get("source_profile_sha256") != digest(source_cfg)
         or lineage.get("derived_profile_sha256") != digest(target_cfg)
@@ -70,7 +70,7 @@ def _model_records(bundle, report, hashes):
         raise ValueError("derived profile identity differs")
     models[target] = {}
     for split in ("validation", "test"):
-        original = json.loads((bundle / f"plans/{host}-{split}.json").read_text())
+        original = json.loads((bundle / f"plans/{host}-{split}.json").read_text(encoding="utf-8"))
         derived = {**original, "config_sha256": digest(target_cfg)}
         models[target][split] = {"plan_sha256": digest(derived)}
     return models
@@ -93,7 +93,7 @@ def _verify_plan_bindings(bundle, report, hashes, frozen_rules):
         expected_configs.add(config_name)
         if config_name not in hashes:
             raise ValueError("unsealed bundle config: " + config_name)
-        config = json.loads((bundle / config_name).read_text())
+        config = json.loads((bundle / config_name).read_text(encoding="utf-8"))
         if not isinstance(config, dict) or config.get("alias") != alias:
             raise ValueError("preflight config identity differs: " + config_name)
         for split, recorded in phases.items():
@@ -101,7 +101,7 @@ def _verify_plan_bindings(bundle, report, hashes, frozen_rules):
             expected_plans.add(name)
             if name not in hashes:
                 raise ValueError("unsealed bundle plan: " + name)
-            plan = json.loads((bundle / name).read_text())
+            plan = json.loads((bundle / name).read_text(encoding="utf-8"))
             planned_rules = None
             if isinstance(plan, dict):
                 try:
@@ -137,7 +137,7 @@ def _verify_plan_bindings(bundle, report, hashes, frozen_rules):
 
 def verify_bundle(bundle):
     bundle = Path(bundle)
-    hashes = json.loads((bundle / "bundle-files-sha256.json").read_text())
+    hashes = json.loads((bundle / "bundle-files-sha256.json").read_text(encoding="utf-8"))
     if not isinstance(hashes, dict):
         raise ValueError("bundle integrity record must be a mapping")
     inventory = set()
@@ -157,7 +157,7 @@ def verify_bundle(bundle):
         path = bundle / name
         if file_hash(path) != expected:
             raise ValueError("bundle file differs: " + name)
-    frozen_rules = json.loads((bundle / "rules.json").read_text())
+    frozen_rules = json.loads((bundle / "rules.json").read_text(encoding="utf-8"))
     try:
         expected_rules = rules_for(frozen_rules.get("version"))
     except (ValueError, AttributeError) as error:
@@ -170,12 +170,12 @@ def verify_bundle(bundle):
             "bundle protocol differs; use its retained source snapshot "
             "for historical replay"
         )
-    report = json.loads((bundle / "preflight.json").read_text())
+    report = json.loads((bundle / "preflight.json").read_text(encoding="utf-8"))
     if not report.get("offline_passed"):
         raise ValueError("offline preflight not passed")
     if not {"rules.json", "preflight.json", "source-hashes.json"} <= set(hashes):
         raise ValueError("bundle is missing required integrity records")
-    sources = json.loads((bundle / "source-hashes.json").read_text())
+    sources = json.loads((bundle / "source-hashes.json").read_text(encoding="utf-8"))
     active = source_files()
     if set(sources) != set(active) or report.get("sources_sha256") != digest(sources):
         raise ValueError(
@@ -199,7 +199,7 @@ def load_threshold_artifact(path, expected_hash, *, bundle, alias, config, bundl
     """Reject failed calibration before execution or offline test reporting."""
     if not path or not expected_hash or file_hash(path) != expected_hash:
         raise ValueError("test requires frozen validation thresholds and their SHA256")
-    artifact = json.loads(Path(path).read_text())
+    artifact = json.loads(Path(path).read_text(encoding="utf-8"))
     if (not isinstance(artifact, dict) or artifact.get("validation_only") is not True
             or artifact.get("calibration") != "selected_on_complete_validation24"):
         raise ValueError("successful validation-only calibration required; test blocked")
@@ -213,7 +213,7 @@ def load_threshold_artifact(path, expected_hash, *, bundle, alias, config, bundl
                         "incomplete_questions": 0, "final_missing_unique_units": 0}
     if artifact.get("validation_summary") != expected_summary:
         raise ValueError("complete validation24 evidence required; test blocked")
-    plan = json.loads((Path(bundle) / "plans" / f"{alias}-validation.json").read_text())
+    plan = json.loads((Path(bundle) / "plans" / f"{alias}-validation.json").read_text(encoding="utf-8"))
     evidence_hash = artifact.get("validation_evidence_sha256")
     if (plan.get("split") != "validation" or len(plan.get("questions", [])) != 24
             or artifact.get("validation_plan_sha256") != digest(plan)
@@ -282,8 +282,8 @@ def main(argv=None):
     args = p.parse_args(argv)
     bundle_digest = verify_bundle(args.bundle)
     split = "validation" if args.phase == "select" else "test"
-    plan = json.loads((args.bundle / "plans" / f"{args.model}-{split}.json").read_text())
-    config = json.loads((args.bundle / "configs" / f"{args.model}.json").read_text())
+    plan = json.loads((args.bundle / "plans" / f"{args.model}-{split}.json").read_text(encoding="utf-8"))
+    config = json.loads((args.bundle / "configs" / f"{args.model}.json").read_text(encoding="utf-8"))
     thresholds = {e: .5 for e in EVENTS}  # unused for native argmax / hard JSON answers
     if args.phase == "report" and config["kind"] in ("margin", "probability"):
         artifact = load_threshold_artifact(args.thresholds, args.thresholds_sha256,

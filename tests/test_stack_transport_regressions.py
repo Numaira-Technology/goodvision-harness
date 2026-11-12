@@ -1,6 +1,7 @@
 """Offline producer/consumer regressions found in independent stack review."""
 
 import io
+import os
 import shlex
 import subprocess
 import sys
@@ -142,6 +143,7 @@ def test_cloud_redirect_never_forwards_bearer_key():
         )
 
 
+@pytest.mark.skipif(os.name != "posix", reason="the diagnostic script is a POSIX bash source command")
 def test_diagnostic_uses_activate_sibling_and_stops_if_activation_fails(tmp_path):
     packed_python = tmp_path / "prefix/bin/python"
     remote = diag._old_verify_remote(str(packed_python))
@@ -153,6 +155,7 @@ def test_diagnostic_uses_activate_sibling_and_stops_if_activation_fails(tmp_path
     assert result.returncode != 0 and not marker.exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="the probe script is executed by bash with a POSIX interpreter path")
 def test_new_diagnostic_uses_isolated_packed_prefix(monkeypatch):
     monkeypatch.setenv("PYTHONPATH", "/synthetic/injection")
     remote = diag._isolated_probe_remote(sys.executable, "print('synthetic-probe-ok')")
