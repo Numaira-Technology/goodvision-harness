@@ -2,13 +2,47 @@
 
 from __future__ import annotations
 
+import faulthandler
 import json
+import os
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
 from tools.ci_regression import shard_for
+
+# GitHub cancels a job that reaches its timeout-minutes and keeps no log for
+# it, so a hung Windows shard leaves nothing to diagnose. On Windows CI only,
+# end the shard first: dump every thread and exit nonzero, keeping the log.
+_WATCHDOG_ARMED = "GOODVISION_CI_WATCHDOG_ARMED"
+_WATCHDOG_SECONDS = 20 * 60
+
+
+def _arm_windows_watchdog(config):
+    if os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    if os.environ.get(_WATCHDOG_ARMED):
+        return  # nested in-process or child pytest sessions
+    os.environ[_WATCHDOG_ARMED] = "1"
+    # Same approach as pytest's faulthandler plugin: duplicate the real stderr
+    # now, before test capture can redirect file descriptor 2.
+    stream = os.fdopen(os.dup(2), "w", buffering=1)
+
+    def expire():
+        stream.write(
+            f"\n[ci watchdog] shard exceeded {_WATCHDOG_SECONDS}s; last stage: "
+            f"{getattr(config, '_ci_last_stage', None)}\n"
+        )
+        stream.flush()
+        faulthandler.dump_traceback(file=stream, all_threads=True)
+        stream.flush()
+        os._exit(3)
+
+    timer = threading.Timer(_WATCHDOG_SECONDS, expire)
+    timer.daemon = True
+    timer.start()
 
 
 def pytest_addoption(parser):
@@ -28,9 +62,12 @@ def pytest_configure(config):
     directory.mkdir(parents=True, exist_ok=True)
     config._ci_progress = (directory / "progress.jsonl").open("a", buffering=1)
     _record(config, event="configured", shard=index, shards=count)
+    _arm_windows_watchdog(config)
 
 
 def _record(config, **value):
+    if value.get("event") == "stage":
+        config._ci_last_stage = f"{value['nodeid']} ({value['stage']})"
     value["time_unix"] = time.time()
     config._ci_progress.write(json.dumps(value, ensure_ascii=True) + "\n")
 
