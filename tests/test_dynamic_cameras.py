@@ -105,6 +105,21 @@ def test_broken_registry_is_not_silently_overwritten(monkeypatch, tmp_path):
         manager(app, tmp_path)
 
 
+@pytest.mark.parametrize("provisioned,saved,total", [(3, 2, 3), (2, 4, 4)])
+def test_saved_registry_allows_provisioned_capacity_changes(
+    monkeypatch, tmp_path, provisioned, saved, total,
+):
+    app = make_app(monkeypatch, capacity=provisioned)
+    path = tmp_path / "video-sources.json"
+    path.write_text(json.dumps({"schema_version": 1, "capacity": saved}))
+    cameras = manager(app, tmp_path)
+    assert app.state.fleet.capacity == total
+    assert cameras.base_capacity == provisioned
+    assert not cameras.owns(provisioned)
+    assert cameras.owns(total + 1)
+    assert json.loads(path.read_text())["capacity"] == saved
+
+
 def test_registry_write_failure_rolls_back_worker_and_capacity(monkeypatch, tmp_path):
     app = make_app(monkeypatch, capacity=1)
     cameras = manager(app, tmp_path)

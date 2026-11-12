@@ -303,6 +303,10 @@ container replacement and restart. Existing launcher-provisioned peers retain
 their original destinations. New cameras start disconnected with analysis stopped.
 Removing a Source from a workflow leaves its saved channel available for reuse.
 Worker failures are reported and the next request restarts the affected process.
+Increasing the provisioned capacity does not invalidate an existing source registry.
+Workers refresh the shared people library once per second after face recognition
+has initialized. Enrollment and deletion update their recognition snapshots and
+invalidate obsolete identity/display results without restarting the workers.
 
 Video connection, Summary, face and Bbox workflows do not reserve Contour lanes.
 Contour admission still checks the actual tracking server capacity when enabled.

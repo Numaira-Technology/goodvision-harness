@@ -41,10 +41,10 @@ class DynamicCameras:
                 not isinstance(value, dict)
                 or value.get("schema_version") != 1
                 or type(value.get("capacity")) is not int
-                or value["capacity"] < self.base_capacity
+                or value["capacity"] < 1
             ):
                 raise ValueError("invalid video source registry")
-            fleet.capacity = value["capacity"]
+            fleet.capacity = max(self.base_capacity, value["capacity"])
 
     def owns(self, index):
         return index > self.base_capacity

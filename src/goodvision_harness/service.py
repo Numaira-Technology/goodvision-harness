@@ -1901,25 +1901,53 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             deleted = self._ensure_face_runtime().delete_person(person_id)
             if deleted:
                 self._invalidate_fast_face_gallery()
-                with self._state_lock:
-                    targets = [(self._session, self._scene)]
-                    targets.extend(
-                        (run.session, run.scene)
-                        for run in self._run_postprocess.values()
-                        if run.state != "finalized" and run.session is not None
-                    )
-                seen = set()
-                for session, scene in targets:
-                    if session is None or id(session) in seen:
-                        continue
-                    seen.add(id(session))
-                    registry = getattr(session, "person_registry", None)
-                    if registry is not None:
-                        registry.forget_person(person_id)
-                    if scene is not None:
-                        scene.forget_identity(person_id)
-                self._camera_display_metadata.forget_identity(person_id)
+                self._forget_face_identity(person_id)
             return deleted
+
+    def _forget_face_identity(self, person_id):
+        with self._state_lock:
+            targets = [(self._session, self._scene)]
+            targets.extend(
+                (run.session, run.scene)
+                for run in self._run_postprocess.values()
+                if run.state != "finalized" and run.session is not None
+            )
+        seen = set()
+        for session, scene in targets:
+            if session is None or id(session) in seen:
+                continue
+            seen.add(id(session))
+            registry = getattr(session, "person_registry", None)
+            if registry is not None:
+                registry.forget_person(person_id)
+            if scene is not None:
+                scene.forget_identity(person_id)
+        self._camera_display_metadata.forget_identity(person_id)
+
+    def refresh_face_gallery(self):
+        # Each process owns its recognition/identity caches, even when the
+        # underlying gallery is shared with the primary console.
+        with self._identity_control_lock:
+            if not isinstance(self._face_runtime, FaceRecognitionRuntime):
+                return
+            changed = self._face_runtime.gallery.refresh()
+            if changed is None:
+                return
+            previous, current = changed
+            self._invalidate_fast_face_gallery()
+            old = {entry[0]: entry for entry in previous.entries}
+            new = {entry[0]: entry for entry in current.entries}
+            for person_id in old:
+                if old[person_id] != new.get(person_id):
+                    self._forget_face_identity(person_id)
+            for person_id in new:
+                if new[person_id] != old.get(person_id):
+                    with self._state_lock:
+                        registry = getattr(self._session, "person_registry", None)
+                        self._observe_scene("allow_identity", person_id)
+                    if registry is not None:
+                        registry.allow_person(person_id)
+                    self._camera_display_metadata.allow_identity(person_id)
 
     def _invalidate_fast_face_gallery(self) -> None:
         if isinstance(self._face_runtime, FaceRecognitionRuntime):
@@ -4957,9 +4985,31 @@ def create_app(
                 )
         runtime.start()
         start_resource_sampling()
+
+        gallery_shutdown = asyncio.Event()
+
+        async def refresh_shared_gallery():
+            while True:
+                try:
+                    await asyncio.wait_for(gallery_shutdown.wait(), timeout=1)
+                    return
+                except asyncio.TimeoutError:
+                    pass
+                try:
+                    await asyncio.to_thread(runtime.refresh_face_gallery)
+                except Exception:
+                    LOGGER.warning("could not refresh shared face gallery")
+
+        gallery_refresh = (
+            asyncio.create_task(refresh_shared_gallery())
+            if callable(getattr(runtime, "refresh_face_gallery", None)) else None
+        )
         try:
             yield
         finally:
+            gallery_shutdown.set()
+            if gallery_refresh is not None:
+                await gallery_refresh
             stop_resource_sampling()
             await application.state.local_cameras.aclose()
             runtime.stop()
