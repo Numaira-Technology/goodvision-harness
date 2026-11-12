@@ -12,6 +12,7 @@ def test_parse_variant_accepts_known_shapes():
     assert bench.parse_variant("procs:4x8") == ("procs", 4, 8)
     assert bench.parse_variant("s5cmd:16x16") == ("s5cmd", 16, 16)
     assert bench.parse_variant("env:qwen8b") == ("env", "qwen8b", None)
+    assert bench.parse_variant("envold:qwen8b") == ("envold", "qwen8b", None)
     assert bench.parse_variant("both:qwen8b-vllm") == ("both", "qwen8b-vllm", None)
 
 

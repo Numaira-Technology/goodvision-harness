@@ -6,6 +6,8 @@ pulling the same pinned model several ways on the same machine:
     threads:FxS   model_source.pull_from_r2, F files in threads x S streams
     env:NAME      env_source restore of NAME's packed env from models.yaml, timed
                   per step (download, verify, extract, conda-unpack)
+    envold:NAME   the same with the previous single download_file call, for a
+                  same-box before/after of the env download
     both:NAME     that env restore and the weight pull at the same time, as the
                   qwen8b launchers now do
     procs:PxS     model_source.pull_from_r2, P processes x S streams
@@ -63,7 +65,7 @@ S5CMD_SHA256 = "de0fdbfa3aceae55e069ba81a0fc17b2026567637603734a387b2fca06c299b4
 
 def parse_variant(text):
     kind, _, shape = text.partition(":")
-    if kind in {"env", "both"}:
+    if kind in {"env", "envold", "both"}:
         if not shape or not all(c.isalnum() or c in "-_" for c in shape):
             raise argparse.ArgumentTypeError(f"bad variant {text!r} (e.g. env:qwen8b)")
         return kind, shape, None
@@ -172,7 +174,7 @@ def box(argv):
             os.environ.pop(name, None)
         note = ""
         t = time.monotonic()
-        if kind in {"env", "both"}:
+        if kind in {"env", "envold", "both"}:
             _env_variant(kind, a, ms, args, out, env_root=args.env_root)
             continue
         try:
@@ -244,16 +246,26 @@ def _env_variant(kind, name, ms, args, out, env_root=None):
     for attr, label in labels.items():
         setattr(es, attr, timed(label, originals[attr]))
 
-    class TimedClient:
+    class OldPathClient:
+        """Not a botocore client, so env_source takes its single download_file."""
+
         def __init__(self, client):
             self._client = client
-            self.download_file = timed("download", client.download_file)
+            self.download_file = timed("download(single)", client.download_file)
 
         def __getattr__(self, attr):
             return getattr(self._client, attr)
 
+    real_download = es.model_source.__dict__.setdefault(
+        "_bench_download_object", es.model_source.download_object
+    )
+    es.model_source.download_object = timed("download(parallel)", real_download)
+
     def restore():
-        es.pull_env(env, client=TimedClient(ms.r2_client()))
+        client = ms.r2_client()  # real boto3 client -> parallel ranged download
+        if kind == "envold":
+            client = OldPathClient(client)
+        es.pull_env(env, client=client)
         return time.monotonic() - start
 
     def weights():
@@ -267,7 +279,7 @@ def _env_variant(kind, name, ms, args, out, env_root=None):
         shutil.rmtree(prefix, ignore_errors=True)
         prefix.parent.mkdir(parents=True, exist_ok=True)
         start = time.monotonic()
-        if kind == "env":
+        if kind in {"env", "envold"}:
             env_s = restore()
             detail = ""
         else:
