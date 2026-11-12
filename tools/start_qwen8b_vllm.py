@@ -227,6 +227,11 @@ def _server_process(ssh, activate: str, snapshot: str, log_path: Path | None = N
     logf = None
     if log_path is not None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Never replace retained evidence. POSIX O_EXCL already refuses any
+        # existing path, including a dangling symlink; Windows follows a
+        # dangling link and creates its target, so check the link itself too.
+        if log_path.is_symlink() or log_path.exists():
+            raise FileExistsError(f"server log already exists: {log_path}")
         logf = open(log_path, "x", buffering=1)
     try:
         proc = subprocess.Popen(
