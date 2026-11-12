@@ -33,8 +33,6 @@ FROZEN_R2_KEYS = (
     "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz",
     "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz",
     "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz",
-    "envs/videojev/cu128-py312-torch280-ada.tar.gz",
-    "envs/clip/cu128-py312-torch280-ada.tar.gz",
 )
 MAX_BUILD_RECORD_SIZE = 64 * 1024
 REQUIREMENTS_DIRS = {
@@ -554,6 +552,7 @@ def _upload(env_spec, name, tarball, compat, repo_rev, *, record, recipe_sha):
     for author inspection rather than risking deletion of a committed artifact.
     """
     registry.validate_env(env_spec)
+    _refuse_frozen_key(env_spec["r2_key"])
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
         raise ValueError("invalid model name")
     if compat != env_spec["compat"]:
@@ -907,6 +906,8 @@ def main(argv=None):
         "12.8",
     ):
         ap.error("default torch installer requires torch 2.8.0 / CUDA 12.8")
+    if not args.skip_upload and not args.skip_pack:
+        _refuse_frozen_key(env_spec["r2_key"])
     repo, rev = registry.weights_of(args.model)
     repo_rev = f"{repo}@{rev}"
     requirements = _requirements(args.model, args.requirements)

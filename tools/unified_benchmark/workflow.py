@@ -102,6 +102,14 @@ def _verify_plan_bindings(bundle, report, hashes, frozen_rules):
             if name not in hashes:
                 raise ValueError("unsealed bundle plan: " + name)
             plan = json.loads((bundle / name).read_text())
+            planned_rules = None
+            if isinstance(plan, dict):
+                try:
+                    planned_rules = plan_rules(plan)
+                except ValueError:
+                    planned_rules = None
+            if planned_rules is not None and planned_rules != frozen_rules:
+                raise ValueError("plan protocol differs from bundle")
             if (
                 not isinstance(recorded, dict)
                 or not isinstance(plan, dict)
@@ -111,8 +119,6 @@ def _verify_plan_bindings(bundle, report, hashes, frozen_rules):
                 or plan.get("rules_sha256") != rules_digest
             ):
                 raise ValueError("preflight plan identity differs: " + name)
-            if plan_rules(plan) != frozen_rules:
-                raise ValueError("plan protocol differs from bundle")
             for unit in plan["units"]:
                 for frame in unit.get("frames", []):
                     if hashes.get(frame["path"]) != frame["sha256"]:

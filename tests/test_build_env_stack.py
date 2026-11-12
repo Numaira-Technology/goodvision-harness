@@ -4,6 +4,7 @@ import base64
 import copy
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -274,6 +275,8 @@ importlib.import_module = noisy_import
     "fault", ["content", "mode", "link", "escape", "added", "removed"]
 )
 def test_staged_prefix_changes_stop_before_execution(cpu_build, fault):
+    if fault == "mode" and os.name != "posix":
+        pytest.skip("Windows does not store the POSIX mode bit this check reads")
     spec, out, args, calls = cpu_build
     be.main([*args, "--skip-pack"])
     prefix = Path(spec["unpack_to"])

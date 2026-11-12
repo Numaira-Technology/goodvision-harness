@@ -74,6 +74,8 @@ class LocalTransport:
             payload = json.loads(raw)
         except ValueError as error:
             raise InvalidResponse("invalid JSON response", status, raw) from error
+        if not isinstance(payload, dict):
+            raise InvalidResponse("invalid response envelope", status, raw)
         return payload
 
     def __call__(self, unit):
@@ -129,7 +131,11 @@ class LocalTransport:
             raise RequestFailure(type(error).__name__, metadata=metadata) from error
         metadata = save({"http_status": 200, **raw_fields(response=payload)})
         if not isinstance(payload, dict):
-            raise RequestFailure("invalid response envelope", metadata=metadata)
+            raise RequestFailure(
+                "actual model identity missing or invalid",
+                fatal=True,
+                metadata=metadata,
+            )
         actual_model = payload.get("model")
         if isinstance(actual_model, str) and actual_model.strip():
             metadata["actual_model"] = actual_model
@@ -157,8 +163,14 @@ class LocalTransport:
 def execute(alias, bundle, root, endpoint, bundle_digest, phase):
     output = root / alias
     config = json.loads((bundle / "configs" / f"{alias}.json").read_text())
-    if config.get("execution") != "self_hosted_r2":
-        raise ValueError("eval_local requires a self_hosted_r2 profile")
+    if (
+        config.get("execution") != "self_hosted_r2"
+        or config.get("backend") != "language"
+        or config.get("kind") != "choice"
+    ):
+        raise ValueError(
+            "eval_local requires a self_hosted_r2 hard-answer language profile"
+        )
     thresholds, calibration = {e: .5 for e in EVENTS}, "not_applicable_hard_boolean"
     output.mkdir(exist_ok=False)
     stage_results = {}

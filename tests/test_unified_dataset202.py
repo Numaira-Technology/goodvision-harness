@@ -166,7 +166,7 @@ def test_default_preflight202_all_routes_and_protocol_guard(tmp_path, inputs, mo
     path = out / "plans/qwen8b-test.json"
     wrong = json.loads(path.read_text()) | {"protocol": VERSION, "rules_sha256": digest(rules_for(VERSION))}
     path.write_text(json.dumps(wrong))
-    hashes = json.loads((out / "bundle-files-sha256.json").read_text()); hashes[str(path.relative_to(out))] = d.file_hash(path)
+    hashes = json.loads((out / "bundle-files-sha256.json").read_text()); hashes[path.relative_to(out).as_posix()] = d.file_hash(path)
     (out / "bundle-files-sha256.json").write_text(json.dumps(hashes))
     with pytest.raises(ValueError, match="protocol differs"):
         workflow.verify_bundle(out)
