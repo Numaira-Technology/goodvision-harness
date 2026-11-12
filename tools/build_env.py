@@ -33,11 +33,6 @@ FROZEN_R2_KEYS = (
     "envs/videojev/cu128-py312-torch280-ada.tar.gz",
     "envs/clip/cu128-py312-torch280-ada.tar.gz",
 )
-
-
-def _refuse_frozen_key(r2_key: str) -> None:
-    if r2_key in FROZEN_R2_KEYS:
-        sys.exit(f"refusing to upload over frozen env key {r2_key}")
 MAX_BUILD_RECORD_SIZE = 64 * 1024
 REQUIREMENTS_DIRS = {
     "videojev": "videojev_probe",
@@ -47,6 +42,11 @@ REQUIREMENTS_DIRS = {
     "qwen8b": "qwen8b",
 }
 _sha256 = env_source._sha256
+
+
+def _refuse_frozen_key(r2_key: str) -> None:
+    if r2_key in FROZEN_R2_KEYS:
+        sys.exit(f"refusing to upload over frozen env key {r2_key}")
 
 
 def _log(*a):
