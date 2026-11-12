@@ -7,8 +7,9 @@ deployment pages remain available without reconnecting cameras.
 
 ## Build, test and apply
 
-1. Create a workflow. Drag a **Video source** onto the canvas for each camera,
-   up to the available deployed channel capacity. Select each source to set its
+1. Create a workflow. Drag a **Video source** onto the canvas for each camera.
+   The main container creates an isolated worker automatically when needed; no
+   channel count or redeployment is required. Select each source to set its
    URL and mono/stereo layout, then **Save video source** and **Connect video**.
    The node and inspector display the shared live input; connection and
    disconnection are synchronized with the live workspace.
@@ -88,14 +89,14 @@ memory for the current run, not an archive.
 
 | Block | Configuration and behavior |
 | --- | --- |
-| Video source | One deployed camera per source; URL, mono/stereo layout, Connect/Disconnect and shared input preview. Multiple sources are supported. |
+| Video source | One camera per source, allocated on demand; URL, mono/stereo layout, Connect/Disconnect and shared input preview. Multiple sources are supported. |
 | Person tracking → Contour | Existing continuous person contours and stable person IDs. Connect `frames` into the block and `tracks` into Output. |
 | Person tracking → Bbox | Bounding boxes and local track IDs from the detector service. Configure its full `/v1/labels` URL in this block. |
 | Face recognition | Existing face recognition, identity and stranger-confirmation component; uses the shared gallery and configured face engine. One instance per workflow. |
 | Event recognition → VLM semantic recognition | Existing event engine; events and sensitivity choices come from the server catalog. Uses the shared analysis service. |
 | Event recognition → System 1 recognition | Native scene classification through the configured System 1 service base URL. Uses the existing event definitions and sensitivity policies. |
 | Event recognition → Neural network recognition | Fixed image/text similarity classifier through its own service base URL. Supports the six built-in safety events; no sensitivity controls or custom-event prompts. |
-| Every-minute summary | Independent latest-snapshot model request; configurable 1–3600 second interval and an instruction of at most 4000 characters. Multiple independent instances are supported. |
+| Every-minute summary | Independent latest-snapshot model request; configurable 1–3600 second interval and an instruction of at most 4000 characters. Its sidebar also configures a shared OpenAI-compatible summary API. Multiple independent instances are supported. |
 | Output | Publishes connected results and composes a video preview. Toggle person geometry, event alerts and summary text; choose any corner for alerts and summaries. Multiple summaries stack in their chosen corner. |
 
 Each engine has its own draggable block and saved configuration. Keep alternatives
@@ -104,6 +105,40 @@ one event engine at a time. Enabling a block turns the other engines in its cate
 off. Apply rejects graphs with two enabled engines in one category. Group and
 camera switches can disable the selected engine; they cannot enable an alternative
 that is disabled in the workflow. Legacy graphs use Contour and VLM by default.
+
+### Summary API
+
+Select a summary block in the workflow canvas, then use **Summary service** in
+its sidebar. **Use the analysis service** preserves the existing shared model
+route. To use another provider, choose **OpenAI-compatible API**, enter the full
+Chat Completions URL (including any custom path), the vision model ID and its
+optional API key, then click **Save summary service**. Stop all analysis before
+saving; the next single-frame test or analysis session uses the saved connection.
+This setting is shared by all summary blocks and leaves event analysis unchanged.
+
+The provider must accept non-streaming OpenAI-format messages with Base64 JPEG
+`image_url` inputs and return `choices[].message.content`. The summary prompt
+requires a JSON object containing Chinese `zh` and English `en` strings. An
+interface with only text input or a different response protocol needs an adapter.
+
+API keys are write-only: leave the key field blank to retain it, or select the
+clear-key checkbox for an unauthenticated service. Changing the URL clears the
+old key unless a new key is entered. The connection is atomically saved in
+`summary-service.json` beside deployment settings with owner-only permissions;
+camera workers sharing that data directory read it on the next request setup.
+Separate fleet workers receive the connection before analysis and single-frame
+tests, including an explicit empty key when authentication is cleared.
+Credentials are never stored in workflow graphs or returned by the settings API.
+Custom summary connections never inherit cloud or local-model environment keys.
+
+**Request parameters (JSON)** accepts provider generation options. The default
+token budget is 512; `max_tokens` or `max_completion_tokens` can set a budget up
+to 4096. Set `temperature` to `null` to omit it for models that do not support
+that parameter. Model, messages and streaming cannot be overridden here.
+
+`GET /v1/deployment/summary-service` returns the connection and an
+`api_key_present` flag. `PUT` accepts `mode` (`inherit` or `custom`), `endpoint`,
+`model`, `request_parameters`, optional `api_key` and `clear_api_key`.
 
 ### Output appearance
 
@@ -252,3 +287,35 @@ source-to-output paths. Invalid input returns 400, stale revisions or busy
 targets 409, oversized requests 413, and unavailable storage 503. Internal
 `/v1/analysis/workflow` and `/v1/analysis/workflow/test` routes are coordinated
 worker controls; use the primary's public workflow API.
+
+### Dynamic video sources in Docker
+
+The main container enables on-demand video workers by default. Adding a Source
+uses an existing free channel or `POST /v1/fleet/cameras` to allocate one. Each
+additional worker runs inside the same container on a private loopback port;
+there are no new Docker containers, published ports, or Docker socket mounts.
+The worker count has no configured product ceiling. Actual concurrent throughput
+is limited by the container resources and the services used by each workflow.
+
+`video-sources.json` and `cameras/cameraNN/` are stored beside the existing
+persistent deployment settings. Camera IDs, URLs and per-camera settings survive
+container replacement and restart. Existing launcher-provisioned peers retain
+their original destinations. New cameras start disconnected with analysis stopped.
+Removing a Source from a workflow leaves its saved channel available for reuse.
+Worker failures are reported and the next request restarts the affected process.
+Increasing the provisioned capacity does not invalidate an existing source registry.
+Workers refresh the shared people library once per second after face recognition
+has initialized. Enrollment and deletion update their recognition snapshots and
+invalidate obsolete identity/display results without restarting the workers.
+
+Video connection, Summary, face and Bbox workflows do not reserve Contour lanes.
+Contour admission still checks the actual tracking server capacity when enabled.
+`HARNESS_FLEET_CAPACITY` remains compatible with old installations, but no longer
+needs to be increased to add video sources. `HARNESS_FLEET_DYNAMIC=false` is an
+optional compatibility switch for administrators who require fixed topology.
+
+Dynamic workers require POSIX socket inheritance. Linux Docker containers support
+this on Linux hosts and on Windows Docker Desktop in Linux-container mode.
+Running the Python application directly on native Windows retains the existing
+fixed, provisioned camera channels; dynamic allocation is unavailable there,
+even if `HARNESS_FLEET_DYNAMIC=true` is set.

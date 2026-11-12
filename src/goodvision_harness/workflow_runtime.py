@@ -41,7 +41,69 @@ class WorkflowRuntimeMixin:
     _workflow_event_baseline = None
 
     def _workflow_summary_configuration(self):
-        return self.config
+        return self._workflow_summary_route()[0]
+
+    def _workflow_summary_route(self):
+        from .model_api import ModelAPISettings
+
+        settings = self._summary_service_settings()
+        if settings["mode"] == "inherit":
+            return self.config, self._aiclub_api_key or ""
+        return replace(
+            self.config,
+            aiclub=ModelAPISettings(
+                provider="local", endpoint=settings["endpoint"],
+                timeout_seconds=self.config.model_api.timeout_seconds,
+                max_retries=0,
+            ),
+            inference=replace(
+                self.config.inference, model=settings["model"],
+                request_parameters=settings["request_parameters"],
+            ),
+        ), settings["api_key"]
+
+    def _summary_service_settings(self):
+        from .summary_service import summary_service_settings
+
+        return (self._deployment_store.load_summary_service()
+                if self._deployment_store is not None else summary_service_settings())
+
+    def workflow_summary_service(self):
+        from .summary_service import public_summary_service
+
+        return public_summary_service(
+            self._summary_service_settings(),
+            persistence_available=self._deployment_store is not None,
+        )
+
+    def update_workflow_summary_service(self, payload):
+        from .summary_service import summary_service_settings
+
+        if self._deployment_store is None:
+            raise RuntimeError("persistent deployment storage is not configured")
+        with self._control_lock:
+            if self._processing_lifecycle_busy():
+                raise RuntimeError("stop the active session before saving settings")
+            if not isinstance(payload, dict) or set(payload) - {
+                "mode", "endpoint", "model", "request_parameters", "api_key",
+                "clear_api_key",
+            }:
+                raise ValueError("invalid summary service settings")
+            clear = payload.get("clear_api_key", False)
+            if not isinstance(clear, bool) or (clear and "api_key" in payload):
+                raise ValueError("cannot set and clear the summary API key together")
+            previous = self._summary_service_settings()
+            value = {
+                **previous,
+                **{k: v for k, v in payload.items() if k != "clear_api_key"},
+            }
+            # A saved key never silently follows a change of service address.
+            if clear or (
+                value["endpoint"] != previous["endpoint"] and "api_key" not in payload
+            ):
+                value["api_key"] = ""
+            self._deployment_store.save_summary_service(summary_service_settings(value))
+            return self.workflow_summary_service()
 
     def _workflow_prepare_modules(self, plan):
         from .module_services import local_modules
@@ -444,7 +506,12 @@ class WorkflowRuntimeMixin:
     def _make_summary_manager(self, specs, connection, *, session_id=None):
         from .workflow_summary import SummaryManager
 
-        configuration = self._workflow_summary_configuration()
+        configuration, api_key = self._workflow_summary_route()
+        options = {}
+        if configuration is not self.config:
+            options["max_tokens"] = configuration.inference.request_parameters.get(
+                "max_tokens", 512,
+            )
         return SummaryManager.from_config(
             specs,
             configuration,
@@ -452,8 +519,9 @@ class WorkflowRuntimeMixin:
             stream_session_id=session_id or uuid4().hex,
             generation=self._generation,
             connection=connection,
-            api_key=self._aiclub_api_key or "",
+            api_key=api_key,
             dry_run=self.dry_run,
+            **options,
         )
 
     def _start_workflow_summaries(self, connection, *, session_id=None):
@@ -1127,7 +1195,7 @@ class WorkflowRuntimeMixin:
                             label for label in plan["features"] if label != "stranger"
                         )
                     )
-                    test_config = self._workflow_summary_configuration()
+                    test_config = self._workflow_event_configuration()
                     client = build_selected_features_grounding_client(
                         test_config.inference,
                         test_config.model_api,

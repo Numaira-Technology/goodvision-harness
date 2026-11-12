@@ -72,7 +72,7 @@ def export_service(alias, output, repository=ROOT):
         else:
             path.write_bytes(subprocess.check_output(
                 ["git", "-C", str(repository), "show", spec["commit"] + ":" + name]))
-    subprocess.run(["patch", "-p1", "--batch", "--forward", "--input", str(ASSETS / spec["patch"])],
+    subprocess.run(["patch", "-p1", "--binary", "--batch", "--forward", "--input", str(ASSETS / spec["patch"])],
                    cwd=output, check=True, capture_output=True)
     check_files(output, spec["files"])
     return spec["files"]

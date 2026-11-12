@@ -82,8 +82,12 @@ jobs:
           LINUX_RESULT: ${{ needs.linux-tests.result }}
         run: python tools/ci_regression.py verify --shards 2 --result "$LINUX_RESULT" outputs/ci-downloaded
 
-  windows-tests:
-    name: Tests (windows-latest, Python 3.12)
+  windows-regressions:
+    name: Windows regression shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -115,7 +119,54 @@ jobs:
       - name: Install video encoder (Windows)
         run: choco install ffmpeg --no-progress -y
       - name: Run regression suite (no models or service credentials)
-        run: python -m pytest -vv -o faulthandler_timeout=60 --durations=20
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          $evidence = "outputs/ci/windows-${{ matrix.shard }}"
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+          $arguments = @('-u', '-m', 'pytest', '-vv', '-o', 'faulthandler_timeout=60', '--durations=20', '-p', 'tools.ci_pytest', '--ci-shard', '${{ matrix.shard }}', '--ci-shards', '4', '--ci-evidence', $evidence, "--junitxml=$evidence/junit.xml")
+          # Direct file sinks avoid runner-console backpressure. The parent
+          # deadline leaves time to stop descendants and upload partial evidence.
+          $process = Start-Process -FilePath (Get-Command python).Source -ArgumentList $arguments -NoNewWindow -PassThru -RedirectStandardOutput "$evidence/stdout.log" -RedirectStandardError "$evidence/stderr.log"
+          $timedOut = -not $process.WaitForExit(960000)
+          if ($timedOut) {
+            taskkill /F /T /PID $process.Id
+            $testExitCode = 124
+          } else {
+            $testExitCode = $process.ExitCode
+          }
+          @{exit_code=$testExitCode; timed_out=$timedOut} | ConvertTo-Json | Set-Content -Encoding utf8NoBOM "$evidence/run.json"
+          Get-Content "$evidence/stdout.log" -Tail 80
+          Get-Content "$evidence/stderr.log" -Tail 80
+          exit $testExitCode
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: regression-windows-${{ matrix.shard }}
+          path: outputs/ci/windows-${{ matrix.shard }}
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-tests:
+    # Preserve the existing required name and reject missing/failed execution.
+    name: Tests (windows-latest, Python 3.12)
+    if: always()
+    needs: windows-regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: regression-windows-*
+          path: outputs/ci-windows-downloaded
+      - name: Require all Windows tests and exact-once coverage
+        env:
+          WINDOWS_RESULT: ${{ needs.windows-regressions.result }}
+        run: python tools/ci_regression.py verify --shards 4 --result "$WINDOWS_RESULT" outputs/ci-windows-downloaded
 
   sam3-onnx-contract:
     name: Optional SAM3 ONNX contract (no weights)
