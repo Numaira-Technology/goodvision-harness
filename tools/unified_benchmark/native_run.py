@@ -544,7 +544,7 @@ def _verify_completion(output, phase_dir, *, calibration=False):
         if (
             relative.is_absolute()
             or ".." in relative.parts
-            or str(relative) != name
+            or relative.as_posix() != name  # keys are canonical posix paths
             or artifact.is_symlink()
             or not artifact.resolve().is_relative_to(output.resolve())
             or not artifact.is_file()
