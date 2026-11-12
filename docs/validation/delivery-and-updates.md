@@ -2,6 +2,15 @@
 
 [验证索引](README.md) · [更新工具说明](../../tools/harness_update/README.md) · [发布构建](../guides/release.md)
 
+## 独立 CLIP V2.0
+
+2026-11-12 首次制作 `goodvision-neural` 独立容器，沿用原 V2.0 应用和依赖，
+没有把原临时 GPU 验收进程当作常驻安装。本次 139 项相关检查通过、2 项跳过；
+Linux/amd64 镜像构建、源码一致性和隔离环境的挂载/健康/重启检查通过。
+本机没有 NVIDIA GPU，新容器真实模型推理和 VideoJev/CLIP 并发显存尚未验收。
+具体环境与验证范围见[验证清单](neural-container-v2.0.json)，名称、独立版本和交付
+证据统一见[模块目录](../internal/docker-module-catalog.md)。客户服务器部署状态未核实。
+
 ## 连续升级与 Windows PowerShell 5.1
 
 2026-09-21 的 health6/health7 修复解决两类安装识别问题：目标机重建导致镜像 ID 不在静态列表；PowerShell 5.1 将多个镜像的反序列化 JSON 包成嵌套数组，导致 RootFS 比对混合多个镜像。
