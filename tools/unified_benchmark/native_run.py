@@ -8,6 +8,7 @@ import base64
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import hashlib
 import io
 import json
 import os
@@ -423,6 +424,23 @@ def preflight_resume(alias, bundle, output, cfg, bundle_digest, deployment_hash,
             ledger.close()
 
 
+def _output_file_hash(path, ledger):
+    """Hash evidence. The open ledger is locked; Windows rejects a second open."""
+    if Path(path) == Path(ledger.path) and getattr(ledger, "file", None) is not None:
+        checksum = hashlib.sha256()
+        ledger.file.flush()
+        position = ledger.file.tell()
+        try:
+            ledger.file.seek(0)
+            reader = ledger.file.buffer
+            for block in iter(lambda: reader.read(1024 * 1024), b""):
+                checksum.update(block)
+        finally:
+            ledger.file.seek(position)
+        return checksum.hexdigest()
+    return file_hash(path)
+
+
 def execute(alias, bundle, deployment, output, deployment_hash, *, phase, threshold_path=None,
             threshold_hash=None, port=8093, authorization, resume=False,
             backend_factory=NativeBackend, queue_factory=Queue):
@@ -552,7 +570,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     write_new(completion_path, {"execution_finished": True,
                         "final_missing_unique_units": result["final_missing_unique_units"],
                         "incomplete_questions": result["incomplete_questions"],
-                        "files": {str(p.relative_to(output)): file_hash(p) for p in files}, "at": stamp()})
+                        "files": {str(p.relative_to(output)): _output_file_hash(p, ledger) for p in files}, "at": stamp()})
                 completed.append(split)
             except BaseException:
                 # Per-invocation partial report: never overwrite completed evidence.
