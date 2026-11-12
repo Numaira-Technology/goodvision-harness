@@ -49,6 +49,9 @@ R2_KEYS = ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY
 DEFAULT_REPO = "Qwen/Qwen3-VL-8B-Instruct"
 DEFAULT_REVISION = "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b"
 LABEL_PREFIX = "goodvision-r2bench-"
+# Files the box half imports (tools/ package layout, mirrored on the box).
+BOX_TOOLS = ("model_source.py", "env_source.py", "registry.py", "models.yaml")
+BOX_TOOLS_UB = ("unified_benchmark/__init__.py", "unified_benchmark/locking.py")
 IMAGE = "pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime"  # has python3 + pip
 # Pinned s5cmd release; hash from the release's s5cmd_checksums.txt.
 S5CMD_URL = (
@@ -150,6 +153,10 @@ def box(argv):
     ap = argparse.ArgumentParser(prog="r2_pull_bench box")
     ap.add_argument("--repo", default=DEFAULT_REPO)
     ap.add_argument("--revision", default=DEFAULT_REVISION)
+    ap.add_argument(
+        "--env-root",
+        help="restore envs under this directory instead of unpack_to (dry runs)",
+    )
     ap.add_argument("variants", nargs="+", type=parse_variant)
     args = ap.parse_args(argv)
     os.environ.update(json.loads(sys.stdin.readline()))  # R2_* only, via stdin
@@ -166,7 +173,7 @@ def box(argv):
         note = ""
         t = time.monotonic()
         if kind in {"env", "both"}:
-            _env_variant(kind, a, ms, args, out)
+            _env_variant(kind, a, ms, args, out, env_root=args.env_root)
             continue
         try:
             if kind == "s5cmd":
@@ -195,7 +202,7 @@ def box(argv):
     shutil.rmtree(out, ignore_errors=True)
 
 
-def _env_variant(kind, name, ms, args, out):
+def _env_variant(kind, name, ms, args, out, env_root=None):
     """Time a packed-env restore, alone or beside the weight pull."""
     import threading
     from concurrent.futures import ThreadPoolExecutor
@@ -203,6 +210,11 @@ def _env_variant(kind, name, ms, args, out):
     from tools import env_source as es
 
     env = es.registry.env_of(name)
+    if env_root:
+        # Dry run off the box: unpack_to is part of the pinned identity, so the
+        # relocated prefix must not be compared with the bucket manifest.
+        env = {**env, "unpack_to": str(Path(env_root).resolve() / name)}
+        es.IDENTITY_FIELDS = tuple(f for f in es.IDENTITY_FIELDS if f != "unpack_to")
     prefix = Path(env["unpack_to"])
     # Timing only: the cheap benchmark box need not match env.compat.gpu_family;
     # download, verify, extract and conda-unpack do not touch the GPU.
@@ -264,7 +276,11 @@ def _env_variant(kind, name, ms, args, out):
                 env_s, w_s = env_f.result(), w_f.result()
             detail = f"; weights done at {w_s:.0f}s"
     except Exception as e:  # no exception text (secrets)
-        print(f"RESULT {kind}:{name}: FAILED {type(e).__name__}", flush=True)
+        done = ", ".join(f"{k} {v:.0f}s" for k, v in steps.items()) or "none"
+        print(
+            f"RESULT {kind}:{name}: FAILED {type(e).__name__} (steps timed: {done})",
+            flush=True,
+        )
         return
     finally:
         shutil.rmtree(prefix, ignore_errors=True)
@@ -388,7 +404,8 @@ def rent(argv):
                 "-p",
                 str(port),
                 f"root@{host}",
-                f"mkdir -p {remote}/tools && touch {remote}/tools/__init__.py && "
+                f"mkdir -p {remote}/tools/unified_benchmark && "
+                f"touch {remote}/tools/__init__.py && "
                 "python3 -m pip install -q boto3 PyYAML >/dev/null 2>&1",
             ],
             timeout=600,
@@ -399,16 +416,19 @@ def rent(argv):
                 *opts,
                 "-P",
                 str(port),
-                *(
-                    str(root / "tools" / name)
-                    for name in (
-                        "model_source.py",
-                        "env_source.py",
-                        "registry.py",
-                        "models.yaml",
-                    )
-                ),
+                *(str(root / "tools" / name) for name in BOX_TOOLS),
                 f"root@{host}:{remote}/tools/",
+            ],
+            timeout=120,
+        )
+        S.run(
+            [
+                "scp",
+                *opts,
+                "-P",
+                str(port),
+                *(str(root / "tools" / name) for name in BOX_TOOLS_UB),
+                f"root@{host}:{remote}/tools/unified_benchmark/",
             ],
             timeout=120,
         )
