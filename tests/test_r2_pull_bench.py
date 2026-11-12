@@ -26,3 +26,29 @@ def test_parse_variant_rejects_garbage(bad):
 def test_main_requires_a_subcommand():
     with pytest.raises(SystemExit):
         bench.main([])
+
+
+class _Vast:
+    def __init__(self, listings):
+        self.listings = listings  # query -> offers
+
+    def search_offers(self, query, **kw):
+        return self.listings.get(query, [])
+
+
+def _args(**kw):
+    base = {"offer": 1, "max_dph": 0.12, "disk_gb": 80, "machine": None}
+    return argparse.Namespace(**{**base, **kw})
+
+
+def test_find_approved_offer_exact_id():
+    vast = _Vast({"rentable=true dph_total<=0.12": [{"id": 1, "dph_total": 0.1}]})
+    assert bench.find_approved_offer(vast, _args())["id"] == 1
+
+
+def test_find_approved_offer_twin_slot_needs_machine():
+    twin = {"id": 2, "dph_total": 0.1, "machine_id": 7, "num_gpus": 1}
+    multi = {"id": 3, "dph_total": 0.05, "machine_id": 7, "num_gpus": 2}
+    vast = _Vast({"machine_id=7": [twin, multi]})
+    assert bench.find_approved_offer(vast, _args()) is None
+    assert bench.find_approved_offer(vast, _args(machine=7))["id"] == 2

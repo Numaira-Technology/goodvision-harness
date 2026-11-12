@@ -297,10 +297,50 @@ def _env_variant(kind, name, ms, args, out, env_root=None):
 # ------------------------------------------------------------------ laptop side
 
 
+def find_approved_offer(vast, args):
+    """The approved offer, or (with --machine) a twin slot on the same host."""
+    queries = [f"rentable=true dph_total<={args.max_dph}", "rentable=true"]
+    if args.machine:
+        queries.insert(0, f"machine_id={args.machine}")
+    twins = []
+    for query in queries:
+        found = vast.search_offers(
+            query=query,
+            type="on-demand",
+            order="dph_total",
+            storage=float(args.disk_gb),
+            limit=1000,
+        )
+        if isinstance(found, dict):
+            found = found.get("offers", [])
+        for o in found or []:
+            if int(o["id"]) == args.offer:
+                return o
+            if (
+                args.machine
+                and o.get("machine_id") == args.machine
+                and int(o.get("num_gpus") or 1) == 1
+            ):
+                twins.append(o)
+    if twins:
+        twin = min(twins, key=lambda o: float(o["dph_total"]))
+        print(
+            f"offer {args.offer} not listed; using twin slot {twin['id']}", flush=True
+        )
+        return twin
+    return None
+
+
 def rent(argv):
     ap = argparse.ArgumentParser(prog="r2_pull_bench rent")
     ap.add_argument("--offer", type=int, required=True, help="offer id you approved")
     ap.add_argument("--max-dph", type=float, required=True, help="refuse above $/hr")
+    ap.add_argument(
+        "--machine",
+        type=int,
+        help="machine id of the approved offer: a host lists one offer per GPU "
+        "slot, so accept another single-GPU offer on it at or under --max-dph",
+    )
     ap.add_argument("--disk-gb", type=int, default=60)
     ap.add_argument("--repo", default=DEFAULT_REPO)
     ap.add_argument("--revision", default=DEFAULT_REVISION)
@@ -332,24 +372,7 @@ def rent(argv):
         key = S.prepare_ssh_key(
             Path(env["SAM_SSH_KEY"]).expanduser(), Path(ssh_dir.name)
         )
-        offer = None
-        for query in (
-            f"id={args.offer}",
-            f"rentable=true dph_total<={args.max_dph}",
-            "rentable=true",
-        ):
-            found = vast.search_offers(
-                query=query,
-                type="on-demand",
-                order="dph_total",
-                storage=float(args.disk_gb),
-                limit=1000,
-            )
-            if isinstance(found, dict):
-                found = found.get("offers", [])
-            offer = next((o for o in found or [] if int(o["id"]) == args.offer), None)
-            if offer is not None:
-                break
+        offer = find_approved_offer(vast, args)
         if offer is None:
             raise SystemExit("approved offer is gone; nothing rented")
         if float(offer["dph_total"]) > args.max_dph:
