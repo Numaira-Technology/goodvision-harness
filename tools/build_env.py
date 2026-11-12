@@ -45,12 +45,6 @@ REQUIREMENTS_DIRS = {
     "qwen8b": "qwen8b",
     "qwen8b-vllm": "qwen8b_vllm",
 }
-FROZEN_R2_KEYS = (
-    "envs/qwen8b/cu128-py312-torch280-ada.tar.gz",
-    "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz",
-    "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz",
-    "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz",
-)
 _sha256 = env_source._sha256
 
 
