@@ -337,10 +337,9 @@ def test_timeout_before_handler_releases_admission_and_reuses_worker(
         monkeypatch.setattr(client, "_start_operation", gated_start)
 
     try:
+        first_deadline = time.monotonic() + 0.05
         with pytest.raises(httpx.TimeoutException):
-            client._request(
-                "GET", client._health, deadline=time.monotonic() + 0.05,
-            )
+            client._request("GET", client._health, deadline=first_deadline)
         assert blocked.wait(1)
         assert calls == [] and exchange_entries == []
         with client._lock:
@@ -358,6 +357,11 @@ def test_timeout_before_handler_releases_admission_and_reuses_worker(
                 )
         worker = client._thread
         monkeypatch.setattr(client, "_start_operation", original_start)
+        # Windows timer waits can return up to one clock tick (~15.6 ms) before
+        # monotonic() reaches the deadline. Make the expired stage really expired
+        # before the gated task runs, so it observes the deadline itself.
+        while time.monotonic() <= first_deadline + 0.02:
+            time.sleep(0.01)
         release.set()
         wait_inactive(client)
         assert calls == []
