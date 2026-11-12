@@ -87,7 +87,7 @@ Every shard records the full collection and its selected node IDs; the existing
 `Tests (ubuntu-latest, Python 3.11)` aggregate check fails unless both shards pass
 and the manifests plus completed setup/call/teardown records prove every collected
 test was executed exactly once. Legitimate recorded setup skips remain skips.
-Windows also uses two shards with the same partition and evidence plugin. Its
+Windows uses four shards with the same partition and evidence plugin. Its
 existing `Tests (windows-latest, Python 3.12)` check independently verifies all
 Windows tests were covered exactly once. Each Windows shard retains the 25-minute
 job limit and bounds the test step to 20 minutes. Its parent process stops the

@@ -153,7 +153,8 @@ def test_http_failure_keeps_safe_diagnostics_without_retrying(monkeypatch):
     assert "omit this" not in json.dumps(result)
 
 
-@pytest.mark.parametrize("body", [b"not JSON", b"null", b"x" * (latency.MAX_RESPONSE_BYTES + 1)])
+@pytest.mark.parametrize("body", [b"not JSON", b"null", b"x" * (latency.MAX_RESPONSE_BYTES + 1)],
+                         ids=["invalid-json", "null", "oversized"])
 def test_unreadable_http_error_body_preserves_original_status(monkeypatch, body):
     def fail(request, **kwargs):
         raise urllib.error.HTTPError(request.full_url, 429, "limited", None, io.BytesIO(body))
