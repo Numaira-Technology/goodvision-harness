@@ -438,6 +438,13 @@ def test_parallelism_env_is_clamped(monkeypatch):
     assert ms._parallelism()[0] == 128
 
 
+class BotoLikeS3(FakeS3):
+    """Passes pull_from_r2's 'real boto3 client' check for process mode."""
+
+
+BotoLikeS3.__module__ = "botocore.client"
+
+
 def test_process_mode_uses_one_process_per_file_with_own_client(tmp_path, monkeypatch):
     """R2_PULL_PROCESSES routes each file through _fetch_in_child, never argv."""
     from concurrent.futures import ThreadPoolExecutor
@@ -463,7 +470,9 @@ def test_process_mode_uses_one_process_per_file_with_own_client(tmp_path, monkey
 
     children = []
     monkeypatch.setattr(ms, "ProcessPoolExecutor", InlinePool)
-    monkeypatch.setattr(ms, "r2_client", lambda: children.append(1) or FakeS3(objects))
+    monkeypatch.setattr(
+        ms, "r2_client", lambda: children.append(1) or BotoLikeS3(objects)
+    )
     snap = ms.snapshot_dir(tmp_path, REPO, REV)
     ms.pull_from_r2(REPO, REV, snap, bucket="b")
     assert pools == [3]
@@ -483,4 +492,47 @@ def test_process_mode_needs_env_credentials(tmp_path, monkeypatch):
     )
     snap = ms.snapshot_dir(tmp_path, REPO, REV)
     ms.pull_from_r2(REPO, REV, snap, client=FakeS3(objects), bucket="b")
+    assert ms.verify_snapshot(snap, manifest)
+
+
+def test_processes_are_the_default_for_real_clients(monkeypatch):
+    monkeypatch.delenv("R2_PULL_PROCESSES", raising=False)
+    assert ms._processes() == ms.DEFAULT_PROCESSES > 1
+
+
+def test_fake_clients_keep_threads_even_with_env_credentials(tmp_path, monkeypatch):
+    """Tests and injected clients must never spawn real R2 children."""
+    objects, manifest = _bucket(REPO, REV, FILES)
+    for k in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+        monkeypatch.setenv(k, "x")
+    monkeypatch.delenv("R2_PULL_PROCESSES", raising=False)
+    monkeypatch.setattr(
+        ms, "ProcessPoolExecutor", lambda **kw: pytest.fail("must not spawn")
+    )
+    snap = ms.snapshot_dir(tmp_path, REPO, REV)
+    ms.pull_from_r2(REPO, REV, snap, client=FakeS3(objects), bucket="b")
+    assert ms.verify_snapshot(snap, manifest)
+
+
+def test_broken_process_pool_falls_back_to_threads(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+
+    objects, manifest = _bucket(REPO, REV, FILES)
+    for k in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+        monkeypatch.setenv(k, "x")
+    monkeypatch.delenv("R2_PULL_PROCESSES", raising=False)
+
+    class BrokenPool(ThreadPoolExecutor):
+        def __init__(self, max_workers, mp_context=None):
+            super().__init__(max_workers=max_workers)
+
+        def submit(self, *a, **kw):
+            raise BrokenProcessPool("cannot spawn")
+
+    monkeypatch.setattr(ms, "ProcessPoolExecutor", BrokenPool)
+    client = BotoLikeS3(objects)
+    snap = ms.snapshot_dir(tmp_path, REPO, REV)
+    ms.pull_from_r2(REPO, REV, snap, client=client, bucket="b")
+    assert client.gets == len(FILES)  # every file fetched once, in threads
     assert ms.verify_snapshot(snap, manifest)

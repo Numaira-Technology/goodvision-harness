@@ -22,6 +22,7 @@ import shutil
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory, mkdtemp
@@ -36,11 +37,14 @@ MANIFEST_NAME = "MANIFEST.json"
 # and within each large file STREAMS byte-range parts in parallel. The HTTP
 # connection pool must hold every stream that can be open at the same time.
 # Overridable per run (e.g. a slow box): R2_PULL_FILE_WORKERS, R2_PULL_STREAMS.
-# R2_PULL_PROCESSES > 1 moves each file into its own Python process instead of
-# a thread, so TLS decryption and response copying are not serialized by one
-# interpreter lock (experimental; measure before making it the default).
+# By default each file gets its own Python process (R2_PULL_PROCESSES) so TLS
+# decryption and response copying are not serialized by one interpreter lock.
+# Measured 2026-11-12 on Qwen3-VL-8B (17.55 GB, one Ontario box): one process
+# with 4 files x 16 streams took 93 s (190 MB/s); 4 processes x 8 streams took
+# 45 s (391 MB/s), on par with s5cmd. R2_PULL_PROCESSES=1 restores threads.
+DEFAULT_PROCESSES = 4
 DEFAULT_FILE_WORKERS = 4
-DEFAULT_STREAMS = 16
+DEFAULT_STREAMS = 8
 PART_SIZE = 64 * 1024 * 1024
 
 
@@ -60,7 +64,7 @@ def _parallelism():
 
 
 def _processes():
-    return _env_int("R2_PULL_PROCESSES", 1, hi=32)
+    return _env_int("R2_PULL_PROCESSES", DEFAULT_PROCESSES, hi=32)
 
 
 def _transfer_config(streams):
@@ -230,6 +234,26 @@ def _fetch_in_child(bucket, key, dest, rel, meta, streams):
     return _fetch_one(client, bucket, key, dest, rel, meta, extra)
 
 
+def _run_pool(pool, order, submit):
+    """Run every file through ``pool``; return bytes downloaded.
+
+    On the first failure queued files are cancelled, and leaving the
+    with-block waits for running ones, so no worker writes into staging after
+    the caller cleans it up.
+    """
+    pulled = 0
+    with pool:
+        futures = [submit(pool, rel, meta) for rel, meta in order]
+        try:
+            for future in as_completed(futures):
+                pulled += future.result()
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
+    return pulled
+
+
 def pull_from_r2(repo, revision, snap, *, client=None, bucket=None):
     """Download models/<repo>/<revision>/ from R2 into ``snap``; return its manifest.
 
@@ -266,51 +290,60 @@ def pull_from_r2(repo, revision, snap, *, client=None, bucket=None):
 
     file_workers, streams = _parallelism()
     processes = _processes()
-    started = time.monotonic()
-    pulled = 0
     # Largest first so the long shards start early and small files fill gaps.
     order = sorted(files.items(), key=lambda kv: kv[1]["size"], reverse=True)
-    use_processes = processes > 1 and _r2_env_ready()
+    # Children log in with their own client from the inherited environment, so
+    # only a real boto3 client with R2_* set qualifies; injected fakes and
+    # explicit clients without env credentials keep the in-process threads.
+    use_processes = (
+        processes > 1
+        and _r2_env_ready()
+        and type(client).__module__.startswith("botocore")
+    )
+    started = time.monotonic()
     if use_processes:
-        # Children build their own client from the inherited environment;
-        # credentials never travel through argv or the task arguments.
-        file_workers, unit = processes, "processes"
-        pool = ProcessPoolExecutor(
-            max_workers=processes, mp_context=multiprocessing.get_context("spawn")
-        )
-    else:
-        unit = "files"
+        try:
+            pulled = _run_pool(
+                ProcessPoolExecutor(
+                    max_workers=processes,
+                    mp_context=multiprocessing.get_context("spawn"),
+                ),
+                order,
+                lambda pool, rel, meta: pool.submit(
+                    _fetch_in_child,
+                    bucket,
+                    prefix + rel,
+                    str(snap / rel),
+                    rel,
+                    meta,
+                    streams,
+                ),
+            )
+            workers, unit = processes, "processes"
+        except BrokenProcessPool:
+            # e.g. the interpreter cannot spawn children from this entry point.
+            # Already-correct files are kept; the rest are fetched in threads.
+            _log("process pool unavailable; continuing with threads")
+            use_processes = False
+    if not use_processes:
         extra = {}
         config = _transfer_config(streams)
         if config is not None:
             extra["Config"] = config
-        pool = ThreadPoolExecutor(max_workers=file_workers)
-
-    def submit(rel, meta):
-        key, dest = prefix + rel, snap / rel
-        if use_processes:
-            return pool.submit(
-                _fetch_in_child, bucket, key, str(dest), rel, meta, streams
-            )
-        return pool.submit(_fetch_one, client, bucket, key, dest, rel, meta, extra)
-
-    with pool:
-        futures = [submit(rel, meta) for rel, meta in order]
-        try:
-            for future in as_completed(futures):
-                pulled += future.result()
-        except BaseException:
-            # Stop queued files; leaving the with-block waits for running ones,
-            # so no worker writes into staging after the caller cleans it up.
-            for future in futures:
-                future.cancel()
-            raise
+        pulled = _run_pool(
+            ThreadPoolExecutor(max_workers=file_workers),
+            order,
+            lambda pool, rel, meta: pool.submit(
+                _fetch_one, client, bucket, prefix + rel, snap / rel, rel, meta, extra
+            ),
+        )
+        workers, unit = file_workers, "files"
     elapsed = max(time.monotonic() - started, 1e-6)
     if pulled:
         _log(
             f"R2 pull {pulled / 1e6:.1f} MB in {elapsed:.1f}s "
             f"({pulled / 1e6 / elapsed:.1f} MB/s, "
-            f"{file_workers} {unit} x {streams} streams)"
+            f"{workers} {unit} x {streams} streams)"
         )
 
     marker.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")

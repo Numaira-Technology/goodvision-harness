@@ -164,8 +164,11 @@ def box(argv):
                 )
                 note = f" (download {download:.0f}s + verify)"
             else:
-                key = "R2_PULL_PROCESSES" if kind == "procs" else "R2_PULL_FILE_WORKERS"
-                os.environ[key] = str(a)
+                if kind == "procs":
+                    os.environ["R2_PULL_PROCESSES"] = str(a)
+                else:  # processes are the default now; pin threads explicitly
+                    os.environ["R2_PULL_PROCESSES"] = "1"
+                    os.environ["R2_PULL_FILE_WORKERS"] = str(a)
                 os.environ["R2_PULL_STREAMS"] = str(b)
                 manifest = ms.pull_from_r2(args.repo, args.revision, out)
         except Exception as e:  # report and keep going; no exception text (secrets)
