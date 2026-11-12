@@ -721,3 +721,17 @@ test('summary service save failures retain edits and invalid parameters never re
  app.summaryServiceDraft.request_parameters='{}';assert.equal(await app.saveSummaryService(),false);
  assert.equal(app.summaryServiceDraft.api_key,'pending-key');assert(app.summaryServiceDirty());assert.equal(app.summaryServiceSaving,false);
 });
+for(const outcome of ['success','cancel','failed-workflows','failed-summary'])test('summary draft reload: '+outcome,async()=>{
+ const app=appFixture(),workflows=clone(app.data),saved={mode:'custom',endpoint:'https://api.example/chat',model:'saved',request_parameters:{},persistence_available:true};
+ app.acceptSummaryService(saved);app.summaryServiceDraft.model='discard-me';app.summaryServiceDraft.api_key='unsaved-key';app.summaryServiceDraft.clear_api_key=true;
+ app.graph.nodes[0].config.name='unsaved workflow';const edited=clone(app.graph),requests=[];
+ app.confirm=()=>outcome!=='cancel';app.request=async url=>{requests.push(url);if(outcome==='failed-workflows'||outcome==='failed-summary'&&url.includes('summary-service'))throw new Error('reload unavailable');return url==='/v1/workflows'?workflows:{...saved,model:'latest saved'};};
+ const previous=globalThis.requestAnimationFrame;globalThis.requestAnimationFrame=()=>0;
+ try{await app.load(true);}finally{if(previous===undefined)delete globalThis.requestAnimationFrame;else globalThis.requestAnimationFrame=previous;}
+ assert.equal(app.busy,false);
+ if(outcome==='success'){
+  assert.deepEqual(requests,['/v1/workflows','/v1/deployment/summary-service']);assert.equal(app.summaryServiceDraft.model,'latest saved');assert.equal(app.summaryServiceDraft.api_key,'');assert.equal(app.summaryServiceDraft.clear_api_key,false);assert.equal(app.anyDirty(),false);
+ }else{
+  assert.equal(app.summaryServiceDraft.model,'discard-me');assert.equal(app.summaryServiceDraft.api_key,'unsaved-key');assert.deepEqual(app.graph,edited);assert(app.anyDirty());if(outcome==='cancel')assert.deepEqual(requests,[]);else assert.equal(app.error,true);
+ }
+});

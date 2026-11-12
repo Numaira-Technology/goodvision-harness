@@ -210,7 +210,21 @@
     say(text,error=false,reload=false){this.notice=this.t(text);this.error=error;this.reloadRequired=reload;this.feedback();}
     async request(url,options={},timeout=30000){const controller=new AbortController(),timer=root.setTimeout(()=>controller.abort(),timeout);try{const response=await this.fetch(url,{cache:'no-store',...options,signal:controller.signal});let value;try{value=await response.json();}catch(_){throw new Error('The service returned an unreadable response.');}if(!response.ok){const error=new Error(typeof value.detail==='string'?value.detail:JSON.stringify(value.detail||value.error||response.status));error.status=response.status;throw error;}return value;}finally{root.clearTimeout(timer);}}
     accept(data){if(!data?.document||!Array.isArray(data.document.workflows)||!Array.isArray(data.document.groups))throw new Error('The workflow service returned an invalid document.');this.data=data;if(!this.workflows.some(w=>w.id===this.workflowId))this.workflowId=this.workflows[0]?.id||null;if(!this.groups.some(g=>g.id===this.groupId))this.groupId=this.groups[0]?.id||null;if(this.scope!=='all'&&!this.group?.camera_ids?.includes(this.scope))this.scope='all';if(!this.cameras.some(c=>c.id===this.testCamera))this.testCamera=this.cameras.find(c=>c.enabled!==false)?.id||'';}
-    async load(discard=false){if(this.busy)return;if(discard&&this.anyDirty()&&!this.confirm(this.t('Discard all unsaved workflow edits and reload?')))return;this.busy=true;this.render();try{const data=await this.request('/v1/workflows');if(discard){this.drafts.clear();this.sourceDrafts?.clear();this.undo.clear();this.pending=null;this.invalidateTest();}this.accept(data);this.notice='';this.error=false;this.selected=this.graph.nodes[0]?.id||null;this.render();root.requestAnimationFrame(()=>this.fit());}catch(error){this.say(error.message,true);}finally{this.busy=false;this.render();}}
+    async load(discard=false){
+      if(this.busy||this.summaryServiceLoading||this.summaryServiceSaving)return;
+      if(discard&&this.anyDirty()&&!this.confirm(this.t('Discard all unsaved workflow edits and reload?')))return;
+      this.busy=true;this.render();
+      try{
+        const data=await this.request('/v1/workflows');
+        const summary=discard&&this.summaryServiceDraft?await this.request('/v1/deployment/summary-service'):null;
+        // Keep all drafts if either reload fails; discard the key only after
+        // the confirmed reload succeeds, together with the other edits.
+        this.accept(data);
+        if(discard){this.drafts.clear();this.sourceDrafts?.clear();this.undo.clear();this.pending=null;this.invalidateTest();}
+        if(summary){this.acceptSummaryService(summary);this.summaryServiceError='';}
+        this.notice='';this.error=false;this.selected=this.graph.nodes[0]?.id||null;this.render();root.requestAnimationFrame(()=>this.fit());
+      }catch(error){this.say(error.message,true);}finally{this.busy=false;this.render();}
+    }
     async command(action,payload={},clearDraft=null){if(this.busy)return false;this.busy=true;this.render();try{const data=await this.request('/v1/workflows/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:this.document.revision,action,...payload})},90000);this.accept(data);if(clearDraft)this.drafts.delete(clearDraft);this.dialog=null;this.say(this.t(action==='apply'?'Workflow applied.':'Changes saved.'));this.render();root.GoodvisionFleet?.refresh?.();return true;}catch(error){const conflict=error.status===409&&/revision conflict|workflow (?:state|assets) changed/i.test(error.message);this.say(conflict?this.t('The workspace changed. Reload before retrying.'):error.message,true,conflict);return false;}finally{this.busy=false;this.render();}}
     button(action,label,classes='',attrs=''){return `<button type="button" class="wc-button ${classes}" data-wc-action="${action}" ${attrs}>${esc(this.t(label))}</button>`;}
     size(){if(!this.el.isConnected)return;const rect=this.el.getBoundingClientRect();if(rect.width===0||this.el.closest('[hidden]'))return;const height=Math.max(0,root.innerHeight-rect.top-12);this.el.style.setProperty('--wc-height',height+'px');}

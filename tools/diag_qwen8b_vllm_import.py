@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
 from tools import registry
@@ -244,8 +244,11 @@ def main() -> int:
         print("CUDA probe rc=%s" % cuda["rc"], flush=True)
         print(cuda["stdout"] or cuda["stderr"], flush=True)
 
+        pylib = (
+            PurePosixPath(python).parent.parent / "lib" / "python3.12" / "site-packages"
+        )
         libs = _ssh_run(ssh, (
-            f"set +u; PYLIB={shlex.quote(str(Path(python).parent.parent / 'lib' / 'python3.12' / 'site-packages'))}; "
+            f"set +u; PYLIB={shlex.quote(str(pylib))}; "
             "echo '--- libcudart ---'; "
             "find /opt/env/qwen8b-vllm -name 'libcudart.so*' | head; "
             "echo '--- libcuda ---'; "
