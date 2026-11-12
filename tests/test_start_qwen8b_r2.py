@@ -203,3 +203,26 @@ def test_run_side_by_side_raises_first_failure_without_waiting():
     # The caller gets the error at once and can release the instance.
     assert time.monotonic() - started < 2
     release.set()
+
+
+def test_prefer_near_bucket_picks_eastern_offers_within_tolerance():
+    from tools import start_qwen8b_r2 as host
+
+    offers = [
+        {"id": 1, "dph_total": 0.40, "geolocation": "Oregon, US"},
+        {"id": 2, "dph_total": 0.43, "geolocation": "Virginia, US"},
+        {"id": 3, "dph_total": 0.60, "geolocation": "Quebec, CA"},
+    ]
+    assert [o["id"] for o in host.prefer_near_bucket(offers)] == [2]
+
+
+def test_prefer_near_bucket_falls_back_when_east_is_too_expensive():
+    from tools import start_qwen8b_r2 as host
+
+    offers = [
+        {"id": 1, "dph_total": 0.40, "geolocation": "Oregon, US"},
+        {"id": 3, "dph_total": 0.60, "geolocation": "Quebec, CA"},
+        {"id": 4, "dph_total": 0.41, "geolocation": None},
+    ]
+    assert host.prefer_near_bucket(offers) == offers
+    assert host.prefer_near_bucket([]) == []

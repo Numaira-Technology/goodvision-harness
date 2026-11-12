@@ -46,6 +46,75 @@ mkdir -p {REPO} {CACHE}
 """
 
 
+# The goodvision-models bucket lives in R2's ENAM region (eastern North
+# America). Measured 2026-11-12 on Qwen3-VL-8B: an Oregon box pulled at about
+# 116 MB/s, a Connecticut box at 232 MB/s. Vast only filters by country, so
+# match the state/province in the offer's geolocation text instead.
+NEAR_BUCKET = (
+    "Connecticut",
+    "Delaware",
+    "District of Columbia",
+    "Florida",
+    "Georgia, US",
+    "Illinois",
+    "Indiana",
+    "Kentucky",
+    "Maine",
+    "Maryland",
+    "Massachusetts",
+    "Michigan",
+    "New Hampshire",
+    "New Jersey",
+    "New York",
+    "North Carolina",
+    "Ohio",
+    "Pennsylvania",
+    "Rhode Island",
+    "South Carolina",
+    "Tennessee",
+    "Vermont",
+    "Virginia",
+    "West Virginia",
+    "Wisconsin",
+    "Ontario",
+    "Quebec",
+    "New Brunswick",
+    "Nova Scotia",
+)
+NEAR_BUCKET_PRICE_TOLERANCE = 0.10  # pay at most 10% more per hour for proximity
+
+
+def prefer_near_bucket(offers, *, tolerance=NEAR_BUCKET_PRICE_TOLERANCE):
+    """Keep offers near the R2 bucket when they cost at most ``tolerance`` more.
+
+    Falls back to the full list when no nearby offer is close in price, so a
+    launch never fails or gets much dearer just because of location.
+    """
+    try:
+        cheapest = min(float(o["dph_total"]) for o in offers)
+        near = [
+            o
+            for o in offers
+            if any(place in str(o.get("geolocation") or "") for place in NEAR_BUCKET)
+            and float(o["dph_total"]) <= cheapest * (1 + tolerance)
+        ]
+    except (TypeError, KeyError, ValueError, AttributeError):
+        return offers  # empty or unexpected offer shape: keep the caller's list
+    if near:
+        print(
+            f"Preferring {len(near)} offer(s) near the R2 bucket (eastern North "
+            f"America) within {tolerance:.0%} of the cheapest ${cheapest:.4f}/hr",
+            flush=True,
+        )
+        return near
+    print(
+        "No offer near the R2 bucket within budget; weights will download "
+        "more slowly from farther away.",
+        flush=True,
+    )
+    return offers
+
+
 def run_side_by_side(**steps):
     """Run independent remote setup steps at once; return results by name.
 
@@ -419,13 +488,13 @@ def main() -> int:
                 type="on-demand",
                 order="dph_total",
                 storage=float(args.disk_gb),
-                limit=10,
+                limit=64,  # wide enough to see offers near the bucket
             )
             if not offers:
                 raise RuntimeError("No eligible RTX 4090 / CUDA 12.8 offer available.")
             creation_attempted = True
             instance_id = S.create_from_offers(
-                vast, offers, disk_gb=args.disk_gb, label=label
+                vast, prefer_near_bucket(offers), disk_gb=args.disk_gb, label=label
             )
             print(f"Created instance: {instance_id}", flush=True)
 
