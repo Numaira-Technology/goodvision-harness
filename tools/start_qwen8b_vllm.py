@@ -213,11 +213,11 @@ def _verify_eval_bundle(bundle: Path, phase: str, env_spec: dict) -> str:
     from tools.unified_benchmark.workflow import verify_bundle
 
     bundle_sha = verify_bundle(bundle)
-    hashes = json.loads((bundle / "bundle-files-sha256.json").read_text())
+    hashes = json.loads((bundle / "bundle-files-sha256.json").read_text(encoding="utf-8"))
     config_name = "configs/qwen8b_r2_vllm.json"
     if config_name not in hashes:
         raise ValueError("vLLM config is not sealed in the bundle")
-    config = json.loads((bundle / config_name).read_text())
+    config = json.loads((bundle / config_name).read_text(encoding="utf-8"))
     expected = model_configs(["qwen8b_r2_vllm"])["qwen8b_r2_vllm"]
     if config != expected:
         raise ValueError(
@@ -234,7 +234,7 @@ def _verify_eval_bundle(bundle: Path, phase: str, env_spec: dict) -> str:
         name = f"plans/qwen8b_r2_vllm-{split}.json"
         if name not in hashes:
             raise ValueError(f"vLLM {split} plan is not sealed in the bundle")
-        plan = json.loads((bundle / name).read_text())
+        plan = json.loads((bundle / name).read_text(encoding="utf-8"))
         if (
             plan.get("protocol") != VERSION
             or plan.get("split") != split
