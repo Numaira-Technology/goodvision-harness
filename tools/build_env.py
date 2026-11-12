@@ -48,11 +48,6 @@ REQUIREMENTS_DIRS = {
 _sha256 = env_source._sha256
 
 
-def _refuse_frozen_key(r2_key: str) -> None:
-    if r2_key in FROZEN_R2_KEYS:
-        sys.exit(f"refusing to upload over frozen env key {r2_key}")
-
-
 def _log(*a):
     print(f"[build_env {time.strftime('%H:%M:%S')}]", *a, flush=True, file=sys.stderr)
 
