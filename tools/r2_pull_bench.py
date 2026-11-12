@@ -220,7 +220,11 @@ def rent(argv):
             Path(env["SAM_SSH_KEY"]).expanduser(), Path(ssh_dir.name)
         )
         offer = None
-        for query in (f"id={args.offer}", "rentable=true"):
+        for query in (
+            f"id={args.offer}",
+            f"rentable=true dph_total<={args.max_dph}",
+            "rentable=true",
+        ):
             found = vast.search_offers(
                 query=query,
                 type="on-demand",
