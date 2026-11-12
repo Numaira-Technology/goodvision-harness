@@ -570,7 +570,8 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     write_new(completion_path, {"execution_finished": True,
                         "final_missing_unique_units": result["final_missing_unique_units"],
                         "incomplete_questions": result["incomplete_questions"],
-                        "files": {str(p.relative_to(output)): _output_file_hash(p, ledger) for p in files}, "at": stamp()})
+                        # Posix keys: validate_completion requires "<split>/<name>" on every OS.
+                        "files": {p.relative_to(output).as_posix(): _output_file_hash(p, ledger) for p in files}, "at": stamp()})
                 completed.append(split)
             except BaseException:
                 # Per-invocation partial report: never overwrite completed evidence.
