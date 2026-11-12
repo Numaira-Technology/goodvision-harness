@@ -78,6 +78,7 @@ class FleetController:
         self._peer_client: httpx.AsyncClient | None = None
         self._own_client: httpx.AsyncClient | None = None
         self._output_client: httpx.AsyncClient | None = None
+        self.dynamic = None
         self._analysis_indices: set[int] = set()
         self._analysis_transition: str | None = None
         self._analysis_errors: list[dict[str, str]] = []
@@ -127,6 +128,8 @@ class FleetController:
         return self._output_client
 
     async def aclose(self) -> None:
+        if self.dynamic is not None:
+            await self.dynamic.close()
         for client in (self._peer_client, self._own_client, self._output_client):
             if client is not None:
                 await client.aclose()
@@ -135,6 +138,8 @@ class FleetController:
     def _url(self, index: int, path: str) -> str:
         if index == self.camera_index:
             return f"http://fleet-self{path}"
+        if self.dynamic is not None and self.dynamic.owns(index):
+            return self.dynamic.origins[index] + path
         if self.origins:
             return self.origins[index - 1] + path
         service = "harness" if index == 1 else f"harness-{index:02d}"
@@ -163,6 +168,10 @@ class FleetController:
         )
 
     def usable_capacity(self) -> int:
+        # Video connections are independent of the optional tracking service.
+        # Its admission checks run when a tracking workflow actually starts.
+        if self.dynamic is not None:
+            return self.capacity
         runtime = self.application.state.runtime
         if getattr(runtime, "_local_configuration_error", None):
             return 1
@@ -198,7 +207,9 @@ class FleetController:
         tracking_mode = self.tracking_mode()
         reason = ""
         tracking_enabled = getattr(self.application.state.runtime, "_tracking_requested", True)
-        if not tracking_enabled:
+        if self.dynamic is not None:
+            reason = "可在页面按需添加视频源。无需预设路数或重新部署。"
+        elif not tracking_enabled:
             reason = "人物描边未启用；视频播放、人脸与 VLM 识别独立运行。"
         elif tracking_mode == "legacy":
             reason = "原远程人物追踪仅支持一路。配置本地或自建追踪服务可使用多路。"
@@ -207,6 +218,8 @@ class FleetController:
         elif usable == 1:
             reason = "当前部署配置一路视频。增加部署通道后可连接更多视频。"
         return {
+            "dynamic_sources": self.dynamic is not None,
+            "add_camera_url": "/v1/fleet/cameras" if self.dynamic is not None else None,
             "multi_camera_allowed": allowed,
             "capacity": self.capacity,
             "usable_capacity": usable,
@@ -266,6 +279,8 @@ class FleetController:
     ) -> JSONResponse:
         from .relay_auth import relay_headers
 
+        if self.dynamic is not None:
+            await self.dynamic.ensure(index)
         private_relay = bool(
             path == "/v1/video/connect" and payload and payload.get("relay")
         )
@@ -773,6 +788,23 @@ def install_fleet_routes(application: FastAPI) -> FleetController:
     from .cloud_gpu import install_cloud_gpu_routes
     install_cloud_gpu_routes(application, controller)
 
+    @application.post("/v1/fleet/cameras")
+    async def add_camera(request: Request) -> JSONResponse:
+        controller._require_primary()
+        if await _json_body(request):
+            raise HTTPException(400, "Adding a video source takes no parameters.")
+        if controller.dynamic is None:
+            raise HTTPException(
+                409, "This deployment does not support dynamic video sources."
+            )
+        async with controller.control_lock:
+            camera = await controller.dynamic.add()
+            response = await controller.request_json(
+                camera["index"], "GET", "/v1/status?lightweight=true", timeout=5,
+            )
+            camera["status"] = json.loads(response.body)
+        return JSONResponse({"camera": camera}, status_code=201, headers=_NO_STORE)
+
     @application.get("/v1/fleet")
     async def fleet() -> JSONResponse:
         controller._require_primary()
@@ -888,6 +920,8 @@ def install_fleet_routes(application: FastAPI) -> FleetController:
         if index == controller.camera_index:
             await receive_relay(socket, application.state.runtime, token)
         else:
+            if controller.dynamic is not None:
+                await controller.dynamic.ensure(index)
             await proxy_relay(
                 socket, controller._url(index, ""), f"/v1/video/relay/{token}",
             )

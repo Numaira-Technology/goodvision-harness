@@ -106,6 +106,8 @@ class WorkflowCoordinator:
         for camera in cameras:
             camera["status"] = statuses.get(camera["index"])
         return {
+            "dynamic_sources": fleet.dynamic is not None,
+            "add_camera_url": "/v1/fleet/cameras" if fleet.dynamic is not None else None,
             "document": self.store.load(),
             "cameras": cameras,
             "event_catalog": event_catalog(self.vocabulary),

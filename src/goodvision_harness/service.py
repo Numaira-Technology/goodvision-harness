@@ -2344,7 +2344,13 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             raise ValueError("Synthetic analysis is no longer supported.")
         if self.config is None or self.config_error is not None:
             raise RuntimeError(self.config_error or "configuration unavailable")
-        if self._fleet_camera_index > self.tracking_camera_capacity():
+        needs_tracking = (
+            self._workflow_plan.get("tracking_enabled", False)
+            and self._workflow_plan.get("tracking_engine") != "bbox"
+            if self._workflow_plan is not None
+            else self._tracking_requested
+        )
+        if needs_tracking and self._fleet_camera_index > self.tracking_camera_capacity():
             raise RuntimeError("该视频通道超出人员追踪模块的配置容量。")
         self._ensure_rich_readiness_probe()
         if mode not in {CAMERA_MODE, STREAM_MODE}:
@@ -4936,6 +4942,19 @@ def create_app(
         runtime._local_camera_stream_options = (
             application.state.local_cameras.stream_options
         )
+        fleet = application.state.fleet
+        if (
+            fleet.is_primary
+            and os.environ.get("HARNESS_FLEET_DYNAMIC", "true").lower()
+            not in {"false", "0", "no"}
+            and getattr(runtime, "_deployment_store", None) is not None
+        ):
+            from .dynamic_cameras import DynamicCameras
+
+            if DynamicCameras.supported():
+                fleet.dynamic = DynamicCameras(
+                    fleet, runtime._deployment_store.path.parent,
+                )
         runtime.start()
         start_resource_sampling()
         try:
