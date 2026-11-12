@@ -519,7 +519,7 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, sealed_receipts=Non
 
 
 
-def _verify_completion(output, phase_dir, *, calibration=False):
+def _verify_completion(output, phase_dir, *, calibration=False, ledger=None):
     path = phase_dir / "completion.json"
     if not path.exists():
         return
@@ -548,9 +548,18 @@ def _verify_completion(output, phase_dir, *, calibration=False):
             or artifact.is_symlink()
             or not artifact.resolve().is_relative_to(output.resolve())
             or not artifact.is_file()
-            or file_hash(artifact) != expected
+            or _evidence_hash(artifact, ledger) != expected
         ):
             raise ValueError("completed phase evidence differs: " + name)
+
+
+def _evidence_hash(artifact, ledger):
+    # The owner holds an exclusive lock on its ledger. On Windows that CRT
+    # byte lock also blocks reads through a second handle (PermissionError),
+    # so hash the ledger through its own owning handle, as before.
+    if ledger is not None and artifact.resolve() == ledger.path.resolve():
+        return ledger.file_hash()
+    return file_hash(artifact)
 
 
 def _verify_existing_phase_records(
@@ -750,6 +759,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     _verify_completion(
                         output, phase_dir,
                         calibration=split == "validation" and cfg["kind"] == "margin",
+                        ledger=ledger,
                     )
                 else:
                     if any(used < 3 and set(answers) != set(unit["targets"])
