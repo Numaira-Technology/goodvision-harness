@@ -26,6 +26,7 @@ from .workflow import collect, context_for, load_threshold_artifact, report, ver
 ALIASES = ("qwen8b", "gemini25", "gemini38", "qwen235b", "luna", "maverick")
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+_STDLIB_URL_OPEN = urllib.request.urlopen
 
 
 class InvalidResponse(ValueError):
@@ -77,6 +78,13 @@ def retry_after(value, now=None):
     return max(0, seconds) if math.isfinite(seconds) else 0
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url, code, "OpenRouter redirects are refused", headers, fp
+        )
+
+
 def atomic(path, data):
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_bytes(canonical(data) + b"\n")
@@ -88,14 +96,32 @@ class Transport:
         self.bundle, self.config, self.key, self.output = bundle, config, key, output
         self.ledger, self.billing_stop = ledger, billing_stop
         self.ssl = ssl.create_default_context(cafile=certifi.where())
-        # opener.open is the patch point for receipt tests. It still calls
-        # urlopen, which the HTTP-body tests replace.
+        self._redirect_opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=self.ssl), _NoRedirect()
+        )
+        # opener.open is the patch point for receipt tests. A replaced
+        # urllib.request.urlopen still drives the HTTP-body tests.
         self.opener = self
 
     def open(self, req, timeout=90):
-        return urllib.request.urlopen(req, context=self.ssl, timeout=timeout)
+        if urllib.request.urlopen is not _STDLIB_URL_OPEN:
+            return urllib.request.urlopen(req, timeout=timeout)
+        return self._redirect_opener.open(req, timeout=timeout)
 
     def call(self, url, body=None):
+        parsed = urllib.parse.urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "openrouter.ai"
+            or parsed.fragment
+            or parsed.path
+            not in {
+                "/api/v1/chat/completions",
+                "/api/alpha/decisions",
+                "/api/v1/generation",
+            }
+        ):
+            raise ValueError("OpenRouter transport refuses an unapproved endpoint")
         req = urllib.request.Request(url, data=canonical(body) if body is not None else None,
             headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json"})
         status = None

@@ -129,20 +129,26 @@ class LocalTransport:
             raise RequestFailure(type(error).__name__, metadata=metadata) from error
         metadata = save({"http_status": 200, **raw_fields(response=payload)})
         actual_model = payload.get("model") if isinstance(payload, dict) else None
+        if isinstance(actual_model, str) and actual_model.strip():
+            metadata["actual_model"] = actual_model
+        metadata["actual_provider"] = "self-hosted-r2-4090"
         if not isinstance(actual_model, str) or not actual_model.strip():
-            raise RequestFailure("actual model identity missing or invalid", fatal=True)
+            raise RequestFailure(
+                "actual model identity missing or invalid",
+                fatal=True,
+                metadata=metadata,
+            )
         if actual_model != self.expected_model:
-            raise RequestFailure("actual model mismatch: " + repr(actual_model)[:512], fatal=True)
-        metadata = {
-            "actual_provider": "self-hosted-r2-4090",
-            "actual_model": actual_model,
-        }
+            raise RequestFailure(
+                "actual model mismatch: " + repr(actual_model)[:512],
+                fatal=True,
+                metadata=metadata,
+            )
         try:
             answers = parse_response(self.config, unit, payload)
         except (ValueError, KeyError, TypeError, IndexError) as error:
             answers = {}
             metadata["answer_error"] = str(error)[:500]
-        metadata["receipt"] = "receipts/" + prefix + ".json"
         return answers, metadata
 
 
