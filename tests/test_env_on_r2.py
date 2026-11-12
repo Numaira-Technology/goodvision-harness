@@ -945,6 +945,20 @@ def test_inflater_streams_single_and_multi_member_gzip(tmp_path, members):
         assert reader.read() == raw
 
 
+@pytest.mark.parametrize("output_limit", [4096, 8 << 20])
+def test_inflater_does_not_repeat_members_after_output_limit(
+    tmp_path, monkeypatch, output_limit
+):
+    import gzip
+
+    monkeypatch.setattr(es._Inflater, "_OUT", output_limit)
+    parts = [b"a" * (output_limit + 1), b"b" * 31, b"c" * 47]
+    path = tmp_path / "members.gz"
+    path.write_bytes(b"".join(gzip.compress(part) for part in parts))
+    with es._Inflater(path) as reader:
+        assert reader.read() == b"".join(parts)
+
+
 @pytest.mark.parametrize(
     "damage, error", [("truncate", EOFError), ("corrupt", zlib.error)]
 )

@@ -432,8 +432,9 @@ class _Inflater(io.RawIOBase):
                 out = inflater.decompress(data, self._OUT)
                 data = inflater.unconsumed_tail
                 if inflater.eof:
-                    # Next gzip member (if any) starts in unused_data.
-                    data = inflater.unused_data + data
+                    # At EOF unused_data already includes any unconsumed_tail
+                    # left by output-limited calls; adding both repeats members.
+                    data = inflater.unused_data
                     inflater = zlib.decompressobj(31)
                     if not data:
                         data = self._source.read(self._CHUNK)
