@@ -27,7 +27,7 @@ class FakeS3:
     def get_object(self, Bucket, Key):
         return {"Body": io.BytesIO(self.objects[Key])}
 
-    def download_file(self, Bucket, Key, Filename):
+    def download_file(self, Bucket, Key, Filename, Config=None):
         self.gets += 1
         with open(Filename, "wb") as f:
             f.write(self.objects[Key])
@@ -180,13 +180,13 @@ def test_failed_r2_pull_does_not_contaminate_hf_cache(
         del objects[key]
 
     class BrokenS3(FakeS3):
-        def download_file(self, Bucket, Key, Filename):
+        def download_file(self, Bucket, Key, Filename, Config=None):
             if failure == "interrupted" and Key == key:
                 from pathlib import Path
 
                 Path(Filename).write_bytes(b"partial")
                 raise OSError("secret-that-must-not-appear-in-logs")
-            super().download_file(Bucket, Key, Filename)
+            super().download_file(Bucket, Key, Filename, Config)
 
     monkeypatch.setenv("R2_BUCKET", "b")
     monkeypatch.setattr(ms, "r2_client", lambda: BrokenS3(objects))
@@ -363,3 +363,76 @@ def test_publication_failure_preserves_previous_snapshot(
     else:
         assert (snap / "existing").read_bytes() == b"previous HF snapshot"
         assert not list(snap.parent.glob(".r2-previous-*"))
+
+
+def test_pull_downloads_files_concurrently(tmp_path, monkeypatch):
+    """Several files must be in flight at once, not one after another."""
+    import threading
+
+    many = {f"model-{i:05d}.safetensors": bytes([i]) * (100 + i) for i in range(6)}
+    many["config.json"] = b"{}"
+    objects, manifest = _bucket(REPO, REV, many)
+    monkeypatch.setenv("R2_PULL_FILE_WORKERS", "3")
+    barrier = threading.Barrier(3, timeout=5)
+
+    class ConcurrentS3(FakeS3):
+        def __init__(self, objects):
+            super().__init__(objects)
+            self.lock = threading.Lock()
+            self.active = self.peak = 0
+
+        def download_file(self, Bucket, Key, Filename, Config=None):
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            try:
+                if Key.endswith("safetensors"):
+                    barrier.wait()  # deadlocks (times out) if run serially
+                super().download_file(Bucket, Key, Filename, Config)
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    client = ConcurrentS3(objects)
+    snap = ms.snapshot_dir(tmp_path, REPO, REV)
+    ms.pull_from_r2(REPO, REV, snap, client=client, bucket="b")
+    assert client.peak == 3
+    assert client.gets == len(many)
+    assert ms.verify_snapshot(snap, manifest)
+
+
+def test_parallel_failure_stops_queue_and_waits_for_running(tmp_path, monkeypatch):
+    """A bad file aborts the pull; no worker keeps writing after it returns."""
+    import threading
+    import time
+
+    many = {f"f{i}.bin": bytes([i]) * 50 for i in range(8)}
+    objects, _ = _bucket(REPO, REV, many)
+    objects[f"{ms.R2_PREFIX}/{REPO}/{REV}/f0.bin"] = b"corrupt"
+    monkeypatch.setenv("R2_PULL_FILE_WORKERS", "2")
+    finished = []
+
+    class SlowS3(FakeS3):
+        def download_file(self, Bucket, Key, Filename, Config=None):
+            if not Key.endswith("f0.bin"):
+                time.sleep(0.05)
+            super().download_file(Bucket, Key, Filename, Config)
+            finished.append(threading.current_thread().name)
+
+    client = SlowS3(objects)
+    snap = ms.snapshot_dir(tmp_path, REPO, REV)
+    with pytest.raises(ValueError, match="mismatch"):
+        ms.pull_from_r2(REPO, REV, snap, client=client, bucket="b")
+    count = len(finished)
+    time.sleep(0.2)
+    assert len(finished) == count  # nothing still running in the background
+    assert client.gets < len(many)  # queued files were cancelled
+    assert not (snap / ms.MANIFEST_NAME).exists()
+
+
+def test_parallelism_env_is_clamped(monkeypatch):
+    monkeypatch.setenv("R2_PULL_FILE_WORKERS", "0")
+    monkeypatch.setenv("R2_PULL_STREAMS", "nonsense")
+    assert ms._parallelism() == (1, ms.DEFAULT_STREAMS)
+    monkeypatch.setenv("R2_PULL_FILE_WORKERS", "100000")
+    assert ms._parallelism()[0] == 128

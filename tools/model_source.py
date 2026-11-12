@@ -20,6 +20,7 @@ import os
 import shutil
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory, mkdtemp
@@ -28,6 +29,49 @@ from tempfile import TemporaryDirectory, mkdtemp
 #   models/<repo>/<revision>/<original HF relative path>  (+ MANIFEST.json)
 R2_PREFIX = "models"
 MANIFEST_NAME = "MANIFEST.json"
+
+# Download parallelism. A single HTTPS stream to R2 tops out far below a GPU
+# box's NIC, so we open several at once: FILE_WORKERS whole files in parallel,
+# and within each large file STREAMS byte-range parts in parallel. The HTTP
+# connection pool must hold every stream that can be open at the same time.
+# Overridable per run (e.g. a slow box): R2_PULL_FILE_WORKERS, R2_PULL_STREAMS.
+DEFAULT_FILE_WORKERS = 4
+DEFAULT_STREAMS = 16
+PART_SIZE = 64 * 1024 * 1024
+
+
+def _env_int(name, default, lo=1, hi=128):
+    try:
+        value = int(os.environ.get(name, default))
+    except ValueError:
+        return default
+    return max(lo, min(hi, value))
+
+
+def _parallelism():
+    return (
+        _env_int("R2_PULL_FILE_WORKERS", DEFAULT_FILE_WORKERS),
+        _env_int("R2_PULL_STREAMS", DEFAULT_STREAMS),
+    )
+
+
+def _transfer_config(streams):
+    """boto3 TransferConfig for ranged parallel GETs, or None without boto3."""
+    try:
+        from boto3.s3.transfer import TransferConfig
+    except ImportError:
+        return None
+    settings = dict(
+        multipart_threshold=PART_SIZE,
+        multipart_chunksize=PART_SIZE,
+        max_concurrency=streams,
+        use_threads=True,
+    )
+    try:
+        # R2 is not AWS; keep the pure-Python transfer path (no CRT client).
+        return TransferConfig(preferred_transfer_client="classic", **settings)
+    except TypeError:  # boto3 older than the CRT option
+        return TransferConfig(**settings)
 
 
 def repo_cache_folder(repo):
@@ -123,12 +167,18 @@ def r2_client():
     import boto3
     from botocore.config import Config
 
+    file_workers, streams = _parallelism()
     return boto3.client(
         "s3",
         endpoint_url=os.environ["R2_ENDPOINT"],
         aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
         aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
-        config=Config(signature_version="s3v4", retries={"max_attempts": 8}),
+        config=Config(
+            signature_version="s3v4",
+            retries={"max_attempts": 8, "mode": "standard"},
+            # boto3's default pool is 10; extra streams would just queue.
+            max_pool_connections=file_workers * streams + 4,
+        ),
     )
 
 
@@ -165,21 +215,58 @@ def pull_from_r2(repo, revision, snap, *, client=None, bucket=None):
     marker = snap / MANIFEST_NAME
     if marker.is_symlink():
         raise ValueError("manifest must not be a symlink")
-    for rel, meta in files.items():
+    # Check every destination before any byte is written or any thread starts.
+    root = snap.resolve()
+    for rel in files:
         dest = snap / rel
-        if dest.is_symlink() or not dest.resolve().is_relative_to(snap.resolve()):
+        if dest.is_symlink() or not dest.resolve().is_relative_to(root):
             raise ValueError(f"unsafe path in manifest: {rel!r}")
+
+    file_workers, streams = _parallelism()
+    extra = {}
+    config = _transfer_config(streams)
+    if config is not None:
+        extra["Config"] = config
+
+    def fetch(rel, meta):
+        """Download one file (unless already correct) and verify it; bytes pulled."""
+        dest = snap / rel
         if (
             dest.is_file()
             and dest.stat().st_size == meta["size"]
             and _sha256(dest) == meta["sha256"]
         ):
-            continue  # resume: keep already-correct files
+            return 0  # resume: keep already-correct files
         dest.parent.mkdir(parents=True, exist_ok=True)
-        client.download_file(bucket, prefix + rel, str(dest))
+        client.download_file(bucket, prefix + rel, str(dest), **extra)
+        # Hashing one file overlaps with other files still on the wire.
         if dest.stat().st_size != meta["size"] or _sha256(dest) != meta["sha256"]:
             raise ValueError(f"checksum/size mismatch after R2 download: {rel}")
         _log(f"pulled {rel} ({meta['size'] / 1e6:.1f} MB)")
+        return meta["size"]
+
+    started = time.monotonic()
+    pulled = 0
+    # Largest first so the long shards start early and small files fill gaps.
+    order = sorted(files.items(), key=lambda kv: kv[1]["size"], reverse=True)
+    with ThreadPoolExecutor(max_workers=file_workers) as pool:
+        futures = [pool.submit(fetch, rel, meta) for rel, meta in order]
+        try:
+            for future in as_completed(futures):
+                pulled += future.result()
+        except BaseException:
+            # Stop queued files; leaving the with-block waits for running ones,
+            # so no thread writes into staging after the caller cleans it up.
+            for future in futures:
+                future.cancel()
+            raise
+    elapsed = max(time.monotonic() - started, 1e-6)
+    if pulled:
+        _log(
+            f"R2 pull {pulled / 1e6:.1f} MB in {elapsed:.1f}s "
+            f"({pulled / 1e6 / elapsed:.1f} MB/s, "
+            f"{file_workers} files x {streams} streams)"
+        )
 
     marker.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     # A pinned historical revision does not establish the current HF main ref.
