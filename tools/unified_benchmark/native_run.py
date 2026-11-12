@@ -556,7 +556,8 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     write_new(completion_path, {"execution_finished": True,
                         "final_missing_unique_units": result["final_missing_unique_units"],
                         "incomplete_questions": result["incomplete_questions"],
-                        "files": {str(p.relative_to(output)): ledger.file_hash() if p == ledger.path else file_hash(p)
+                        # Posix keys: validate_completion requires "<split>/<name>" on every OS.
+                        "files": {p.relative_to(output).as_posix(): ledger.file_hash() if p == ledger.path else file_hash(p)
                                   for p in files}, "at": stamp()})
                 completed.append(split)
             except BaseException:
