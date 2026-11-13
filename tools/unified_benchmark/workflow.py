@@ -9,7 +9,8 @@ import json
 import math
 from pathlib import Path
 
-from .contract import CURRENT_VERSION, EVENTS, plan_rules, rules_for, digest, file_hash, score, select_thresholds, source_files, validate_threshold_values, write_new
+from .contract import (BAG_VALIDATION_SCHEMA, CURRENT_VERSION, EVENTS, plan_rules, rules_for, digest, file_hash,
+                       has_bag_validation, score, select_thresholds, source_files, validate_threshold_values, write_new)
 
 
 def verify_bundle(bundle):
@@ -31,14 +32,21 @@ def verify_bundle(bundle):
         raise ValueError("offline preflight not passed")
     if not {"rules.json", "preflight.json", "source-hashes.json"} <= set(hashes):
         raise ValueError("bundle is missing required integrity records")
+    overlay = (report.get("dataset_context") or {}).get("bag_validation")
+    if overlay is not None:
+        if (not hashes.get("inputs/bag-validation.json") or hashes["inputs/bag-validation.json"] != overlay.get("sha256")
+                or set(report["models"]) - {"clip", "siglip2"} or frozen_rules["version"] != CURRENT_VERSION):
+            raise ValueError("bag validation manifest or model scope differs")
     for name in hashes:
         if not name.startswith("plans/") or not name.endswith(".json"):
             continue
         plan = json.loads((bundle / name).read_text())
         if plan_rules(plan) != frozen_rules:
             raise ValueError("plan protocol differs from bundle")
+        if (plan.get("dataset_context") or {}).get("bag_validation") != overlay:
+            raise ValueError("plan bag validation fingerprint differs from preflight")
         if frozen_rules["version"] == CURRENT_VERSION:
-            count = 24 if plan["split"] == "validation" else 202
+            count = (44 if has_bag_validation(plan) else 24) if plan["split"] == "validation" else 202
             if {q["number"] for q in plan["questions"]} != set(range(1, count + 1)) or len(plan["questions"]) != count:
                 raise ValueError("plan does not cover the frozen question cohort")
     sources = json.loads((bundle / "source-hashes.json").read_text())
@@ -90,8 +98,11 @@ def load_threshold_artifact(path, expected_hash, *, bundle, alias, config, bundl
     if not path or not expected_hash or file_hash(path) != expected_hash:
         raise ValueError("test requires frozen validation thresholds and their SHA256")
     artifact = json.loads(Path(path).read_text())
+    plan = json.loads((Path(bundle) / "plans" / f"{alias}-validation.json").read_text())
+    include_bags = has_bag_validation(plan)
+    count = 44 if include_bags else 24
     if (not isinstance(artifact, dict) or artifact.get("validation_only") is not True
-            or artifact.get("calibration") != "selected_on_complete_validation24"):
+            or artifact.get("calibration") != f"selected_on_complete_validation{count}"):
         raise ValueError("successful validation-only calibration required; test blocked")
     for field, expected in {"config_sha256": digest(config), "bundle_sha256": bundle_digest,
                             "rules_sha256": digest(json.loads((Path(bundle) / "rules.json").read_text())), "model": config["model"]}.items():
@@ -99,19 +110,23 @@ def load_threshold_artifact(path, expected_hash, *, bundle, alias, config, bundl
             raise ValueError("threshold configuration mismatch: " + field)
     kind = config["kind"]
     validate_threshold_values(artifact.get("thresholds"), kind)
-    expected_summary = {"planned_questions": 24, "complete_valid_questions": 24,
+    expected_summary = {"planned_questions": count, "complete_valid_questions": count,
                         "incomplete_questions": 0, "final_missing_unique_units": 0}
     if artifact.get("validation_summary") != expected_summary:
-        raise ValueError("complete validation24 evidence required; test blocked")
-    plan = json.loads((Path(bundle) / "plans" / f"{alias}-validation.json").read_text())
+        raise ValueError(f"complete validation{count} evidence required; test blocked")
     evidence_hash = artifact.get("validation_evidence_sha256")
-    if (plan.get("split") != "validation" or len(plan.get("questions", [])) != 24
+    if (plan.get("split") != "validation" or len(plan.get("questions", [])) != count
             or artifact.get("validation_plan_sha256") != digest(plan)
             or not isinstance(evidence_hash, str) or len(evidence_hash) != 64
             or any(c not in "0123456789abcdef" for c in evidence_hash)):
         raise ValueError("validation plan/evidence identity differs")
-    if (artifact.get("comparator") != (">" if kind == "margin" else ">=")
-            or artifact.get("bag_calibration") != "uncalibrated_no_bag_validation"
+    if artifact.get("comparator") != (">" if kind == "margin" else ">="):
+        raise ValueError("threshold decision rule differs")
+    if include_bags:
+        if (kind != "margin" or alias not in {"clip", "siglip2"}
+                or artifact.get("bag_calibration") != BAG_VALIDATION_SCHEMA or set(artifact.get("details", {})) != set(EVENTS)):
+            raise ValueError("complete six-event margin selection required")
+    elif (artifact.get("bag_calibration") != "uncalibrated_no_bag_validation"
             or any(artifact["thresholds"][e] != (0 if kind == "margin" else .5) for e in EVENTS[4:])):
         raise ValueError("threshold decision rule or uncalibrated bag baseline differs")
     return artifact
@@ -144,6 +159,9 @@ def timings(rows):
 def report(plan, config, ledger, thresholds):
     observed = collect(plan, config, ledger)
     result = score(plan, observed, config["kind"], thresholds)
+    if has_bag_validation(plan):
+        zeros = dict.fromkeys(EVENTS, 0.0)
+        result["zero_margin_baseline"] = score(plan, observed, config["kind"], zeros) | {"thresholds": zeros}
     sent = {r["unit"] for r in ledger.rows if r["type"] == "intent"}
     # Offline re-scoring must retain the inference date, including across resumes.
     attempt_times = [r["at_unix"] for r in ledger.rows if r["type"] == "intent"
@@ -189,7 +207,7 @@ def main(argv=None):
         observed = collect(plan, config, ledger)
         if args.phase == "select":
             result = select_thresholds(plan, observed, config["kind"], config["model"])
-            result.update(calibration="selected_on_complete_validation24", config_sha256=digest(config), rules_sha256=digest(plan_rules(plan)), bundle_sha256=bundle_digest,
+            result.update(config_sha256=digest(config), rules_sha256=digest(plan_rules(plan)), bundle_sha256=bundle_digest,
                           model=config["model"], selected_at=datetime.now(timezone.utc).isoformat())
         else:
             result = report(plan, config, ledger, thresholds)

@@ -7,6 +7,7 @@ from pathlib import Path
 
 VERSION = "unified-frame-120-v2"
 CURRENT_VERSION = "unified-frame-202-v1"
+BAG_VALIDATION_SCHEMA = "bag-validation10-v1"
 EVENTS = ("fight", "smoking", "fall", "weapon", "bag_knife", "bag_alcohol_bottle")
 RULES = {
     "version": VERSION,
@@ -215,19 +216,38 @@ def score(plan, evidence, kind, thresholds=None):
     return result
 
 
+def has_bag_validation(plan):
+    overlay = (plan.get("dataset_context") or {}).get("bag_validation")
+    if overlay is None:
+        return False
+    if (plan.get("protocol") != CURRENT_VERSION or not isinstance(overlay, dict)
+            or overlay.get("schema") != BAG_VALIDATION_SCHEMA):
+        raise ValueError("unsupported bag validation overlay")
+    return True
+
+
 def select_thresholds(plan, evidence, kind, model):
     """Reuse the existing midpoint algorithms; never accept incomplete validation."""
     from tools.event_benchmark.tune_threshold import pick_tau
+    from tools.clip_benchmark.protocol import REVISIONS
     from tools.clip_benchmark.scoring import _optimal_midpoint
-    if plan["split"] != "validation" or len(plan["questions"]) != 24 or kind not in ("margin", "probability"):
-        raise ValueError("threshold selection requires frozen validation24 and continuous scores")
+    include_bags = has_bag_validation(plan)
+    count = 44 if include_bags else 24
+    if include_bags and (kind != "margin" or model not in REVISIONS):
+        raise ValueError("supplementary bag calibration requires CLIP/SigLIP2 margin scores")
+    if plan["split"] != "validation" or len(plan["questions"]) != count or kind not in ("margin", "probability"):
+        raise ValueError(f"threshold selection requires frozen validation{count} and continuous scores")
     baseline = score(plan, evidence, kind)
-    if baseline["complete_valid_questions"] != 24:
+    if baseline["complete_valid_questions"] != count:
         raise ValueError("incomplete validation blocks threshold selection; no silent fallback")
     values, details = {e: 0.0 if kind == "margin" else .5 for e in EVENTS}, {}
-    for event in EVENTS[:4]:
+    for event in (EVENTS if include_bags else EVENTS[:4]):
         subset = [q for q in plan["questions"] if q["event"] == event]
-        if Counter(q["reference"] for q in subset) != {"yes": 3, "no": 3}:
+        labels = Counter(q["reference"] for q in subset)
+        if event in EVENTS[4:]:
+            if len(subset) != 10 or set(labels) != {"yes", "no"}:
+                raise ValueError("expected ten bag validation questions with both references per class")
+        elif labels != {"yes": 3, "no": 3}:
             raise ValueError("expected three positive and three negative validation questions per class")
         maxima = [max(evidence[uid][event]["score"] for uid in q["unit_ids"]) for q in subset]
         if kind == "probability":
@@ -237,10 +257,15 @@ def select_thresholds(plan, evidence, kind, model):
         else:
             samples = [{"filename": str(q["number"]), "event": event, "proposed_answer": q["reference"]} for q in subset]
             indexed = {str(q["number"]): [{"errors": None, "predictions": {event: {"margin": val}}}] for q, val in zip(subset, maxima)}
-            result = _optimal_midpoint(samples, indexed, model)
+            try:
+                result = _optimal_midpoint(samples, indexed, model)
+            except ValueError as error:
+                raise ValueError(f"{event}: {error}") from error
             values[event], details[event] = result[0], result[1:]
     return {"thresholds": values, "details": details, "comparator": ">" if kind == "margin" else ">=",
+            "calibration": f"selected_on_complete_validation{count}",
             "validation_plan_sha256": digest(plan), "validation_evidence_sha256": digest(evidence),
             "validation_summary": {k: baseline[k] for k in ("planned_questions", "complete_valid_questions",
                 "incomplete_questions", "final_missing_unique_units")},
-            "bag_calibration": "uncalibrated_no_bag_validation", "validation_only": True}
+            "bag_calibration": BAG_VALIDATION_SCHEMA if include_bags else "uncalibrated_no_bag_validation",
+            "validation_only": True}
