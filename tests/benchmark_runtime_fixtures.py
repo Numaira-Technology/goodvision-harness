@@ -19,11 +19,11 @@ from tools.vlm_benchmark.source_feeder import TimedSourceFeeder
 __all__ = [
     "BOX",
     "ROOT",
+    "ContractSourceFeeder",
     "assert_admission_drained",
     "await_condition",
     "config",
     "configure_ephemeral_admission",
-    "ContractSourceFeeder",
     "job",
     "jpeg",
     "report",
@@ -56,14 +56,40 @@ class ContractSourceFeeder(TimedSourceFeeder):
                         return
                     frames = self.framesets[camera % len(self.framesets)]
                     frame = frames[tick % len(frames)]
-                    accepted = self.branches[camera].offer(frame, tick / self.sample_fps, tick)
+                    accepted = self.branches[camera].offer(
+                        frame, tick / self.sample_fps, tick
+                    )
                     if self.source_hook is not None:
-                        self.source_hook(camera, self.branches[camera].config.stream_session_id,
-                                         tick, tick / self.sample_fps, frame)
+                        self.source_hook(
+                            camera, self.branches[camera].config.stream_session_id,
+                            tick, tick / self.sample_fps, frame,
+                        )
                     self.offer_rejected[camera] += int(not accepted)
                     self.samples.put_nowait((camera, tick, accepted))
         except BaseException as error:
             self.error = error
+
+    def diagnostics(self):
+        """Report fixture wait groups without deriving production frame drops.
+
+        This feeder measures one relative wait per release group, rather than
+        each frame's lag from an absolute deadline as the production feeder does.
+        Those measurements cannot establish per-frame release times or drops.
+        """
+        if self.thread.is_alive():
+            raise RuntimeError("source diagnostics require a stopped feeder")
+        return {
+            "scope": "contract fixture release-group waits only",
+            "release_groups_planned": len(self.releases),
+            "release_groups_measured": len(self.release_lags),
+            "release_group_excess_wait_seconds": list(self.release_lags),
+            "planned_sample_count": sum(len(actions) for _, actions in self.releases),
+            "sample_measurements_available": False,
+            "missed": self.missed,
+            "missed_by_stream": list(self.missed_by_stream),
+            "offer_rejected": list(self.offer_rejected),
+            "feeder_error_type": type(self.error).__name__ if self.error else None,
+        }
 
 
 class _EphemeralAdmissionSQLite:

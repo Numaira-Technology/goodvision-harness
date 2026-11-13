@@ -323,6 +323,8 @@ class CameraOutputResponse(Response):
         )
 
     async def _peer(self, scope, receive, send):
+        if self.controller.dynamic is not None:
+            await self.controller.dynamic.ensure(self.index)
         client = self.controller.output_client()
         headers = {
             k.decode(): v.decode()

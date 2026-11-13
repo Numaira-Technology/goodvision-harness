@@ -64,7 +64,7 @@ def frozen(tmp_path):
         write_new(path, {"passed": True, "model": cfg["model"], "revision": cfg["revision"],
             "snapshot": str(snapshot), "files": [{"name": weight.name, "bytes": weight.stat().st_size,
                                                   "sha256": file_hash(weight)}]})
-        files[str(path.relative_to(deployment))] = file_hash(path)
+        files[path.relative_to(deployment).as_posix()] = file_hash(path)
     write_new(deployment / "deployment.json", {"complete": True, "models": list(deploy.ALIASES), "files": files})
     write_new(bundle / "rules.json", RULES)
     sources = preflight.freeze_sources(bundle)
@@ -542,7 +542,7 @@ def seeded_native_resume(frozen, output, *, fatal=True, completed_at=1000, recor
         ledger.append(base | {"type": "result", "answers": {}, "complete": False,
             "elapsed_seconds": .01, "error": receipt["error"], "fatal": fatal,
             "http_status": receipt["http_status"], "metadata": {
-                "receipt": str(path.relative_to(output)), "receipt_sha256": file_hash(path)}})
+                "receipt": path.relative_to(output).as_posix(), "receipt_sha256": file_hash(path)}})
     ledger.close()
     return unit, path
 
@@ -648,7 +648,7 @@ def test_late_orphan_keeps_first_attempt_answer_in_actual_native_resume(frozen, 
     base = {"unit": unit["id"], "request_sha256": unit["request_sha256"], "attempt": 2}
     ledger.append(base | {"type": "intent"})
     ledger.append(base | {"type": "result", "answers": second, "complete": True,
-        "elapsed_seconds": .01, "metadata": {"receipt": str(second_path.relative_to(output)),
+        "elapsed_seconds": .01, "metadata": {"receipt": second_path.relative_to(output).as_posix(),
                                               "receipt_sha256": file_hash(second_path)}})
     ledger.close()
     before = (output / "test/attempts.jsonl").read_bytes()
@@ -674,7 +674,7 @@ def test_late_orphan_keeps_first_attempt_answer_in_actual_native_resume(frozen, 
 
 def output_snapshot(output):
     """Detect changed bytes and new files/directories at failed resume boundaries."""
-    return {str(p.relative_to(output)): file_hash(p) if p.is_file() else None
+    return {p.relative_to(output).as_posix(): file_hash(p) if p.is_file() else None
             for p in output.rglob("*")}
 
 

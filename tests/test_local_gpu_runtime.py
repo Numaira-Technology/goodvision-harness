@@ -277,11 +277,12 @@ def test_full_console_save_detaches_only_once_when_method_changes(rig, monkeypat
 
 
 @pytest.mark.parametrize("mode", ["stream", "camera"])
-def test_secondary_runtime_requires_local_tracking_for_all_inputs(
+def test_secondary_runtime_checks_capacity_when_tracking_requested(
     rig, monkeypatch, mode,
 ):
     monkeypatch.setenv("HARNESS_FLEET_CAMERA_INDEX", "2")
     runtime = rig.make()
+    runtime._tracking_requested = True
     with pytest.raises(RuntimeError, match="人员追踪模块"):
         if mode == "stream":
             runtime.start_stream("rtsp://camera.example/live")
@@ -341,7 +342,15 @@ def test_fleet_busy_peer_blocks_global_changes_through_original_api(
         }).status_code == 200
 
 
-def test_fleet_remote_switch_after_idle_disables_extra_routes(rig, monkeypatch):
+@pytest.mark.parametrize("dynamic", [True, False])
+@pytest.mark.parametrize("worker_supported", [True, False])
+def test_fleet_remote_switch_only_disables_fixed_topology_routes(
+    rig, monkeypatch, dynamic, worker_supported,
+):
+    from goodvision_harness.dynamic_cameras import DynamicCameras
+
+    monkeypatch.setattr(DynamicCameras, "supported", lambda: worker_supported)
+    monkeypatch.setenv("HARNESS_FLEET_DYNAMIC", str(dynamic).lower())
     monkeypatch.setenv("HARNESS_FLEET_CAPACITY", "16")
     # This scenario requests tracking in remote mode too. Face/VLM-only
     # deployments instead use the provisioned application-worker capacity.
@@ -367,14 +376,47 @@ def test_fleet_remote_switch_after_idle_disables_extra_routes(rig, monkeypatch):
             "local_tracking_enabled": False,
         }).status_code == 200
         descriptor = client.get("/v1/fleet").json()
-        assert descriptor["multi_camera_allowed"] is False
-        assert sum(camera["enabled"] for camera in descriptor["cameras"]) == 1
+        enabled = dynamic and worker_supported
+        assert descriptor["dynamic_sources"] is enabled
+        assert descriptor["multi_camera_allowed"] is enabled
+        assert sum(camera["enabled"] for camera in descriptor["cameras"]) == (
+            16 if enabled else 1
+        )
         assert client.post(
             descriptor["cameras"][1]["start_url"], json={},
         ).status_code == 409
         status = client.get(descriptor["cameras"][0]["status_url"])
         assert isinstance(status.json()["configured_stream"], bool)
         assert status.json()["camera_layout"] == "mono"
+
+
+@pytest.mark.parametrize("requested", [None, "true"])
+def test_unsupported_dynamic_workers_preserve_native_fixed_channels(
+    rig, monkeypatch, requested,
+):
+    from goodvision_harness.dynamic_cameras import DynamicCameras
+
+    monkeypatch.setattr(DynamicCameras, "supported", lambda: False)
+    monkeypatch.setenv("HARNESS_FLEET_CAPACITY", "1")
+    if requested is None:
+        monkeypatch.delenv("HARNESS_FLEET_DYNAMIC", raising=False)
+    else:
+        monkeypatch.setenv("HARNESS_FLEET_DYNAMIC", requested)
+
+    async def unexpected_spawn(*args, **kwargs):
+        pytest.fail("unsupported platforms must not attempt to spawn a worker")
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", unexpected_spawn)
+    with TestClient(create_app(rig.make)) as client:
+        fleet = client.get("/v1/fleet").json()
+        assert fleet["dynamic_sources"] is False
+        assert fleet["add_camera_url"] is None
+        assert fleet["capacity"] == 1
+        assert client.get(fleet["cameras"][0]["status_url"]).status_code == 200
+        workflows = client.get("/v1/workflows").json()
+        assert workflows["dynamic_sources"] is False
+        assert workflows["add_camera_url"] is None
+        assert client.post("/v1/fleet/cameras", json={}).status_code == 409
 
 
 @pytest.mark.parametrize("local_inference", [False, True])
