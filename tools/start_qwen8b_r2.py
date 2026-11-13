@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, build_opener
@@ -43,6 +44,132 @@ python3 -m pip install --break-system-packages --no-cache-dir \\
   boto3==1.43.123 PyYAML==6.0.2
 mkdir -p {REPO} {CACHE}
 """
+
+
+# The goodvision-models bucket lives in R2's ENAM region (eastern North
+# America). Measured 2026-11-12 on Qwen3-VL-8B: an Oregon box pulled at about
+# 116 MB/s, a Connecticut box at 232 MB/s. Vast only filters by country, so
+# match the state/province in the offer's geolocation text instead.
+NEAR_BUCKET = (
+    "Connecticut",
+    "Delaware",
+    "District of Columbia",
+    "Florida",
+    "Georgia, US",
+    "Illinois",
+    "Indiana",
+    "Kentucky",
+    "Maine",
+    "Maryland",
+    "Massachusetts",
+    "Michigan",
+    "New Hampshire",
+    "New Jersey",
+    "New York",
+    "North Carolina",
+    "Ohio",
+    "Pennsylvania",
+    "Rhode Island",
+    "South Carolina",
+    "Tennessee",
+    "Vermont",
+    "Virginia",
+    "West Virginia",
+    "Wisconsin",
+    "Ontario",
+    "Quebec",
+    "New Brunswick",
+    "Nova Scotia",
+)
+NEAR_BUCKET_PRICE_TOLERANCE = 0.10  # pay at most 10% more per hour for proximity
+
+# Some hosts bill inbound traffic per GB (offer field inet_down_cost, $/GB).
+# One run pulls the packed env plus weights (~22 GB for Qwen3-VL-8B), so a
+# cheap hourly price can still be the most expensive run: on 2026-11-08 the
+# download fee was $0.883 of a $1.201 rental. Compare offers by an estimated
+# whole-run total instead of the hourly price alone.
+RUN_DOWNLOAD_GB = 25.0
+RUN_HOURS = 0.6
+RUN_COST_TOLERANCE = 0.10
+
+
+def estimated_run_cost(offer, *, download_gb=RUN_DOWNLOAD_GB, hours=RUN_HOURS):
+    return float(offer["dph_total"]) * hours + float(
+        offer.get("inet_down_cost") or 0.0
+    ) * download_gb
+
+
+def drop_costly_downloads(offers, *, tolerance=RUN_COST_TOLERANCE):
+    """Keep offers whose estimated whole-run cost is near the cheapest.
+
+    Removes hosts whose per-GB download fee outweighs a low hourly price. Falls
+    back to the caller's list when the offers cannot be priced.
+    """
+    try:
+        costs = [estimated_run_cost(o) for o in offers]
+        best = min(costs)
+    except (TypeError, KeyError, ValueError):
+        return offers
+    kept = [o for o, c in zip(offers, costs) if c <= best * (1 + tolerance)]
+    if len(kept) < len(offers):
+        print(
+            f"Skipping {len(offers) - len(kept)} offer(s) whose download fees make "
+            f"the run cost more than ${best * (1 + tolerance):.3f} "
+            f"(estimate: {RUN_DOWNLOAD_GB:.0f} GB in, {RUN_HOURS:.1f} h)",
+            flush=True,
+        )
+    return kept or offers
+
+
+def prefer_near_bucket(offers, *, tolerance=NEAR_BUCKET_PRICE_TOLERANCE):
+    """Keep offers near the R2 bucket when they cost at most ``tolerance`` more.
+
+    Falls back to the full list when no nearby offer is close in price, so a
+    launch never fails or gets much dearer just because of location.
+    """
+    try:
+        cheapest = min(float(o["dph_total"]) for o in offers)
+        near = [
+            o
+            for o in offers
+            if any(place in str(o.get("geolocation") or "") for place in NEAR_BUCKET)
+            and float(o["dph_total"]) <= cheapest * (1 + tolerance)
+        ]
+    except (TypeError, KeyError, ValueError, AttributeError):
+        return offers  # empty or unexpected offer shape: keep the caller's list
+    if near:
+        print(
+            f"Preferring {len(near)} offer(s) near the R2 bucket (eastern North "
+            f"America) within {tolerance:.0%} of the cheapest ${cheapest:.4f}/hr",
+            flush=True,
+        )
+        return near
+    print(
+        "No offer near the R2 bucket within budget; weights will download "
+        "more slowly from farther away.",
+        flush=True,
+    )
+    return offers
+
+
+def run_side_by_side(**steps):
+    """Run independent remote setup steps at once; return results by name.
+
+    Restoring the packed env and prefetching weights use separate SSH
+    sessions and separate directories, so neither needs to wait for the
+    other: the env's unpack time hides behind the weight download. The first
+    failure is raised right away; the caller's cleanup releases the instance,
+    which also ends the other step's SSH session.
+    """
+    pool = ThreadPoolExecutor(max_workers=len(steps))
+    futures = {pool.submit(step): name for name, step in steps.items()}
+    try:
+        results = {}
+        for future in as_completed(futures):
+            results[futures[future]] = future.result()
+        return results
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _public_key(key_path: Path) -> str:
@@ -403,13 +530,13 @@ def main() -> int:
                 type="on-demand",
                 order="dph_total",
                 storage=float(args.disk_gb),
-                limit=10,
+                limit=64,  # wide enough to see offers near the bucket
             )
             if not offers:
                 raise RuntimeError("No eligible RTX 4090 / CUDA 12.8 offer available.")
             creation_attempted = True
             instance_id = S.create_from_offers(
-                vast, offers, disk_gb=args.disk_gb, label=label
+                vast, prefer_near_bucket(drop_costly_downloads(offers)), disk_gb=args.disk_gb, label=label
             )
             print(f"Created instance: {instance_id}", flush=True)
 
@@ -423,29 +550,34 @@ def main() -> int:
         S.run([*ssh, "bash -s"], input=BOOTSTRAP, timeout=15 * 60)
         print("Uploading repo...", flush=True)
         _upload_repo(ssh)
-        print("Restoring qwen8b packed env from R2...", flush=True)
-        activate = restore_env(
-            ssh_options=options,
-            host=host,
-            port=port,
-            name="qwen8b",
-            expected_env=env_spec,
-            remote_dir=REPO,
-            r2_env=r2_env,
-            python="python3",
+        print(
+            "Restoring qwen8b packed env and prefetching weights from R2 "
+            "(side by side)...",
+            flush=True,
         )
+        activate = run_side_by_side(
+            env=lambda: restore_env(
+                ssh_options=options,
+                host=host,
+                port=port,
+                name="qwen8b",
+                expected_env=env_spec,
+                remote_dir=REPO,
+                r2_env=r2_env,
+                python="python3",
+            ),
+            weights=lambda: prefetch_models(
+                ssh_options=options,
+                host=host,
+                port=port,
+                remote_dir=REPO,
+                models=[(repo, rev)],
+                cache_dir=CACHE,
+                r2_env=r2_env,
+                python="python3",
+            ),
+        )["env"]
         print(f"env python: {_packed_python(activate)}", flush=True)
-        print("Prefetching qwen8b weights from R2...", flush=True)
-        prefetch_models(
-            ssh_options=options,
-            host=host,
-            port=port,
-            remote_dir=REPO,
-            models=[(repo, rev)],
-            cache_dir=CACHE,
-            r2_env=r2_env,
-            python="python3",
-        )
         worker = _server_process(ssh, activate)
         state = _wait_ready(worker)
         print(

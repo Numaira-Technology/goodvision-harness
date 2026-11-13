@@ -529,11 +529,11 @@ def main() -> int:
                 type="on-demand",
                 order="dph_total",
                 storage=float(args.disk_gb),
-                limit=10,
+                limit=64,  # wide enough to see offers near the bucket
             )
             if not offers:
                 raise RuntimeError("No eligible RTX 4090 / CUDA 12.8 offer available.")
-            chosen = _eligible_offers(offers)
+            chosen = H.prefer_near_bucket(H.drop_costly_downloads(_eligible_offers(offers)))
             cheapest = min(float(o["dph_total"]) for o in chosen)
             print(
                 f"{len(chosen)} single-GPU 4090 offers <= ${MAX_DPH}/hr; "
@@ -559,30 +559,32 @@ def main() -> int:
         print("Uploading repo...", flush=True)
         H._upload_repo(ssh)
         print(
-            "Prefetching pinned weights from R2 (same revision as HF run)...",
+            "Prefetching pinned weights (same revision as HF run) and restoring "
+            "the versioned vLLM packed env from R2, side by side...",
             flush=True,
         )
-        prefetch_models(
-            ssh_options=options,
-            host=host,
-            port=port,
-            remote_dir=H.REPO,
-            models=[(repo, rev)],
-            cache_dir=H.CACHE,
-            r2_env=r2_env,
-            python="python3",
-        )
-        print("Restoring versioned vLLM packed env from R2 (no GPU pip)...", flush=True)
-        activate = restore_env(
-            ssh_options=options,
-            host=host,
-            port=port,
-            name=ENV_NAME,
-            expected_env=env_spec,
-            remote_dir=H.REPO,
-            r2_env=r2_env,
-            python="python3",
-        )
+        activate = H.run_side_by_side(
+            weights=lambda: prefetch_models(
+                ssh_options=options,
+                host=host,
+                port=port,
+                remote_dir=H.REPO,
+                models=[(repo, rev)],
+                cache_dir=H.CACHE,
+                r2_env=r2_env,
+                python="python3",
+            ),
+            env=lambda: restore_env(
+                ssh_options=options,
+                host=host,
+                port=port,
+                name=ENV_NAME,
+                expected_env=env_spec,
+                remote_dir=H.REPO,
+                r2_env=r2_env,
+                python="python3",
+            ),
+        )["env"]
         _verify_restored_env(ssh, activate)
 
         snapshot = _remote_snapshot(ssh)

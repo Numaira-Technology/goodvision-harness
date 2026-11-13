@@ -123,3 +123,19 @@ def test_remote_command_executes_quoted_paths_and_credentials(tmp_path):
         secret,
     ]
     assert secret not in cmd
+
+
+def test_pull_tuning_forwards_only_integer_knobs(monkeypatch):
+    from tools import cloud_prefetch as cp
+
+    env = {
+        "R2_PULL_PROCESSES": "4",
+        "R2_PULL_STREAMS": "8; rm -rf /",
+        "R2_SECRET_ACCESS_KEY": "nope",
+    }
+    assert cp.pull_tuning(env) == "R2_PULL_PROCESSES=4 "
+    for name in cp.PULL_TUNING:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("R2_PULL_STREAMS", "16")
+    cmd = cp.remote_command("/c", "a/b", "0" * 40)
+    assert "R2_PULL_STREAMS=16 " in cmd and "nope" not in cmd

@@ -158,3 +158,91 @@ def test_provider_body_skips_selfhost_routing():
         {"config": {"transport": "openrouter", "provider": {"only": ["parasail"], "allow_fallbacks": False}}},
     )
     assert routed["provider"]["only"] == ["parasail"]
+
+
+def test_run_side_by_side_overlaps_env_and_weights():
+    """Env restore and weight prefetch must run at the same time."""
+    import threading
+
+    from tools import start_qwen8b_r2 as host
+
+    both = threading.Barrier(2, timeout=5)
+
+    def env():
+        both.wait()  # times out if the steps run one after another
+        return "/opt/env/bin/activate"
+
+    def weights():
+        both.wait()
+
+    assert host.run_side_by_side(env=env, weights=weights) == {
+        "env": "/opt/env/bin/activate",
+        "weights": None,
+    }
+
+
+def test_run_side_by_side_raises_first_failure_without_waiting():
+    import threading
+    import time
+
+    import pytest
+
+    from tools import start_qwen8b_r2 as host
+
+    release = threading.Event()
+
+    def weights():
+        raise RuntimeError("prefetch failed")
+
+    def env():
+        release.wait(5)
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="prefetch failed"):
+        host.run_side_by_side(env=env, weights=weights)
+    # The caller gets the error at once and can release the instance.
+    assert time.monotonic() - started < 2
+    release.set()
+
+
+def test_prefer_near_bucket_picks_eastern_offers_within_tolerance():
+    from tools import start_qwen8b_r2 as host
+
+    offers = [
+        {"id": 1, "dph_total": 0.40, "geolocation": "Oregon, US"},
+        {"id": 2, "dph_total": 0.43, "geolocation": "Virginia, US"},
+        {"id": 3, "dph_total": 0.60, "geolocation": "Quebec, CA"},
+    ]
+    assert [o["id"] for o in host.prefer_near_bucket(offers)] == [2]
+
+
+def test_prefer_near_bucket_falls_back_when_east_is_too_expensive():
+    from tools import start_qwen8b_r2 as host
+
+    offers = [
+        {"id": 1, "dph_total": 0.40, "geolocation": "Oregon, US"},
+        {"id": 3, "dph_total": 0.60, "geolocation": "Quebec, CA"},
+        {"id": 4, "dph_total": 0.41, "geolocation": None},
+    ]
+    assert host.prefer_near_bucket(offers) == offers
+    assert host.prefer_near_bucket([]) == []
+
+
+def test_download_fees_outweigh_a_cheap_hourly_price():
+    from tools import start_qwen8b_r2 as launcher
+
+    texas = {"id": 1, "dph_total": 0.136, "inet_down_cost": 0.0391, "geolocation": "Texas, US"}
+    virginia = {"id": 2, "dph_total": 0.301, "inet_down_cost": 0.0026, "geolocation": "Virginia, US"}
+    washington = {"id": 3, "dph_total": 0.401, "inet_down_cost": 0.0, "geolocation": "Washington, US"}
+    kept = launcher.drop_costly_downloads([texas, virginia, washington])
+    # Texas: 0.136*0.6 + 0.0391*25 = $1.06 per run; Virginia ~$0.25; Washington ~$0.24.
+    assert texas not in kept and virginia in kept and washington in kept
+    assert launcher.prefer_near_bucket(kept) == [virginia]
+
+
+def test_unpriced_offers_are_left_unchanged():
+    from tools import start_qwen8b_r2 as launcher
+
+    offers = [{"id": 1, "dph_total": "n/a"}]
+    assert launcher.drop_costly_downloads(offers) is offers
+    assert launcher.drop_costly_downloads([{"id": 2, "dph_total": 0.3}]) == [{"id": 2, "dph_total": 0.3}]

@@ -90,7 +90,10 @@ _PREFIX_PROBE = "\n".join(
 )
 
 
-_LAUNCH_WRAPPER = _PREFIX_PROBE + "\n" + """
+_LAUNCH_WRAPPER = (
+    _PREFIX_PROBE
+    + "\n"
+    + """
 def _launch():
     import sys
     # Load launcher dependencies without letting the caller's cwd shadow stdlib.
@@ -147,6 +150,7 @@ def _launch():
 
 _launch()
 """
+)
 
 
 def verify_packed_interpreter(env, *, runner=subprocess.run):
@@ -212,9 +216,7 @@ def subprocess_env(prefix=None):
     result = {
         key: os.environ[key] for key in ("HOME", "LANG", "TMPDIR") if key in os.environ
     }
-    result["PATH"] = (
-        _packed_bin(prefix) + os.pathsep if prefix else ""
-    ) + os.defpath
+    result["PATH"] = (_packed_bin(prefix) + os.pathsep if prefix else "") + os.defpath
     result["PYTHONNOUSERSITE"] = "1"
     return result
 
@@ -460,10 +462,27 @@ def _safe_extract(tarball, dest):
     _critical_files(dest)
 
 
+# conda-pack's conda-unpack imports its sibling bin/conda_unpack_progress.py.
+# Python 3.11+ -I also implies -P (no script directory on sys.path), so run
+# the script via runpy with only the archive's own, already verified bin/
+# directory added; -I still excludes PYTHONPATH, user site and env vars.
+_UNPACK_PROGRAM = (
+    "import os, runpy, sys; script = sys.argv[1]; sys.argv = [script]; "
+    "sys.path.insert(0, os.path.dirname(script)); "
+    "runpy.run_path(script, run_name='__main__')"
+)
+
+
 def _run_unpack(prefix):
     # conda-unpack's shebang may name the build host; always use packed Python.
     subprocess.run(
-        [str(prefix / "bin/python"), "-I", str(prefix / "bin/conda-unpack")],
+        [
+            str(prefix / "bin/python"),
+            "-I",
+            "-c",
+            _UNPACK_PROGRAM,
+            str(prefix / "bin/conda-unpack"),
+        ],
         check=True,
         stdin=subprocess.DEVNULL,
         stdout=sys.stderr,
@@ -484,8 +503,13 @@ def _publish_prefix(staged, prefix):
     if sys.platform == "linux":
         rename = getattr(library, "renameat2", None)
         arguments = [-100, source, -100, target, 1]  # AT_FDCWD, RENAME_NOREPLACE
-        types = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
-                 ctypes.c_char_p, ctypes.c_uint]
+        types = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
     elif sys.platform == "darwin":
         rename = getattr(library, "renamex_np", None)
         arguments = [source, target, 4]  # RENAME_EXCL
@@ -525,7 +549,13 @@ def _restore(env, *, prefer_local, client=None, bucket=None, scratch=None):
         ) as download:
             tarball = Path(download) / "env.tar.gz"
             try:
-                client.download_file(bucket, env["r2_key"], str(tarball))
+                if model_source._is_real_client(client):
+                    # Parallel ranged parts (processes x streams), like weights.
+                    model_source.download_object(
+                        client, bucket, env["r2_key"], tarball, env["size"]
+                    )
+                else:
+                    client.download_file(bucket, env["r2_key"], str(tarball))
             except Exception:
                 raise RuntimeError("R2 environment download failed") from None
             if tarball.stat().st_size != env["size"]:

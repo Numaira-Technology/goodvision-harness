@@ -27,7 +27,7 @@ class FakeS3:
     def get_object(self, Bucket, Key):
         return {"Body": io.BytesIO(self.objects[Key])}
 
-    def download_file(self, Bucket, Key, Filename):
+    def download_file(self, Bucket, Key, Filename, Config=None):
         self.gets += 1
         with open(Filename, "wb") as f:
             f.write(self.objects[Key])
@@ -180,13 +180,13 @@ def test_failed_r2_pull_does_not_contaminate_hf_cache(
         del objects[key]
 
     class BrokenS3(FakeS3):
-        def download_file(self, Bucket, Key, Filename):
+        def download_file(self, Bucket, Key, Filename, Config=None):
             if failure == "interrupted" and Key == key:
                 from pathlib import Path
 
                 Path(Filename).write_bytes(b"partial")
                 raise OSError("secret-that-must-not-appear-in-logs")
-            super().download_file(Bucket, Key, Filename)
+            super().download_file(Bucket, Key, Filename, Config)
 
     monkeypatch.setenv("R2_BUCKET", "b")
     monkeypatch.setattr(ms, "r2_client", lambda: BrokenS3(objects))
@@ -363,3 +363,250 @@ def test_publication_failure_preserves_previous_snapshot(
     else:
         assert (snap / "existing").read_bytes() == b"previous HF snapshot"
         assert not list(snap.parent.glob(".r2-previous-*"))
+
+
+def test_pull_downloads_files_concurrently(tmp_path, monkeypatch):
+    """Several files must be in flight at once, not one after another."""
+    import threading
+
+    many = {f"model-{i:05d}.safetensors": bytes([i]) * (100 + i) for i in range(6)}
+    many["config.json"] = b"{}"
+    objects, manifest = _bucket(REPO, REV, many)
+    monkeypatch.setenv("R2_PULL_FILE_WORKERS", "3")
+    barrier = threading.Barrier(3, timeout=5)
+
+    class ConcurrentS3(FakeS3):
+        def __init__(self, objects):
+            super().__init__(objects)
+            self.lock = threading.Lock()
+            self.active = self.peak = 0
+
+        def download_file(self, Bucket, Key, Filename, Config=None):
+            with self.lock:
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+            try:
+                if Key.endswith("safetensors"):
+                    barrier.wait()  # deadlocks (times out) if run serially
+                super().download_file(Bucket, Key, Filename, Config)
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    client = ConcurrentS3(objects)
+    snap = ms.snapshot_dir(tmp_path, REPO, REV)
+    ms.pull_from_r2(REPO, REV, snap, client=client, bucket="b")
+    assert client.peak == 3
+    assert client.gets == len(many)
+    assert ms.verify_snapshot(snap, manifest)
+
+
+def test_parallel_failure_stops_queue_and_waits_for_running(tmp_path, monkeypatch):
+    """A bad file aborts the pull; no worker keeps writing after it returns."""
+    import threading
+    import time
+
+    many = {f"f{i}.bin": bytes([i]) * 50 for i in range(8)}
+    objects, _ = _bucket(REPO, REV, many)
+    objects[f"{ms.R2_PREFIX}/{REPO}/{REV}/f0.bin"] = b"corrupt"
+    monkeypatch.setenv("R2_PULL_FILE_WORKERS", "2")
+    finished = []
+
+    class SlowS3(FakeS3):
+        def download_file(self, Bucket, Key, Filename, Config=None):
+            if not Key.endswith("f0.bin"):
+                time.sleep(0.05)
+            super().download_file(Bucket, Key, Filename, Config)
+            finished.append(threading.current_thread().name)
+
+    client = SlowS3(objects)
+    snap = ms.snapshot_dir(tmp_path, REPO, REV)
+    with pytest.raises(ValueError, match="mismatch"):
+        ms.pull_from_r2(REPO, REV, snap, client=client, bucket="b")
+    count = len(finished)
+    time.sleep(0.2)
+    assert len(finished) == count  # nothing still running in the background
+    assert client.gets < len(many)  # queued files were cancelled
+    assert not (snap / ms.MANIFEST_NAME).exists()
+
+
+def test_parallelism_env_is_clamped(monkeypatch):
+    monkeypatch.setenv("R2_PULL_FILE_WORKERS", "0")
+    monkeypatch.setenv("R2_PULL_STREAMS", "nonsense")
+    assert ms._parallelism() == (1, ms.DEFAULT_STREAMS)
+    monkeypatch.setenv("R2_PULL_FILE_WORKERS", "100000")
+    assert ms._parallelism()[0] == 128
+
+
+class BotoLikeS3(FakeS3):
+    """Passes pull_from_r2's 'real boto3 client' check for process mode."""
+
+
+BotoLikeS3.__module__ = "botocore.client"
+
+
+def test_process_mode_uses_one_process_per_file_with_own_client(tmp_path, monkeypatch):
+    """R2_PULL_PROCESSES routes each file through _fetch_in_child, never argv."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    objects, manifest = _bucket(REPO, REV, FILES)
+    for k, v in {
+        "R2_ENDPOINT": "https://example.invalid",
+        "R2_BUCKET": "b",
+        "R2_ACCESS_KEY_ID": "id",
+        "R2_SECRET_ACCESS_KEY": "secret",
+        "R2_PULL_PROCESSES": "3",
+    }.items():
+        monkeypatch.setenv(k, v)
+    pools = []
+
+    class InlinePool(ThreadPoolExecutor):
+        """Stands in for ProcessPoolExecutor; spawn cannot see monkeypatches."""
+
+        def __init__(self, max_workers, mp_context=None):
+            assert mp_context is not None and mp_context.get_start_method() == "spawn"
+            pools.append(max_workers)
+            super().__init__(max_workers=max_workers)
+
+    children = []
+    monkeypatch.setattr(ms, "ProcessPoolExecutor", InlinePool)
+    monkeypatch.setattr(
+        ms, "r2_client", lambda: children.append(1) or BotoLikeS3(objects)
+    )
+    snap = ms.snapshot_dir(tmp_path, REPO, REV)
+    ms.pull_from_r2(REPO, REV, snap, bucket="b")
+    assert pools == [3]
+    # One client for the manifest, one per child-side file fetch.
+    assert len(children) == 1 + len(FILES)
+    assert ms.verify_snapshot(snap, manifest)
+
+
+def test_process_mode_needs_env_credentials(tmp_path, monkeypatch):
+    """Without R2_* in the environment children could not log in: use threads."""
+    objects, manifest = _bucket(REPO, REV, FILES)
+    for k in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("R2_PULL_PROCESSES", "4")
+    monkeypatch.setattr(
+        ms, "ProcessPoolExecutor", lambda **kw: pytest.fail("must not spawn")
+    )
+    snap = ms.snapshot_dir(tmp_path, REPO, REV)
+    ms.pull_from_r2(REPO, REV, snap, client=FakeS3(objects), bucket="b")
+    assert ms.verify_snapshot(snap, manifest)
+
+
+def test_processes_are_the_default_for_real_clients(monkeypatch):
+    monkeypatch.delenv("R2_PULL_PROCESSES", raising=False)
+    assert ms._processes() == ms.DEFAULT_PROCESSES > 1
+
+
+def test_fake_clients_keep_threads_even_with_env_credentials(tmp_path, monkeypatch):
+    """Tests and injected clients must never spawn real R2 children."""
+    objects, manifest = _bucket(REPO, REV, FILES)
+    for k in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+        monkeypatch.setenv(k, "x")
+    monkeypatch.delenv("R2_PULL_PROCESSES", raising=False)
+    monkeypatch.setattr(
+        ms, "ProcessPoolExecutor", lambda **kw: pytest.fail("must not spawn")
+    )
+    snap = ms.snapshot_dir(tmp_path, REPO, REV)
+    ms.pull_from_r2(REPO, REV, snap, client=FakeS3(objects), bucket="b")
+    assert ms.verify_snapshot(snap, manifest)
+
+
+def test_broken_process_pool_falls_back_to_threads(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
+
+    objects, manifest = _bucket(REPO, REV, FILES)
+    for k in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+        monkeypatch.setenv(k, "x")
+    monkeypatch.delenv("R2_PULL_PROCESSES", raising=False)
+
+    class BrokenPool(ThreadPoolExecutor):
+        def __init__(self, max_workers, mp_context=None):
+            super().__init__(max_workers=max_workers)
+
+        def submit(self, *a, **kw):
+            raise BrokenProcessPool("cannot spawn")
+
+    monkeypatch.setattr(ms, "ProcessPoolExecutor", BrokenPool)
+    client = BotoLikeS3(objects)
+    snap = ms.snapshot_dir(tmp_path, REPO, REV)
+    ms.pull_from_r2(REPO, REV, snap, client=client, bucket="b")
+    assert client.gets == len(FILES)  # every file fetched once, in threads
+    assert ms.verify_snapshot(snap, manifest)
+
+
+class RangedS3(FakeS3):
+    """Serves get_object(Range=...) like S3, counting ranged requests."""
+
+    def __init__(self, objects):
+        super().__init__(objects)
+        self.ranges = []
+
+    def get_object(self, Bucket, Key, Range=None):
+        data = self.objects[Key]
+        if Range:
+            a, b = map(int, Range.removeprefix("bytes=").split("-"))
+            self.ranges.append((a, b))
+            data = data[a : b + 1]
+        return {"Body": io.BytesIO(data)}
+
+
+def test_download_object_writes_every_range_in_place(tmp_path, monkeypatch):
+    monkeypatch.setattr(ms, "PART_SIZE", 1000)
+    data = bytes(range(256)) * 41  # 10496 bytes -> 11 ranges, last one short
+    client = RangedS3({"envs/x.tar.gz": data})
+    dest = tmp_path / "env.tar.gz"
+    assert ms.download_object(client, "b", "envs/x.tar.gz", dest, len(data)) == len(
+        data
+    )
+    assert dest.read_bytes() == data
+    assert len(client.ranges) == 11 and client.ranges[-1] == (10000, 10495)
+
+
+def test_download_object_uses_processes_for_real_clients(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(ms, "PART_SIZE", 1000)
+    data = b"z" * 4500
+    for k in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+        monkeypatch.setenv(k, "x")
+    monkeypatch.delenv("R2_PULL_PROCESSES", raising=False)
+    pools = []
+
+    class InlinePool(ThreadPoolExecutor):
+        def __init__(self, max_workers, mp_context=None):
+            pools.append(max_workers)
+            super().__init__(max_workers=max_workers)
+
+    class BotoRanged(RangedS3):
+        pass
+
+    BotoRanged.__module__ = "botocore.client"
+    monkeypatch.setattr(ms, "ProcessPoolExecutor", InlinePool)
+    monkeypatch.setattr(ms, "r2_client", lambda: BotoRanged({"k": data}))
+    dest = tmp_path / "out"
+    ms.download_object(BotoRanged({"k": data}), "b", "k", dest, len(data))
+    assert pools == [4]  # 5 ranges, capped at DEFAULT_PROCESSES
+    assert dest.read_bytes() == data
+
+
+def test_download_object_retries_a_failed_range(tmp_path, monkeypatch):
+    monkeypatch.setattr(ms, "PART_SIZE", 1000)
+    monkeypatch.setattr(ms.time, "sleep", lambda s: None)
+    data = b"q" * 2500
+
+    class Flaky(RangedS3):
+        failed = False
+
+        def get_object(self, Bucket, Key, Range=None):
+            if Range == "bytes=1000-1999" and not Flaky.failed:
+                Flaky.failed = True
+                raise OSError("connection reset")
+            return super().get_object(Bucket, Key, Range)
+
+    dest = tmp_path / "out"
+    ms.download_object(Flaky({"k": data}), "b", "k", dest, len(data))
+    assert dest.read_bytes() == data
