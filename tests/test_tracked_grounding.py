@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pytest
 from benchmark_runtime_fixtures import (
+    ContractSourceFeeder,
     BOX,
     assert_admission_drained,
     config,
@@ -467,6 +468,13 @@ def offline_inspector(config, *, broker_url):
 def test_twelve_sources_through_http_broker_and_spawned_workers(
     tmp_path, fake_models, monkeypatch, mode, load_profile, request
 ):
+    # This adapter contract must exercise every planned input exactly once.
+    # Keep real HTTP/process/admission behavior, but do not replace a failed
+    # stage with a retry. Production lag/drop gates are exercised unchanged in
+    # test_vlm_source_feeder and test_vlm_sender_lag using the real feeder.
+    monkeypatch.setattr(
+        "tools.vlm_multistream_benchmark.TimedSourceFeeder", ContractSourceFeeder
+    )
     url, calls = fake_models
     args = arguments(load_profile=load_profile)
     args.real = True
@@ -490,49 +498,20 @@ def test_twelve_sources_through_http_broker_and_spawned_workers(
     diagnostic = {"source": source_diagnostics, "detector_keys": calls["detector"]}
     register_synthetic_evidence(request.node, tmp_path, diagnostic)
 
-    def run_once(output):
-        for recorded in calls.values():
-            recorded.clear()
-        source_diagnostics.clear()
-        with DetectorBroker(url, output) as broker:
-            stage = run_stage(
-                args,
-                base,
-                12,
-                [[jpeg()] * frame_count],
-                output,
-                1,
-                inspector_factory=partial(
-                    offline_inspector, broker_url=broker.endpoint
-                ),
-                source_hook=broker.submit,
-                source_diagnostics=source_diagnostics,
-            )
-            # Model windows can finish before the detector-only source tail.
-            counts = broker.drain()
-        diagnostic["drain_counts"] = counts
-        return stage, counts
-
     output = tmp_path
-    result, detector_counts = run_once(output)
-    if not result["input_timing_valid"]:
-        # input_timing_valid measures the host, not routing: on a shared CI
-        # runner the single feeder thread can be starved behind twelve live
-        # pipelines and their spawned workers, releasing each camera a little
-        # later than the last. Re-run once in a fresh directory; a real
-        # regression fails both runs, and every assertion below is unchanged.
-        diagnostic["first_run_input_release_lag_seconds"] = result[
-            "input_release_lag_seconds"
-        ]
-        output = tmp_path / "retry"
-        output.mkdir()
-        result, detector_counts = run_once(output)
-    assert result["input_timing_valid"], {
-        "sender_missed_samples": result["sender_missed_samples"],
-        "sender_missed_samples_by_stream": result["sender_missed_samples_by_stream"],
-        "input_release_lag_seconds": result["input_release_lag_seconds"],
-        "offer_rejected_by_stream": result["offer_rejected_by_stream"],
-    }
+    with DetectorBroker(url, output) as broker:
+        result = run_stage(
+            args, base, 12, [[jpeg()] * frame_count], output, 1,
+            inspector_factory=partial(offline_inspector, broker_url=broker.endpoint),
+            source_hook=broker.submit,
+            source_diagnostics=source_diagnostics,
+        )
+        # Model windows can finish before the detector-only source tail.
+        detector_counts = broker.drain()
+    diagnostic["drain_counts"] = detector_counts
+    assert result["sender_missed_samples"] == 0
+    assert result["sender_missed_samples_by_stream"] == [0] * 12
+    assert result["offer_rejected_by_stream"] == [0] * 12
     assert result["all_drained"] and result["result_records_missing"] == 0
     assert result["result_retention"]["valid"]
     expected = 24 if low_rate else 12

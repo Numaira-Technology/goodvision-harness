@@ -13,7 +13,7 @@ For the legacy runner, use `tools/event_benchmark/SPEC.md` as the authority: **v
 with strict answers, complete frame evidence and reviewed input hashes. Historical
 v1 outputs are not v2 evidence. Inspect the current spec and runner before a run.
 For the controlled provider-pinned, lossless accuracy and latency variant, read
-`tools/event_benchmark/CONTROLLED_RUN.md`. The implemented current120 pipeline and
+`tools/event_benchmark/CONTROLLED_RUN.md`. The implemented current202 pipeline and
 legacy unpinned baseline remain separately identified protocols.
 These instructions do not authorize paid inference, downloads, uploads or publishing;
 use the user's authorized scope and budget.
@@ -51,10 +51,14 @@ two different prompt protocols, and the added 82 views come from only three
 original recordings (all 36 added fall views share one). Human visibility review,
 reviewed source isolation and compatible frozen prompts remain separate gates.
 
-The 202-question download list does not extend the frozen runner below. Its
-validation24/test120 input hashes, plans and denominators remain unchanged; the
-202-question set needs its own reviewed protocol and execution support before
-scoring. Do not edit historical hashes or relabel old results to fit it.
+The unified runner defaults to the separate `unified-frame-202-v1` protocol.
+Follow [its input and reporting guide](../../../tools/unified_benchmark/DATASET202.md):
+preflight uses all eight frozen inputs, retains pending reference-review status,
+and reports original120/robot82 separately. Any combined202 result is provisional
+reference agreement, not a reviewed benchmark. Tune only on validation24.
+The historical120 hashes, plans and denominators below remain unchanged; select
+them explicitly with `--protocol unified-frame-120-v2`. Do not edit historical
+hashes or relabel old results to fit the new protocol.
 
 ## Historical 120-question execution contract
 
