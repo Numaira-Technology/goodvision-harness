@@ -233,7 +233,7 @@ goodvision-models/
 
 ### 一次性构建（仅维护者，在已授权的匹配 GPU 上）
 
-构建器当前只支持 Python 3.12 / torch 2.8.0+cu128 / CUDA 12.8 这套配方。
+默认 GPU 配方使用 Python 3.12 / torch 2.8.0+cu128 / CUDA 12.8。
 要求 Linux x86_64、可用的 `nvidia-smi`、匹配的 GPU compute capability，以及驱动报告
 的 CUDA 支持不低于 12.8。Ada 对应 8.9；Ampere 对应 8.0/8.6；Hopper 对应 9.0。
 所有可见 GPU 都须匹配。同一家族检查不能替代实际 CUDA 内核验证。
@@ -260,6 +260,20 @@ python -m tools.build_env --model videojev \
 | `siglip2` | `tools/siglip2/requirements.txt` |
 | `d3-nano` | `tools/d3_nano/requirements.txt` |
 | `qwen8b` | `tools/qwen8b/requirements.txt` |
+| `qwen8b-vllm` | `tools/qwen8b_vllm/requirements.txt` |
+
+`qwen8b-vllm` 使用独立的 CPU 构建路径：仅允许 Linux x86_64，按选定注册表条目
+的 `env.compat` 验证 Python/torch/CUDA 和声明的扩展版本，不预装 HF 的 torch。
+本分支保留的 cu128 条目声明 Python 3.12、torch 2.13.0、CUDA 12.8 和 vLLM 0.31.0；
+这些声明不等于已验证的运行事实，也不能用 cu130/ada2 的结果证明。构建后继包前须
+先审查新的配方与不可变身份，不能为使构建通过而改写历史条目。
+`require_cuda: false` 会明确留下 GPU 验证待完成；不会把 CPU 构建当作 GPU 验收。
+flash-attn 编译仍要求 GPU。构建与打包后检查 conda 文件完整性，并在全新临时
+目录安全恢复，用包内隔离解释器导入声明的运行模块。源前缀的 pip RECORD
+摘要差异只有在 conda 元数据同时绑定原摘要与安装后摘要时才接受；其余差异拒绝。
+恢复后的 conda-unpack 会重写前缀，原 RECORD 摘要检查明确跳过，缺失文件和导入检查
+继续执行；这不证明 ABI。缺少重定位来源的旧包仍需单独调查。pip 不升级 conda 管理的
+setuptools；缺失文件不会通过 `--ignore-missing-files` 隐藏。
 
 成功构建并打包后，会以独占创建方式写入 `<out>.build.json`。该记录绑定 tarball
 的 SHA256/大小、模型 revision、目标 prefix、GPU 家族、flash-attn 开关、顶层
@@ -267,14 +281,21 @@ requirements 文件摘要、构建器源码摘要，以及包内解释器实测�
 版本、GPU compute capability 和所需扩展版本。构建或打包失败不会生成有效记录；
 已有 tarball 或记录均不会被覆盖。
 
+新构建使用版本 2 记录，绑定 torch 安装开关、必需导入模块及
+`gpu_validation: deferred` 或 `measured`；原 GPU 配方仍接受已有版本 1 记录。
+`--skip-pack` 只构建并写入 `<out>.prefix.json`；后续 `--pack-only` 必须使用同一
+输出、模型、配方及该记录，先核对所有前缀文件内容、模式与链接指纹，再重新验证运行事实后才能打包。
+记录保留原始构建器身份；打包过程中前缀变化会拒绝生成制品记录。它不会为任意旧前缀
+补造来源记录。`--skip-pack`、`--pack-only`、`--upload-only` 互斥。
+
 可以先构建，再在没有 GPU 的上传机上上传；须一起保留并移动 tarball 和同名记录：
 
 ```bash
-python -m tools.build_env --model qwen8b --conda-home /opt/miniforge3 \
-  --out /tmp/qwen8b-new.tar.gz --skip-upload
+python -m tools.build_env --model clip --conda-home /opt/miniforge3 \
+  --out /tmp/clip-new.tar.gz --skip-upload
 # 上传机需持有同一配方；只使用已授权的 R2 写凭据。
-python -m tools.build_env --model qwen8b \
-  --out /tmp/qwen8b-new.tar.gz --upload-only
+python -m tools.build_env --model clip \
+  --out /tmp/clip-new.tar.gz --upload-only
 ```
 
 `--requirements PATH` 可显式覆盖默认配方，后续 `--upload-only` 也必须提供内容
@@ -288,6 +309,10 @@ python -m tools.build_env --model qwen8b \
 内核或模型推理可用。真实包的来源、恢复、依赖及 ABI 验收仍须单独完成。恢复端的
 完整安全解包检查继续适用。条件写入失败或结果不确定时仍需检查远端对象，
 `--upload-only` 不会覆盖既有对象或自动删除部分上传。
+
+HF qwen8b 及三代 vLLM 历史/当前 key 均冻结，包括 `cu130-py312-vllm0310-ada2`。
+对这些注册表身份，正常上传、`--pack-only` 上传和 `--upload-only` 均拒绝；先准备
+经过审查的新身份。`--skip-upload` 可本地构建，输出不代表已发布或已验收。
 
 构建/解包子进程不继承 R2/HF/cloud 凭据或 `PYTHONPATH`。路径通过 argv 传递；
 `conda-pack` 不使用 `--ignore-missing-files` 或 `--force`。

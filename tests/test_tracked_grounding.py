@@ -468,10 +468,10 @@ def offline_inspector(config, *, broker_url):
 def test_twelve_sources_through_http_broker_and_spawned_workers(
     tmp_path, fake_models, monkeypatch, mode, load_profile, request
 ):
-    # Verify every source/frame through the real HTTP and process boundaries.
-    # Shared CI scheduling pauses must not turn this adapter contract into a
-    # throughput benchmark. Production lag/drop rules are exercised with a
-    # controlled clock in test_vlm_sender_lag and test_vlm_source_feeder.
+    # This adapter contract must exercise every planned input exactly once.
+    # Keep real HTTP/process/admission behavior, but do not replace a failed
+    # stage with a retry. Production lag/drop gates are exercised unchanged in
+    # test_vlm_source_feeder and test_vlm_sender_lag using the real feeder.
     monkeypatch.setattr(
         "tools.vlm_multistream_benchmark.TimedSourceFeeder", ContractSourceFeeder
     )
@@ -498,31 +498,17 @@ def test_twelve_sources_through_http_broker_and_spawned_workers(
     diagnostic = {"source": source_diagnostics, "detector_keys": calls["detector"]}
     register_synthetic_evidence(request.node, tmp_path, diagnostic)
 
-    def run_once(output):
-        for recorded in calls.values():
-            recorded.clear()
-        source_diagnostics.clear()
-        with DetectorBroker(url, output) as broker:
-            stage = run_stage(
-                args,
-                base,
-                12,
-                [[jpeg()] * frame_count],
-                output,
-                1,
-                inspector_factory=partial(
-                    offline_inspector, broker_url=broker.endpoint
-                ),
-                source_hook=broker.submit,
-                source_diagnostics=source_diagnostics,
-            )
-            # Model windows can finish before the detector-only source tail.
-            counts = broker.drain()
-        diagnostic["drain_counts"] = counts
-        return stage, counts
-
     output = tmp_path
-    result, detector_counts = run_once(output)
+    with DetectorBroker(url, output) as broker:
+        result = run_stage(
+            args, base, 12, [[jpeg()] * frame_count], output, 1,
+            inspector_factory=partial(offline_inspector, broker_url=broker.endpoint),
+            source_hook=broker.submit,
+            source_diagnostics=source_diagnostics,
+        )
+        # Model windows can finish before the detector-only source tail.
+        detector_counts = broker.drain()
+    diagnostic["drain_counts"] = detector_counts
     # ContractSourceFeeder records relative group waits, not production frame
     # freshness. Keep any slow wait/false timing verdict in the output; require
     # complete fixture delivery here. Controlled-clock sender tests separately

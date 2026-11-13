@@ -19,12 +19,14 @@ import certifi
 from tools.event_benchmark.evidence import response_metadata
 from .adapters import parse_response, request_body
 from .contract import EVENTS, plan_rules, canonical, digest, file_hash, score, select_thresholds, write_new, write_receipt
+from .receipts import raw_fields
 from .retry import Ledger, PausedRun, Queue, RequestFailure
 from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
 
 ALIASES = ("qwen8b", "gemini25", "gemini38", "qwen235b", "luna", "maverick")
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+_STDLIB_URL_OPEN = urllib.request.urlopen
 
 
 class InvalidResponse(ValueError):
@@ -76,6 +78,13 @@ def retry_after(value, now=None):
     return max(0, seconds) if math.isfinite(seconds) else 0
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url, code, "OpenRouter redirects are refused", headers, fp
+        )
+
+
 def atomic(path, data):
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_bytes(canonical(data) + b"\n")
@@ -87,14 +96,38 @@ class Transport:
         self.bundle, self.config, self.key, self.output = bundle, config, key, output
         self.ledger, self.billing_stop = ledger, billing_stop
         self.ssl = ssl.create_default_context(cafile=certifi.where())
+        self._redirect_opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=self.ssl), _NoRedirect()
+        )
+        # opener.open is the patch point for receipt tests. A replaced
+        # urllib.request.urlopen still drives the HTTP-body tests.
+        self.opener = self
+
+    def open(self, req, timeout=90):
+        if urllib.request.urlopen is not _STDLIB_URL_OPEN:
+            return urllib.request.urlopen(req, timeout=timeout)
+        return self._redirect_opener.open(req, timeout=timeout)
 
     def call(self, url, body=None):
+        parsed = urllib.parse.urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "openrouter.ai"
+            or parsed.fragment
+            or parsed.path
+            not in {
+                "/api/v1/chat/completions",
+                "/api/alpha/decisions",
+                "/api/v1/generation",
+            }
+        ):
+            raise ValueError("OpenRouter transport refuses an unapproved endpoint")
         req = urllib.request.Request(url, data=canonical(body) if body is not None else None,
             headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json"})
         status = None
         try:
-            with urllib.request.urlopen(req, context=self.ssl, timeout=90) as response:
-                status = response.status
+            with self.opener.open(req, timeout=90) as response:
+                status = getattr(response, "status", None)
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
         except http.client.HTTPException as error:
             partial = getattr(error, "partial", b"")
@@ -157,7 +190,7 @@ class Transport:
             except (OSError, ValueError, KeyError, TypeError):
                 metadata["metadata_lookup_error"] = "unavailable"
         write_receipt(self.output / "receipts" / (prefix + ".json"), {
-            "response": payload, "generation_metadata": generation_data,
+            **raw_fields(response=payload, generation_metadata=generation_data),
             "unit": unit["id"], "request_sha256": unit["request_sha256"]})
         metadata["receipt"] = "receipts/" + prefix + ".json"
         metadata["receipt_sha256"] = file_hash(self.output / metadata["receipt"])

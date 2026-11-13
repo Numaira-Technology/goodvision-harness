@@ -1,11 +1,12 @@
 # Four self-hosted models: reproducible execution
 
-This is the native execution path for **unified-frame-202-v1** (explicit legacy120 remains supported), alongside the API
+This is the native execution path for **unified-frame-202-v1**, alongside the API
 runner in [README.md](README.md). Run commands from the repository root. The
 installer and runner are opt-in; importing them or running offline preflight
 loads no models. The portable flow is covered by synthetic offline tests; a new
 GPU deployment still requires its own runtime checks and smoke. No new GPU
-benchmark result is implied by these tests.
+benchmark result is implied by these tests. Explicit `unified-frame-120-v2`
+remains available with its original inputs and source fingerprints.
 
 ## Fixed method
 
@@ -30,9 +31,10 @@ correct / **202**, with incomplete questions still in the denominator. Report
 missing units, incomplete questions and unknowns separately. A native window is
 two frames, so missing windows and missing single-frame calls are different units.
 This does not establish twelve-camera real-time throughput.
-
-The additional82 labels remain inherited and pending single-view review; retain
-[the dataset limitations](DATASET202.md) in reports. The default uses validation24.
+The added82 test references remain inherited and pending individual-view review;
+keep [the dataset limitations](DATASET202.md) and original120/robot82 breakdowns.
+Validation24 remains the default. The optional bag supplement below extends it
+to validation44; added test labels are never calibration data.
 
 ## 1. Inputs, media and offline preflight
 
@@ -56,6 +58,8 @@ decodes frames, builds request fingerprints and snapshots execution code. It
 does not download weights, contact an API or import CUDA. Rebuild a new bundle
 after changing runner code; never edit an old bundle's hashes. Copy the complete
 bundle to the GPU machine without changing its contents, using the same checkout.
+For a deliberately selected legacy120 run, add `--protocol unified-frame-120-v2`
+and use its five original JSON inputs. Preserve historical bundles unchanged.
 
 ### Optional CLIP/SigLIP2 bag validation
 
@@ -205,7 +209,6 @@ recovers a valid receipt saved just before an interruption, skips completed unit
 and phases, and preserves frozen thresholds. An interrupted intent without a
 recoverable receipt consumes one attempt. A unit already at three attempts cannot
 be sent a fourth time. Do not use a new output directory to evade that limit.
-
 Every result must match one preceding intent for the same unit, request and attempt;
 duplicate or unmatched results stop recovery before backend startup. First valid
 answers are selected in original attempt order, even if an older orphan receipt is
@@ -214,20 +217,21 @@ recovered after a later result. Historical ledger rows and receipt files are not
 A fatal receipt discovered during recovery is recorded and pauses that invocation
 before backend startup. Diagnose it before a subsequent explicit `--resume`, which
 may retry an already recorded fatal response using only the remaining attempt budget.
-An incomplete legacy receipt that needs a retry cooldown must retain a finite
-`completed_at_unix`; missing or invalid timing stops recovery without inventing a
-completion time or resetting attempts. Complete legacy receipts need no retry time.
+An incomplete legacy receipt, including a fatal orphan, must retain its
+authoritative recovery fields and a finite `completed_at_unix`. Missing or invalid
+timing stops recovery without inventing a completion time or resetting attempts.
+Complete legacy receipts need no retry time.
 
 Each continuation retains its own startup, telemetry and failure records.
 An incomplete final result is still incomplete; `completed` means the bounded
 queue finished, not that every question succeeded. There is no automatic infinite
 retry loop. Inspect `status.json` and the current invocation's logs before resuming.
 
-Receipts remain strict JSON. If a decoded raw response contains nonfinite numbers
-(for example JSON `1e400` becomes infinity), its `response_json` field retains the
-decoded JSON text under `raw_json_encoding: python-json-nonfinite-v1`; `response`
-is null. `read_receipt` restores that raw payload for replay. Such scores remain
-invalid and retryable; optional invalid cost metadata remains unknown.
+Receipts remain strict JSON. Readers accept both historical
+`python-json-nonfinite-v1` global and `json-text-nonfinite-v1` per-field raw
+encodings through the strict receipt decoder. New writes retain the per-field
+format. Raw nonfinite values remain lossless diagnostics, never valid scores;
+optional invalid cost metadata remains unknown. Preserve original receipt bytes.
 
 For each phase, keep `run.json`, `attempts.jsonl`, `receipts/`, `report.json` and
 `completion.json`; a failed stage leaves a partial report in its invocation.
@@ -236,7 +240,7 @@ peak allocation records and `result-files-sha256.json`. Verify that inventory af
 copying results locally, before releasing a GPU with unbacked-up files. The inventory
 excludes itself; earlier inventory snapshots remain in continuation records.
 
-The test report includes combined202, original120/robot82 cohorts and per-event results, missing units,
+The test report includes combined202, original120/robot82 and per-event results, missing units,
 incomplete questions and successful-attempt P50/P95. Latency excludes worker queue
 and retry backoff; CLIP's preprocessing/GPU-lock wait/readback are retained separately
 inside each receipt. Restarts can change cache warmth and are recorded. These are

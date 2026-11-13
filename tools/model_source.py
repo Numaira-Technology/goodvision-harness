@@ -280,6 +280,7 @@ def _known_names():
     names = set(_KNOWN)
     try:
         from tools import registry
+
         names.update(registry.model_names())
     except Exception:
         pass
@@ -291,6 +292,7 @@ def _resolve_known(name):
 
     try:
         from tools import registry
+
         return registry.weights_of(name)
     except Exception:
         pass
@@ -309,7 +311,9 @@ def main(argv=None):
     )
     ap.add_argument("--cache-dir", type=Path, required=True)
     ap.add_argument(
-        "--model", choices=_known_names(), help="use the pinned repo+revision from code"
+        "--model",
+        choices=_known_names(),
+        help="use the pinned repo+revision from the registry",
     )
     ap.add_argument("--repo", help="explicit HF repo id (with --revision)")
     ap.add_argument("--revision", help="explicit 40-char commit sha (with --repo)")

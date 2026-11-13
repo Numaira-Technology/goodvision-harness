@@ -6,6 +6,7 @@ from functools import partial
 import httpx
 import pytest
 from benchmark_runtime_fixtures import (
+    ContractSourceFeeder,
     assert_admission_drained,
     configure_ephemeral_admission,
 )
@@ -54,6 +55,13 @@ def offline_inspector(config, *, broker_url, audit_dir):
 def test_twelve_sources_native_decisions_and_person_reports(
     tmp_path, monkeypatch, mode, request
 ):
+    # This adapter contract must exercise every planned input exactly once.
+    # Keep real HTTP/process/admission behavior, but do not replace a failed
+    # stage with a retry. Production lag/drop gates are exercised unchanged in
+    # test_vlm_source_feeder and test_vlm_sender_lag using the real feeder.
+    monkeypatch.setattr(
+        "tools.vlm_multistream_benchmark.TimedSourceFeeder", ContractSourceFeeder
+    )
     monkeypatch.setenv("OPENAI_API_KEY", "offline-native-key")
     monkeypatch.setenv("OPENROUTER_API_KEY", "wrong-provider-key")
     args = suite.arguments()
@@ -78,32 +86,23 @@ def test_twelve_sources_native_decisions_and_person_reports(
     source_diagnostics = {}
     diagnostic = {"source": source_diagnostics, "detector_keys": calls}
     register_synthetic_evidence(request.node, tmp_path, diagnostic)
-    def run_once(output):
-        calls.clear()
-        source_diagnostics.clear()
-        with DetectorBroker(
-            "http://127.0.0.1:1", output, transport=detector
-        ) as broker:
-            stage = run_stage(
-                args,
-                base,
-                12,
-                [[jpeg()] * 4],
-                output,
-                1,
-                inspector_factory=partial(
-                    offline_inspector,
-                    broker_url=broker.endpoint,
-                    audit_dir=output / "api-audit",
-                ),
-                source_hook=broker.submit,
-                source_diagnostics=source_diagnostics,
-            )
-            diagnostic["drain_counts"] = broker.drain()
-        return stage
-
     output = tmp_path
-    result = run_once(output)
+    with DetectorBroker("http://127.0.0.1:1", output, transport=detector) as broker:
+        result = run_stage(
+            args, base, 12, [[jpeg()] * 4], output, 1,
+            inspector_factory=partial(
+                offline_inspector, broker_url=broker.endpoint,
+                audit_dir=output / "api-audit",
+            ),
+            source_hook=broker.submit,
+            source_diagnostics=source_diagnostics,
+        )
+        detector_counts = broker.drain()
+    diagnostic["drain_counts"] = detector_counts
+    assert detector_counts == {"submitted": 48, "ready": 48}
+    assert result["sender_missed_samples"] == 0
+    assert result["sender_missed_samples_by_stream"] == [0] * 12
+    assert result["offer_rejected_by_stream"] == [0] * 12
     assert result["all_drained"] and not result["result_records_missing"]
     assert result["result_retention"]["valid"]
     assert len(calls) == len(set(calls)) == 48

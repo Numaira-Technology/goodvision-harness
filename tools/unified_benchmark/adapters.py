@@ -3,10 +3,11 @@ import base64
 import importlib.util
 import json
 import math
-from pathlib import Path
 import re
+from pathlib import Path
 
 from tools.event_benchmark import run_eval as original
+
 from .contract import EVENTS, canonical, file_hash, finite_number, valid_value
 
 CURRENT_IMAGE_PROMPTS = {'fight': 'Is any fighting visible in the current image? Judge only the current image. Do not '
@@ -84,13 +85,16 @@ def parse_response(config, unit, response):
         event = unit["targets"][0]
         if backend == "language":
             choices = response.get("choices")
-            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            if (not isinstance(choices, list) or not choices
+                    or not isinstance(choices[0], dict)):
                 raise ValueError("invalid language choice envelope")
             choice = choices[0]
             message = choice.get("message")
-            if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+            if (not isinstance(message, dict)
+                    or not isinstance(message.get("content"), str)):
                 raise ValueError("invalid language message")
-            if choice.get("finish_reason") != "stop" or choice.get("error") is not None or message.get("refusal"):
+            if (choice.get("finish_reason") != "stop"
+                    or choice.get("error") is not None or message.get("refusal")):
                 raise ValueError("incomplete or refused language answer")
             match = re.search(r"\{.*\}", message["content"], re.DOTALL)
             answer = json.loads(match[0], object_pairs_hook=original._unique) if match else None
@@ -102,16 +106,30 @@ def parse_response(config, unit, response):
             if type(v) is not bool and not (event.startswith("bag_") and v == "unknown"):
                 raise ValueError("only explicit boolean or unknown is valid; null/refusal is not unknown")
             return {event: {"answer": "yes" if v is True else "no" if v is False else "unknown"}}
-        score = original.parse_answer(response, backend)
-        return {event: {"score": score} if backend == "decision" else {"answer": "yes" if score else "no"}}
+        envelope = response.get("answers")
+        if not isinstance(envelope, dict) or not isinstance(envelope.get("answer"), dict):
+            raise ValueError("invalid decision answer envelope")
+        answer = envelope["answer"]
+        score = answer.get("noul")
+        if (answer.get("type") != "noul" or answer.get("error") is not None
+                or not finite_number(score) or not 0 <= score <= 1):
+            raise ValueError("decision answer must be a probability in [0, 1]")
+        return {event: {"score": score}}
     if backend == "contrastive":
         result = {}
         for event in unit["targets"]:
             p = response.get(event)
             if isinstance(p, dict) and all(finite_number(p.get(k))
                                            for k in ("positive_cosine", "contrast_cosine", "margin")):
-                result[event] = {"score": p["margin"], "native_scores": {
-                    k: p[k] for k in ("positive_cosine", "contrast_cosine", "margin")}}
+                # Normalized evidence contains only validated score components.
+                # Optional diagnostics stay in the retained raw response, where
+                # the explicit raw codec can preserve nonfinite values safely.
+                result[event] = {
+                    "score": p["margin"],
+                    "native_scores": {k: p[k] for k in (
+                        "positive_cosine", "contrast_cosine", "margin"
+                    )},
+                }
         return result
     if any(response.get(k) != v for k, v in {"request_id": unit["id"], "model": config["model"], "revision": config["revision"]}.items()):
         raise ValueError("native response identity differs")
@@ -135,13 +153,15 @@ def parse_response(config, unit, response):
             answers[event] = {"answer": ("yes", "no", "unknown")[index], "probabilities": probs}
     else:
         if not isinstance(raw, dict) or not isinstance(raw.get("answers"), dict):
-            raise ValueError("invalid native answer group")
+            raise ValueError("invalid native choice answers")
         for event in unit["targets"]:
-            item = raw["answers"].get(event)
+            item = raw["answers"].get(event, {})
             if not isinstance(item, dict):
                 continue
             p = item.get("probabilities", {})
-            if item.get("type") != "choice" or item.get("error") is not None or not isinstance(p, dict) or set(p) != set(D3_OPTIONS):
+            if not isinstance(p, dict):
+                continue
+            if item.get("type") != "choice" or item.get("error") is not None or set(p) != set(D3_OPTIONS):
                 continue
             probs = [p[o] for o in D3_OPTIONS]
             if item.get("choice") not in D3_OPTIONS or not _probabilities(probs):

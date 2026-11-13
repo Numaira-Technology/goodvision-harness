@@ -5,6 +5,7 @@ removed from the environment before any packed executable runs. The caller must
 supply a read-only bucket token. The returned activation path is remote, not local.
 """
 
+import copy
 import io
 import json
 import os
@@ -112,12 +113,20 @@ def restore_env(
     uploader=_default_uploader,
     cleaner=_default_cleaner,
     timeout=1800,
+    expected_env=None,
 ):
-    """Return the remote packed python path only after a matching successful restore."""
+    """Return packed Python only for the caller's captured artifact, if supplied."""
     env = registry.env_of(name)
     if env is None:
         raise registry.RegistryError(f"model {name!r} has no packed environment")
-    expected_identity = restore_identity(env)
+    expected_identity = copy.deepcopy(restore_identity(env))
+    if expected_env is not None:
+        caller_identity = copy.deepcopy(restore_identity(expected_env))
+        if caller_identity != expected_identity:
+            raise ValueError(
+                "registry environment differs from caller's expected identity"
+            )
+        expected_identity = caller_identity
     if not isinstance(remote_dir, str) or not remote_dir.startswith("/"):
         raise ValueError("remote_dir must be an absolute POSIX path")
     registry.relative_path(remote_dir[1:])

@@ -113,16 +113,9 @@ def write_receipt(path, record):
 
 
 def read_receipt(path):
-    record = json.loads(Path(path).read_text())
-    if "raw_json_encoding" in record:
-        if record["raw_json_encoding"] != "python-json-nonfinite-v1":
-            raise ValueError("unsupported raw receipt encoding")
-        for field in ("response", "generation_metadata"):
-            if field + "_json" in record:
-                if record.get(field) is not None or not isinstance(record[field + "_json"], str):
-                    raise ValueError("invalid raw receipt encoding")
-                record[field] = json.loads(record[field + "_json"])
-    return record
+    """Compatibility entry point using the strict dual historical-codec reader."""
+    from .receipts import read_receipt as read_strict_receipt
+    return read_strict_receipt(path)
 
 
 def sample_times(duration, *, last_frame_time=None):

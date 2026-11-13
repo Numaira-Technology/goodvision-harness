@@ -67,7 +67,7 @@ def model_configs(aliases, profiles=PROFILES):
     for alias in aliases:
         if not alias or Path(alias).name != alias:
             raise ValueError("model must be a profile filename without directories")
-        config = json.loads((profiles / (alias + ".json")).read_text())
+        config = json.loads((profiles / (alias + ".json")).read_text(encoding="utf-8"))
         if config["alias"] != alias or config["window_frames"] not in (1, 2):
             raise ValueError("profile identity/window mismatch")
         if config.get("execution") == "self_hosted_r2":

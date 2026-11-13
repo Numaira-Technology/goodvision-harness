@@ -8,6 +8,7 @@ import pytest
 
 from tools.unified_benchmark import dataset202 as d, preflight, workflow, api_run
 from tools.unified_benchmark.contract import CURRENT_VERSION, VERSION, digest, rules_for, score
+from tools.qwen8b import eval_local
 
 
 @pytest.fixture(autouse=True)
@@ -163,6 +164,58 @@ def test_default_preflight202_all_routes_and_protocol_guard(tmp_path, inputs, mo
     artifact = json.loads((runs / "luna/thresholds.json").read_text())
     assert artifact["rules_sha256"] == digest(rules_for(CURRENT_VERSION))
     assert artifact["validation_summary"]["complete_valid_questions"] == 24
+    config = json.loads((out / "configs/luna.json").read_text())
+    threshold_path = runs / "luna/thresholds.json"
+    assert workflow.load_threshold_artifact(
+        threshold_path, d.file_hash(threshold_path), bundle=out, alias="luna",
+        config=config, bundle_digest=bundle_digest,
+    ) == artifact
+    for split in ("validation", "test"):
+        plan = json.loads((out / f"plans/luna-{split}.json").read_text())
+        assert workflow.context_for(plan, config, bundle_digest)["rules_sha256"] == digest(rules_for(CURRENT_VERSION))
+    selected_path, report_path = tmp_path / "selected.json", tmp_path / "report.json"
+    workflow.main([
+        "select", "--bundle", str(out), "--model", "luna", "--ledger",
+        str(runs / "luna/validation/attempts.jsonl"), "--output", str(selected_path),
+    ])
+    selected = json.loads(selected_path.read_text())
+    assert selected["rules_sha256"] == artifact["rules_sha256"]
+    workflow.main([
+        "report", "--bundle", str(out), "--model", "luna", "--ledger",
+        str(runs / "luna/test/attempts.jsonl"), "--output", str(report_path),
+        "--thresholds", str(selected_path), "--thresholds-sha256", d.file_hash(selected_path),
+    ])
+    assert json.loads(report_path.read_text())["correct"] == 202
+
+    class SyntheticLocal(SyntheticTransport):
+        def __init__(self, bundle, config, endpoint, directory, ledger):
+            super().__init__(bundle, config, None, directory, ledger, None)
+
+    monkeypatch.setattr(eval_local, "LocalTransport", SyntheticLocal)
+    for alias in ("qwen8b_r2_host", "qwen8b_r2_vllm"):
+        eval_local.execute(alias, out, runs, "http://unused.invalid", bundle_digest, "test")
+        result = json.loads((runs / alias / "test/summary.json").read_text())
+        assert result["correct"] == result["accuracy_denominator"] == 202
+        assert result["base100"]["correct"] == result["base100"]["accuracy_denominator"] == 100
+        assert result["bag20"]["accuracy_denominator"] == 20
+        assert result["cohorts"]["original120"]["accuracy_denominator"] == 120
+        assert result["cohorts"]["robot82"]["accuracy_denominator"] == 82
+
+    # Even a resealed plan/preflight pair must reject an unsupported protocol.
+    path = out / "plans/qwen8b-test.json"
+    original = json.loads(path.read_text())
+    bad = original | {"protocol": "unsupported-protocol"}
+    path.write_text(json.dumps(bad))
+    audit_path = out / "preflight.json"
+    audit["models"]["qwen8b"]["test"]["plan_sha256"] = digest(bad)
+    audit_path.write_text(json.dumps(audit))
+    hashes = json.loads((out / "bundle-files-sha256.json").read_text())
+    for changed in (path, audit_path):
+        hashes[changed.relative_to(out).as_posix()] = d.file_hash(changed)
+    (out / "bundle-files-sha256.json").write_text(json.dumps(hashes))
+    with pytest.raises(ValueError, match="unsupported unified protocol"):
+        workflow.verify_bundle(out)
+    path.write_text(json.dumps(original))
     path = out / "plans/qwen8b-test.json"
     wrong = json.loads(path.read_text()) | {"protocol": VERSION, "rules_sha256": digest(rules_for(VERSION))}
     path.write_text(json.dumps(wrong))

@@ -25,6 +25,9 @@ def fake_builder(tmp_path, monkeypatch, capsys):
     }
     for name, spec in specs.items():
         spec["unpack_to"] = str(tmp_path / "prefixes" / name)
+        # Publish a proposed successor, never a frozen historical identity.
+        spec["r2_key"] = f"envs/{name}/synthetic-successor.tar.gz"
+        spec["manifest_key"] = f"envs/{name}/synthetic-successor.json"
     monkeypatch.setattr(registry, "env_of", lambda name: specs[name])
     monkeypatch.setattr(be.env_source, "check_compatibility", lambda env: None)
     monkeypatch.setattr(be, "_ensure_miniconda", lambda *args: tmp_path / "conda")
@@ -36,6 +39,7 @@ def fake_builder(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(be, "_run", run)
     monkeypatch.setattr(be, "_pack", lambda conda, prefix, out: synthetic_pack(out))
+    monkeypatch.setattr(be, "_verify_packed_build", lambda *args: None)
 
     def build(name="qwen8b", *, requirements=None):
         out = tmp_path / f"{name}.tar.gz"
@@ -338,6 +342,7 @@ def test_probe_emits_measured_runtime_facts(monkeypatch, capsys, flash):
     import builtins
 
     fake_torch = SimpleNamespace(
+        __file__=sys.prefix + "/synthetic/torch.py",
         __version__="2.8.0+cu128",
         version=SimpleNamespace(cuda="12.8"),
         cuda=SimpleNamespace(
@@ -352,6 +357,26 @@ def test_probe_emits_measured_runtime_facts(monkeypatch, capsys, flash):
     )
     monkeypatch.setitem(sys.modules, "causal_conv1d", SimpleNamespace())
     monkeypatch.setattr(sys, "version_info", (3, 12, 0))
+    monkeypatch.setitem(
+        sys.modules,
+        "typing_extensions",
+        SimpleNamespace(__file__=sys.prefix + "/synthetic/typing_extensions.py"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "flags",
+        SimpleNamespace(
+            **{
+                **{
+                    name: getattr(sys.flags, name)
+                    for name in dir(sys.flags)
+                    if not name.startswith("_")
+                },
+                "isolated": 1,
+                "no_user_site": 1,
+            }
+        ),
+    )
     monkeypatch.setattr("importlib.metadata.version", lambda name: "1.7.0")
     original_import = builtins.__import__
 

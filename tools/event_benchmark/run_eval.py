@@ -45,12 +45,14 @@ CANDIDATES = {
 }
 
 REPO = Path(__file__).resolve().parents[2]
-DEFAULT_MANIFEST = Path(__file__).parent / "datasets/manifest_50.json"
-SPEC_VERSION = "v2.1"
+# Load the sibling by path so standalone scripts (including python -I) use the
+# same evidence API without depending on the caller's working directory.
 _evidence_spec = importlib.util.spec_from_file_location(
-    "benchmark_evidence", Path(__file__).with_name("evidence.py"))
+    "event_benchmark_evidence", Path(__file__).with_name("evidence.py"))
 evidence = importlib.util.module_from_spec(_evidence_spec)
 _evidence_spec.loader.exec_module(evidence)
+DEFAULT_MANIFEST = Path(__file__).parent / "datasets/manifest_50.json"
+SPEC_VERSION = "v2.1"
 
 
 def load_key(env_file):
@@ -134,6 +136,7 @@ def build_request(backend, model, qcore, uri, provider_context=None):
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": uri}}]}],
             "max_tokens": CHAT_MAX_TOKENS, "temperature": TEMPERATURE}
+        # Never redirect the selected cloud credential through an ambient URL.
         url = CHAT_URL
     elif backend == "decision":
         body = {"model": model,

@@ -68,11 +68,11 @@ def frozen(tmp_path):
     write_new(deployment / "deployment.json", {"complete": True, "models": list(deploy.ALIASES), "files": files})
     write_new(bundle / "rules.json", RULES)
     sources = preflight.freeze_sources(bundle)
-    models = {}
-    for path in (bundle / "plans").glob("*.json"):
-        alias, split = path.stem.rsplit("-", 1)
-        models.setdefault(alias, {})[split] = {"plan_sha256": digest(json.loads(path.read_text()))}
-    write_new(bundle / "preflight.json", {"offline_passed": True, "sources_sha256": digest(sources), "models": models})
+    write_new(bundle / "preflight.json", {
+        "offline_passed": True, "sources_sha256": digest(sources),
+        "models": {alias: {split: {"plan_sha256": digest(json.loads(
+            (bundle / f"plans/{alias}-{split}.json").read_text()))}
+            for split in ("validation", "test")} for alias in deploy.ALIASES}})
     seal(bundle)
     return bundle, deployment, file_hash(deployment / "deployment.json")
 
@@ -272,24 +272,6 @@ def test_separate_validation_then_test_accepts_only_its_frozen_artifact(frozen, 
     assert json.loads((tmp_path / "test/test/report.json").read_text())["correct"] == 120
 
 
-@pytest.mark.parametrize("alias", ["clip", "siglip2"])
-def test_validation_report_uses_selected_nonzero_thresholds(frozen, tmp_path, alias):
-    def positive_margins(self, unit, body):
-        margin = .3 if unit["id"].endswith("/yes") else .1
-        return 200, {event: {"margin": margin, "positive_cosine": .5 + margin,
-                            "contrast_cosine": .5} for event in unit["targets"]}, {}
-    FakeBackend.behavior = positive_margins
-    out = tmp_path / "validation"
-    execute(frozen, out, alias, phase="validation")
-    artifact = json.loads((out / "thresholds.json").read_text())
-    result = json.loads((out / "validation/report.json").read_text())
-    assert artifact["thresholds"]["fight"] == pytest.approx(.2)
-    assert result["thresholds"] == artifact["thresholds"]
-    assert result["threshold_artifact_sha256"] == file_hash(out / "thresholds.json")
-    assert result["correct"] == result["complete_valid_questions"] == 24
-    assert not (out / "test").exists()
-
-
 def test_startup_failure_does_not_consume_request_budget(frozen, tmp_path, monkeypatch):
     def fail(self): raise RuntimeError("synthetic startup failure")
     monkeypatch.setattr(FakeBackend, "start", fail)
@@ -373,6 +355,216 @@ def test_offline_native_cli_no_runtime(frozen, tmp_path, capsys):
               "--deployment-sha256", sha, "--output", str(tmp_path / "untouched")])
     assert json.loads(capsys.readouterr().out)["inference_calls"] == 0
     assert not (tmp_path / "untouched").exists()
+
+
+@pytest.mark.parametrize(
+    "name", ["plans/decision3-test.json", "configs/decision3.json", "frame-0.jpg"]
+)
+def test_native_inputs_reject_consumed_but_unsealed_files(frozen, tmp_path, name):
+    bundle, _, deployment_sha = frozen
+    seal_path = bundle / "bundle-files-sha256.json"
+    hashes = json.loads(seal_path.read_text())
+    del hashes[name]
+    seal_path.write_text(json.dumps(hashes))
+    with pytest.raises(ValueError, match="unsealed"):
+        run.validate_inputs(bundle, "decision3", "test", deployment_sha)
+    assert not FakeBackend.calls
+
+
+@pytest.mark.parametrize("change", ["edit", "delete"])
+def test_resume_rejects_changed_failed_receipt_without_resealing(
+    frozen, tmp_path, change
+):
+    uid = "test/fight/0/yes"
+    FakeBackend.behavior = lambda self, unit, body: (
+        (503, {"error": "fixture"}, {}) if unit["id"] == uid else None
+    )
+    out = tmp_path / "run"
+    execute(frozen, out, "decision3", "test")
+    path = out / "test/receipts" / f"{digest(uid)}-1.json"
+    results = [
+        json.loads(row)
+        for row in (out / "test/attempts.jsonl").read_text().splitlines()
+    ]
+    failed = next(
+        row for row in results if row["type"] == "result" and row["unit"] == uid
+    )
+    assert failed["metadata"]["receipt_sha256"] == file_hash(path)
+    if change == "edit":
+        record = json.loads(path.read_text())
+        record["response"] = {"error": "rewritten failure"}
+        path.write_text(json.dumps(record))
+    else:
+        path.unlink()
+    before = {p.relative_to(out): p.read_bytes() for p in out.rglob("*") if p.is_file()}
+    calls = list(FakeBackend.calls)
+    with pytest.raises((ValueError, FileNotFoundError)):
+        execute(frozen, out, "decision3", "test", resume=True)
+    assert FakeBackend.calls == calls
+    assert {
+        p.relative_to(out): p.read_bytes() for p in out.rglob("*") if p.is_file()
+    } == before
+
+
+def test_receipt_metadata_cannot_reference_another_attempt(frozen, tmp_path):
+    out = tmp_path / "run"
+    execute(frozen, out, "decision3", "test")
+    bundle = frozen[0]
+    cfg = deploy.profile("decision3")
+    plan = json.loads((bundle / "plans/decision3-test.json").read_text())
+    ledger = Ledger(
+        out / "test/attempts.jsonl",
+        workflow.context_for(plan, cfg, workflow.verify_bundle(bundle)),
+    )
+    try:
+        results = [row for row in ledger.rows if row["type"] == "result"]
+        results[0]["metadata"] = dict(results[1]["metadata"])
+        with pytest.raises(ValueError, match="path differs"):
+            run.reconcile_receipts(out / "test", ledger, plan, cfg, out)
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        [],
+        "bad",
+        {"answers": None},
+        {"answers": []},
+        {"answers": {"fight": None}},
+        {"answers": {"fight": {"probabilities": None}}},
+    ],
+)
+def test_malformed_decision3_response_retries_and_keeps_receipts(frozen, tmp_path, raw):
+    uid = "test/fight/0/yes"
+
+    def behavior(self, unit, body):
+        if unit["id"] == uid and Counter(self.calls)[uid] == 1:
+            response = self.raw(unit, "yes")
+            response["raw"] = raw
+            return 200, response, {}
+
+    FakeBackend.behavior = behavior
+    out = tmp_path / "run"
+    execute(frozen, out, "decision3", "test")
+    assert Counter(FakeBackend.calls)[uid] == 2
+    assert json.loads((out / "test/report.json").read_text())["correct"] == 120
+    assert all(instance.closed for instance in FakeBackend.instances)
+    execute(frozen, out, "decision3", "test", resume=True)
+    assert Counter(FakeBackend.calls)[uid] == 2
+
+
+@pytest.mark.parametrize("failure", ["write", "torch_query", "torch_import"])
+def test_encoder_closes_even_when_memory_report_fails(tmp_path, monkeypatch, failure):
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    backend = run.NativeBackend("clip", {}, tmp_path, tmp_path, tmp_path, 1)
+    backend.encoder = Mock()
+    backend.monitor = Mock()
+    backend.log = Mock()
+    query = Mock(return_value=0)
+    if failure == "torch_query":
+        query.side_effect = RuntimeError("synthetic query failure")
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        None
+        if failure == "torch_import"
+        else SimpleNamespace(
+            cuda=SimpleNamespace(max_memory_allocated=query, max_memory_reserved=query)
+        ),
+    )
+    write = run.write_new
+
+    def output(path, value):
+        if failure == "write" and path.name == "memory.json":
+            raise OSError("synthetic report failure")
+        return write(path, value)
+
+    monkeypatch.setattr(run, "write_new", output)
+    with pytest.raises((OSError, RuntimeError, ModuleNotFoundError)):
+        backend.close()
+    backend.encoder.close.assert_called_once()
+    backend.log.close.assert_called_once()
+    assert backend.stop.is_set()
+    backend.monitor.join.assert_called_once_with(5)
+
+
+def test_legacy_failed_receipt_requires_the_retained_seal(frozen, tmp_path):
+    uid = "test/fight/0/yes"
+    FakeBackend.behavior = lambda self, unit, body: (
+        (503, {"error": "fixture"}, {}) if unit["id"] == uid else None
+    )
+    out = tmp_path / "run"
+    execute(frozen, out, "decision3", "test")
+    bundle = frozen[0]
+    cfg = deploy.profile("decision3")
+    plan = json.loads((bundle / "plans/decision3-test.json").read_text())
+    ledger = Ledger(
+        out / "test/attempts.jsonl",
+        workflow.context_for(plan, cfg, workflow.verify_bundle(bundle)),
+    )
+    try:
+        for row in ledger.rows:
+            if row["type"] == "result" and row.get("error"):
+                row.pop("metadata")  # old failure rows had no receipt anchor
+        run.reconcile_receipts(
+            out / "test", ledger, plan, cfg, out, run._verify_sealed_receipts(out)
+        )
+        with pytest.raises(ValueError, match="lacks an integrity anchor"):
+            run.reconcile_receipts(out / "test", ledger, plan, cfg, out)
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize("alias", ["decision3", "videojev", "clip"])
+@pytest.mark.parametrize(
+    "bad", [10**1000, -(10**1000)], ids=["large-positive", "large-negative"]
+)
+def test_oversized_native_numbers_retry_without_pausing_run(
+    frozen, tmp_path, alias, bad
+):
+    uid = "validation/fight/0/yes"
+
+    def behavior(self, unit, body):
+        if unit["id"] != uid or Counter(self.calls)[uid] != 1:
+            return None
+        raw = self.raw(unit, "yes")
+        if alias == "decision3":
+            raw["raw"]["answers"]["fight"]["probabilities"][D3_OPTIONS[0]] = bad
+        elif alias == "videojev":
+            raw["raw"][0]["probabilities"][0] = bad
+        else:
+            raw["fight"]["margin"] = bad
+        return 200, raw, {}
+
+    FakeBackend.behavior = behavior
+    out = tmp_path / "run"
+    execute(frozen, out, alias)
+    assert Counter(FakeBackend.calls)[uid] == 2
+    assert json.loads((out / "test/report.json").read_text())["correct"] == 120
+    rows = [
+        json.loads(line)
+        for line in (out / "validation/attempts.jsonl").read_text().splitlines()
+    ]
+    first = next(row for row in rows if row["type"] == "result" and row["unit"] == uid)
+    assert first["complete"] is False and not first.get("fatal")
+    assert first["metadata"]["receipt_sha256"]
+    assert all(backend.closed for backend in FakeBackend.instances)
+    execute(frozen, out, alias, resume=True)
+    assert Counter(FakeBackend.calls)[uid] == 2
+
+
+def test_contrastive_parser_keeps_unbounded_finite_margins():
+    from tools.unified_benchmark.adapters import parse_response
+
+    config = deploy.profile("clip")
+    raw = {"fight": {"margin": 3.5, "positive_cosine": 4.0, "contrast_cosine": 0.5}}
+    assert parse_response(config, {"targets": ["fight"]}, raw)["fight"]["score"] == 3.5
 
 
 @pytest.mark.parametrize("recover", [False, True])
@@ -482,7 +674,7 @@ def test_unsealed_native_input_rejected_before_backend(frozen, tmp_path, name):
     manifest = json.loads(path.read_text())
     manifest.pop(name)
     path.write_text(json.dumps(manifest))
-    with pytest.raises(ValueError, match="unsealed bundle"):
+    with pytest.raises(ValueError, match="bundle inventory contains unsealed or missing files"):
         execute(frozen, tmp_path / "run", "decision3", "test")
     assert not FakeBackend.instances
 
@@ -549,7 +741,7 @@ def seeded_native_resume(frozen, output, *, fatal=True, completed_at=1000, recor
 
 def test_newly_recovered_fatal_pauses_before_backend_then_explicit_resume(frozen, tmp_path):
     output = tmp_path / "recover-fatal"
-    unit, path = seeded_native_resume(frozen, output, completed_at="missing")
+    unit, path = seeded_native_resume(frozen, output, completed_at=1000)
     receipt_hash = file_hash(path)
     intent_bytes = (output / "test/attempts.jsonl").read_bytes()
     with pytest.raises(PausedRun, match="newly recovered fatal receipt"):
@@ -992,6 +1184,42 @@ def test_resume_preflight_rejects_noncanonical_later_orphan_metadata(frozen, tmp
     assert_read_only_resume_rejection(frozen, output)
 
 
+@pytest.mark.parametrize("bad_time", ["missing", None, False, "1000", float("inf"), float("nan"), 10 ** 400])
+def test_fatal_orphan_requires_authoritative_completion_timestamp(frozen, tmp_path, bad_time):
+    output = tmp_path / "fatal-missing-time"
+    _, path = seeded_native_resume(frozen, output)
+    receipt = json.loads(path.read_text())
+    if bad_time == "missing":
+        receipt.pop("completed_at_unix")
+    else:
+        receipt["completed_at_unix"] = bad_time
+    path.write_text(json.dumps(receipt))
+    before = output_snapshot(output)
+    with pytest.raises(ValueError):
+        execute(frozen, output, "decision3", "test", resume=True)
+    assert not FakeBackend.instances and not FakeBackend.calls
+    assert output_snapshot(output) == before
+    assert not (output / "invocations").exists()
+
+
+@pytest.mark.parametrize("alias", ["clip", "siglip2"])
+def test_validation_report_uses_selected_nonzero_thresholds(frozen, tmp_path, alias):
+    def positive_margins(self, unit, body):
+        margin = .3 if unit["id"].endswith("/yes") else .1
+        return 200, {event: {"margin": margin, "positive_cosine": .5 + margin,
+                            "contrast_cosine": .5} for event in unit["targets"]}, {}
+    FakeBackend.behavior = positive_margins
+    out = tmp_path / "validation"
+    execute(frozen, out, alias, phase="validation")
+    artifact = json.loads((out / "thresholds.json").read_text())
+    result = json.loads((out / "validation/report.json").read_text())
+    assert artifact["thresholds"]["fight"] == pytest.approx(.2)
+    assert result["thresholds"] == artifact["thresholds"]
+    assert result["threshold_artifact_sha256"] == file_hash(out / "thresholds.json")
+    assert result["correct"] == result["complete_valid_questions"] == 24
+    assert not (out / "test").exists()
+
+
 @pytest.mark.parametrize("alias", deploy.ALIASES)
 def test_native202_validation_to_test_keeps_method(frozen, tmp_path, alias):
     """Exercise the same native pipeline with 82 extra synthetic test questions."""
@@ -1032,6 +1260,10 @@ def test_native202_validation_to_test_keeps_method(frozen, tmp_path, alias):
         artifact = json.loads((out / 'thresholds.json').read_text())
         assert artifact['rules_sha256'] == digest(rules_for(CURRENT_VERSION))
         assert artifact['validation_summary']['complete_valid_questions'] == 24
+    # Resume verifies the same protocol-bound calibration without new calls.
+    calls = list(FakeBackend.calls)
+    execute(frozen, out, alias, resume=True)
+    assert FakeBackend.calls == calls
 
 
 def test_native_completion_and_resume_do_not_reopen_owned_ledger(frozen, tmp_path, monkeypatch):
@@ -1187,6 +1419,7 @@ def test_bag_validation_freezes_six_midpoints_before_test_and_preserves_baseline
     assert artifact["thresholds"] == pytest.approx(midpoints)
     for split, count in (("validation", 44), ("test", 202)):
         report = json.loads((out / split / "report.json").read_text())
+        assert report["threshold_artifact_sha256"] == file_hash(out / "thresholds.json")
         baseline = report["zero_margin_baseline"]
         assert report["correct"] == report["planned_questions"] == count
         assert baseline["planned_questions"] == count

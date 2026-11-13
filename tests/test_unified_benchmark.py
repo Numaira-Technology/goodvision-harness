@@ -426,8 +426,19 @@ def test_ledger_rejects_invalid_result_attempt_identity(tmp_path, bad_attempt):
     try:
         base = {"unit": "u", "request_sha256": "frozen"}
         ledger.append(base | {"type": "intent", "attempt": 1})
-        ledger.append(base | {"type": "result", "attempt": bad_attempt, "answers": {"fight": {"answer": "yes"}}})
-        with pytest.raises(ValueError, match="invalid ledger attempt|result.*preceding intent"):
+        bad_result = base | {"type": "result", "attempt": bad_attempt,
+                             "answers": {"fight": {"answer": "yes"}}}
+        with ledger.raw_reader() as reader:
+            before = reader.read()
+        with pytest.raises(ValueError, match="invalid ledger row identity/type/attempt"):
+            ledger.append(bad_result)
+        with ledger.raw_reader() as reader:
+            assert reader.read() == before
+        assert ledger.state(unit(), "choice") == (1, {})
+        # Append is now guarded too. Inject corruption only in the in-memory
+        # fixture so the original state-reader rejection remains exercised.
+        ledger.rows.append(bad_result)
+        with pytest.raises(ValueError, match="invalid ledger row identity/type/attempt"):
             ledger.state(unit(), "choice")
     finally:
         ledger.close()
