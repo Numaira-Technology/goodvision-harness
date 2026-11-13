@@ -3,6 +3,11 @@
 import math
 import subprocess
 
+# A .MOV filename alone does not prevent FFmpeg from detecting a playlist and
+# following nested files/URLs. This demo accepts MOV/MP4 containers only, with
+# external tracks disabled; probing and extraction must use the same boundary.
+_INPUT_OPTIONS = ("-protocol_whitelist", "file", "-f", "mov", "-enable_drefs", "0")
+
 
 def validate_times(times):
     times = list(times)
@@ -23,6 +28,7 @@ def duration(video_path):
             "format=duration",
             "-of",
             "default=nokey=1:noprint_wrappers=1",
+            *_INPUT_OPTIONS,
             str(video_path),
         ],
         capture_output=True,
@@ -46,6 +52,7 @@ def frame_jpeg(video_path, t, *, width=768):
             "error",
             "-ss",
             f"{t:.6f}",
+            *_INPUT_OPTIONS,
             "-i",
             str(video_path),
             "-vframes",

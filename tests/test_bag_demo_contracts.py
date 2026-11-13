@@ -342,6 +342,54 @@ def test_real_synthetic_frame_preserves_aspect_and_rejects_eof(tmp_path):
         media.frame_jpeg(path, 9, width=720)
 
 
+@pytest.fixture
+def disguised_playlist(tmp_path):
+    # The top-level .MOV is local and not a symlink; its nested file is not.
+    outside = tmp_path / "outside.MOV"
+    _synthetic_video(outside)
+    directory = tmp_path / "media"
+    directory.mkdir()
+    try:
+        (directory / "segment.MOV").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    playlist = directory / "clip.MOV"
+    playlist.write_text("ffconcat version 1.0\nfile segment.MOV\nduration 2\n")
+    return playlist
+
+
+@pytest.mark.parametrize("operation", ["frame", "duration"])
+def test_mov_named_playlist_cannot_follow_external_media(disguised_playlist, operation):
+    import shutil
+
+    if not shutil.which("ffmpeg" if operation == "frame" else "ffprobe"):
+        pytest.skip("media executable unavailable")
+    with pytest.raises(subprocess.CalledProcessError):
+        if operation == "frame":
+            media.frame_jpeg(disguised_playlist, 0.4)
+        else:
+            media.duration(disguised_playlist)
+
+
+def test_disguised_playlist_never_reaches_scorer(disguised_playlist, monkeypatch):
+    import shutil
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg unavailable")
+    monkeypatch.setattr(server, "MEDIA_DIR", disguised_playlist.parent)
+    # Exercise extraction independently of the probe (which is hardened too).
+    monkeypatch.setattr(server, "duration", lambda _: 2.0)
+    scorer = Mock(return_value={"label": "未检出刀/武器"})
+    monkeypatch.setattr(vb, "predict", scorer)
+    with TestClient(server.app, base_url="http://127.0.0.1") as client:
+        result = client.get("/api/verdict?clip=clip.MOV&t=0.8")
+    assert result.status_code == 502
+    assert result.json()["status"] == "unavailable"
+    scorer.assert_not_called()
+    assert server.SCORING.acquire(blocking=False)
+    server.SCORING.release()
+
+
 def test_synthetic_media_through_api_and_native_scorer_contract(tmp_path, monkeypatch):
     import shutil
 
