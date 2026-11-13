@@ -8,9 +8,11 @@ operators must move an old/damaged prefix aside before restoring a different pin
 
 import ctypes
 import hashlib
+import io
 import json
 import os
 import platform
+import queue
 import re
 import shutil
 import signal
@@ -18,7 +20,9 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
+import zlib
 from collections import deque
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
@@ -386,11 +390,107 @@ def _validate_archive_links(paths):
                 resolved.append(part)
 
 
-def _safe_extract(tarball, dest):
-    """Validate every header, extract with the data filter, then validate link targets.
+class _Inflater(io.RawIOBase):
+    """Read a gzip file's decompressed bytes, inflated on a helper thread.
 
-    Links may point within the environment, but are never extraction parents.
-    This also rejects devices, FIFOs, absolute paths, duplicates and forged markers.
+    zlib releases the GIL, so inflating overlaps with tarfile parsing and file
+    writes on the caller's thread. Concatenated gzip members are supported.
+    A truncated or corrupt stream raises on read. close() stops the helper.
+    """
+
+    _CHUNK = 4 << 20
+    _OUT = 8 << 20
+
+    def __init__(self, path):
+        super().__init__()
+        self._queue = queue.Queue(maxsize=8)
+        self._stop = threading.Event()
+        self._pending = memoryview(b"")
+        self._done = False
+        self._source = open(path, "rb")
+        self._thread = threading.Thread(target=self._inflate, daemon=True)
+        self._thread.start()
+
+    def _put(self, item):
+        while not self._stop.is_set():
+            try:
+                self._queue.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def _inflate(self):
+        try:
+            inflater = zlib.decompressobj(31)
+            data = b""
+            while not self._stop.is_set():
+                if not data:
+                    data = self._source.read(self._CHUNK)
+                    if not data:
+                        break
+                out = inflater.decompress(data, self._OUT)
+                data = inflater.unconsumed_tail
+                if inflater.eof:
+                    # At EOF unused_data already includes any unconsumed_tail
+                    # left by output-limited calls; adding both repeats members.
+                    data = inflater.unused_data.lstrip(b"\0")
+                    inflater = zlib.decompressobj(31)
+                    # Like gzip.GzipFile, accept zero padding between members
+                    # and at EOF, including padding spanning input chunks.
+                    while not data and not self._stop.is_set():
+                        data = self._source.read(self._CHUNK)
+                        if not data:
+                            if out and not self._put(out):
+                                return
+                            self._put(None)
+                            return
+                        data = data.lstrip(b"\0")
+                if out and not self._put(out):
+                    return
+            if not self._stop.is_set():
+                self._put(EOFError("compressed archive is truncated"))
+        except BaseException as exc:  # handed to the reading thread
+            self._put(exc)
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        while not self._pending and not self._done:
+            item = self._queue.get()
+            if item is None:
+                self._done = True
+            elif isinstance(item, BaseException):
+                self._done = True
+                raise item
+            else:
+                self._pending = memoryview(item)
+        count = min(len(buffer), len(self._pending))
+        buffer[:count] = self._pending[:count]
+        self._pending = self._pending[count:]
+        return count
+
+    def close(self):
+        if not self.closed:
+            self._stop.set()
+            self._thread.join()
+            self._source.close()
+        super().close()
+
+
+def _safe_extract(tarball, dest):
+    """Inflate the archive once and validate each header before writing it.
+
+    Every member is checked as it streams past: relative path, no completion
+    marker, no duplicate, no device/FIFO, no non-directory parent. Regular
+    files and directories are written immediately into the fresh, private
+    ``dest``. Symlinks and hardlinks are only collected, so while data is
+    written no link exists on disk to redirect it; the data filter keeps every
+    file under ``dest``. After the last header, link targets are validated as a
+    whole, links are created, directory modes applied, and resolved link
+    targets re-checked. On any error ``dest`` may hold partial output; callers
+    discard it (it is never published).
     Requires a patched Python with tarfile.data_filter (3.10.12/3.11.4 or later).
     """
     if not hasattr(tarfile, "data_filter"):
@@ -399,10 +499,25 @@ def _safe_extract(tarball, dest):
         )
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=False)
-    with tarfile.open(tarball, "r:gz") as tf:
-        members = tf.getmembers()
-        paths = {}
-        for member in members:
+
+    def data_filter(member, destination):
+        filtered = tarfile.data_filter(member, destination)
+        # chmod on a hardlink would also change the original file's mode.
+        if filtered.islnk():
+            return filtered.replace(mode=None)
+        if filtered.issym():
+            # Retain the validated target: normalization can change semantics
+            # when a target traverses another symlink before '..'.
+            return filtered.replace(linkname=member.linkname)
+        return filtered
+
+    paths, implied, links, dirs = {}, set(), [], []
+    with (
+        _Inflater(tarball) as raw,
+        io.BufferedReader(raw, 1 << 20) as stream,
+        tarfile.open(fileobj=stream, mode="r|") as tf,
+    ):
+        for member in tf:
             if member.name in {".", "./"} and member.isdir():
                 continue
             name = member.name.rstrip("/") if member.isdir() else member.name
@@ -415,50 +530,51 @@ def _safe_extract(tarball, dest):
                 member.isfile() or member.isdir() or member.issym() or member.islnk()
             ):
                 raise ValueError("archive contains a special file")
-            paths[name] = member
-        for name, member in paths.items():
+            # A non-directory may not be the parent of an earlier or later entry.
+            if not member.isdir() and name in implied:
+                raise ValueError("archive entry has a non-directory parent")
             for parent in PurePosixPath(name).parents:
-                if str(parent) in paths and not paths[str(parent)].isdir():
+                parent = str(parent)
+                if parent in paths and not paths[parent].isdir():
                     raise ValueError("archive entry has a non-directory parent")
+                implied.add(parent)
+            paths[name] = member
             if member.issym() or member.islnk():
-                target = member.linkname
-                if (
-                    not target
-                    or target.startswith("/")
-                    or any(c in target for c in "\\:\x00\r\n")
-                ):
-                    raise ValueError("archive contains an unsafe link")
-                if member.islnk():
-                    registry.relative_path(target)
-                    if target not in paths or not paths[target].isfile():
-                        raise ValueError(
-                            "archive hardlink must target a regular member"
-                        )
+                links.append(member)
+                continue
+            # Directory modes are applied after all writes, as extractall does.
+            tf.extract(member, dest, set_attrs=not member.isdir(), filter=data_filter)
+            if member.isdir():
+                dirs.append(member)
+        # tarfile stops at the tar end marker, possibly before the gzip trailer
+        # or later gzip members. Consume the rest so late inflate errors cannot
+        # be discarded by close() and a damaged staging dir cannot be published.
+        while stream.read(1 << 20):
+            pass
+        for member in links:
+            target = member.linkname
+            if (
+                not target
+                or target.startswith("/")
+                or any(c in target for c in "\\:\x00\r\n")
+            ):
+                raise ValueError("archive contains an unsafe link")
+            if member.islnk():
+                registry.relative_path(target)
+                if target not in paths or not paths[target].isfile():
+                    raise ValueError("archive hardlink must target a regular member")
         _validate_archive_links(paths)
-        ordered = sorted(paths.values(), key=lambda m: m.issym() or m.islnk())
-
-        def data_filter(member, destination):
-            filtered = tarfile.data_filter(member, destination)
-            # chmod on a hardlink would also change the original file's mode.
-            if filtered.islnk():
-                return filtered.replace(mode=None)
-            if filtered.issym():
-                # Retain the validated target: normalization can change semantics
-                # when a target traverses another symlink before '..'.
-                return filtered.replace(linkname=member.linkname)
-            return filtered
-
-        tf.extractall(dest, members=ordered, filter=data_filter)
-        for name, member in paths.items():
-            if member.issym() or member.islnk():
-                try:
-                    safe = (dest / name).resolve().is_relative_to(dest.resolve())
-                except (OSError, RuntimeError):
-                    safe = False
-                if not safe:
-                    raise ValueError(
-                        "archive link escapes the environment or forms a cycle"
-                    )
+        for member in links:
+            tf.extract(member, dest, filter=data_filter)
+        for member in sorted(dirs, key=lambda m: m.name, reverse=True):
+            tf.extract(member, dest, filter=data_filter)
+    for member in links:
+        try:
+            safe = (dest / member.name).resolve().is_relative_to(dest.resolve())
+        except (OSError, RuntimeError):
+            safe = False
+        if not safe:
+            raise ValueError("archive link escapes the environment or forms a cycle")
     _critical_files(dest)
 
 
