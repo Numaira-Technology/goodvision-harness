@@ -14,6 +14,7 @@ from test_tracked_grounding import jpeg
 
 from tools.decisions_benchmark import adapter as native
 from tools.decisions_benchmark.report import audit_coverage, audit_rows
+from tools.synthetic_evidence import register_synthetic_evidence
 from tools.tracked_decisions import adapter, suite
 from tools.tracked_grounding.detector import DetectorBroker
 from tools.vlm_benchmark import modes
@@ -51,7 +52,7 @@ def offline_inspector(config, *, broker_url, audit_dir):
 
 @pytest.mark.parametrize("mode", ["events", "compact", "parallel"])
 def test_twelve_sources_native_decisions_and_person_reports(
-    tmp_path, monkeypatch, mode
+    tmp_path, monkeypatch, mode, request
 ):
     monkeypatch.setenv("OPENAI_API_KEY", "offline-native-key")
     monkeypatch.setenv("OPENROUTER_API_KEY", "wrong-provider-key")
@@ -74,22 +75,35 @@ def test_twelve_sources_native_decisions_and_person_reports(
             }
         ]
 
-    with DetectorBroker("http://127.0.0.1:1", tmp_path, transport=detector) as broker:
-        result = run_stage(
-            args,
-            base,
-            12,
-            [[jpeg()] * 4],
-            tmp_path,
-            1,
-            inspector_factory=partial(
-                offline_inspector,
-                broker_url=broker.endpoint,
-                audit_dir=tmp_path / "api-audit",
-            ),
-            source_hook=broker.submit,
-        )
-        broker.drain()
+    source_diagnostics = {}
+    diagnostic = {"source": source_diagnostics, "detector_keys": calls}
+    register_synthetic_evidence(request.node, tmp_path, diagnostic)
+    def run_once(output):
+        calls.clear()
+        source_diagnostics.clear()
+        with DetectorBroker(
+            "http://127.0.0.1:1", output, transport=detector
+        ) as broker:
+            stage = run_stage(
+                args,
+                base,
+                12,
+                [[jpeg()] * 4],
+                output,
+                1,
+                inspector_factory=partial(
+                    offline_inspector,
+                    broker_url=broker.endpoint,
+                    audit_dir=output / "api-audit",
+                ),
+                source_hook=broker.submit,
+                source_diagnostics=source_diagnostics,
+            )
+            diagnostic["drain_counts"] = broker.drain()
+        return stage
+
+    output = tmp_path
+    result = run_once(output)
     assert result["all_drained"] and not result["result_records_missing"]
     assert result["result_retention"]["valid"]
     assert len(calls) == len(set(calls)) == 48
@@ -103,11 +117,11 @@ def test_twelve_sources_native_decisions_and_person_reports(
     assert_admission_drained(result, args, 12 * len(result["lanes"]))
     records = [
         json.loads(s)["report"]
-        for s in (tmp_path / "streams-12-repeat-1/reports.jsonl")
+        for s in (output / "streams-12-repeat-1/reports.jsonl")
         .read_text()
         .splitlines()
     ]
-    assert audit_coverage(records, audit_rows(tmp_path))["valid"]
+    assert audit_coverage(records, audit_rows(output))["valid"]
     for row in records:
         if report_lane(row) == "grounding":
             assert row["subject_id_scope"] == "stream_session"

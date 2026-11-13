@@ -71,9 +71,22 @@ def export_service(alias, output, repository=ROOT):
             path.write_bytes((ASSETS / spec["extra_files"][name]).read_bytes())
         else:
             path.write_bytes(subprocess.check_output(
-                ["git", "-C", str(repository), "show", spec["commit"] + ":" + name]))
-    subprocess.run(["patch", "-p1", "--binary", "--batch", "--forward", "--input", str(ASSETS / spec["patch"])],
-                   cwd=output, check=True, capture_output=True)
+                ["git", "-C", str(repository), "show", spec["commit"] + ":" + name],
+                timeout=30))
+    # Windows builds of GNU patch open files in text mode and fail on the
+    # LF-only patches and sources; --binary keeps the exact bytes. POSIX is
+    # unchanged (the flag is a no-op there, and production runs on Linux).
+    binary = ["--binary"] if os.name == "nt" else []
+    try:
+        subprocess.run(["patch", "-p1", *binary, "--batch", "--forward",
+                        "--input", str(ASSETS / spec["patch"])],
+                       cwd=output, check=True, capture_output=True, stdin=subprocess.DEVNULL,
+                       timeout=60)
+    except subprocess.CalledProcessError as exc:
+        # Keep patch's own diagnosis visible; the patch and sources are public.
+        sys.stderr.write((exc.stdout or b"").decode(errors="replace")[-2000:])
+        sys.stderr.write((exc.stderr or b"").decode(errors="replace")[-2000:])
+        raise
     check_files(output, spec["files"])
     return spec["files"]
 

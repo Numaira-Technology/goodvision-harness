@@ -205,75 +205,101 @@ python -m tools.cloud_prefetch --host H --port P --ssh-key ~/.ssh/goodvision_vas
 
 ## 环境也打包进 R2（conda-pack，免编译起环境）
 
-权重进 R2 之后，租机还剩一半慢的：**在盒子上现装环境**——`apt` 装 python、`pip` 装
-torch（cu128，~2.5 GB），最后 `flash-attn --no-build-isolation` **从源码编译**（10–30 分钟）。
-每次租机都重来一遍，白等。
+环境和权重是两个独立制品：权重仍由 `model_source` 填充 HF cache；环境由
+`env_source` 恢复。环境读取失败会报错，不回退到 HF，也不会现场编译。
 
-做法：把环境当成第二个 R2 制品，和权重并列——**一次性构建、此后只拉**。
+### 注册表与不可变对象
 
-### 注册表：`tools/models.yaml`（每个模型两个 key）
+`tools/models.yaml` 固定每个环境的 `r2_key`、`manifest_key`、完整 SHA256、字节数、
+`unpack_to`、`activate_rel` 与 `compat`。恢复必须具备全部字段；R2 边车 manifest 的
+`format: conda-pack`、key、hash、size、prefix、activate 路径及兼容信息必须逐项一致。
+远端 manifest 不能代替仓库中的可信 hash。现有 VideoJev pin 和权重对象保持不变。
 
-```yaml
-models:
-  videojev:
-    repo: ZhuYuhan/VideoJev-4B
-    revision: 1c1a253bf90dfa66176124d25a48ffb791d517d5
-    weights:                                 # key 1：权重（沿用既有布局）
-      r2_prefix: models/ZhuYuhan/VideoJev-4B/1c1a253.../
-    env:                                     # key 2：打包好的环境
-      r2_key: envs/videojev/cu128-py312-torch280-ada.tar.gz
-      manifest_key: envs/videojev/cu128-py312-torch280-ada.json
-      unpack_to: /opt/env/videojev           # 固定前缀：在哪构建就在哪还原
-      activate_rel: bin/activate             # source {unpack_to}/{activate_rel}
-      sha256: <填>                           # 每次拉取校验
-      compat: {python: "3.12", cuda: "12.8", torch: "2.8.0", gpu_family: ada}
-```
+新构建的对象使用内容地址：
 
-### R2 布局（在 `models/` 旁新增 `envs/`）
-
-```
+```text
 goodvision-models/
-├── models/<org>/<name>/<sha>/              # 权重（不变）
-└── envs/<name>/<compat-tag>.tar.gz         # conda-pack 产物（单个 tar.gz）
-    envs/<name>/<compat-tag>.json           # 边车 manifest：sha256 + size + compat
+├── models/<org>/<name>/<revision>/      # 权重身份，不变
+└── envs/<model>/<sha256>.tar.gz         # 新环境对象
+    envs/<model>/<sha256>.json           # 同一制品的边车 manifest
 ```
 
-`<compat-tag>` 形如 `cu128-py312-torch280-ada`，把 CUDA / python / torch / GPU 家族写进文件名。
+`build_env` 使用 R2 原子 `PutObject(IfNoneMatch="*")`，不会覆盖旧对象，不使用
+无条件 multipart 上传。上传上限保守设为 5 GiB 减 5 MiB；更大的包直接拒绝。
+第二个写入失败或超时可能留下未被引用的 tarball，必须人工检查，不自动删除、
+覆盖或追加无条件写入。输出的新 pin 需审查后更新注册表。
+参考：[R2 条件写入](https://developers.cloudflare.com/r2/api/s3/extensions/#conditional-operations-in-putobject)、
+[R2 大小限制](https://developers.cloudflare.com/r2/platform/limits/)。
 
-### 一次性构建（在匹配的 GPU 上）
+### 一次性构建（仅维护者，在已授权的匹配 GPU 上）
 
-`tools/build_env.py` 在一台**符合 `compat` 的盒子**（RTX 4090 / Ada / CUDA 12.8）上跑：
-装 Miniforge（conda-forge 默认通道，绕开 Anaconda 默认通道的 ToS 门）→ 在固定前缀建
-conda 环境 → `pip` 装 torch + requirements + flash-attn（慢的那步，只此一次）→ `conda pack`
-成单个 tar.gz → 连同边车 manifest 上传到 `env.r2_key` / `env.manifest_key`。只在换钉死版本或
-换 GPU 家族时再跑（后者是**第二个 tar.gz**，不是重建第一个）。
+构建器当前只支持 Python 3.12 / torch 2.8.0+cu128 / CUDA 12.8 这套配方。
+要求 Linux x86_64、可用的 `nvidia-smi`、匹配的 GPU compute capability，以及驱动报告
+的 CUDA 支持不低于 12.8。Ada 对应 8.9；Ampere 对应 8.0/8.6；Hopper 对应 9.0。
+所有可见 GPU 都须匹配。同一家族检查不能替代实际 CUDA 内核验证。
+
+先安装可信的 Miniforge；或者提供本地 installer 和独立核验过的 SHA256。
+构建器不再下载并执行浮动的 `latest` installer。环境前缀和输出文件都必须不存在；
+已有环境不会被删除。构建失败留下的前缀供维护者检查，重试前需主动移走。
 
 ```bash
-# 在盒子上，读写 R2_* 经 SSH stdin 注入，不进 argv/镜像：
-PYTHONPATH=. HF_HUB_DISABLE_XET=1 MAX_JOBS=4 python -m tools.build_env --model videojev
+# 仅在已授权的构建机上运行；读写 R2_* 从环境传入，不写进命令参数。
+python -m tools.build_env --model videojev \
+  --conda-home /opt/miniforge3 --out /tmp/videojev-new.tar.gz
+# 只构建、不上传：加 --skip-upload
+# 若尚未安装 Miniforge：加 --miniforge-installer /path/installer.sh \
+#   --miniforge-sha256 <独立核验过的完整摘要>
 ```
 
-### 每次租机：直接从 R2 起环境（免编译）
+构建/解包子进程不继承 R2/HF/cloud 凭据或 `PYTHONPATH`。路径通过 argv 传递；
+`conda-pack` 不使用 `--ignore-missing-files` 或 `--force`。
 
-`tools/env_source.py`（`model_source` 的环境对应物）：拉 tar.gz → sha256 校验 → 解到
-固定前缀 → `conda-unpack`（修 shebang/前缀）→ 返回 activate 路径。本地可直接用；要在
-租来的盒子上起，用 `tools/cloud_env.py`（`cloud_prefetch` 的环境对应物），它把几个
-reader 文件推上去、在盒子上跑 `env_source`，**只读** R2 key 经 stdin 注入：
+### 每次使用：在远端恢复，再用包内解释器启动
+
+远端需有 Python（带 `tarfile.data_filter` 的受维护版本）、`boto3`、`PyYAML`、
+`tar`（仅用于上传小型 reader 文件）和 `nvidia-smi`。大包解压不调用系统 tar。
+`cloud_env` 将 reader 文件上传到独立临时目录，R2 **只读** key 仅经 SSH stdin
+传入，结束后清理 reader。返回的是远端 `{unpack_to}/bin/python`，不能在本机执行：
+远端必须同时回报所选包的 key、SHA256、大小、前缀、兼容性及 manifest key，
+并与控制机启动前捕获的身份完全一致；缺少身份或仅路径相同都不能作为成功回执。
+只验证 stdout 最后一条非空回执；后续错误、错误路径或错误身份不能被较早的成功
+输出掩盖。完成标记的旧格式保持不变。
 
 ```bash
-source "$(python -m tools.cloud_env --host H --port P --ssh-key KEY --model videojev)"
-# 然后在环境里起服务，不 apt、不 pip、不编译 flash-attn
+# 在控制机运行；先通过安全的既有方式导出四个只读 R2_* 变量。
+python -m tools.cloud_env --host H --port P --ssh-key KEY --model videojev
+# 成功后会输出远端 /opt/env/videojev/bin/python。
+# 另开远端 shell：
+ssh -p P -i KEY root@H
+# 以下命令只在远端 shell 中运行；不要 source activate，也不要用 PATH 上的 python：
+PYTHONNOUSERSITE=1 /opt/env/videojev/bin/python -s -c 'import sys; assert sys.prefix == "/opt/env/videojev"'
 ```
 
-把 ~15–30 分钟的现装变成 ~1–2 分钟的下载+解包（R2 出站免费）。
+恢复流程：校验注册表和主机 → 加前缀锁 → 核对 manifest → 私有目录下载 →
+SHA256/size 校验 → 安全临时解包 → 放到固定前缀 → 用包内 `bin/python -I`
+运行 `bin/conda-unpack` → 写完成标记 → 返回包内 `bin/python`。允许安全内部软/硬链接；
+拒绝路径逃逸、链接父目录、设备/FIFO、重复路径和包内伪造的完成标记。
+发布前缀使用原子 no-replace rename，不会创建等待确认所有权的空公开目录，也不会
+替换其他进程刚创建的空目录。Linux 主机的 libc、内核及文件系统必须支持
+[`renameat2(RENAME_NOREPLACE)`](https://man7.org/linux/man-pages/man2/rename.2.html)；
+不支持时直接报错，不退回可能覆盖目标的普通 rename。macOS 的
+[`RENAME_EXCL`](https://developer.apple.com/documentation/foundation/urlresourcekey/volumesupportsexclusiverenamingkey)
+仅用于离线合成恢复测试，不代表 Linux/GPU 验收。
 
-### 唯一要注意的坑：GPU 家族必须匹配
+匹配的完成标记和必要文件允许本地复用；这不是对整个已使用环境的重新取证校验。
+任何其他已有前缀（包括旧版本、损坏、旧格式标记或无标记目录）都被保留并拒绝覆盖。
+需要更换时先检查并主动移走它。`--no-local` 同样要求空缺前缀，不会强制删除。
+普通异常、Ctrl-C、SIGTERM/SIGHUP 清理本次下载和新前缀；SIGKILL/断电可能留下无
+完成标记的目录，下一次会拒绝把它当作可用环境，需检查后移走。锁文件可以保留，
+内核会在进程退出时释放锁。
 
-`conda-unpack` 只改 shebang 和 conda 元数据；编译出的 `.so`（flash-attn / torch）靠
-`$ORIGIN` 相对 RPATH 迁移，但 flash-attn 是**按单一 SM 架构编译**的，所以 tar.gz 只在
-同家族 GPU 上有效。`compat.gpu_family` 钉死它（默认 `ada`=sm_89=RTX 4090），launcher 只租
-匹配的 offer；要换 A100 就另出一个 `...-ampere.tar.gz`。解到**固定前缀**也顺手避开任何
-不可迁移的角落。构建环境只放 Python 包，权重仍由 `model_source` 单独拉——两者解耦。
+### 验证范围
+
+PR 作者报告原始 Ada/4090 包还原耗时 126 秒、可导入 torch/flash-attn 并识别 CUDA。
+这是作者的历史报告，代码审查未独立复现。离线回归使用合成 tarball、假 R2/SSH
+与主机检测 mock；不证明现存 4.85 GB 包的链接布局、ABI、真实 GPU 内核或速度。
+作者还需用原始对象确认完整 manifest 与注册表一致，并在已授权的兼容主机上提供
+更新后恢复路径的证据；若旧包不满足安全约束，应发布新身份，不能覆盖现有对象。
 
 ## R2 价格与成本估算
 

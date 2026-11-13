@@ -76,9 +76,14 @@ def test_twelve_processes_share_concurrency_rate_and_all_make_progress(tmp_path)
             process.start()
         assert len({ready.get(timeout=20) for _ in workers}) == 12
         start.set()
+        # One shared budget. A stuck participant must not spend 40s on each of
+        # the 36 results and consume the whole Windows job.
+        deadline = time.monotonic() + 90
         rows = []
         for _ in range(36):
-            row = results.get(timeout=40)
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, "participants did not finish within the shared budget"
+            row = results.get(timeout=remaining)
             assert row[1] is not None, f"participant {row[0]} failed: {row[2]}"
             rows.append(row)
         for process in workers:
@@ -108,7 +113,7 @@ def test_twelve_processes_share_concurrency_rate_and_all_make_progress(tmp_path)
             process.join(5)
         for queue in (ready, results):
             queue.close()
-            queue.join_thread()
+            queue.cancel_join_thread()
 
 
 def test_shared_rate_and_release_on_error(tmp_path):
@@ -481,7 +486,7 @@ class ReleaseConflict:
         if current_thread().name == "vlm-admission-cleanup":
             self.worker = current_thread()
             self.cleanup_entered.set()
-            if not self.allow_cleanup.wait(3):
+            if not self.allow_cleanup.wait(30):
                 raise AssertionError("test did not release cleanup barrier")
         elif self.armed and self.failures < 3:
             self.failures += 1

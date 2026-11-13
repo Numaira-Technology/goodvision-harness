@@ -1,338 +1,35 @@
-"""Build a model's environment ONCE on a matching GPU, conda-pack it, upload to R2.
+"""Build once on a compatible GPU and publish NEW immutable environment objects.
 
-Runs ON a rented box whose GPU matches the model's ``env.compat`` (e.g. an RTX
-4090 / Ada for CUDA 12.8). It:
-
-  1. installs miniconda if absent (each model env is a self-contained conda env),
-  2. creates the env at the registry's fixed ``unpack_to`` prefix,
-  3. pip-installs torch (cu128), the model's requirements, and flash-attn --
-     the slow, compile-once step,
-  4. conda-pack's the prefix into a single tarball,
-  5. uploads the tarball + a side-manifest (sha256, size, compat) to R2 at the
-     registry's ``env.r2_key`` / ``env.manifest_key``.
-
-After this, tools/env_source.py restores the env on any matching box with a plain
-download -- no apt, no pip, no flash-attn compile. Run build_env again only to
-refresh a pin or target a new GPU family (a second tarball, not a rebuild of the
-first).
-
-Credentials (R2_* read-write) come from the environment, carried over SSH stdin,
-never committed and never echoed.
+No weights are built or uploaded. Existing prefixes, packs and R2 objects are
+never replaced. The output is a proposed registry pin; review it before use.
+A trusted installed Miniforge, or a local installer plus its independently
+verified SHA256, is required. Nothing is fetched from a floating installer URL.
 """
 
 import argparse
-import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-from tools import model_source, registry
+from tools import env_source, model_source, registry
 
-# Never overwrite these published objects. New packs get a new r2_key.
+# R2 documents create-once PutObject; do not assume multipart completion supports it.
+# https://developers.cloudflare.com/r2/api/s3/extensions/#conditional-operations-in-putobject
+MAX_PUT_SIZE = 5 * 1024**3 - 5 * 1024**2
+# Published objects. A new pack needs a new key; these must not be replaced.
 FROZEN_R2_KEYS = (
+    "envs/qwen8b/cu128-py312-torch280-ada.tar.gz",
+    "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz",
+    "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz",
     "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz",
     "envs/videojev/cu128-py312-torch280-ada.tar.gz",
     "envs/clip/cu128-py312-torch280-ada.tar.gz",
-    "envs/siglip2/cu128-py312-torch280-ada.tar.gz",
-    "envs/d3-nano/cu128-py312-torch280-ada.tar.gz",
-    "envs/qwen8b/cu128-py312-torch280-ada.tar.gz",
-    "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz",
-    # Mixed conda setuptools 84.2.1 + pip 80.10.2; tarball files != RECORD.
-    "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz",
 )
-
-# Miniforge: a miniconda-family distribution defaulting to conda-forge, so the
-# build is not blocked by the Anaconda defaults' Terms-of-Service gate.
-MINICONDA_URL = ("https://github.com/conda-forge/miniforge/releases/latest/"
-                 "download/Miniforge3-Linux-x86_64.sh")
-# flash-attn is compiled for one SM; map the registry gpu_family to an arch list.
-_ARCH = {"ada": "8.9", "ampere": "8.0;8.6", "hopper": "9.0"}
-
-
-def _log(*a):
-    print(f"[build_env {time.strftime('%H:%M:%S')}]", *a, flush=True, file=sys.stderr)
-
-
-def _sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _run(cmd, **kw):
-    _log("$", cmd if isinstance(cmd, str) else " ".join(cmd))
-    subprocess.run(cmd, check=True, **kw)
-
-
-def _ensure_miniconda(home):
-    conda = Path(home) / "bin" / "conda"
-    if conda.is_file():
-        return conda
-    installer = Path("/tmp/miniconda.sh")
-    _run(["curl", "-fsSL", "-o", str(installer), MINICONDA_URL])
-    _run(["bash", str(installer), "-b", "-p", str(home)])
-    return conda
-
-
-def _build_script(conda, prefix, requirements, python_ver, arch, flash_attn=True,
-                  install_default_torch=True, require_cuda=True,
-                  extra_imports=()):
-    """The bash recipe that creates + fills the env -- a pure, testable string.
-
-    ``flash_attn`` gates the slow compile-once step: when False, flash-attn and
-    causal-conv1d are NOT installed (and the readiness check does not import
-    flash_attn). Models whose runtime never touches flash-attn (e.g. a CLIP/SigLIP
-    ViT) set ``env.build.flash_attn: false`` to skip minutes of nvcc compile.
-
-    ``install_default_torch`` installs the HF-pack pin ``torch==2.8.0`` (cu128).
-    vLLM envs set it false so ``vllm==0.31.0`` can pull its own torch. Never
-    reuse this to overwrite the existing qwen8b HF tarball key.
-    """
-    conda_sh = f'source "{Path(conda).parent.parent}/etc/profile.d/conda.sh"'
-    if flash_attn:
-        flash_step = (
-            f'export TORCH_CUDA_ARCH_LIST="{arch}"\n'
-            'export MAX_JOBS="${MAX_JOBS:-4}"\n'
-            'python -s -m pip install --no-user --no-cache-dir --no-build-isolation \\\n'
-            '  flash-attn==2.8.3.post2 causal-conv1d==1.7.0'
-        )
-        cuda_check = (
-            'assert torch.cuda.is_available(), "CUDA not available in built env"'
-            if require_cuda else
-            'assert torch.version.cuda, "packed torch is not a CUDA wheel"\n'
-            'print("cpu-pack: CUDA wheels installed; device check deferred to GPU restore")'
-        )
-        extra = (", " + ", ".join(extra_imports)) if extra_imports else ""
-        verify = (
-            f"import torch, flash_attn, typing_extensions{extra}\n"
-            'print("torch", torch.__version__, "cuda", torch.version.cuda)\n'
-            'print("flash_attn", flash_attn.__version__)\n'
-            f"{cuda_check}"
-        )
-    else:
-        flash_step = "# flash-attn/causal-conv1d skipped (env.build.flash_attn: false)"
-        cuda_check = (
-            'assert torch.cuda.is_available(), "CUDA not available in built env"'
-            if require_cuda else
-            'assert torch.version.cuda, "packed torch is not a CUDA wheel"\n'
-            'print("cpu-pack: CUDA wheels installed; device check deferred to GPU restore")'
-        )
-        extra = (", " + ", ".join(extra_imports)) if extra_imports else ""
-        verify = (
-            f"import torch, typing_extensions{extra}\n"
-            'print("torch", torch.__version__, "cuda", torch.version.cuda)\n'
-            f"{cuda_check}"
-        )
-    if install_default_torch:
-        torch_step = (
-            "python -s -m pip install --no-user --no-cache-dir torch==2.8.0 torchvision==0.23.0 \\\n"
-            "  --index-url https://download.pytorch.org/whl/cu128"
-        )
-    else:
-        torch_step = (
-            "# default torch==2.8.0 pin skipped "
-            "(env.build.install_default_torch: false)"
-        )
-    # One bash block so `conda activate` sticks for the pip steps.
-    return f"""
-set -euo pipefail
-{conda_sh}
-rm -rf "{prefix}"
-conda create -y -p "{prefix}" -c conda-forge --override-channels python={python_ver}
-conda activate "{prefix}"
-export PYTHONNOUSERSITE=1
-python -s -m pip install --no-user --no-cache-dir --upgrade pip wheel packaging ninja
-# Do not `pip install --upgrade setuptools` on top of conda-forge setuptools:
-# that clobbers a subset of files, leaves conda-meta listing the rest, and
-# conda-pack --ignore-missing-files will silently drop the holes.
-{torch_step}
-python -s -m pip install --no-user --no-cache-dir -r "{requirements}"
-{flash_step}
-python -s - <<'PY'
-import sys
-assert sys.flags.no_user_site, "verify must run with python -s"
-{verify}
-for _name, _mod in list(sys.modules.items()):
-    _f = getattr(_mod, "__file__", None)
-    if not _f:
-        continue
-    if ".local/lib/python" in _f:
-        raise SystemExit(f"user-site leak: {{_name}} from {{_f}}")
-print("isolated prefix ok", sys.executable)
-PY
-"""
-
-
-def _build_prefix(conda, prefix, requirements, python_ver, arch, flash_attn=True,
-                  install_default_torch=True, require_cuda=True, extra_imports=()):
-    """Create the conda env at ``prefix`` and install the full stack into it."""
-    script = _build_script(conda, prefix, requirements, python_ver, arch, flash_attn,
-                           install_default_torch, require_cuda, extra_imports)
-    _run(["bash", "-c", script], env={**os.environ, "HF_HUB_DISABLE_XET": "1",
-                                      "PYTHONNOUSERSITE": "1"})
-
-
-def _pack(conda, prefix, out):
-    """conda-pack the prefix into a single tarball at ``out``.
-
-    Use the standalone ``conda-pack`` entry point rather than the ``conda pack``
-    subcommand: recent conda (current Miniforge) does not always register the
-    conda-pack plugin, so ``conda pack`` fails with "invalid choice: 'pack'" while
-    the ``conda-pack`` executable (same tool, same flags) works directly.
-    """
-    script = f"""
-set -euo pipefail
-source "{conda.parent.parent}/etc/profile.d/conda.sh"
-conda activate base
-python -m pip install --no-cache-dir conda-pack
-conda-pack -p "{prefix}" -o "{out}" --force
-# Fail closed if pip deleted conda-managed files. --ignore-missing-files
-# packed a mixed setuptools tree that imported modules the tarball omitted.
-"""
-    _run(["bash", "-c", script])
-
-
-def _assert_prefix_files(prefix: Path) -> dict:
-    """Fail closed on conda/pip file holes before conda-pack.
-
-    Checks: conda-meta listed files exist; pip RECORD hashes match on-disk
-    .py/.so (skip __pycache__ and foreign-python .pyc). Does not prove a
-    delayed serve import; call _isolated_smoke for that.
-    """
-    import base64
-    import csv
-    import hashlib
-    from collections import defaultdict
-
-    prefix = Path(prefix)
-    conda_meta = prefix / "conda-meta"
-    missing_conda = defaultdict(list)
-    if conda_meta.is_dir():
-        for spec in sorted(conda_meta.glob("*.json")):
-            try:
-                info = json.loads(spec.read_text())
-            except (OSError, ValueError):
-                continue
-            pkg = f"{info.get('name')}=={info.get('version')}"
-            for rel in info.get("files") or []:
-                rel = str(rel).lstrip("./")
-                if not rel or rel.endswith("/") or "__pycache__" in rel.split("/"):
-                    continue
-                target = prefix / rel
-                # Directories and prefix-relative symlinks (terminfo, python3.1)
-                # are valid conda entries; is_file() is false for those.
-                if target.exists() or target.is_symlink():
-                    continue
-                missing_conda[pkg].append(rel)
-    if missing_conda:
-        preview = {k: v[:8] for k, v in list(missing_conda.items())[:6]}
-        raise RuntimeError(
-            "conda-meta lists files missing from the prefix (pip likely "
-            f"clobbered a conda package). conda-pack would drop them if "
-            f"ignore-missing-files were set: {preview}"
-        )
-
-    site = None
-    for cand in sorted(prefix.glob("lib/python*/site-packages")):
-        if cand.is_dir():
-            site = cand
-            break
-    record_mismatch = []
-    record_missing = []
-    checked = 0
-    if site is not None:
-        for dist in sorted(site.glob("*.dist-info")):
-            rec = dist / "RECORD"
-            if not rec.is_file():
-                continue
-            with rec.open(newline="") as fh:
-                for row in csv.reader(fh):
-                    if not row:
-                        continue
-                    rel, digest = row[0], row[1] if len(row) > 1 else ""
-                    if not rel or rel.endswith("/") or "__pycache__" in rel.split("/"):
-                        continue
-                    if rel.endswith(".pyc"):
-                        continue
-                    path = site / rel
-                    if not path.is_file():
-                        if rel.endswith((".py", ".so")):
-                            record_missing.append(f"{dist.name}:{rel}")
-                        continue
-                    if not digest.startswith("sha256=") or not rel.endswith((".py", ".so")):
-                        continue
-                    checked += 1
-                    got = base64.urlsafe_b64encode(
-                        hashlib.sha256(path.read_bytes()).digest()
-                    ).decode().rstrip("=")
-                    if f"sha256={got}" != digest:
-                        record_mismatch.append(f"{dist.name}:{rel}")
-    if record_missing:
-        raise RuntimeError(
-            "pip RECORD lists .py/.so files missing from the prefix "
-            f"(missing={record_missing[:12]})"
-        )
-    if record_mismatch:
-        _log("RECORD hash mismatch (prefix rewrite/.so rpath possible): "
-             + str(record_mismatch[:12]))
-    return {
-        "conda_missing": 0,
-        "record_py_so_checked": checked,
-        "record_missing": 0,
-        "record_mismatch": len(record_mismatch),
-    }
-
-
-def _isolated_smoke(python: Path, prefix: Path, modules: tuple[str, ...]) -> dict:
-    """Import modules with python -s and require every file to live under prefix."""
-    names = tuple(modules) or ("torch", "typing_extensions")
-    script = (
-        "import importlib, os, sys\n"
-        "assert sys.flags.no_user_site, 'need python -s'\n"
-        f"prefix = os.path.realpath({str(prefix)!r})\n"
-        "loaded = {}\n"
-        f"for name in {list(names)!r}:\n"
-        "    mod = importlib.import_module(name)\n"
-        "    path = os.path.realpath(getattr(mod, '__file__', '') or '')\n"
-        "    if path and not path.startswith(prefix + os.sep):\n"
-        "        raise SystemExit(f'import {name} resolved outside prefix: {path}')\n"
-        "    loaded[name] = {'file': path, 'version': getattr(mod, '__version__', None)}\n"
-        "import torch\n"
-        "print('torch', torch.__version__, 'cuda', torch.version.cuda)\n"
-        "print('loaded', loaded)\n"
-    )
-    env = {**os.environ, "PYTHONNOUSERSITE": "1", "PYTHONPATH": ""}
-    env.pop("PYTHONHOME", None)
-    proc = subprocess.run(
-        [str(python), "-s", "-c", script],
-        check=True, env=env, capture_output=True, text=True,
-    )
-    _log(proc.stdout.strip())
-    if proc.stderr.strip():
-        _log(proc.stderr.strip())
-    return {"stdout": proc.stdout, "modules": list(names)}
-
-
-def _restore_tarball_isolated(tarball: Path, dest: Path, modules: tuple[str, ...]) -> dict:
-    """Extract + conda-unpack into a fresh directory and smoke-import in isolation."""
-    import shutil
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.mkdir(parents=True)
-    from tools.env_source import _safe_extract
-    _safe_extract(tarball, dest)
-    unpacker = dest / "bin" / "conda-unpack"
-    python = dest / "bin" / "python"
-    if unpacker.is_file():
-        _run([str(python), str(unpacker)] if python.is_file() else [str(unpacker)])
-    if not python.is_file():
-        raise RuntimeError(f"packed python missing after restore: {python}")
-    return _isolated_smoke(python, dest, modules)
+_sha256 = env_source._sha256
 
 
 def _refuse_frozen_key(r2_key: str) -> None:
@@ -340,144 +37,256 @@ def _refuse_frozen_key(r2_key: str) -> None:
         sys.exit(f"refusing to upload over frozen env key {r2_key}")
 
 
-def _upload(env_spec, name, tarball, compat, repo_rev):
-    _refuse_frozen_key(env_spec["r2_key"])
-    client = model_source.r2_client()
-    if client is None:
-        sys.exit("no R2 client: export read-write R2_* first")
-    bucket = os.environ["R2_BUCKET"]
-    sha = _sha256(tarball)
-    size = Path(tarball).stat().st_size
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+def _log(*a):
+    print(f"[build_env {time.strftime('%H:%M:%S')}]", *a, flush=True, file=sys.stderr)
 
+
+def _run(cmd, **kw):
+    # Package installers must not inherit storage credentials from the builder.
+    child_env = env_source.subprocess_env()
+    for key in (
+        "PATH",
+        "CUDA_HOME",
+        "CUDA_PATH",
+        "LD_LIBRARY_PATH",
+        "CC",
+        "CXX",
+        "MAX_JOBS",
+    ):
+        if key in os.environ:
+            child_env[key] = os.environ[key]
+    child_env.update(kw.pop("env", {}))
+    subprocess.run(
+        cmd,
+        check=True,
+        stdin=subprocess.DEVNULL,
+        stdout=sys.stderr,
+        env=child_env,
+        **kw,
+    )
+
+
+def _ensure_miniconda(home, installer=None, installer_sha256=None):
+    home = Path(home).expanduser().resolve()
+    conda = home / "bin" / "conda"
+    if conda.is_file():
+        return conda
+    if (
+        installer is None
+        or not isinstance(installer_sha256, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", installer_sha256)
+    ):
+        raise ValueError(
+            "install trusted Miniforge first, or supply a local installer and SHA256"
+        )
+    installer = Path(installer).resolve()
+    if _sha256(installer) != installer_sha256:
+        raise ValueError("Miniforge installer sha256 mismatch")
+    _run(["bash", str(installer), "-b", "-p", str(home)])
+    if not conda.is_file():
+        raise RuntimeError("Miniforge did not install conda")
+    return conda
+
+
+def _build_prefix(conda, prefix, requirements, python_ver, arch):
+    """Use argv throughout: paths containing shell syntax remain literal paths."""
+    _run(
+        [
+            str(conda),
+            "create",
+            "-y",
+            "-p",
+            str(prefix),
+            "-c",
+            "conda-forge",
+            "--override-channels",
+            f"python={python_ver}",
+        ]
+    )
+    python = str(Path(prefix) / "bin/python")
+    pip = [python, "-I", "-m", "pip", "install", "--no-cache-dir"]
+    _run([*pip, "--upgrade", "pip", "setuptools", "wheel", "packaging", "ninja"])
+    _run(
+        [
+            *pip,
+            "torch==2.8.0",
+            "torchvision==0.23.0",
+            "--index-url",
+            "https://download.pytorch.org/whl/cu128",
+        ]
+    )
+    _run([*pip, "-r", str(requirements)])
+    _run(
+        [
+            *pip,
+            "--no-build-isolation",
+            "flash-attn==2.8.3.post2",
+            "causal-conv1d==1.7.0",
+        ],
+        env={
+            "TORCH_CUDA_ARCH_LIST": arch,
+            "MAX_JOBS": os.environ.get("MAX_JOBS", "4"),
+            "FLASH_ATTENTION_FORCE_BUILD": "TRUE",
+            "CAUSAL_CONV1D_FORCE_BUILD": "TRUE",
+        },
+    )
+    _run(
+        [
+            python,
+            "-I",
+            "-c",
+            "\n".join(
+                [
+                    "import sys, torch, flash_attn, causal_conv1d",
+                    "assert sys.version_info[:2] == (3, 12), 'unexpected Python'",
+                    "assert torch.__version__ == '2.8.0+cu128', 'unexpected torch'",
+                    "assert torch.version.cuda == '12.8', 'unexpected CUDA runtime'",
+                    "assert flash_attn.__version__ == '2.8.3.post2', "
+                    "'unexpected flash-attn'",
+                    "assert torch.cuda.is_available(), 'CUDA unavailable'",
+                ]
+            ),
+        ]
+    )
+
+
+def _pack(conda, prefix, out):
+    base_python = str(conda.parent / "python")
+    _run(
+        [
+            base_python,
+            "-I",
+            "-m",
+            "pip",
+            "install",
+            "--no-cache-dir",
+            "conda-pack==0.9.2",
+        ]
+    )
+    _run([base_python, "-I", "-m", "conda_pack.cli", "-p", str(prefix), "-o", str(out)])
+
+
+def _upload(env_spec, name, tarball, compat, repo_rev):
+    """Create content-addressed objects conditionally; never delete after a timeout.
+
+    A failed/uncertain second write can leave an unreferenced tarball. Preserve it
+    for author inspection rather than risking deletion of a committed artifact.
+    """
+    registry.validate_env(env_spec)
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
+        raise ValueError("invalid model name")
+    if compat != env_spec["compat"]:
+        raise ValueError("build compatibility differs from registry")
+    tarball = Path(tarball)
+    sha = _sha256(tarball)
+    size = tarball.stat().st_size
+    if not 0 < size <= MAX_PUT_SIZE:
+        raise ValueError(
+            "create-only upload supports packs below 5 GiB; no multipart fallback"
+        )
+    key = f"envs/{name}/{sha}.tar.gz"
+    # Refuse only the object about to be written. A new sha is a successor,
+    # not an overwrite of the model's current pin.
+    _refuse_frozen_key(key)
+    manifest_key = f"envs/{name}/{sha}.json"
     manifest = {
-        "name": name, "r2_key": env_spec["r2_key"], "sha256": sha, "size": size,
-        "created_utc": now, "unpack_to": env_spec["unpack_to"],
-        "activate_rel": env_spec["activate_rel"], "compat": compat,
-        "built_by": "goodvision-harness build_env", "for_model": repo_rev,
+        "name": name,
+        "r2_key": key,
+        "sha256": sha,
+        "size": size,
+        "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "unpack_to": env_spec["unpack_to"],
+        "activate_rel": env_spec["activate_rel"],
+        "compat": compat,
+        "built_by": "goodvision-harness build_env",
+        "for_model": repo_rev,
         "format": "conda-pack",
     }
-    _log(f"uploading {tarball} ({size/1e9:.2f} GB) -> {env_spec['r2_key']}")
-    # Conditional single-object writes preserve immutable keys even with concurrent
-    # builders. Do not fall back to overwrite-capable upload_file on unsupported stores.
-    if size > 5_000_000_000:
-        raise ValueError("pack exceeds conditional single-PUT limit; split/version the build")
-    with Path(tarball).open("rb") as body:
-        client.put_object(Bucket=bucket, Key=env_spec["r2_key"],
-                          Body=body, ContentLength=size, IfNoneMatch="*")
-    client.put_object(Bucket=bucket, Key=env_spec["manifest_key"],
-                      Body=json.dumps(manifest, indent=2).encode(), IfNoneMatch="*")
-    return manifest
+    client = model_source.r2_client()
+    if client is None:
+        raise RuntimeError("R2 credentials not configured")
+    bucket = os.environ["R2_BUCKET"]
+    try:
+        with tarball.open("rb") as body:
+            client.put_object(
+                Bucket=bucket, Key=key, Body=body, ContentLength=size, IfNoneMatch="*"
+            )
+        client.put_object(
+            Bucket=bucket,
+            Key=manifest_key,
+            IfNoneMatch="*",
+            Body=json.dumps(manifest, indent=2).encode(),
+        )
+    except Exception:
+        raise RuntimeError(
+            f"create-only upload failed or is uncertain; inspect {key} "
+            f"and {manifest_key}; "
+            "existing objects were not deleted or overwritten"
+        ) from None
+    return {**manifest, "manifest_key": manifest_key}
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        description="Build + conda-pack + upload a model env to R2.")
-    ap.add_argument("--model", required=True, help="model name in tools/models.yaml")
+        description="Build a new immutable conda-pack environment."
+    )
+    ap.add_argument("--model", required=True)
     ap.add_argument("--conda-home", default=str(Path.home() / "miniconda3"))
-    ap.add_argument("--out", help="tarball path (default: /tmp/<name>-env.tar.gz)")
-    ap.add_argument("--requirements",
-                    default="tools/videojev_probe/requirements.txt",
-                    help="pip requirements installed into the env")
-    ap.add_argument("--skip-upload", action="store_true",
-                    help="build + pack only; keep the tarball at --out and print its "
-                         "path + sha256 + size (upload it later with --upload-only)")
-    ap.add_argument("--skip-pack", action="store_true",
-                    help="build the prefix only; skip conda-pack (eval first, pack later)")
-    ap.add_argument("--pack-only", action="store_true",
-                    help="conda-pack an already-built prefix; do not recreate the env")
-    ap.add_argument("--upload-only", action="store_true",
-                    help="skip build + pack; upload an already-built tarball at --out "
-                         "to R2 (so an interrupted/credential-blocked upload needs no "
-                         "rebuild). Fails if the tarball is missing")
+    ap.add_argument("--miniforge-installer", type=Path)
+    ap.add_argument("--miniforge-sha256")
+    ap.add_argument(
+        "--out", type=Path, required=True, help="new tarball path (must not exist)"
+    )
+    ap.add_argument(
+        "--requirements",
+        type=Path,
+        default=Path(__file__).parent / "videojev_probe/requirements.txt",
+    )
+    ap.add_argument("--skip-upload", action="store_true")
     args = ap.parse_args(argv)
-    if args.skip_upload and args.upload_only:
-        ap.error("--skip-upload and --upload-only are mutually exclusive")
-    if args.skip_pack and args.upload_only:
-        ap.error("--skip-pack and --upload-only are mutually exclusive")
-    if args.pack_only and args.skip_pack:
-        ap.error("--pack-only and --skip-pack are mutually exclusive")
-    if args.pack_only and args.upload_only:
-        ap.error("--pack-only and --upload-only are mutually exclusive")
-
     env_spec = registry.env_of(args.model)
     if env_spec is None:
-        sys.exit(f"model {args.model!r} has no env block in the registry")
-    compat = env_spec.get("compat") or {}
-    gpu_family = compat.get("gpu_family", "ada")
-    arch = _ARCH.get(gpu_family)
-    if not arch:
-        sys.exit(f"unknown gpu_family {gpu_family!r}; known: {sorted(_ARCH)}")
-    python_ver = compat.get("python", "3.12")
-    # env.build.flash_attn gates the flash-attn/causal-conv1d compile (default on,
-    # so videojev and anything omitting the field keep the original behaviour).
-    build = env_spec.get("build") or {}
-    flash_attn = bool(build.get("flash_attn", True))
-    install_default_torch = bool(build.get("install_default_torch", True))
-    # Wheel-only stacks (vLLM) may be conda-packed on a CPU VM; GPU restore
-    # still uses the CUDA wheels. flash-attn compiles keep require_cuda.
-    require_cuda = bool(build.get("require_cuda", True)) or flash_attn
-    extra_imports = tuple(
-        name for name in (build.get("verify_imports") or ())
-        if str(name).isidentifier()
-    )
-    serve_imports = tuple(
-        str(name) for name in (build.get("verify_modules") or ())
-        if str(name).strip()
-    )
-    prefix = env_spec["unpack_to"]
-    out = Path(args.out or f"/tmp/{args.model}-env.tar.gz")
+        ap.error("model has no env block")
+    compat = env_spec["compat"]
+    if any(
+        compat[k] != v
+        for k, v in {"python": "3.12", "torch": "2.8.0", "cuda": "12.8"}.items()
+    ):
+        ap.error("this builder supports only Python 3.12 / torch 2.8.0 / CUDA 12.8")
+    env_source.check_compatibility(env_spec)
     repo, rev = registry.weights_of(args.model)
-    if not args.skip_upload:
-        _refuse_frozen_key(env_spec["r2_key"])
-
-    if args.upload_only:
-        if not out.is_file():
-            sys.exit(f"--upload-only: no tarball at {out}; build it first "
-                     f"(e.g. with --skip-upload)")
-        _log(f"upload-only {args.model}: reusing existing {out}")
-    elif args.pack_only:
-        if not Path(prefix).is_dir():
-            sys.exit(f"--pack-only: missing prefix {prefix}; build it first")
-        conda = _ensure_miniconda(args.conda_home)
-        _log(f"pack-only {args.model} from {prefix}")
-        _assert_prefix_files(Path(prefix))
-        _pack(conda, prefix, out)
-    else:
-        _log(f"building {args.model} (python={python_ver} arch={arch} "
-             f"flash_attn={flash_attn} install_default_torch={install_default_torch} "
-             f"require_cuda={require_cuda})")
-        conda = _ensure_miniconda(args.conda_home)
-        _build_prefix(conda, prefix, args.requirements, python_ver, arch, flash_attn,
-                      install_default_torch, require_cuda, extra_imports)
-        _assert_prefix_files(Path(prefix))
-        if args.skip_pack:
-            print(json.dumps({"model": args.model, "prefix": prefix, "packed": False,
-                              "uploaded": False, "arch": arch}))
-            return
+    prefix = Path(env_spec["unpack_to"])
+    out = args.out.absolute()
+    if out.exists() or out.is_symlink():
+        ap.error("output already exists; choose a new path")
+    if not args.requirements.is_file():
+        ap.error("requirements file does not exist")
+    if out.is_relative_to(prefix):
+        ap.error("output must be outside the environment prefix")
+    arch = ";".join(registry.GPU_ARCHES[compat["gpu_family"]])
+    with env_source.prefix_lock(prefix), env_source.interruptible():
+        if prefix.exists():
+            ap.error("preserving existing environment; inspect and move it aside first")
+        conda = _ensure_miniconda(
+            args.conda_home, args.miniforge_installer, args.miniforge_sha256
+        )
+        _build_prefix(
+            conda, prefix, args.requirements.resolve(), compat["python"], arch
+        )
         _pack(conda, prefix, out)
     sha = _sha256(out)
-    size = out.stat().st_size
-    _log(f"packed {out} sha256={sha} size={size/1e9:.2f}GB")
-    isolate_modules = ("torch", "typing_extensions") + extra_imports + serve_imports
-    if not args.upload_only and out.is_file():
-        _log(f"isolated restore check -> /tmp/{args.model}-isolated-restore")
-        restored = Path(f"/tmp/{args.model}-isolated-restore")
-        _restore_tarball_isolated(out, restored, isolate_modules)
-        _assert_prefix_files(restored)
-        prefix_py = Path(prefix) / "bin" / "python"
-        if prefix_py.is_file():
-            _isolated_smoke(prefix_py, Path(prefix), isolate_modules)
-            _assert_prefix_files(Path(prefix))
-
-    if args.skip_upload:
-        print(json.dumps({"model": args.model, "tarball": str(out), "sha256": sha,
-                          "size": size, "arch": arch, "uploaded": False}))
-        return
-    manifest = _upload(env_spec, args.model, out, compat, f"{repo}@{rev}")
-    print(json.dumps({"model": args.model, "r2_key": manifest["r2_key"],
-                      "sha256": manifest["sha256"], "size": manifest["size"],
-                      "arch": arch, "uploaded": True}))
+    result = {
+        "model": args.model,
+        "tarball": str(out),
+        "sha256": sha,
+        "size": out.stat().st_size,
+        "arch": arch,
+        "uploaded": False,
+    }
+    if not args.skip_upload:
+        result.update(_upload(env_spec, args.model, out, compat, f"{repo}@{rev}"))
+        result["uploaded"] = True
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":
