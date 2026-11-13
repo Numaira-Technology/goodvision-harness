@@ -21,6 +21,9 @@ _SCHEMA = json.loads(
     )
 )
 
+# Evidence encoding is asynchronous and can take longer on Windows CI runners.
+_ARCHIVE_DRAIN_TIMEOUT = 15
+
 
 def episode(
     event_id: str,
@@ -149,7 +152,7 @@ def rows(archive: EventArchive) -> list[dict[str, Any]]:
 def finish(archive: EventArchive) -> list[dict[str, Any]]:
     assert archive.end_session("session")
     # This validates complete event records, not shared-runner disk throughput.
-    assert archive.wait_until_idle(10), archive.status()
+    assert archive.wait_until_idle(_ARCHIVE_DRAIN_TIMEOUT), archive.status()
     assert archive.status()["encoding_failures"] == 0
     return rows(archive)
 
@@ -242,7 +245,7 @@ def test_identity_reconciliation_preserves_scene_episode_boundaries_and_videos(
         assert len(before) == 2
         previous = {event["event_id"]: event["evidence"] for event in before}
         assert archive.reconcile_subjects("session", {"person-2": "person-1"})
-        assert archive.wait_until_idle(3)
+        assert archive.wait_until_idle(_ARCHIVE_DRAIN_TIMEOUT)
         after = rows(archive)
         assert len(after) == 2
         assert {event["subject_id"] for event in after} == {"person-1"}
@@ -265,12 +268,12 @@ def test_repeated_scene_snapshot_does_not_duplicate_events_or_encode_again(
         frames(archive)
         snapshot = scene(episode("stable-event", "smoking", 3, 4))
         assert archive.submit_scene(snapshot)
-        assert archive.wait_until_idle(3)
+        assert archive.wait_until_idle(_ARCHIVE_DRAIN_TIMEOUT)
         before = rows(archive)
         assert len(before) == 1
         for _ in range(5):
             assert archive.submit_scene(copy.deepcopy(snapshot))
-        assert archive.wait_until_idle(3)
+        assert archive.wait_until_idle(_ARCHIVE_DRAIN_TIMEOUT)
         after = rows(archive)
         assert after == before
         assert len(encoder.manifests) == 1
@@ -291,7 +294,7 @@ def test_scene_retraction_cannot_remain_a_playable_positive(
         frames(archive)
         original = episode("corrected-event", "fall", 3, 4)
         assert archive.submit_scene(scene(original))
-        assert archive.wait_until_idle(3)
+        assert archive.wait_until_idle(_ARCHIVE_DRAIN_TIMEOUT)
         before = rows(archive)[0]
         assert before["evidence"]["status"] == "ready"
         corrected = copy.deepcopy(original)
@@ -313,7 +316,7 @@ def test_scene_retraction_cannot_remain_a_playable_positive(
             }
         ]
         assert archive.submit_scene(snapshot)
-        assert archive.wait_until_idle(3)
+        assert archive.wait_until_idle(_ARCHIVE_DRAIN_TIMEOUT)
         after = rows(archive)
         assert len(after) == 1 and after[0]["event_id"] == before["event_id"]
         assert after[0]["state"] == "ended"
@@ -351,7 +354,7 @@ def test_ended_scene_episodes_and_aliases_survive_restart_without_reencoding(
         assert reopened.flush()
         assert rows(reopened) == before
         assert reopened.submit_scene(snapshot)
-        assert reopened.wait_until_idle(3)
+        assert reopened.wait_until_idle(_ARCHIVE_DRAIN_TIMEOUT)
         assert rows(reopened) == before
         assert len(encoder.manifests) == 2
         assert all(event["subject_id"] == "person-1" for event in rows(reopened))
@@ -393,7 +396,7 @@ def test_encoding_completion_cannot_revive_retracted_scene_evidence(
         assert withdrawn["evidence"]["status"] == "expired"
         assert not archive.wait_until_idle(0.01)
         release.set()
-        assert archive.wait_until_idle(3)
+        assert archive.wait_until_idle(_ARCHIVE_DRAIN_TIMEOUT)
         finished = rows(archive)[0]
         assert finished["end_reason"] == "retracted"
         assert finished["evidence"]["status"] == "expired"
@@ -413,7 +416,7 @@ def test_scene_revision_retains_explicit_zero_confidence(tmp_path: Path) -> None
         frames(archive)
         original = episode("revised-confidence", "smoking", 3, 4)
         assert archive.submit_scene(scene(original))
-        assert archive.wait_until_idle(3)
+        assert archive.wait_until_idle(_ARCHIVE_DRAIN_TIMEOUT)
         before = rows(archive)[0]
         assert before["confidence"] == 0.95
         corrected = copy.deepcopy(original)
@@ -422,7 +425,7 @@ def test_scene_revision_retains_explicit_zero_confidence(tmp_path: Path) -> None
             {**item, "confidence": 0.0, "revision": 2} for item in corrected["history"]
         ]
         assert archive.submit_scene(scene(corrected))
-        assert archive.wait_until_idle(3)
+        assert archive.wait_until_idle(_ARCHIVE_DRAIN_TIMEOUT)
         after = rows(archive)[0]
         assert after["event_id"] == before["event_id"]
         assert after["confidence"] == 0.0
@@ -443,7 +446,7 @@ def test_latest_historical_transition_overrides_older_retraction(
         frames(archive)
         original = episode("historical-event", "smoking", 3, 4)
         assert archive.submit_scene(scene(original))
-        assert archive.wait_until_idle(3)
+        assert archive.wait_until_idle(_ARCHIVE_DRAIN_TIMEOUT)
         before = rows(archive)[0]
         snapshot = scene()
         snapshot["scene"]["transitions"] = [
@@ -466,7 +469,7 @@ def test_latest_historical_transition_overrides_older_retraction(
             },
         ]
         assert archive.submit_scene(snapshot)
-        assert archive.wait_until_idle(3)
+        assert archive.wait_until_idle(_ARCHIVE_DRAIN_TIMEOUT)
         after = rows(archive)
         assert len(after) == 1
         event = after[0]
