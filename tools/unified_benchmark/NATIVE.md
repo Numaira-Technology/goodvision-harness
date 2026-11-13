@@ -1,17 +1,18 @@
 # Four self-hosted models: reproducible execution
 
-This is the native execution path for **unified-frame-120-v2**, alongside the API
+This is the native execution path for **unified-frame-202-v1**, alongside the API
 runner in [README.md](README.md). Run commands from the repository root. The
 installer and runner are opt-in; importing them or running offline preflight
 loads no models. The portable flow is covered by synthetic offline tests; a new
 GPU deployment still requires its own runtime checks and smoke. No new GPU
-benchmark result is implied by these tests.
+benchmark result is implied by these tests. Explicit `unified-frame-120-v2`
+remains available with its original inputs and source fingerprints.
 
 ## Fixed method
 
 | Profile | Input / decision | Precision | Validation |
 |---|---|---|---|
-| `clip` | One common JPEG; positive-minus-contrast cosine margin | FP32, TF32 off | Select four base-event thresholds on complete validation24 |
+| `clip` | One common JPEG; positive-minus-contrast cosine margin | FP32, TF32 off | Four base events on validation24 by default, six events with the optional bag supplement |
 | `siglip2` | Same; original lowercase text preprocessing | FP32, TF32 off | Same selection, independently for this model |
 | `videojev` | Two adjacent distinct 1 FPS frames; native yes/no/unknown argmax | BF16 backbone, original FP32 scoring | Evaluate native decisions; no scalar threshold |
 | `decision3` | Two adjacent distinct 1 FPS frames; native yes/no/unknown argmax | BF16 backbone, FP32 readout | Same; no scalar threshold |
@@ -26,14 +27,18 @@ first valid target answers. Retry invalid/missing responses after the original
 
 A question needs every planned target response. For complete evidence: any yes
 means yes, otherwise any no means no, otherwise unknown. Headline accuracy is
-correct / **120**, with incomplete questions still in the denominator. Report
+correct / **202**, with incomplete questions still in the denominator. Report
 missing units, incomplete questions and unknowns separately. A native window is
 two frames, so missing windows and missing single-frame calls are different units.
 This does not establish twelve-camera real-time throughput.
+The added82 test references remain inherited and pending individual-view review;
+keep [the dataset limitations](DATASET202.md) and original120/robot82 breakdowns.
+Validation24 remains the default. The optional bag supplement below extends it
+to validation44; added test labels are never calibration data.
 
 ## 1. Inputs, media and offline preflight
 
-Obtain the five private JSON inputs and original videos as described in
+Obtain the eight private JSON inputs and original videos as described in
 [the input guide](README.md#get-the-frozen-inputs). Use Python 3.12, Pillow,
 certifi, FFmpeg and ffprobe for preflight. Keep inputs, generated JPEGs and raw
 receipts private. Model requests do not contain reference answers; the frozen
@@ -53,6 +58,37 @@ decodes frames, builds request fingerprints and snapshots execution code. It
 does not download weights, contact an API or import CUDA. Rebuild a new bundle
 after changing runner code; never edit an old bundle's hashes. Copy the complete
 bundle to the GPU machine without changing its contents, using the same checkout.
+For a deliberately selected legacy120 run, add `--protocol unified-frame-120-v2`
+and use its five original JSON inputs. Preserve historical bundles unchanged.
+
+### Optional CLIP/SigLIP2 bag validation
+
+For current202, select `--models clip siglip2` (or either alias) and add the
+following preflight arguments to use a private, versioned validation supplement.
+
+```sh
+  --bag-validation /private/goodvision-inputs/bag-validation.json \
+  --bag-validation-sha256 FROZEN_MANIFEST_SHA256
+```
+
+The manifest has `schema: "bag-validation10-v1"` and a `videos` array of ten
+original clips under the existing media `validation/` directory. Each entry
+contains `filename`, media `sha256`, `source_video_group` and two `questions`.
+Each question contains its `event` (`bag_knife` or `bag_alcohol_bottle`),
+`proposed_answer` (`yes` or `no`) and `human_review` describing the actual
+reference provenance, including any absence of individual human review. Record
+the manifest digest before preflight. Preflight preserves its bytes and checks
+both labels occur per event, unique video hashes and split separation by source
+group. Recording cuts can share a group within validation.
+
+Original validation questions 1–24 retain their identifiers. The supplement
+adds 25–44 in manifest video order, knife then bottle. The two questions per
+clip share the same 1 FPS frames. Use the existing `native_run --phase both`
+command with an authorization note covering 34 validation videos / 44 questions
+and test202. Each model selects all six midpoints on complete validation44 and
+freezes them before its first test request. The top level of each completed
+phase report gives calibrated results. Its `zero_margin_baseline` gives the
+same scores evaluated at zero, including per-event and test-cohort counts.
 
 ## 2. Prepare the GPU deployment (no evaluation inference)
 
@@ -115,13 +151,13 @@ First check the execution inputs offline. The command below intentionally omits
 /workspace/goodvision-native/clip/env/bin/python -m tools.unified_benchmark.native_run \
   --model clip --bundle /private/native-bundle \
   --deployment /workspace/goodvision-native --deployment-sha256 DEPLOYMENT_SHA256 \
-  --phase both --output /workspace/results/clip-current120
+  --phase both --output /workspace/results/clip-current202
 ```
 
 Once the **validation and test** run is authorized, append:
 
 ```sh
-  --authorization-note 'Approved native validation24 and test120 scope' --execute
+  --authorization-note 'Approved native validation24 and test202 scope' --execute
 ```
 
 Use the same command for each model, with a distinct output directory and these
@@ -130,10 +166,10 @@ overlapping runner processes. Stop unrelated services using the same GPU first.
 
 | Alias | Python executable | Suggested output |
 |---|---|---|
-| `clip` | `/workspace/goodvision-native/clip/env/bin/python` | `/workspace/results/clip-current120` |
-| `siglip2` | `/workspace/goodvision-native/clip/env/bin/python` | `/workspace/results/siglip2-current120` |
-| `videojev` | `/workspace/goodvision-native/videojev/env/bin/python` | `/workspace/results/videojev-current120` |
-| `decision3` | `/workspace/goodvision-native/decision3/env/bin/python` | `/workspace/results/decision3-current120` |
+| `clip` | `/workspace/goodvision-native/clip/env/bin/python` | `/workspace/results/clip-current202` |
+| `siglip2` | `/workspace/goodvision-native/clip/env/bin/python` | `/workspace/results/siglip2-current202` |
+| `videojev` | `/workspace/goodvision-native/videojev/env/bin/python` | `/workspace/results/videojev-current202` |
+| `decision3` | `/workspace/goodvision-native/decision3/env/bin/python` | `/workspace/results/decision3-current202` |
 
 The native runner starts its own loopback service; no externally exposed inference
 port is needed. `--port` defaults to 8093 and must be free. Startup checks GPU,
@@ -142,11 +178,11 @@ runs the original service warmup plus a synthetic smoke, then starts evaluation.
 A failed startup consumes **no** evaluation attempt budget. Runtime and smoke
 records live under `invocations/<id>/`. Cleanup stops only its own service process.
 
-`--phase both` runs validation before test. For CLIP/SigLIP2 it requires all 24
-validation questions, chooses each base threshold using the original widest
-finite optimal interval midpoint and strict `>` comparator, and writes
-`thresholds.json` **before** test starts. No bag validation exists: both bag
-thresholds remain 0, labelled uncalibrated. Missing validation evidence blocks
+`--phase both` runs validation before test. With default validation24, each
+margin model requires all 24 answers, chooses each base threshold using the
+original widest finite optimal interval midpoint and strict `>` comparator,
+and writes `thresholds.json` **before** test starts. Both bag thresholds stay
+at zero for validation24. Missing validation evidence blocks
 selection and test; there is no silent zero-threshold fallback. VideoJev/Decision3
 have no threshold selection; their validation coverage remains separately reported.
 
@@ -204,7 +240,7 @@ peak allocation records and `result-files-sha256.json`. Verify that inventory af
 copying results locally, before releasing a GPU with unbacked-up files. The inventory
 excludes itself; earlier inventory snapshots remain in continuation records.
 
-The test report includes combined120 and per-event results, missing units,
+The test report includes combined202, original120/robot82 and per-event results, missing units,
 incomplete questions and successful-attempt P50/P95. Latency excludes worker queue
 and retry backoff; CLIP's preprocessing/GPU-lock wait/readback are retained separately
 inside each receipt. Restarts can change cache warmth and are recorded. These are

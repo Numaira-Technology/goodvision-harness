@@ -7,9 +7,9 @@ annotated video, and event video evidence. It has no runtime dependency on the
 original `goodvision` repository.
 
 `python tools/start_local_gpu.py` 自动检测本机 NVIDIA GPU，使用与 Contour 相同的 SAM 引擎运行人物追踪，大模型继续使用云端 API。
-本地 NVIDIA 部署**默认 1 路，使用 `--streams N` 按实际需要启动正整数路数**，
-12 路是容量参考值，不是软件上限。3、6、12、16 路示例见 [本地 GPU 部署说明](docs/guides/local-gpu.md)。
-同一控制台可以分别连接和并排显示已部署的 N 路视频；连接只预览，分析通过“开始全部分析”
+Docker 主程序部署后可在工作流页面按需添加视频源，无需预设通道数量或重新部署。
+`--streams N` 仍可用于预置初始实例；未指定时从 1 路开始。12 路是容量参考值，不是软件上限。3、6、12、16 路示例见 [本地 GPU 部署说明](docs/guides/local-gpu.md)。
+同一控制台可以分别连接和并排显示按需添加的多路视频；连接只预览，分析通过“开始全部分析”
 和“停止全部分析”统一控制所有已连接的视频。停止分析后预览继续，各路都可展开详细控制，
 独立保存检测项目、敏感度并查看结果。分析运行和收尾期间锁定视频连接、各路设置与共享模型配置。
 人物追踪使用本机 GPU 或

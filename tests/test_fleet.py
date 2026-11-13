@@ -905,3 +905,30 @@ def test_peer_settings_cannot_change_global_service_locations(monkeypatch, field
         )
         assert response.status_code == 400
         assert not app.state.peer_requests
+
+
+@pytest.mark.parametrize("mode", ["inherit", "custom"])
+def test_peer_summary_connection_syncs_for_analysis_without_exposing_key(
+    monkeypatch, mode
+):
+    app = make_app(monkeypatch, connected=(2,))
+    connection = {
+        "mode": mode,
+        "endpoint": "https://summary.example/chat/completions",
+        "model": "vision-model",
+        "request_parameters": {},
+        "api_key": "summary-private-key" if mode == "custom" else "",
+    }
+    app.state.runtime._summary_service_settings = lambda: connection
+    with TestClient(app) as client:
+        response = client.post("/v1/fleet/analysis/start", json={})
+        assert response.status_code == 200
+        requests = [
+            request
+            for request in app.state.peer_requests
+            if request.url.path == "/v1/deployment/summary-service"
+        ]
+        assert len(requests) == 1
+        assert json.loads(requests[0].content) == connection
+        assert "authorization" not in requests[0].headers
+        assert "summary-private-key" not in response.text

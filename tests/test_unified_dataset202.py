@@ -230,3 +230,206 @@ def test_frozen_extension_hash_rejected_before_plan(tmp_path, inputs):
     (tmp_path / "manifest_202.json").write_text("{}")
     with pytest.raises(ValueError, match="frozen input changed"):
         d.load_extension(tmp_path, tmp_path, inputs[0])
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "hash",
+        "traversal",
+        "duplicate_name",
+        "duplicate_hash",
+        "test_group",
+        "missing_question",
+        "duplicate_question",
+        "blank_review",
+        "nonbinary",
+        "only_yes",
+    ],
+)
+def test_bag_supplement_rejects_invalid_manifest_before_save(tmp_path, inputs, change):
+    from helpers.bag_validation import bag_manifest
+
+    parts = d.extend_test(*inputs)
+    before = deepcopy(parts)
+    document = bag_manifest()
+    videos = document["videos"]
+    if change == "traversal":
+        videos[0]["filename"] = "../bad.mp4"
+    elif change == "duplicate_name":
+        videos[1]["filename"] = videos[0]["filename"]
+    elif change == "duplicate_hash":
+        videos[1]["sha256"] = videos[0]["sha256"]
+    elif change == "test_group":
+        videos[0]["source_video_group"] = parts["test"]["rows"][0]["source_video_group"]
+    elif change == "missing_question":
+        videos[0]["questions"].pop()
+    elif change == "duplicate_question":
+        videos[0]["questions"].append(deepcopy(videos[0]["questions"][0]))
+    elif change == "blank_review":
+        videos[0]["questions"][0]["human_review"] = "  "
+    elif change == "nonbinary":
+        videos[0]["questions"][0]["proposed_answer"] = "unknown"
+    elif change == "only_yes":
+        for video in videos:
+            for question in video["questions"]:
+                question["proposed_answer"] = "yes"
+    (tmp_path / "inputs").mkdir()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    expected = "0" * 64 if change == "hash" else d.file_hash(manifest)
+
+    with pytest.raises(ValueError):
+        d.add_bag_validation(tmp_path, parts, manifest, expected)
+
+    assert not (tmp_path / "inputs/bag-validation.json").exists()
+    assert parts == before
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--bag-validation", "missing.json"],
+        ["--bag-validation-sha256", "0" * 64],
+        [
+            "--bag-validation",
+            "missing.json",
+            "--bag-validation-sha256",
+            "0" * 64,
+            "--protocol",
+            "unified-frame-120-v2",
+        ],
+        [
+            "--bag-validation",
+            "missing.json",
+            "--bag-validation-sha256",
+            "0" * 64,
+            "--models",
+            "videojev",
+        ],
+    ],
+)
+def test_bag_supplement_preflight_rejects_unsupported_scope(tmp_path, extra):
+    output = tmp_path / "bundle"
+    args = [
+        "--inputs",
+        str(tmp_path),
+        "--media",
+        str(tmp_path),
+        "--output",
+        str(output),
+        "--models",
+        "clip",
+        *extra,
+    ]
+    with pytest.raises(SystemExit):
+        preflight.main(args)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("alias", ["clip", "siglip2"])
+def test_bag_supplement_preflight_preserves_cohorts_pairing_and_manifest(
+    tmp_path,
+    inputs,
+    monkeypatch,
+    alias,
+):
+    from helpers.bag_validation import bag_manifest
+
+    parts = d.extend_test(*inputs)
+    original = deepcopy(parts)
+    manifest = tmp_path / "supplement.json"
+    manifest.write_text(json.dumps(bag_manifest(), indent=2), encoding="utf-8")
+
+    def load(out, *_args):
+        (out / "inputs").mkdir()
+        return parts
+
+    def inspect(split, row, out, media, protocol):
+        assert protocol == CURRENT_VERSION
+        frames = []
+        for index in range(2):
+            relative = f"frames/{split}/{row['filename']}-{index}.jpg"
+            path = out / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"synthetic offline JPEG")
+            frames.append(
+                {
+                    "path": relative,
+                    "sha256": d.file_hash(path),
+                    "time": float(index),
+                    "size": [720, 480],
+                }
+            )
+        return {
+            "filename": row["filename"],
+            "frames": frames,
+            "full_decode_passed": True,
+        }
+
+    monkeypatch.setattr(preflight, "load_inputs", load)
+    monkeypatch.setattr(preflight, "inspect_video", inspect)
+    original_check = preflight.subprocess.check_output
+    monkeypatch.setattr(
+        preflight.subprocess,
+        "check_output",
+        lambda args, **kwargs: (
+            "ffmpeg synthetic offline test\n"
+            if args == ["ffmpeg", "-version"]
+            else original_check(args, **kwargs)
+        ),
+    )
+    out = tmp_path / "bundle"
+    assert (
+        preflight.main(
+            [
+                "--inputs",
+                str(tmp_path),
+                "--media",
+                str(tmp_path),
+                "--output",
+                str(out),
+                "--models",
+                alias,
+                "--bag-validation",
+                str(manifest),
+                "--bag-validation-sha256",
+                d.file_hash(manifest),
+            ]
+        )
+        == 0
+    )
+
+    workflow.verify_bundle(out)
+    audit = json.loads((out / "preflight.json").read_text())
+    assert audit["unique_videos"] == 226
+    assert audit["inference_calls"] == audit["network_calls"] == 0
+    assert audit["models"][alias]["validation"]["questions"] == 44
+    assert audit["models"][alias]["test"]["questions"] == 202
+    assert parts["validation"]["rows"][:24] == original["validation"]["rows"]
+    assert parts["test"]["rows"] == original["test"]["rows"]
+    assert (out / "inputs/bag-validation.json").read_bytes() == manifest.read_bytes()
+
+    plan = json.loads((out / f"plans/{alias}-validation.json").read_text())
+    assert [q["number"] for q in plan["questions"]] == list(range(1, 45))
+    assert len(plan["units"]) == 68  # Two frames per video, not per question.
+    for index in range(24, 44, 2):
+        knife, bottle = plan["questions"][index : index + 2]
+        assert (knife["event"], bottle["event"]) == d.EVENTS[4:]
+        assert knife["unit_ids"] == bottle["unit_ids"]
+        video = bag_manifest()["videos"][(index - 24) // 2]
+        for question, reference in zip(
+            (knife, bottle), video["questions"], strict=True
+        ):
+            assert question["reference"] == reference["proposed_answer"]
+            assert question["source_video_group"] == video["source_video_group"]
+        for row, reference in zip(
+            parts["validation"]["rows"][index : index + 2],
+            video["questions"],
+            strict=True,
+        ):
+            assert row["human_review"] == reference["human_review"]
+
+    (out / "inputs/bag-validation.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="bundle file differs"):
+        workflow.verify_bundle(out)

@@ -16,7 +16,7 @@ from tools.event_benchmark import evidence, run_eval
 from tools.clip_benchmark.protocol import PROMPTS, REVISIONS
 from .adapters import CURRENT_IMAGE_PROMPTS, question_core, request_body
 from .contract import CURRENT_VERSION, EVENTS, VERSION, canonical, digest, file_hash, rules_for, sample_times, source_files, write_new
-from .dataset202 import load_extension
+from .dataset202 import add_bag_validation, load_extension
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILES = Path(__file__).parent / "profiles"
@@ -206,26 +206,39 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--inputs", type=Path, required=True, help="Private frozen inputs: eight JSON files for 202, five for legacy120")
     parser.add_argument("--protocol", choices=(CURRENT_VERSION, VERSION), default=CURRENT_VERSION)
+    parser.add_argument("--bag-validation", type=Path, help="Optional private bag-validation10-v1 manifest for current202 CLIP/SigLIP2")
+    parser.add_argument("--bag-validation-sha256", help="Pinned raw SHA256 of the supplementary manifest")
     parser.add_argument("--media", type=Path, required=True, help="contains validation/ and test/ videos")
     parser.add_argument("--profiles", type=Path, default=PROFILES)
     parser.add_argument("--models", nargs="+", required=True, help="profile aliases to prepare")
     args = parser.parse_args(argv)
+    if bool(args.bag_validation) != bool(args.bag_validation_sha256):
+        parser.error("--bag-validation and --bag-validation-sha256 must be supplied together")
+    if args.bag_validation and (args.protocol != CURRENT_VERSION or set(args.models) - {"clip", "siglip2"}):
+        parser.error("--bag-validation requires current202 and only clip/siglip2")
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     report = {"protocol": args.protocol, "started_at": datetime.now(timezone.utc).isoformat(),
               "inference_calls": 0, "model_downloads": 0, "network_calls": 0, "formal_run_authorized": False}
     try:
         parts = load_inputs(out, args.inputs, args.protocol)
+        configs = model_configs(args.models, args.profiles)
+        if args.bag_validation:
+            if configs != model_configs(args.models):
+                raise ValueError("bag validation requires the recorded CLIP/SigLIP2 profiles")
+            add_bag_validation(out, parts, args.bag_validation, args.bag_validation_sha256)
         report["dataset_context"] = parts["test"].get("dataset_context")
         write_new(out / "split-audit.json", {split: {"context": part["split_context"],
             "members": [{k: row[k] for k in ("number", "filename", "sha256", "source_video_group", "human_review")}
                         for row in part["rows"]]} for split, part in parts.items()})
-        configs = model_configs(args.models, args.profiles)
         write_new(out / "rules.json", rules_for(args.protocol))
         tasks, inspected = [], {"validation": {}, "test": {}}
         for split, part in parts.items():
             unique = {r["filename"]: r for r in part["rows"]}
-            if len(unique) != (24 if split == "validation" else 192 if args.protocol == CURRENT_VERSION else 110):
+            expected_videos = 192 if args.protocol == CURRENT_VERSION else 110
+            if split == "validation":
+                expected_videos = 34 if args.bag_validation else 24
+            if len(unique) != expected_videos:
                 raise ValueError("unique video count differs")
             tasks.extend((split, r) for r in unique.values())
         errors = []
@@ -270,7 +283,8 @@ def main(argv=None):
                      "current API access/credits/cost/provider verification before paid execution",
                      "complete validation and frozen thresholds before calibrated test"],
             limits=["No proof of training/development/actor/scene isolation; test has prior uses.",
-                    "No bag validation: zero margin / 0.5 Luna bag thresholds remain uncalibrated.",
+                    ("Bag thresholds use ten supplementary videos; see manifest for reference provenance."
+                     if args.bag_validation else "No bag validation: zero margin / 0.5 Luna bag thresholds remain uncalibrated."),
                     "Exact t=0,1,... and shared 720px JPEGs differ from old API centered sampling and native pixels.",
                     "Single-frame and native two-frame interfaces, prompts and native precisions remain different.",
                     "Three total attempts cannot guarantee full completion; missing evidence is reported separately.",

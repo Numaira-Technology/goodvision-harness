@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
 from tools import registry
@@ -316,7 +316,7 @@ def main() -> int:
         print(f"CUDA probe rc={cuda['rc']}", flush=True)
         print(cuda["stdout"] or cuda["stderr"], flush=True)
 
-        site_packages = Path(python).parent.parent / "lib/python3.12/site-packages"
+        site_packages = PurePosixPath(python).parent.parent / "lib/python3.12/site-packages"
         libs = _ssh_run(
             ssh,
             (

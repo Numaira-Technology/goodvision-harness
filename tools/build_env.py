@@ -462,8 +462,10 @@ def _check_pack(tarball):
                 member = members[member.linkname]
             if member is None or not member.isfile():
                 raise ValueError(f"missing packed archive file: {critical}")
-            if critical == "bin/python" and not member.mode & 0o111:
-                raise ValueError("packed Python is not executable")
+            # Restore's data filter drops every execute bit unless the regular
+            # target is owner-executable; group/other execute alone is lost.
+            if critical == "bin/python" and not member.mode & 0o100:
+                raise ValueError("packed Python is not executable after safe restore")
 
 
 def _validate_record(record, env, name, tarball, repo_rev, recipe_sha):

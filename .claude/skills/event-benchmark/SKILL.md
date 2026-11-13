@@ -13,7 +13,7 @@ For the legacy runner, use `tools/event_benchmark/SPEC.md` as the authority: **v
 with strict answers, complete frame evidence and reviewed input hashes. Historical
 v1 outputs are not v2 evidence. Inspect the current spec and runner before a run.
 For the controlled provider-pinned, lossless accuracy and latency variant, read
-`tools/event_benchmark/CONTROLLED_RUN.md`. The implemented current120 pipeline and
+`tools/event_benchmark/CONTROLLED_RUN.md`. The implemented current202 pipeline and
 legacy unpinned baseline remain separately identified protocols.
 These instructions do not authorize paid inference, downloads, uploads or publishing;
 use the user's authorized scope and budget.
@@ -51,10 +51,43 @@ two different prompt protocols, and the added 82 views come from only three
 original recordings (all 36 added fall views share one). Human visibility review,
 reviewed source isolation and compatible frozen prompts remain separate gates.
 
-The 202-question download list does not extend the frozen runner below. Its
-validation24/test120 input hashes, plans and denominators remain unchanged; the
-202-question set needs its own reviewed protocol and execution support before
-scoring. Do not edit historical hashes or relabel old results to fit it.
+1. **Preflight:** run `tools.unified_benchmark.preflight` for the selected profiles.
+   Verify all eight frozen inputs and video hashes, decode frames and save the new
+   request/code snapshot. Keep pending hardware/provider/authorization checks
+   separate from input validity. This step performs no model calls.
+2. **Environment:** follow the execution route below. Verify pinned versions,
+   credentials/access and hardware; do the authorized original warmup/smoke before
+   evaluation. Offline checks do not prove a new GPU deployment can run.
+3. **Validation:** use validation24 by default. For a requested CLIP/SigLIP2
+   [bag validation supplement](../../../tools/unified_benchmark/NATIVE.md#optional-clipsiglip2-bag-validation),
+   use the frozen 44-question plan on 34 videos. Preserve
+   receipts, complete scores, missing units and run identity.
+4. **Thresholds, when applicable:** use `bench-threshold-tune` and the route's own
+   selector for Luna/CLIP/SigLIP2; require complete validation, then freeze the
+   artifact before test. Boolean/argmax models do not gain a scalar threshold.
+5. **Test:** run the frozen configuration on all 202 questions. Preserve successful
+   answers and the cumulative three-attempt budget across interruptions. For the
+   four-model native CLI, use explicit `--resume`; other routes follow their own
+   documented continuation support, never a fresh ledger to reset the budget.
+6. **Local report:** verify counts, coverage, unknowns, source identities, matching
+   speed and actual costs using [report fields](references/report-format.md).
+   Retain raw receipts, frozen inputs/configs and historical results.
+
+The [202 dataset guide](../../../tools/unified_benchmark/DATASET202.md) defines
+questions1–120 unchanged plus82 single views in test, with 24 base validation questions.
+Keep inherited/unreviewed labels explicit; preflight is not human review. Report
+original120 and robot82 separately alongside correct/202, and never count the old41
+stereo sources again. Do not tune on the new test questions.
+
+The unified runner defaults to the separate `unified-frame-202-v1` protocol.
+Follow [its input and reporting guide](../../../tools/unified_benchmark/DATASET202.md):
+preflight uses all eight frozen inputs, retains pending reference-review status,
+and reports original120/robot82 separately. Any combined202 result is provisional
+reference agreement, not a reviewed benchmark. Tune only on the separately frozen
+validation24 or requested CLIP/SigLIP2 validation44 supplement.
+The historical120 hashes, plans and denominators below remain unchanged; select
+them explicitly with `--protocol unified-frame-120-v2`. Do not edit historical
+hashes or relabel old results to fit the new protocol.
 
 ## Historical 120-question execution contract
 

@@ -64,7 +64,7 @@ def frozen(tmp_path):
         write_new(path, {"passed": True, "model": cfg["model"], "revision": cfg["revision"],
             "snapshot": str(snapshot), "files": [{"name": weight.name, "bytes": weight.stat().st_size,
                                                   "sha256": file_hash(weight)}]})
-        files[str(path.relative_to(deployment))] = file_hash(path)
+        files[path.relative_to(deployment).as_posix()] = file_hash(path)
     write_new(deployment / "deployment.json", {"complete": True, "models": list(deploy.ALIASES), "files": files})
     write_new(bundle / "rules.json", RULES)
     sources = preflight.freeze_sources(bundle)
@@ -734,7 +734,7 @@ def seeded_native_resume(frozen, output, *, fatal=True, completed_at=1000, recor
         ledger.append(base | {"type": "result", "answers": {}, "complete": False,
             "elapsed_seconds": .01, "error": receipt["error"], "fatal": fatal,
             "http_status": receipt["http_status"], "metadata": {
-                "receipt": str(path.relative_to(output)), "receipt_sha256": file_hash(path)}})
+                "receipt": path.relative_to(output).as_posix(), "receipt_sha256": file_hash(path)}})
     ledger.close()
     return unit, path
 
@@ -840,7 +840,7 @@ def test_late_orphan_keeps_first_attempt_answer_in_actual_native_resume(frozen, 
     base = {"unit": unit["id"], "request_sha256": unit["request_sha256"], "attempt": 2}
     ledger.append(base | {"type": "intent"})
     ledger.append(base | {"type": "result", "answers": second, "complete": True,
-        "elapsed_seconds": .01, "metadata": {"receipt": str(second_path.relative_to(output)),
+        "elapsed_seconds": .01, "metadata": {"receipt": second_path.relative_to(output).as_posix(),
                                               "receipt_sha256": file_hash(second_path)}})
     ledger.close()
     before = (output / "test/attempts.jsonl").read_bytes()
@@ -866,7 +866,7 @@ def test_late_orphan_keeps_first_attempt_answer_in_actual_native_resume(frozen, 
 
 def output_snapshot(output):
     """Detect changed bytes and new files/directories at failed resume boundaries."""
-    return {str(p.relative_to(output)): file_hash(p) if p.is_file() else None
+    return {p.relative_to(output).as_posix(): file_hash(p) if p.is_file() else None
             for p in output.rglob("*")}
 
 
@@ -1264,3 +1264,214 @@ def test_native202_validation_to_test_keeps_method(frozen, tmp_path, alias):
     calls = list(FakeBackend.calls)
     execute(frozen, out, alias, resume=True)
     assert FakeBackend.calls == calls
+
+
+def test_native_completion_and_resume_do_not_reopen_owned_ledger(frozen, tmp_path, monkeypatch):
+    """Model Windows mandatory byte locks while exercising real native receipts."""
+    owners = set()
+    original_init, original_close, original_open = Ledger.__init__, Ledger.close, Path.open
+
+    def ledger_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        if self.file is not None:
+            owners.add(self.path.resolve())
+
+    def ledger_close(self):
+        original_close(self)
+        owners.discard(self.path.resolve())
+
+    def guarded_open(path, *args, **kwargs):
+        if path.resolve() in owners:
+            raise PermissionError("synthetic mandatory lock denies second handle")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Ledger, "__init__", ledger_init)
+    monkeypatch.setattr(Ledger, "close", ledger_close)
+    monkeypatch.setattr(Path, "open", guarded_open)
+    out = tmp_path / "run"
+    execute(frozen, out, "clip")
+    calls = list(FakeBackend.calls)
+    before = {name: file_hash(out / name) for name in ("validation/attempts.jsonl", "test/attempts.jsonl")}
+    execute(frozen, out, "clip", resume=True)
+    assert FakeBackend.calls == calls
+    assert {name: file_hash(out / name) for name in before} == before
+    assert not owners
+
+
+@pytest.fixture
+def bag_frozen(frozen):
+    """Extend the existing synthetic native bundle, not a real model deployment."""
+    from helpers.bag_validation import bag_manifest
+
+    from tools.unified_benchmark.contract import BAG_VALIDATION_SCHEMA
+
+    bundle, _, _ = frozen
+    for alias in ("videojev", "decision3"):
+        (bundle / f"configs/{alias}.json").unlink()
+        for phase in ("validation", "test"):
+            (bundle / f"plans/{alias}-{phase}.json").unlink()
+    manifest = bundle / "inputs/bag-validation.json"
+    manifest.parent.mkdir()
+    manifest.write_text(json.dumps(bag_manifest()), encoding="utf-8")
+    context = {
+        "bag_validation": {
+            "schema": BAG_VALIDATION_SCHEMA,
+            "sha256": file_hash(manifest),
+            "review_status": ["synthetic label, not human reviewed"],
+        },
+        "validation_questions": 44,
+        "validation_videos": 34,
+    }
+    for path in (bundle / "plans").glob("*.json"):
+        plan = json.loads(path.read_text())
+        alias = path.stem.rsplit("-", 1)[0]
+        cfg = deploy.profile(alias)
+        plan.update(
+            protocol=CURRENT_VERSION,
+            rules_sha256=digest(rules_for(CURRENT_VERSION)),
+            dataset_context=context,
+        )
+        if plan["split"] == "validation":
+            extras = [
+                (f"validation/bags/{i}", list(EVENTS[4:]), "yes" if i % 2 else "no")
+                for i in range(10)
+            ]
+        else:
+            extras = [
+                (
+                    f"test/robot/{i}",
+                    ["fall" if i < 36 else "weapon"],
+                    "yes" if i % 2 else "no",
+                )
+                for i in range(82)
+            ]
+        for source, targets, answer in extras:
+            uid = f"{source}/{answer}"
+            unit = plan["units"][0] | {
+                "id": uid,
+                "source_id": source,
+                "targets": targets,
+            }
+            unit["request_sha256"] = digest(request_body(cfg, unit, bundle)[1])
+            plan["units"].append(unit)
+            for event in targets:
+                plan["questions"].append(
+                    {
+                        "number": len(plan["questions"]) + 1,
+                        "event": event,
+                        "reference": answer,
+                        "unit_ids": [uid],
+                    }
+                )
+        path.write_text(json.dumps(plan), encoding="utf-8")
+    (bundle / "rules.json").write_text(
+        json.dumps(rules_for(CURRENT_VERSION)), encoding="utf-8"
+    )
+    audit = json.loads((bundle / "preflight.json").read_text())
+    audit["dataset_context"] = context
+    audit["models"] = {alias: {} for alias in ("clip", "siglip2")}
+    for path in (bundle / "plans").glob("*.json"):
+        alias, split = path.stem.rsplit("-", 1)
+        audit["models"][alias][split] = {
+            "plan_sha256": digest(json.loads(path.read_text()))
+        }
+    (bundle / "preflight.json").write_text(json.dumps(audit), encoding="utf-8")
+    seal(bundle)
+    return frozen
+
+
+@pytest.mark.parametrize("alias", ["clip", "siglip2"])
+def test_bag_validation_freezes_six_midpoints_before_test_and_preserves_baseline(
+    bag_frozen,
+    tmp_path,
+    alias,
+):
+    from tools.unified_benchmark.contract import BAG_VALIDATION_SCHEMA
+
+    out = tmp_path / "run44"
+    midpoints = {event: 0.2 + 0.03 * index for index, event in enumerate(EVENTS)}
+
+    def behavior(self, unit, body):
+        if unit["id"].startswith("test/"):
+            artifact = json.loads((out / "thresholds.json").read_text())
+            assert artifact["validation_summary"]["complete_valid_questions"] == 44
+            assert sum(c.startswith("validation/") for c in FakeBackend.calls) == 34
+        offset = 0.1 if unit["id"].endswith("/yes") else -0.1
+        return (
+            200,
+            {
+                event: {
+                    "margin": midpoints[event] + offset,
+                    "positive_cosine": 0.5 + midpoints[event] + offset,
+                    "contrast_cosine": 0.5,
+                }
+                for event in unit["targets"]
+            },
+            {},
+        )
+
+    FakeBackend.behavior = behavior
+    execute(bag_frozen, out, alias)
+    artifact = json.loads((out / "thresholds.json").read_text())
+    assert artifact["calibration"] == "selected_on_complete_validation44"
+    assert artifact["bag_calibration"] == BAG_VALIDATION_SCHEMA
+    assert set(artifact["details"]) == set(EVENTS)
+    assert artifact["thresholds"] == pytest.approx(midpoints)
+    for split, count in (("validation", 44), ("test", 202)):
+        report = json.loads((out / split / "report.json").read_text())
+        assert report["threshold_artifact_sha256"] == file_hash(out / "thresholds.json")
+        baseline = report["zero_margin_baseline"]
+        assert report["correct"] == report["planned_questions"] == count
+        assert baseline["planned_questions"] == count
+        assert baseline["correct"] == count // 2
+        assert baseline["thresholds"] == dict.fromkeys(EVENTS, 0)
+        assert all(
+            baseline["per_event"][event]["planned_questions"] > 0 for event in EVENTS
+        )
+        if split == "test":
+            assert baseline["cohorts"]["robot82"]["planned_questions"] == 82
+            assert baseline["cohorts"]["original120"]["planned_questions"] == 120
+    calls = list(FakeBackend.calls)
+    threshold_hash = file_hash(out / "thresholds.json")
+    execute(bag_frozen, out, alias, resume=True)
+    assert FakeBackend.calls == calls
+    assert file_hash(out / "thresholds.json") == threshold_hash
+
+
+@pytest.mark.parametrize("failure", ["missing", "nonfinite", "unbounded"])
+def test_bad_bag_validation_blocks_thresholds_and_all_test_requests(
+    bag_frozen,
+    tmp_path,
+    failure,
+):
+    def behavior(self, unit, body):
+        if unit["id"].startswith("validation/bags/"):
+            if failure == "missing" and "/0/" in unit["id"]:
+                return 503, {}, {}
+            if failure in ("nonfinite", "unbounded"):
+                margin = float("nan") if failure == "nonfinite" else 0
+                return (
+                    200,
+                    {
+                        event: {
+                            "margin": margin,
+                            "positive_cosine": 0.5,
+                            "contrast_cosine": 0.5,
+                        }
+                        for event in unit["targets"]
+                    },
+                    {},
+                )
+        return None
+
+    FakeBackend.behavior = behavior
+    out = tmp_path / "failed44"
+    with pytest.raises(
+        ValueError, match=r"incomplete validation|bag_knife:.*unbounded"
+    ):
+        execute(bag_frozen, out)
+    assert not (out / "thresholds.json").exists()
+    assert not (out / "test").exists()
+    assert FakeBackend.calls and all(
+        c.startswith("validation/") for c in FakeBackend.calls
+    )
