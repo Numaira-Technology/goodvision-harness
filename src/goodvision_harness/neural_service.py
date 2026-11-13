@@ -179,6 +179,8 @@ class _BatchWorker:
     """
 
     def __init__(self, score_batch, max_batch_size, max_queue=32):
+        if type(max_queue) is not int or max_queue < 1:
+            raise ValueError("max_queue must be a positive integer")
         self.score_batch, self.max_batch_size = score_batch, max_batch_size
         self.pending = queue.Queue(maxsize=max_queue)
         self.thread = threading.Thread(
@@ -253,6 +255,8 @@ def _window_pairs(frame_pairs):
 
 
 def create_app(encoder, *, max_batch_size=4, max_queue=32):
+    if type(max_queue) is not int or max_queue < 1:
+        raise ValueError("max_queue must be a positive integer")
     ppe, shared_error = None, None
 
     def score_batch(pixels, labels):

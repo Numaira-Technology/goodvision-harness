@@ -13,15 +13,22 @@ that ``Encoder.score_batch``'s hand-written forward
 other HTTP-contract tests, since it needs no torch and runs in the main job.)
 """
 
+import importlib
+import os
+
 import pytest
+from PIL import Image
 
-# These tests need a (tiny, random, CPU) CLIP model. The main regression job
-# does not install torch/transformers, so skip cleanly there; the dedicated
-# neural-forward CI job installs the pinned CPU stack and runs them.
-torch = pytest.importorskip("torch")
-pytest.importorskip("transformers")
+# The lightweight CI matrix omits this stack. Explicit CPU validation sets
+# the strict flag so missing dependencies fail collection rather than skip.
+if os.environ.get("NEURAL_REQUIRE_NUMERICAL_ORACLE") == "1":
+    torch = importlib.import_module("torch")
+    importlib.import_module("transformers")
+else:
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("transformers")
 
-from goodvision_harness.neural_service import PROMPTS, Encoder  # noqa: E402
+from goodvision_harness.neural_service import PROMPTS, Encoder
 
 
 def _tiny_clip():
@@ -93,6 +100,8 @@ def _real_encoder(model, processor):
     encoder.model = model
     encoder.processor = processor
     encoder._text_features = None
+    encoder.prompts = PROMPTS
+    encoder.thresholds = None
     return encoder
 
 
@@ -146,7 +155,7 @@ def test_manual_forward_matches_native_logits_for_all_events():
 
     native = _native_pairs(model, processor, labels)
     encoder = _real_encoder(model, processor)
-    got = _on_cpu(lambda: encoder.scores(object(), labels))
+    got = _on_cpu(lambda: encoder.scores(Image.new("RGB", (30, 30)), labels))
 
     assert len(got) == len(labels)
     for pair in got:
@@ -163,7 +172,7 @@ def test_manual_forward_matches_native_for_requested_subset():
 
     native = _native_pairs(model, processor, labels)
     encoder = _real_encoder(model, processor)
-    got = _on_cpu(lambda: encoder.scores(object(), labels))
+    got = _on_cpu(lambda: encoder.scores(Image.new("RGB", (30, 30)), labels))
 
     assert _max_abs_diff(native, got) < 1e-4
 
@@ -172,10 +181,10 @@ def test_cached_text_features_are_reused_across_calls():
     model, processor, _, _ = _tiny_clip()
     encoder = _real_encoder(model, processor)
 
-    first = _on_cpu(lambda: encoder.scores(object(), list(PROMPTS)))
+    first = _on_cpu(lambda: encoder.scores(Image.new("RGB", (30, 30)), list(PROMPTS)))
     cached = encoder._text_features
     assert cached is not None
     # A second call reuses the cached, normalised text features unchanged.
-    second = _on_cpu(lambda: encoder.scores(object(), list(PROMPTS)))
+    second = _on_cpu(lambda: encoder.scores(Image.new("RGB", (30, 30)), list(PROMPTS)))
     assert encoder._text_features is cached
     assert _max_abs_diff(first, second) < 1e-6
