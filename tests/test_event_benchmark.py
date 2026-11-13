@@ -101,7 +101,11 @@ def test_complete_run_records_frozen_provenance_and_errors(tmp_path, monkeypatch
     monkeypatch.setattr(runner.sys, "argv", [
         "run_eval.py", "--candidate", "qwen", "--samples", str(dataset.samples),
         "--manifest", str(dataset.manifest), "--media", str(dataset.media), "--out", str(output),
+        "--provider-config", "synthetic-provider.json", "--split-manifest", "synthetic-split.json", "--split", "test",
     ])
+    monkeypatch.setattr(runner.evidence, "load_provider", lambda *args: {
+        "sha256": "a" * 64, "config": {"expected_provider_name": "Provider A"}})
+    monkeypatch.setattr(runner.evidence, "split_groups", lambda *args: ({1: "source-a"}, {"sha256": "b" * 64}))
     monkeypatch.setattr(runner, "load_key", lambda _: "offline")
     monkeypatch.setattr(runner, "eval_video", lambda backend, model, sample, *args: (sample, {"error": "offline failure"}))
     result = runner.main()
@@ -188,6 +192,10 @@ def test_provisional_report_has_separate_protocol_and_recorded_not_verified_hash
     ["--provisional", "--manifest", "unverified.json"],
     ["--events", "fight"],
     ["--provisional", "--events", "fight", "fight"],
+    ["--provisional", "--legacy-baseline"],
+    ["--provisional", "--provider-config", "provider.json"],
+    ["--provisional", "--split-manifest", "split.json"],
+    ["--provisional", "--split", "test"],
 ])
 def test_incompatible_modes_fail_before_credentials_or_provider_access(tmp_path, monkeypatch, options):
     dataset = fixture_dataset(tmp_path)
@@ -201,6 +209,22 @@ def test_incompatible_modes_fail_before_credentials_or_provider_access(tmp_path,
         runner.main()
     assert error.value.code == 2
     assert not output.exists()
+
+
+def test_provisional_preflight_records_hashes_without_credentials(tmp_path, monkeypatch):
+    dataset = fixture_dataset(tmp_path)
+    dataset.manifest.unlink()
+    monkeypatch.setattr(runner.sys, "argv", [
+        "run_eval.py", "--candidate", "luna", "--samples", str(dataset.samples),
+        "--media", str(dataset.media), "--provisional", "--preflight",
+    ])
+    monkeypatch.setattr(runner, "load_key", lambda _: pytest.fail("credentials must not be accessed"))
+    result = runner.main()
+    assert result["protocol_variant"] == "base4-provisional-v2"
+    assert result["manifest_sha256"] is None
+    assert result["frozen"] is False and result["hashes_verified"] is False
+    assert result["inference_calls"] == 0
+    assert "frozen provider configuration" not in result["pending"]
 
 
 @pytest.mark.parametrize("provisional", [False, True])

@@ -171,7 +171,7 @@ class SummaryManager:
         frame_provider: Callable[[], SummarySnapshot | None],
         model_settings: ModelAPISettings | None = None,
         model: str = "",
-        api_key: str = "",
+        api_key: str | None = None,
         request_parameters: Mapping[str, Any] | None = None,
         dry_run: bool = False,
         timeout_seconds: float = 20,
@@ -229,14 +229,18 @@ class SummaryManager:
         self._on_result, self._inference = on_result, inference
         self._settings = model_settings
         self._model = model
-        self._api_key = api_key or (
+        self._api_key = api_key if api_key is not None else (
             environment_api_key(model_settings) if model_settings else ""
         )
         self._parameters = copy.deepcopy(dict(request_parameters or {}))
         if {"model", "messages"} & self._parameters.keys():
             raise ValueError("summary parameters cannot replace model or messages")
-        self._parameters.update(stream=False, max_tokens=max_tokens)
+        self._parameters["stream"] = False
+        if "max_completion_tokens" not in self._parameters:
+            self._parameters["max_tokens"] = max_tokens
         self._parameters.setdefault("temperature", 0)
+        if self._parameters["temperature"] is None:
+            self._parameters.pop("temperature")
         json.dumps(self._parameters, allow_nan=False)
         if not dry_run and inference is None:
             if not model_settings or not isinstance(model, str) or not model.strip():

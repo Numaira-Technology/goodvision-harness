@@ -13,6 +13,7 @@ import httpx
 import pytest
 from benchmark_runtime_fixtures import (
     BOX,
+    ContractSourceFeeder,
     assert_admission_drained,
     config,
     configure_ephemeral_admission,
@@ -466,6 +467,13 @@ def offline_inspector(config, *, broker_url):
 def test_twelve_sources_through_http_broker_and_spawned_workers(
     tmp_path, fake_models, monkeypatch, mode, load_profile
 ):
+    # Verify every source/frame through the real HTTP and process boundaries.
+    # Shared CI scheduling pauses must not turn this adapter contract into a
+    # throughput benchmark. Production lag/drop rules are exercised with a
+    # controlled clock in test_vlm_sender_lag and test_vlm_source_feeder.
+    monkeypatch.setattr(
+        "tools.vlm_multistream_benchmark.TimedSourceFeeder", ContractSourceFeeder
+    )
     url, calls = fake_models
     args = arguments(load_profile=load_profile)
     args.real = True
@@ -498,7 +506,9 @@ def test_twelve_sources_through_http_broker_and_spawned_workers(
         )
         # Model windows can finish before the detector-only source tail.
         detector_counts = broker.drain()
-    assert result["input_timing_valid"]
+    assert result["sender_missed_samples"] == 0
+    assert result["sender_missed_samples_by_stream"] == [0] * 12
+    assert result["offer_rejected_by_stream"] == [0] * 12
     assert result["all_drained"] and result["result_records_missing"] == 0
     assert result["result_retention"]["valid"]
     expected = 24 if low_rate else 12

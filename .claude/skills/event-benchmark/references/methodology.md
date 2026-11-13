@@ -1,4 +1,7 @@
-# Frozen benchmark methodology
+For the current-frame 202-question variant, use `tools/unified_benchmark/README.md`.
+The procedure below describes the retained legacy runner.
+
+# Legacy v2/v2.1 benchmark methodology
 
 Authority: `tools/event_benchmark/SPEC.md` and `run_eval.py`, currently v2.1.
 `SPEC_V1.md`, `RESULTS.md` and checked-in result JSONs are historical v1 artifacts.
@@ -6,12 +9,10 @@ They cannot establish v2 accuracy or calibrate a v2 variant without fresh eviden
 
 ## Inputs and provenance
 
-Before any request, require a `human_reviewed` manifest matching the exact samples
+Before any model request, require a `human_reviewed` manifest matching the exact samples
 file and every scored media file. Pass `--manifest` explicitly. Missing media,
 ambiguous filenames, changed questions/labels and hash mismatches are blockers.
-`--checksums` is a compatibility flag: frozen mode always verifies hashes.
-Explicit provisional diagnostics only record hashes and use a separate protocol;
-they do not establish reviewed v2 evidence.
+`--checksums` is a compatibility flag: hash checking is always enforced.
 
 Record dataset ID, samples/manifest/media hashes, source commit, runner/spec hashes,
 model/backend/provider route, configuration, run timestamp, environment versions
@@ -19,14 +20,20 @@ and result-file hash. A count such as 50 or 100 is not a dataset identity. Recor
 question count and distinct-media count separately. Do not send labels or reference
 answers to the model. Private media, keys and raw outputs stay outside Git.
 
-Read review status from the selected manifest. The committed 50 is reviewed;
-merged PR #73 records all 120 questions as
-`user_reviewed` under `status=human_reviewed`, with 100 base-4 and 20 bag questions.
-Questions, answers and media/sample fingerprints were unchanged by that metadata
-update. The flags do not independently establish owner verification, reviewed
-source groups or fresh v2 runs. Review status must be resolved by reviewers,
-not relabeled by an agent to enable a run. Bag questions allow unknown
+Read the actual reviewed status and hash of each manifest. The 120 cohort has 100
+base-4 questions and 20 bag-search questions. Review status must be resolved by
+reviewers, not relabeled by an agent to enable a run. Bag questions allow unknown
 and require a separate versioned task/metric; the base runner filters them out.
+
+The legacy reviewed-scoring route still rejects the combined draft202 manifest.
+The separate unified202 variant explicitly reports provisional reference agreement,
+not a human-reviewed benchmark. Related views/cuts must stay in one split; a group
+name alone does not prove reviewed source isolation. All 36 added fall views share
+one recording. Original and robot weapon references retain different semantics;
+a frozen current-image prompt does not establish relabeling equivalence. Do not
+silently combine those references for calibration. The retained public historical
+samples also do not match the exact hash pinned by the committed120 manifest.
+Recover the matching frozen bytes rather than changing that hash.
 
 ## Frozen v2 procedure
 
@@ -58,3 +65,9 @@ copy their OVERALL into a v2 base-event cell without a verified equivalent mappi
 Changing prompts, cadence, aggregation, parser or error policy changes the protocol;
 changing samples or labels changes the dataset fingerprint. Both require new,
 explicitly identified comparison evidence.
+
+PR #61's explicit keep-unmerged acceptance hold remains separate from the current
+unified workflow. It still requires its reviewed validation/media-hash manifest,
+source-group/isolation evidence and fresh compatible lossless calibration/test
+outputs. Legacy `--provisional` diagnostics record hashes without certifying review
+or freeze status, and must not be described as eligible calibration evidence.

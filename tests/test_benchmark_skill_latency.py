@@ -124,6 +124,48 @@ def test_transport_errors_are_counted_and_sanitized(monkeypatch, exception, erro
     assert "secret" not in json.dumps(result)
 
 
+def test_http_failure_keeps_safe_diagnostics_without_retrying(monkeypatch):
+    from email.message import Message
+
+    headers = Message()
+    headers["Retry-After"] = "60"
+    headers["X-Request-Id"] = "request-synthetic-key"
+    headers["Authorization"] = "Bearer synthetic-key"
+    body = json.dumps({"error": {
+        "code": 429, "message": "Limited synthetic-key", "type": "rate_limit",
+        "metadata": {"provider_name": "Provider synthetic-key", "raw": "omit this"},
+    }}).encode()
+    attempts = []
+
+    def fail(request, **kwargs):
+        attempts.append(request)
+        raise urllib.error.HTTPError(request.full_url, 429, "limited", headers, io.BytesIO(body))
+
+    monkeypatch.setattr(latency.urllib.request, "urlopen", fail)
+    result = latency.one_call("https://example.invalid", {}, "synthetic-key", "language")
+    assert len(attempts) == 1
+    assert result["ok"] is False and result["error"] == "http_429"
+    assert result["http_error_headers"]["retry-after"] == "60"
+    assert result["http_error_detail"]["message"] == "Limited [REDACTED]"
+    assert result["http_error_detail"]["provider_name"] == "Provider [REDACTED]"
+    assert "authorization" not in result["http_error_headers"]
+    assert "synthetic-key" not in json.dumps(result)
+    assert "omit this" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("body", [b"not JSON", b"null", b"x" * (latency.MAX_RESPONSE_BYTES + 1)],
+                         ids=["invalid-json", "null", "oversized"])
+def test_unreadable_http_error_body_preserves_original_status(monkeypatch, body):
+    def fail(request, **kwargs):
+        raise urllib.error.HTTPError(request.full_url, 429, "limited", None, io.BytesIO(body))
+
+    monkeypatch.setattr(latency.urllib.request, "urlopen", fail)
+    result = latency.one_call("https://example.invalid", {}, "synthetic-key", "language")
+    assert result["ok"] is False and result["error"] == "http_429"
+    assert result["http_error_headers"] == {}
+    assert "http_error_detail" not in result
+
+
 @pytest.mark.parametrize("backend", ["language", "decision"])
 def test_request_envelope_matches_canonical_runner(monkeypatch, backend):
     captured = []
@@ -248,7 +290,11 @@ def test_cli_writes_provenance_and_returns_failure_for_incomplete_run(
     jpeg = b"synthetic prepared image"
     monkeypatch.setattr(latency, "prepare_frame", lambda *a, **k: jpeg)
     monkeypatch.setattr(latency, "load_key", lambda *a: "synthetic-key")
-    attempts = iter([{"ok": complete, "elapsed_s": 1}, {"ok": True, "elapsed_s": 2}])
+    attempts = iter([{"ok": complete, "elapsed_s": 1, "actual_provider": "Provider A", "actual_model": "model-a", "generation_id": "synthetic-gen"},
+                     {"ok": True, "elapsed_s": 2, "actual_provider": "Provider A", "actual_model": "model-a", "generation_id": "synthetic-gen"}])
+    monkeypatch.setattr(latency.runner.evidence, "load_provider", lambda *args: {
+        "sha256": "a" * 64, "config": {"expected_provider_name": "Provider A",
+                                      "provider": {"only": ["provider-a"], "allow_fallbacks": False}}})
     monkeypatch.setattr(latency, "one_call", lambda *a: next(attempts))
     output = tmp_path / "nested" / "result.json"
     exit_code = latency.main(
@@ -257,6 +303,8 @@ def test_cli_writes_provenance_and_returns_failure_for_incomplete_run(
             "qwen",
             "--frame",
             "synthetic.jpg",
+            "--provider-config",
+            "synthetic-provider.json",
             "--single-n",
             "1",
             "--concurrency",

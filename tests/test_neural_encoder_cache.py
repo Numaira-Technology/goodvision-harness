@@ -52,9 +52,9 @@ def encoder_fixture(thresholds=None):
         if text is not None:
             calls.append(("text", tuple(text)))
             return {"input_ids": tensor([vectors[texts.index(t)] for t in text])}
-        assert all(image.mode == "RGB" and image.size == (224, 224) for image in images)
-        colors = [image.getpixel((112, 112)) for image in images]
-        calls.append(("image", colors))
+        assert all(image.mode == "RGB" for image in images)
+        colors = [image.getpixel((image.width // 2, image.height // 2)) for image in images]
+        calls.append(("image", {"colors": colors, "sizes": [image.size for image in images]}))
         return {"pixel_values": tensor(colors)}
 
     encoder = Encoder.__new__(Encoder)
@@ -77,7 +77,8 @@ def encoder_fixture(thresholds=None):
     def reference(image, labels, *, margins=False):
         # Independent full-forward formula: project each requested prompt, then
         # score and normalize only its own positive/negative pair.
-        projected_image = np.asarray(image.getpixel((112, 112)), dtype=float) @ image_projection
+        center = (image.width // 2, image.height // 2)
+        projected_image = np.asarray(image.getpixel(center), dtype=float) @ image_projection
         projected_image /= np.linalg.norm(projected_image)
         result = []
         for label in labels:
@@ -151,6 +152,11 @@ def test_cached_batch_matches_independent_frame_scores_and_window_boundaries(con
     smoking = [reference(image, ["smoking"])[0][0] for image in windows[2]]
     assert max(range(4), key=smoking.__getitem__) == 3
     pixels = [encoder.prepare(images) for images in windows]
+    # Current main delegates resizing/cropping to the checkpoint processor. The
+    # cache must preserve each source image's dimensions at that boundary.
+    assert [entry["sizes"] for kind, entry in calls if kind == "image"] == [
+        [image.size for image in images] for images in windows
+    ]
     batches = encoder.score_batch(pixels, labels)
     for images, requested, actual in zip(windows, labels, batches, strict=True):
         probabilities = [reference(image, requested) for image in images]

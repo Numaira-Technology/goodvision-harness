@@ -20,8 +20,11 @@ def run(prefix):
                               "sha256": digest(name), "event": event, "gt": gt,
                               "score": score, "frames_planned": 2,
                               "pred": gt, "correct": True,
-                              "frames_ok": 2, "frames_failed": 0})
-    return {"spec_version": "v2", "score_precision": "lossless",
+                              "frames_ok": 2, "frames_failed": 0,
+                              "frames": [{"time_s": t, "score": score, "attempts": [
+                                  {"ok": True, "score": score, "actual_provider": "Provider A", "actual_model": "model-a", "generation_id": f"gen-{name}-{t}"}
+                              ]} for t in (0.5, 1.5)]})
+    data = {"spec_version": "v2", "score_precision": "lossless",
             "backend": "decision", "model": "model-a",
             "samples_json_sha256": digest(prefix + "samples"),
             "manifest_sha256": digest(prefix + "manifest"),
@@ -30,58 +33,28 @@ def run(prefix):
                        "frame_width": 720, "temperature": 0, "retries": 3,
                        "timeout": 90, "decision": "max-frame-score >= gate"},
             "overall": {"attempted": 24, "total": 24, "errors": 0},
-            "per_video": questions}
+            "per_video": questions,
+            "protocol_variant": tuner.evidence.VARIANT,
+            "evidence_sha256": digest("evidence"),
+            "provider_context": {"sha256": digest("provider"), "config": {
+                "model": "model-a", "backend": "decision", "expected_provider_name": "Provider A",
+                "provider": {"only": ["provider-a"], "allow_fallbacks": False}}}}
+    refresh_provider(data)
+    return data
+
+
+def refresh_provider(data):
+    attempts = [a for row in data["per_video"] for frame in row.get("frames", []) for a in frame["attempts"]]
+    data["provider_observed"] = tuner.evidence.provider_summary(attempts, data["provider_context"])
 
 
 def check(data, **kwargs):
     return tuner.validate_run(data["per_video"], data, **kwargs)
 
 
-@pytest.mark.parametrize("version", ["v2", "v2.1"])
-def test_versioned_totals_and_optional_scored_count_are_checked(version):
-    data = run("test")
-    data["spec_version"] = version
-    data["per_video"][0].pop("score")
-    data["per_video"][0]["error"] = "offline failure"
-    data["overall"].update(total=24 if version == "v2.1" else 23, errors=1)
-    assert check(data)["scored"] == 23  # Compatible saved outputs may omit scored.
-    data["overall"]["scored"] = 23
-    assert check(data)["scored"] == 23
-    data["overall"]["scored"] = 24
-    with pytest.raises(ValueError, match="scored total"):
-        check(data)
-    data["overall"].pop("scored")
-    data["overall"]["total"] = 23 if version == "v2.1" else 24
-    with pytest.raises(ValueError, match="totals disagree"):
-        check(data)
-
-
-@pytest.mark.parametrize(("val_version", "test_version"), [("v2", "v2.1"), ("v2.1", "v2")])
-def test_selection_cannot_mix_protocol_versions(tmp_path, val_version, test_version):
-    val = run("val")
-    val["spec_version"] = val_version
-    artifact, digest = freeze(tmp_path, val)
-    test = run("test")
-    test["spec_version"] = test_version
-    source, manifest = save_run(tmp_path, test)
-    with pytest.raises(ValueError, match="spec_version differs"):
-        tuner.evaluate_thresholds(artifact, digest, [source], [manifest])
-
-
-def test_v21_does_not_allow_errors_during_validation():
-    data = run("val")
-    data["spec_version"] = "v2.1"
-    data["per_video"][0].pop("score")
-    data["per_video"][0]["error"] = "offline failure"
-    data["overall"]["errors"] = 1
-    with pytest.raises(ValueError, match="validation must be complete"):
-        check(data, validation=True)
-
-
 @pytest.mark.parametrize(("field", "value"), [
     ("frozen", False), ("frozen", "true"), ("provisional", True), ("provisional", None),
-    ("spec_version", "base4-provisional-v1"), ("spec_version", "base4-provisional-v2"),
-    ("spec_version", "v2.2"), ("scored_events", ["fight"]),
+    ("spec_version", "base4-provisional-v1"), ("scored_events", ["fight"]),
 ])
 def test_unfrozen_metadata_cannot_enter_calibration_even_with_valid_hashes(field, value):
     data = run("val")
@@ -171,6 +144,7 @@ def save_run(tmp_path, data, *, change_manifest=None):
         change_manifest(manifest)
     manifest_path.write_text(json.dumps(manifest))
     data["manifest_sha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    refresh_provider(data)
     result_path.write_text(json.dumps(data))
     return result_path, manifest_path
 
@@ -201,13 +175,12 @@ def test_cli_reports_test_errors_and_keeps_fixed_gate_comparison(tmp_path, monke
     report = json.loads(output.read_text())
     result = report["test"][str(test_source)]
     assert result["counts"] == {"attempted": 24, "total": 23, "scored": 23, "errors": 1}
-    assert result["spec_version"] == "v2"
-    assert result["accuracy_denominator"] == "scored"
-    assert result["overall_at_0.5"]["accuracy"] == 100.0
     assert result["overall_at_tau"]["n"] == result["overall_at_0.5"]["n"] == 23
     assert report["val_counts"]["total"] == 24
     assert report["threshold_artifact_sha256"] == digest
     assert result["per_event"]["fight"]["counts"] == {"attempted": 6, "total": 5, "scored": 5, "errors": 1}
+    assert result["all_questions_at_tau"] == {"correct": 23, "total": 24, "accuracy": 95.8}
+    assert result["per_event"]["fight"]["all_questions_at_tau"]["accuracy"] == 83.3
 
 
 def test_cli_rejects_identical_val_and_test_before_writing_report(tmp_path, monkeypatch):
@@ -251,12 +224,8 @@ def test_longest_contiguous_optimum_wins_over_median_of_disconnected_grid_points
 
 def test_subgrid_scores_cannot_make_the_selected_midpoint_suboptimal():
     items = [(0.295, False), (0.301, True), (0.309, False), (0.315, True)]
-    tau, result, selection = tuner.pick_tau(items)
-    assert selection["chosen_run"] == [0.3, 0.31]
-    assert selection["midpoint"] == 0.305
-    assert selection["fallback_to_grid"]
-    assert tau == 0.3
-    assert result["TP"] + result["TN"] == 3
+    with pytest.raises(ValueError, match="midpoint is not optimal"):
+        tuner.pick_tau(items)
 
 
 def test_candidate_ranking_uses_correct_counts_before_display_rounding():
@@ -331,6 +300,7 @@ def test_truncating_a_run_and_updating_totals_does_not_change_the_reviewed_cohor
     source, manifest = save_run(tmp_path, data)
     data["per_video"].pop(0)
     data["overall"].update(attempted=23, total=23)
+    refresh_provider(data)
     source.write_text(json.dumps(data))
     with pytest.raises(ValueError, match="exact reviewed manifest"):
         tuner.evaluate_thresholds(artifact, digest, [source], [manifest])
@@ -402,3 +372,152 @@ def test_different_test_prompt_is_not_a_compatible_evaluation(tmp_path):
 @pytest.mark.parametrize("items", [[], [(0.8, True)], [(0.2, False)]])
 def test_youden_index_requires_both_reference_classes(items):
     assert tuner.confusion(items, 0.5)["youden_j"] is None
+
+
+@pytest.mark.parametrize("change", ["missing_provider", "wrong_provider", "missing_id", "frame_score", "context_model"])
+def test_received_provider_and_full_precision_evidence_are_required(change):
+    data = run("val")
+    attempt = data["per_video"][0]["frames"][0]["attempts"][0]
+    if change == "missing_provider":
+        attempt.pop("actual_provider")
+    elif change == "wrong_provider":
+        attempt["actual_provider"] = "Provider B"
+    elif change == "missing_id":
+        attempt.pop("generation_id")
+    elif change == "frame_score":
+        attempt["score"] = 0.79999
+    else:
+        data["provider_context"]["config"]["model"] = "other-model"
+    refresh_provider(data)
+    with pytest.raises(ValueError):
+        check(data, validation=True)
+
+
+def test_provider_or_worker_change_cannot_reuse_frozen_validation_thresholds(tmp_path):
+    artifact, digest = freeze(tmp_path)
+    data = run("test")
+    data["config"]["workers"] = 6
+    source, manifest = save_run(tmp_path, data)
+    with pytest.raises(ValueError, match="configuration differs"):
+        tuner.evaluate_thresholds(artifact, digest, [source], [manifest])
+
+
+@pytest.mark.parametrize("change", ["provider_config", "actual_model", "helper_code"])
+def test_changed_serving_identity_or_code_cannot_reuse_thresholds(tmp_path, change):
+    artifact, digest = freeze(tmp_path)
+    data = run("test")
+    if change == "provider_config":
+        data["provider_context"]["sha256"] = "f" * 64
+    elif change == "helper_code":
+        data["evidence_sha256"] = "f" * 64
+    else:
+        for row in data["per_video"]:
+            for frame in row["frames"]:
+                frame["attempts"][0]["actual_model"] = "changed-returned-model"
+    source, manifest = save_run(tmp_path, data)
+    with pytest.raises(ValueError, match="differs"):
+        tuner.evaluate_thresholds(artifact, digest, [source], [manifest])
+
+
+def test_historical_thresholds_are_frozen_as_comparison_not_used_for_selection(tmp_path):
+    source, manifest = save_run(tmp_path, run("val"))
+    reference = tmp_path / "old-thresholds.json"
+    reference.write_text(json.dumps({"model": "model-a", "backend": "decision",
+                                     "thresholds": dict.fromkeys(tuner.EVENTS, 0.99)}))
+    plain = tuner.select_thresholds(source, manifest)
+    selected = tuner.select_thresholds(source, manifest, reference_path=reference)
+    assert plain["thresholds"] == selected["thresholds"]
+    artifact = tmp_path / "frozen.json"
+    digest = tuner.write_new_json(artifact, selected)
+    reference.write_text("changed after freeze")
+    test, test_manifest = save_run(tmp_path, run("test"))
+    result = tuner.evaluate_thresholds(artifact, digest, [test], [test_manifest])["test"][str(test)]
+    assert result["overall_at_previous_tau"]["accuracy"] == 50.0
+    assert result["all_questions_at_previous_tau"] == {"correct": 12, "total": 24, "accuracy": 50.0}
+    assert result["overall_at_tau"]["accuracy"] == 100.0
+
+
+def test_selection_and_test_use_the_same_frozen_source_sidecar(tmp_path):
+    val, test = run("val"), run("test")
+    val_path, val_manifest = save_run(tmp_path, val)
+    test_path, test_manifest = save_run(tmp_path, test)
+    split = {"schema_version": 1, "status": "validation_membership_and_labels_frozen_with_recorded_limits",
+             "train": {"membership": None}, "development": {"membership": None}, "limits": ["scene isolation unknown"]}
+    for name, data, manifest in [("validation", val, val_manifest), ("test", test, test_manifest)]:
+        rows = json.loads(manifest.read_text())["files"]
+        split[name] = {"questions": 24, "videos": 24, "manifest_sha256": data["manifest_sha256"],
+                       "samples_json_sha256": data["samples_json_sha256"], "members": [
+                           {**{k: row[k] for k in ("filename", "sha256", "source_video_group")},
+                            "question_numbers": [row["number"]]} for row in rows]}
+    sidecar = tmp_path / "split.json"
+    sidecar.write_text(json.dumps(split))
+    for name, data, manifest, result in [("validation", val, val_manifest, val_path), ("test", test, test_manifest, test_path)]:
+        _, data["split_context"] = tuner.evidence.split_groups(sidecar, manifest, name)
+        result.write_text(json.dumps(data))
+    artifact = tmp_path / "frozen.json"
+    selected = tuner.select_thresholds(val_path, val_manifest, sidecar)
+    digest = tuner.write_new_json(artifact, selected)
+    report = tuner.evaluate_thresholds(artifact, digest, [test_path], [test_manifest], sidecar)
+    assert report["split_limits"] == ["scene isolation unknown"]
+    assert report["test"][str(test_path)]["counts"]["total"] == 24
+    sidecar.write_text(sidecar.read_text() + " ")
+    with pytest.raises(ValueError, match="sidecar provenance differs"):
+        tuner.evaluate_thresholds(artifact, digest, [test_path], [test_manifest], sidecar)
+
+
+def test_v21_counts_missing_in_total_and_rejects_version_mixing():
+    data = run("validation")
+    data['spec_version'] = 'v2.1'
+    # Same valid evidence is accepted; version difference alone blocks pairing.
+    tuner.validate_run(data['per_video'], data, validation=True)
+    old = run("other")
+    with pytest.raises(ValueError, match='spec_version'):
+        tuner.validate_pair(old['per_video'], old, data['per_video'], data)
+
+
+def test_v21_keeps_error_questions_in_reported_total():
+    data = run("test")
+    data["spec_version"] = "v2.1"
+    row = data["per_video"][0]
+    for key in ("score", "pred", "correct", "frames"):
+        row.pop(key)
+    row["error"] = "missing answer"
+    data["overall"]["errors"] = 1
+    refresh_provider(data)
+    assert check(data) == {"attempted": 24, "total": 24, "scored": 23, "errors": 1}
+    data["overall"]["total"] = 23
+    with pytest.raises(ValueError, match="totals"):
+        check(data)
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("attempted", 24.0), ("total", 24.0), ("errors", False),
+    ("scored", 999), ("scored", 24.0), ("scored", True),
+])
+def test_counts_require_exact_integers_and_consistent_optional_scored(field, value):
+    data = run("test")
+    data["overall"][field] = value
+    with pytest.raises(ValueError, match="totals"):
+        check(data)
+
+
+@pytest.mark.parametrize("successful_receipts", [True, False])
+def test_all_error_v21_test_requires_observed_provider_evidence(successful_receipts):
+    data = run("test")
+    data["spec_version"] = "v2.1"
+    data["overall"].update(total=24, errors=24, scored=0)
+    for row in data["per_video"]:
+        for key in ("score", "pred", "correct"):
+            row.pop(key)
+        row.update(error="synthetic second frame failed", frames_ok=1, frames_failed=1)
+        row["frames"][1] = {"time_s": 1.5, "error": "decode failed", "attempts": []}
+        if not successful_receipts:
+            row["frames"] = []
+    refresh_provider(data)
+    if successful_receipts:
+        assert check(data) == {"attempted": 24, "total": 24, "scored": 0, "errors": 24}
+    else:
+        with pytest.raises(ValueError, match="provider"):
+            check(data)
+    with pytest.raises(ValueError, match="validation must be complete"):
+        check(data, validation=True)

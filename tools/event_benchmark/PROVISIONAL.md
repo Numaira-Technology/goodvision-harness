@@ -3,7 +3,10 @@
 `run_eval.py --provisional` is an explicitly unreviewed diagnostic mode. It accepts
 draft binary labels for fight, smoking, fall and weapon, optionally filtered with
 `--events`. It does not verify a reviewed manifest. An explicit `--manifest` is an
-error in this mode; use the normal frozen mode to verify one.
+error in this mode; use the normal frozen mode to verify one. Provisional mode
+also rejects `--legacy-baseline` and controlled provider/split options so it cannot
+claim their protocol identities. `--preflight` checks inputs without credentials
+or inference; its media hashes are recorded, not verified against reviewed inputs.
 
 The runner checks unique question numbers, nonempty binary question text, yes/no
 labels, and the presence of unambiguous media files before any provider request.

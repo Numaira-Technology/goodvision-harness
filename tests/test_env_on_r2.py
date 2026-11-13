@@ -1,0 +1,418 @@
+"""No-GPU tests for the R2 env registry + restore path (registry.py, env_source.py)."""
+
+import io
+import json
+import tarfile
+from pathlib import Path
+
+import pytest
+
+from tools import build_env, env_source, registry
+
+VIDEOJEV_REV = "1c1a253bf90dfa66176124d25a48ffb791d517d5"
+
+
+# --- registry.py -----------------------------------------------------------
+
+def test_registry_ships_and_parses():
+    assert "videojev" in registry.model_names()
+    repo, rev = registry.weights_of("videojev")
+    assert repo == "ZhuYuhan/VideoJev-4B"
+    assert rev == VIDEOJEV_REV
+
+
+def test_env_of_videojev_has_required_keys():
+    env = registry.env_of("videojev")
+    assert env["r2_key"].startswith("envs/videojev/")
+    assert env["unpack_to"] == "/opt/env/videojev"
+    assert env["activate_rel"] == "bin/activate"
+    assert env["compat"]["gpu_family"] == "ada"
+
+
+def test_env_of_clip_has_env_without_flash_attn():
+    env = registry.env_of("clip")
+    assert env["r2_key"].startswith("envs/clip/")
+    assert env["unpack_to"] == "/opt/env/clip"
+    assert env["build"]["flash_attn"] is False
+
+
+def test_new_models_registered_with_pinned_revisions():
+    names = registry.model_names()
+    for name in ("siglip2", "d3-nano", "qwen8b", "qwen8b-vllm"):
+        assert name in names
+        registry.weights_of(name)  # also validates the 40-char sha
+        assert registry.env_of(name)["compat"]["gpu_family"] == "ada"
+    assert registry.weights_of("qwen8b") == (
+        "Qwen/Qwen3-VL-8B-Instruct",
+        "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+    )
+    assert registry.weights_of("qwen8b-vllm") == registry.weights_of("qwen8b")
+    # flash-attn on for the VLMs, off for the ViTs.
+    assert registry.env_of("qwen8b")["build"]["flash_attn"] is True
+    assert registry.env_of("d3-nano")["build"]["flash_attn"] is True
+    assert registry.env_of("siglip2")["build"]["flash_attn"] is False
+    vllm_env = registry.env_of("qwen8b-vllm")
+    hf_env = registry.env_of("qwen8b")
+    assert vllm_env["r2_key"] != hf_env["r2_key"]
+    assert vllm_env["r2_key"] == "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz"
+    assert vllm_env["incomplete_cu130"]["r2_key"] == (
+        "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz"
+    )
+    assert "vllm.entrypoints.openai.api_server" in vllm_env["build"]["verify_modules"]
+    assert "cu128-py312-vllm0310" not in vllm_env["r2_key"]
+    assert vllm_env["unpack_to"] != hf_env["unpack_to"]
+    assert vllm_env["build"]["flash_attn"] is False
+    assert vllm_env["build"]["install_default_torch"] is False
+    assert vllm_env["build"]["require_cuda"] is False
+    assert vllm_env["compat"]["cuda"] == "13.0"
+    assert vllm_env["superseded"]["r2_key"] == "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz"
+    assert vllm_env["superseded"]["sha256"] == (
+        "2a3dcb1fc6a8d84439263512c65dae0bb576c50d4f559ae9f069407eb2e86db6"
+    )
+    assert vllm_env["incomplete_cu130"]["sha256"] == (
+        "24f1eb0cc264a9794979eb6c2225eca47d67d68025407d51db86aa171ce7ba7e"
+    )
+    assert int(vllm_env["incomplete_cu130"]["size"]) == 4252947071
+    assert vllm_env["sha256"] == (
+        "59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b"
+    )
+    assert int(vllm_env["size"]) == 4252375781
+    assert vllm_env.get("complete") is True
+
+
+def test_unknown_model_raises():
+    with pytest.raises(registry.RegistryError):
+        registry.weights_of("does-not-exist")
+
+
+def test_bad_revision_rejected(tmp_path):
+    bad = tmp_path / "models.yaml"
+    bad.write_text("version: 1\nmodels:\n  x:\n    repo: a/b\n    revision: short\n")
+    with pytest.raises(registry.RegistryError):
+        registry.weights_of("x", path=bad)
+
+
+# --- a fake env tarball + fake R2 client -----------------------------------
+
+def _make_env_tarball(dest_tar: Path):
+    """Build a tiny conda-pack-shaped env: bin/activate + a no-op bin/conda-unpack."""
+    staging = dest_tar.parent / "staging"
+    (staging / "bin").mkdir(parents=True, exist_ok=True)
+    (staging / "bin" / "activate").write_text("# fake activate\n")
+    with tarfile.open(dest_tar, "w:gz") as tf:
+        for p in sorted(staging.rglob("*")):
+            tf.add(p, arcname=p.relative_to(staging).as_posix())
+    return dest_tar
+
+
+class _FakeR2:
+    """Minimal stand-in for the boto3 S3 client env_source uses."""
+
+    def __init__(self, tarball: Path, manifest: dict):
+        self._tarball = tarball
+        self._manifest = manifest
+
+    def download_file(self, bucket, key, dest):
+        Path(dest).write_bytes(self._tarball.read_bytes())
+
+    def get_object(self, Bucket, Key):
+        return {"Body": io.BytesIO(json.dumps(self._manifest).encode())}
+
+
+def _sha256(p):
+    import hashlib
+
+    return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+
+# --- env_source.pull_env ---------------------------------------------------
+
+def test_pull_env_extracts_and_marks(tmp_path, monkeypatch):
+    tarball = _make_env_tarball(tmp_path / "env.tar.gz")
+    sha = _sha256(tarball)
+    unpack_to = tmp_path / "opt" / "videojev"
+    env = {"r2_key": "envs/videojev/x.tar.gz", "manifest_key": "envs/videojev/x.json",
+           "unpack_to": str(unpack_to), "activate_rel": "bin/activate", "sha256": sha}
+    manifest = {"sha256": sha, "size": tarball.stat().st_size}
+    monkeypatch.setenv("R2_BUCKET", "goodvision-models")
+
+    activate = env_source.pull_env(env, client=_FakeR2(tarball, manifest),
+                                   scratch=str(tmp_path / "scratch"))
+    assert Path(activate).is_file()
+    assert activate == str(unpack_to / "bin" / "activate")
+    marker = json.loads((unpack_to / ".r2_env.json").read_text())
+    assert marker["sha256"] == sha
+
+
+def test_pull_env_rejects_sha_mismatch(tmp_path, monkeypatch):
+    tarball = _make_env_tarball(tmp_path / "env.tar.gz")
+    unpack_to = tmp_path / "opt" / "videojev"
+    env = {"r2_key": "k", "manifest_key": "m", "unpack_to": str(unpack_to),
+           "activate_rel": "bin/activate", "sha256": "0" * 64}
+    manifest = {"sha256": "0" * 64, "size": tarball.stat().st_size}
+    monkeypatch.setenv("R2_BUCKET", "goodvision-models")
+    with pytest.raises(ValueError, match="sha256 mismatch"):
+        env_source.pull_env(env, client=_FakeR2(tarball, manifest),
+                            scratch=str(tmp_path / "scratch"))
+    assert not unpack_to.exists()
+
+
+def test_already_restored_short_circuits(tmp_path):
+    unpack_to = tmp_path / "opt" / "videojev"
+    (unpack_to / "bin").mkdir(parents=True)
+    (unpack_to / "bin" / "activate").write_text("x")
+    (unpack_to / ".r2_env.json").write_text(json.dumps({"sha256": "a" * 64, "r2_key": "k",
+        "activate_rel": "bin/activate", "activate_sha256": _sha256(unpack_to / "bin/activate")}))
+    env = {"unpack_to": str(unpack_to), "activate_rel": "bin/activate", "sha256": "a" * 64, "r2_key": "k"}
+    assert env_source._already_restored(env) is True
+    env_wrong = dict(env, sha256="b" * 64)
+    assert env_source._already_restored(env_wrong) is False
+
+
+def test_ensure_env_errors_without_packed_env(tmp_path):
+    # A model whose env is null has no packed env to restore.
+    reg = tmp_path / "models.yaml"
+    reg.write_text(
+        "version: 1\nmodels:\n  noenv:\n    repo: a/b\n"
+        "    revision: " + ("a" * 40) + "\n    env: null\n"
+    )
+    with pytest.raises(registry.RegistryError):
+        env_source.ensure_env("noenv", registry_path=reg)
+
+
+# --- build_env flash-attn toggle -------------------------------------------
+
+def _script(flash_attn):
+    return build_env._build_script(
+        Path("/opt/miniforge3/bin/conda"), "/opt/env/x",
+        "tools/x/requirements.txt", "8.9", "3.12", flash_attn=flash_attn,
+    )
+
+
+def test_build_script_includes_flash_attn_by_default():
+    script = _script(True)
+    assert "flash-attn==2.8.3.post2 causal-conv1d==1.7.0" in script
+    assert "import torch, flash_attn, typing_extensions" in script
+    assert "PYTHONNOUSERSITE=1" in script
+    assert "python -s -m pip" in script
+    assert "sys.flags.no_user_site" in script
+    assert "upgrade pip wheel packaging ninja" in script
+    assert "upgrade pip setuptools wheel" not in script
+
+
+def test_build_script_skips_flash_attn_when_false():
+    script = _script(False)
+    # The compile-once pip step and the flash_attn import are both gone.
+    assert "flash-attn==2.8.3.post2" not in script
+    assert "--no-build-isolation" not in script
+    assert "flash_attn.__version__" not in script
+    assert "import torch, flash_attn" not in script
+    # torch is still installed and still verified.
+    assert "torch==2.8.0" in script
+    assert "import torch, typing_extensions" in script
+    assert "PYTHONNOUSERSITE=1" in script
+    assert "python -s -m pip" in script
+
+
+def test_build_script_always_installs_torch_and_requirements():
+    for flash_attn in (True, False):
+        script = _script(flash_attn)
+        assert "torch==2.8.0 torchvision==0.23.0" in script
+        assert '-r "tools/x/requirements.txt"' in script
+
+
+def test_build_script_skips_default_torch_when_disabled():
+    script = build_env._build_script(
+        Path("/opt/miniforge3/bin/conda"), "/opt/env/x",
+        "tools/qwen8b_vllm/requirements.txt", "8.9", "3.12",
+        flash_attn=False, install_default_torch=False,
+    )
+    assert "pip install --no-cache-dir torch==2.8.0" not in script
+    assert "install_default_torch: false" in script
+    assert '-r "tools/qwen8b_vllm/requirements.txt"' in script
+
+
+def test_build_script_cpu_pack_skips_cuda_device_assert():
+    script = build_env._build_script(
+        Path("/opt/miniforge3/bin/conda"), "/opt/env/x",
+        "tools/qwen8b_vllm/requirements.txt", "8.9", "3.12",
+        flash_attn=False, install_default_torch=False, require_cuda=False,
+    )
+    assert "torch.cuda.is_available()" not in script
+    assert "cpu-pack: CUDA wheels installed" in script
+    vllm = build_env._build_script(
+        Path("/opt/miniforge3/bin/conda"), "/opt/env/x",
+        "tools/qwen8b_vllm/requirements.txt", "8.9", "3.12",
+        flash_attn=False, install_default_torch=False, require_cuda=False,
+        extra_imports=("vllm", "filelock", "tqdm"),
+    )
+    assert "import torch, typing_extensions, vllm, filelock, tqdm" in vllm
+    gpu = build_env._build_script(
+        Path("/opt/miniforge3/bin/conda"), "/opt/env/x",
+        "tools/x/requirements.txt", "8.9", "3.12",
+        flash_attn=True, require_cuda=True,
+    )
+    assert "torch.cuda.is_available()" in gpu
+
+
+# --- build_env --upload-only / --skip-upload -------------------------------
+
+class _FakeUploadClient:
+    def __init__(self):
+        self.uploaded = []
+        self.objects = {}
+
+    def upload_file(self, path, bucket, key):
+        self.uploaded.append((path, bucket, key))
+
+    def put_object(self, Bucket, Key, Body, **kwargs):
+        assert kwargs["IfNoneMatch"] == "*"
+        self.objects[(Bucket, Key)] = Body.read() if hasattr(Body, "read") else Body
+
+
+def test_skip_and_upload_only_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        build_env.main(["--model", "videojev", "--skip-upload", "--upload-only"])
+
+
+def test_upload_only_requires_existing_tarball(tmp_path):
+    missing = tmp_path / "nope.tar.gz"
+    with pytest.raises(SystemExit):
+        build_env.main(["--model", "videojev", "--upload-only", "--out", str(missing)])
+
+
+def test_upload_only_uploads_without_building(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(build_env, "FROZEN_R2_KEYS", ())
+    tarball = tmp_path / "videojev-env.tar.gz"
+    tarball.write_bytes(b"packed-env-bytes")
+    fake = _FakeUploadClient()
+    monkeypatch.setattr(build_env.model_source, "r2_client", lambda: fake)
+    monkeypatch.setenv("R2_BUCKET", "goodvision-models")
+    # Building must NOT happen in upload-only mode.
+    def _boom(*a, **k):
+        raise AssertionError("upload-only must not build/pack")
+    monkeypatch.setattr(build_env, "_ensure_miniconda", _boom)
+    monkeypatch.setattr(build_env, "_pack", _boom)
+
+    build_env.main(["--model", "videojev", "--upload-only", "--out", str(tarball)])
+
+    result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert result["uploaded"] is True
+    assert result["r2_key"].startswith("envs/videojev/")
+    assert len(fake.objects) == 2
+    assert any(value == b"packed-env-bytes" for value in fake.objects.values())
+    # the side-manifest was written too
+    assert any(k.endswith(".json") for (_b, k) in fake.objects)
+
+
+def test_pack_fails_closed_on_missing_conda_files():
+    pack_src = Path(build_env.__file__).read_text()
+    line = [ln for ln in pack_src.splitlines() if "conda-pack -p" in ln][0]
+    assert "--ignore-missing-files" not in line
+
+
+def test_assert_prefix_files_detects_conda_meta_holes(tmp_path):
+    prefix = tmp_path / "env"
+    (prefix / "conda-meta").mkdir(parents=True)
+    (prefix / "conda-meta" / "setuptools-84.2.1-py.json").write_text(json.dumps({
+        "name": "setuptools", "version": "84.2.1",
+        "files": ["lib/python3.12/site-packages/setuptools/_distutils/compilers/errors.py"],
+    }))
+    with pytest.raises(RuntimeError, match="conda-meta lists files missing"):
+        build_env._assert_prefix_files(prefix)
+
+@pytest.mark.parametrize("sha", [None, "", "short", "A" * 64, 5])
+def test_restore_requires_registry_digest_before_io(tmp_path, sha):
+    class NoIO:
+        def __getattr__(self, name):
+            raise AssertionError("unexpected IO: " + name)
+    with pytest.raises(ValueError, match="registry-pinned"):
+        env_source.pull_env({"sha256": sha}, client=NoIO(), bucket="b")
+
+
+@pytest.mark.parametrize("field,value", [("sha256", "b" * 64), ("r2_key", "other"),
+    ("size", 999), ("activate_rel", "bad"), ("compat", {"cuda": "other"})])
+def test_restore_rejects_manifest_contradictions(tmp_path, field, value):
+    env = {"sha256": "a" * 64, "r2_key": "k", "manifest_key": "m", "size": 1,
+           "activate_rel": "bin/activate", "compat": {"cuda": "13.0"}}
+    with pytest.raises(ValueError, match="contradicts"):
+        env_source.pull_env(env, client=_FakeR2(tmp_path / "absent", {field: value}), bucket="b")
+
+
+@pytest.mark.parametrize("kind", ["traversal", "symlink", "device"])
+def test_safe_extract_rejects_unsafe_members(tmp_path, kind):
+    archive = tmp_path / "archive.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        entry = tarfile.TarInfo("../escape" if kind == "traversal" else "member")
+        if kind == "symlink":
+            entry.type = tarfile.SYMTYPE
+            entry.linkname = "../escape"
+        elif kind == "device":
+            entry.type = tarfile.CHRTYPE
+        tf.addfile(entry)
+    with pytest.raises(tarfile.FilterError):
+        env_source._safe_extract(archive, tmp_path / "dest")
+    assert not (tmp_path / "escape").exists()
+
+
+def test_local_marker_rejects_changed_activation_and_key(tmp_path):
+    dest = tmp_path / "env"
+    (dest / "bin").mkdir(parents=True)
+    activate = dest / "bin/activate"
+    activate.write_text("original")
+    env = {"sha256": "a" * 64, "r2_key": "k", "unpack_to": str(dest), "activate_rel": "bin/activate"}
+    (dest / ".r2_env.json").write_text(json.dumps(env | {"activate_sha256": _sha256(activate)}))
+    assert env_source._already_restored(env)
+    assert not env_source._already_restored(env | {"r2_key": "different"})
+    activate.write_text("changed")
+    assert not env_source._already_restored(env)
+
+
+def test_all_published_env_keys_are_frozen():
+    for name in registry.model_names():
+        env = registry.env_of(name)
+        if env and env.get("sha256"):
+            with pytest.raises(SystemExit, match="frozen"):
+                build_env._refuse_frozen_key(env["r2_key"])
+
+
+def test_upload_never_retries_conditional_conflict(tmp_path, monkeypatch):
+    class Conflict:
+        calls = 0
+        def put_object(self, **kwargs):
+            self.calls += 1
+            assert kwargs["IfNoneMatch"] == "*"
+            raise RuntimeError("PreconditionFailed")
+    client = Conflict()
+    monkeypatch.setattr(build_env.model_source, "r2_client", lambda: client)
+    monkeypatch.setenv("R2_BUCKET", "b")
+    p = tmp_path / "pack"
+    p.write_bytes(b"synthetic bytes")
+    spec = {"r2_key": "envs/new/version.tar.gz", "manifest_key": "envs/new/version.json",
+            "unpack_to": "/opt/env/new", "activate_rel": "bin/activate"}
+    with pytest.raises(RuntimeError, match="PreconditionFailed"):
+        build_env._upload(spec, "new", p, {}, "repo@revision")
+    assert client.calls == 1
+
+
+def test_pinned_restore_without_optional_manifest(tmp_path, monkeypatch):
+    archive = _make_env_tarball(tmp_path / "source.tar.gz")
+    class MissingManifest(_FakeR2):
+        def get_object(self, **kwargs):
+            raise OSError("manifest unavailable")
+    env = {"r2_key": "k", "manifest_key": "m", "sha256": _sha256(archive),
+           "size": archive.stat().st_size, "unpack_to": str(tmp_path / "env"),
+           "activate_rel": "bin/activate"}
+    result = env_source.pull_env(env, client=MissingManifest(archive, {}), bucket="b",
+                                 scratch=tmp_path / "scratch")
+    assert Path(result).is_file()
+    assert env_source._already_restored(env)
+
+
+def test_builder_restore_also_filters_archive(tmp_path):
+    archive = tmp_path / "archive.tar.gz"
+    with tarfile.open(archive, "w:gz") as tf:
+        tf.addfile(tarfile.TarInfo("../escape"))
+    with pytest.raises(tarfile.FilterError):
+        build_env._restore_tarball_isolated(archive, tmp_path / "dest", ())
+    assert not (tmp_path / "escape").exists()

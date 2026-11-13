@@ -1,3 +1,15 @@
+# Model interfaces and protocol identity
+
+For new current202 or explicitly selected current120 runs use `tools/unified_benchmark/README.md`. All adapters share
+1 FPS JPEG input, but APIs/CLIP/SigLIP2 consume one frame while VideoJev/Decision3
+consume adjacent two-frame windows. Native precision is retained and recorded.
+The four native models now have a portable deployment and execution path in
+`tools/unified_benchmark/NATIVE.md`. Use its verified deployment and `native_run`,
+not the separate paced/probe runners, for this protocol. CLIP/SigLIP2 retain
+FP32/TF32-off; VideoJev/Decision3 retain BF16 backbone and original FP32 scoring.
+The older interfaces below are retained for historical interpretation; they do
+not override the named current protocol or establish identical model inputs.
+
 # Model classes and runner boundaries
 
 A shared table does not make unlike experiments controlled comparisons. Record the
@@ -36,19 +48,22 @@ own deadlines. Neither is automatically the base-4 exam. Check actual timestamps
 question mapping and frozen references; do not assume a universal 0.8s cadence or
 that a historical/private run is reproducible from these public tools.
 
-## CLIP / SigLIP2: availability must be checked
+## CLIP / SigLIP2: authorized native integration
 
-`tools/clip_benchmark/` is **not present on this PR's base**. It is developed
-separately (PR #62); inspect its actual reviewed revision before using its runner
-or claiming results. Do not silently check out or merge another PR to satisfy this
-skill. No CLIP backend exists in `run_eval.py`.
+`tools/clip_benchmark/` was selectively imported from draft PR #62 commit
+`99d515a3f561460561d21e50cff994ad85f0fd99`, then adapted with user authorization;
+the PR was not merged. Read its README and staged runner before use. No CLIP
+backend exists in `run_eval.py`. Offline preflight does not verify CUDA/model loading.
 
 A cosine positive-minus-negative margin is not a probability. Record its text
 pairs, model revision, comparator and threshold. An untuned zero-margin baseline
 and validation-tuned thresholds belong to distinct labeled variants. Only reuse
 a selector after verifying its validation-only inputs, completeness checks and
 deterministic tie rule against `bench-threshold-tune/references/protocol.md`.
-Do not claim the absent implementation is already correct or guess its CLI.
+The controlled variant samples at 1 FPS from source time zero, using original
+decoded pixels and the checkpoint processor, FP32/TF32-off, twelve paced file
+slots and native error denominators. API centered JPEG sampling is different.
+These are explicitly labeled system comparisons, not a model-only comparison.
 
 ## Importing results
 

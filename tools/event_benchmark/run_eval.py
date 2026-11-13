@@ -8,6 +8,7 @@ ONLY thing that varies between runs is the model (--candidate, or --model +
 import argparse
 import base64
 import hashlib
+import importlib.util
 import json
 import math
 import re
@@ -48,6 +49,10 @@ CANDIDATES = {
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = Path(__file__).parent / "datasets/manifest_50.json"
 SPEC_VERSION = "v2.1"
+_evidence_spec = importlib.util.spec_from_file_location(
+    "benchmark_evidence", Path(__file__).with_name("evidence.py"))
+evidence = importlib.util.module_from_spec(_evidence_spec)
+_evidence_spec.loader.exec_module(evidence)
 
 
 def load_key(env_file):
@@ -124,8 +129,8 @@ def _post(url, body, key):
     return json.loads(encoded, object_pairs_hook=_unique)
 
 
-def frame_score(backend, model, qcore, uri, key):
-    """Return a per-frame score in [0,1], or None on hard failure after retries."""
+def build_request(backend, model, qcore, uri, provider_context=None):
+    """Preserve the frozen envelopes; routing is a separately recorded variant."""
     if backend == "language":
         prompt = (f'{qcore} Answer only with compact JSON: '
                   '{"answer": true} or {"answer": false}.')
@@ -133,44 +138,74 @@ def frame_score(backend, model, qcore, uri, key):
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": uri}}]}],
             "max_tokens": CHAT_MAX_TOKENS, "temperature": TEMPERATURE}
-        for _ in range(RETRIES):
-            try:
-                choice = _post(CHAT_URL, body, key)["choices"][0]
-                if choice.get("finish_reason") != "stop":
-                    raise ValueError("incomplete language answer")
-                c = choice["message"]["content"]
-                m = re.search(r"\{.*\}", c, re.DOTALL)
-                answer = json.loads(m.group(0), object_pairs_hook=_unique) if m else None
-                if (not isinstance(answer, dict) or set(answer) != {"answer"}
-                        or type(answer["answer"]) is not bool):
-                    raise ValueError("language answer must be a JSON boolean")
-                return float(answer["answer"])
-            except Exception:
-                time.sleep(1)
-        return None
-    if backend == "decision":
+        url = CHAT_URL
+    elif backend == "decision":
         body = {"model": model,
                 "state": ["Surveillance video frame.",
                           {"type": "image_url", "image_url": {"url": uri}}],
                 "questions": {"answer": {"type": "noul", "instructions": qcore,
                     "criteria": {"true": "Yes — " + qcore, "false": "No — " + qcore}}}}
-        for _ in range(RETRIES):
-            try:
-                answer = _post(LUNA_URL, body, key)["answers"]["answer"]
-                score = answer.get("noul")
-                if (answer.get("type") != "noul" or answer.get("error") is not None
-                        or type(score) not in (int, float) or not math.isfinite(score)
-                        or not 0 <= score <= 1):
-                    raise ValueError("decision answer must be a probability in [0, 1]")
-                return score
-            except Exception:
-                time.sleep(1)
-        return None
-    raise ValueError("unknown backend " + backend)
+        url = LUNA_URL
+    else:
+        raise ValueError("unknown backend " + backend)
+    if provider_context:
+        provider = evidence.provider_body(provider_context)
+        if provider is not None:
+            body["provider"] = provider
+    return url, body
+
+
+def parse_answer(payload, backend):
+    if not isinstance(payload, dict) or payload.get("error") is not None:
+        raise ValueError("invalid provider response")
+    if backend == "language":
+        choice = payload["choices"][0]
+        if choice.get("finish_reason") != "stop" or choice.get("error") is not None:
+            raise ValueError("incomplete language answer")
+        m = re.search(r"\{.*\}", choice["message"]["content"], re.DOTALL)
+        answer = json.loads(m.group(0), object_pairs_hook=_unique) if m else None
+        if (not isinstance(answer, dict) or set(answer) != {"answer"}
+                or type(answer["answer"]) is not bool):
+            raise ValueError("language answer must be a JSON boolean")
+        return float(answer["answer"])
+    answers = payload.get("answers")
+    if not isinstance(answers, dict) or not isinstance(answers.get("answer"), dict):
+        raise ValueError("invalid decision answer envelope")
+    answer = answers["answer"]
+    score = answer.get("noul")
+    if (answer.get("type") != "noul" or answer.get("error") is not None
+            or not evidence.finite_number(score)
+            or not 0 <= score <= 1):
+        raise ValueError("decision answer must be a probability in [0, 1]")
+    return score
+
+
+def frame_score(backend, model, qcore, uri, key, provider_context=None, attempts=None):
+    """Same retry/scoring policy; retain received scores and all attempt metadata."""
+    url, body = build_request(backend, model, qcore, uri, provider_context)
+    request_hash = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+    for index in range(RETRIES):
+        record = {"attempt": index + 1, "request_sha256": request_hash, "ok": False}
+        started = time.perf_counter()
+        try:
+            payload = _post(url, body, key)
+            record.update(evidence.response_metadata(payload))
+            score = parse_answer(payload, backend)
+            record.update(ok=True, score=score)
+            return score
+        except Exception as error:
+            record["error"] = ("http_" + str(error.code) if hasattr(error, "code")
+                               else type(error).__name__)
+        finally:
+            record["elapsed_s"] = time.perf_counter() - started
+            if attempts is not None:
+                attempts.append(record)
+        time.sleep(1)
+    return None
 
 
 # ---------------------------------------------------------------- per-video (§5)
-def eval_video(backend, model, sample, media_index, key, interval=None):
+def eval_video(backend, model, sample, media_index, key, interval=None, provider_context=None):
     path = media_index.get(sample["filename"])
     if path is None or not path.exists():
         return sample, {"error": "missing file"}
@@ -180,28 +215,32 @@ def eval_video(backend, model, sample, media_index, key, interval=None):
         times = frame_times(probe_duration(path), interval)
     except (OSError, ValueError, subprocess.SubprocessError):
         return sample, {"error": "video duration unavailable"}
+    frames = []
     for t in times:
+        frame = {"time_s": t, "attempts": []}
+        frames.append(frame)
         try:
             uri = frame_uri(path, t)
         except (OSError, subprocess.SubprocessError):
             uri = None
         if not uri:
+            frame["error"] = "decode_failed"
             failed += 1
             continue
-        s = frame_score(backend, model, qcore, uri, key)
+        s = frame_score(backend, model, qcore, uri, key, provider_context, frame["attempts"])
         if s is None:
+            frame["error"] = "provider_answer_failed"
             failed += 1
             continue
         seen += 1
+        frame["score"] = s
         best = max(best, s)
     counts = {"frames_planned": len(times), "frames_ok": seen,
-              "frames_failed": failed, "frame_times": times}
+              "frames_failed": failed, "frame_times": times, "frames": frames}
     if failed:
         return sample, {"error": "incomplete frame evidence", **counts}
     pred = "yes" if best >= GATE else "no"
-    # Preserve the exact maximum used for the verdict. Rounding here can turn a
-    # negative 0.49996 into 0.5 and change both baseline replay and tuned decisions.
-    return sample, {"score": best, "pred": pred,
+    return sample, {"score": best, "score_display": round(best, 4), "pred": pred,
                     "correct": pred == sample["proposed_answer"],
                     **counts}
 
@@ -308,6 +347,12 @@ def main():
                          "(max 14 uniform frames) instead of 1 fps")
     ap.add_argument("--checksums", action="store_true",
                     help="compatibility flag; frozen mode verifies hashes, provisional mode only records them")
+    ap.add_argument("--provider-config", type=Path, help="frozen single-provider configuration")
+    ap.add_argument("--split-manifest", type=Path, help="frozen source-group sidecar")
+    ap.add_argument("--split", choices=["validation", "test"])
+    ap.add_argument("--legacy-baseline", action="store_true",
+                    help="explicit v2.1 baseline: default provider routing, no validation/test sidecar; not eligible for controlled tuning")
+    ap.add_argument("--preflight", action="store_true", help="offline input checks only; no credentials or HTTP")
     ap.add_argument("--out", type=Path, help="write full result JSON here")
     ap.add_argument("--events", nargs="+", choices=SCORED_EVENTS,
                     help="base-4 event filter for provisional diagnostics; bag/unknown scoring is unsupported")
@@ -315,6 +360,12 @@ def main():
                     help="draft/unfrozen run: skip the manifest+checksum freeze (GT under review). "
                          "Uses the separate base4-provisional-v2 protocol, ineligible for v2 calibration.")
     a = ap.parse_args()
+    if a.legacy_baseline and (a.provider_config or a.split_manifest or a.split):
+        ap.error("--legacy-baseline cannot be combined with controlled provider/split options")
+    if a.provisional and (a.legacy_baseline or a.provider_config or a.split_manifest or a.split):
+        ap.error("--provisional cannot be combined with legacy or controlled provider/split options")
+    variant = ("base4-provisional-v2" if a.provisional else
+               evidence.LEGACY_VARIANT if a.legacy_baseline else evidence.VARIANT)
     if a.workers < 1 or not math.isfinite(a.interval) or a.interval <= 0:
         ap.error("workers and interval must be positive; interval must be finite")
     if a.candidate and (a.model or a.backend):
@@ -339,19 +390,63 @@ def main():
         a.manifest = a.manifest or DEFAULT_MANIFEST
         scored = list(SCORED_EVENTS)
     try:
+        if a.out and a.out.exists():
+            raise ValueError("output already exists; choose a new path")
         if a.provisional:
             samples, media_index, hashes = provisional_inputs(a.samples, a.media, scored)
         else:
             samples, media_index, hashes = frozen_inputs(a.samples, a.manifest, a.media)
+        if bool(a.split_manifest) != bool(a.split):
+            raise ValueError("--split-manifest and --split must be supplied together")
+        groups, split_context = ({}, None)
+        if a.split_manifest:
+            groups, split_context = evidence.split_groups(a.split_manifest, a.manifest, a.split)
+        provider_context = (evidence.load_provider(a.provider_config, model, backend)
+                            if a.provider_config else None)
+        provenance = {"samples_json_sha256": sha256(a.samples), "manifest_sha256": None if a.provisional else sha256(a.manifest),
+                      "runner_sha256": sha256(Path(__file__)), "spec_sha256": sha256(Path(__file__).with_name("PROVISIONAL.md" if a.provisional else "SPEC.md")),
+                      "evidence_sha256": sha256(Path(evidence.__file__)), **evidence.code_provenance()}
     except (OSError, ValueError, KeyError, TypeError) as error:
         ap.error(str(error))
+    if a.preflight:
+        report = {"artifact_type": "offline-preflight", "model": model, "backend": backend,
+                  **provenance,
+                  "protocol_variant": variant,
+                  "frozen": not a.provisional, "provisional": a.provisional,
+                  "hashes_verified": not a.provisional,
+                  "preflight_at_utc": datetime.now(timezone.utc).isoformat(),
+                  "questions": len(samples), "videos": len(hashes),
+                  "samples_json_sha256": sha256(a.samples), "manifest_sha256": None if a.provisional else sha256(a.manifest),
+                  "runner_sha256": sha256(Path(__file__)), "evidence_sha256": sha256(Path(evidence.__file__)),
+                  "split_context": split_context, "provider_context": provider_context,
+                  "interval": interval, "workers": a.workers, "inference_calls": 0,
+                  "planned_config": {"frame_width": FRAME_WIDTH, "gate": GATE,
+                                     "temperature": TEMPERATURE, "chat_max_tokens": CHAT_MAX_TOKENS,
+                                     "retries": RETRIES, "timeout": TIMEOUT,
+                                     "decision": "max-frame-score >= gate"},
+                  "data_checks_passed": True,
+                  "pending": ["paid inference authorization", "live provider receipt verification"],
+                  "runtime_note": "workers are not proof of twelve-camera end-to-end throughput"}
+        if not provider_context and not (a.legacy_baseline or a.provisional):
+            report["pending"].append("frozen provider configuration")
+        if not split_context and not (a.legacy_baseline or a.provisional):
+            report["pending"].append("frozen split/source-group mapping")
+        if a.out:
+            evidence.write_new(a.out, report)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return report
+    if not (a.legacy_baseline or a.provisional) and (not provider_context or not split_context):
+        ap.error("controlled inference requires --provider-config, --split-manifest and --split")
     key = load_key(a.env_file)
+    run_at = datetime.now(timezone.utc).isoformat()
 
     results = []
     with ThreadPoolExecutor(max_workers=a.workers) as ex:
-        futs = [ex.submit(eval_video, backend, model, s, media_index, key, interval) for s in samples]
+        futs = [ex.submit(eval_video, backend, model, s, media_index, key, interval, provider_context) for s in samples]
         for f in as_completed(futs):
             results.append(f.result())
+    attempts = [a for _, r in results for frame in r.get("frames", []) for a in frame["attempts"]]
+    evidence.enrich_attempts(attempts, key)
 
     # ---- score (§7)
     cnt = defaultdict(lambda: {"TP": 0, "FN": 0, "TN": 0, "FP": 0, "err": 0, "total": 0, "scored": 0})
@@ -382,22 +477,25 @@ def main():
     print(f"OVERALL {oc}/{ot} = {100*oc/ot:.1f}%" if ot else "OVERALL n/a")
 
     out = {
+        **provenance,
         "spec_version": "base4-provisional-v2" if a.provisional else SPEC_VERSION,
-        "score_precision": "lossless",
         "frozen": not a.provisional,
         "provisional": a.provisional,
         "scored_events": scored,
-        "samples_json_sha256": sha256(a.samples),
-        "manifest_sha256": None if a.provisional else sha256(a.manifest),
-        "runner_sha256": sha256(Path(__file__)),
-        "spec_sha256": sha256(Path(__file__).with_name("PROVISIONAL.md" if a.provisional else "SPEC.md")),
-        "run_at": datetime.now(timezone.utc).isoformat(),
+        "protocol_variant": variant,
+        "score_precision": "lossless",
+        "score_precision_scope": "Received JSON numeric value stored as Python float, without extra rounding; server rounding is unknown.",
+        "provider_context": provider_context,
+        "provider_observed": evidence.provider_summary(attempts, provider_context),
+        "split_context": split_context,
+        "run_at": run_at,
         "candidate": a.candidate, "model": model, "backend": backend,
         "config": {"gate": GATE, "sampling": samp, "interval": interval,
                    "frame_rule": (f"n=max(3,min({FRAME_MAX},int(dur))); t=dur*(i+0.5)/n"
                                   if interval is None else "n=max(1,round(dur/interval)); t=dur*(i+0.5)/n"),
                    "workers": a.workers,
                    "frame_width": FRAME_WIDTH, "temperature": TEMPERATURE,
+                   "chat_max_tokens": CHAT_MAX_TOKENS,
                    "retries": RETRIES, "timeout": TIMEOUT, "decision": "max-frame-score >= gate"},
         "overall": {"correct": oc, "total": ot, "attempted": ot,
                     "scored": sum(c["scored"] for c in cnt.values()),
@@ -406,12 +504,12 @@ def main():
         "per_video": [{"number": s["number"], "filename": s["filename"], "event": s["event"],
                        "gt": s["proposed_answer"],
                        "sha256": hashes[s["filename"]],
+                       "source_video_group": groups.get(s["number"]),
                        **r}
                       for s, r in sorted(results, key=lambda x: x[0]["number"])],
     }
     if a.out:
-        a.out.parent.mkdir(parents=True, exist_ok=True)
-        a.out.write_text(json.dumps(out, ensure_ascii=False, indent=1, allow_nan=False), encoding="utf-8")
+        evidence.write_new(a.out, out)
         print(f"-> {a.out}")
     return out
 

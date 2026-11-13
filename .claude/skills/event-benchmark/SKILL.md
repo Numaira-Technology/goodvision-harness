@@ -1,125 +1,142 @@
 ---
 name: event-benchmark
 description: >-
-  Prepare, run and report the surveillance event benchmark (fight/smoking/fall/weapon).
+  Prepare, run and report the surveillance event benchmark and reviewed robot-video
+  supplement (fight/smoking/fall/weapon).
   Use for benchmark/model comparisons, 跑一下测评, 测速, or preparing benchmark tables.
   Preserves reviewed inputs, protocol versions, fixed baselines and measured provenance.
 ---
 
 # Event-recognition benchmark
 
-Use `tools/event_benchmark/SPEC.md` as the authority. Current checkout: **v2.1**,
-with strict answers, complete frame evidence and reviewed input hashes. Historical
-v1 outputs are not v2 evidence. Inspect the current spec and runner before a run.
-These instructions do not authorize paid inference, downloads, uploads or publishing;
-use the user's authorized scope and budget.
+Default for this team's current evaluation: **unified-frame-202-v1**.
+Follow **preflight → environment checks → validation → threshold selection when
+applicable → test → local report**. Publishing is a separately scoped action.
+Use [the unified run guide](../../../tools/unified_benchmark/README.md), not the
+legacy `tools/event_benchmark/run_eval.py` examples, for this default protocol.
+These instructions use the user's existing scope and budget; they do not by
+themselves authorize paid inference, downloads, uploads or publication.
 
-## Workflow
+## Before starting
 
-1. **Freeze the inputs before scoring.** Identify the candidate, dataset, reviewed
-   manifest, media directories and output path. Verify manifest review status,
-   samples hash, question/label identities and media hashes. The runner does this
-   before requests. Do not change a draft status to bypass review.
-   Select the reviewed manifest from `tools/event_benchmark/datasets/` and obtain
-   its exact matching samples file; not every samples file is committed there.
-   Read review status from the selected manifest. The reviewed 120-question set
-   includes 100 base-event questions plus 20 separate bag-search questions; the
-   base runner scores only the former. Question count is not unique-video count.
-   PR #73 records all 120 rows as `user_reviewed`, but these flags alone do not
-   independently verify owner approval, source grouping or fresh run provenance;
-   no `source_video_group` values are present in that manifest. The separate
-   reviewed validation/media manifest and compatible lossless calibration/test
-   evidence are still required by the threshold-study acceptance hold.
-   Categories, questions, answers and source details come from the selected samples.
-   Video source does not change the scoring workflow. Keep each cohort separately
-   identified; supplementary data does not extend an existing result block.
-   Preserve source groups across train/development, validation and test splits:
-   cuts from one recording must not cross splits. Missing onset/person annotations
-   do not establish reaction-time or track-ID accuracy. Never assume a colleague's
-   Desktop path exists.
-2. **Run accuracy from the repository root**, only after authorization for calls:
-   ```sh
-   python tools/event_benchmark/run_eval.py --candidate luna \
-     --samples /path/to/samples.json --manifest /path/to/reviewed-manifest.json \
-     --media /path/to/media1 /path/to/media2 \
-     --interval 1.0 --workers 12 --out outputs/event-benchmark/luna-v2.json
-   ```
-   Repeat with qwen and gemini on identical inputs. Capture the source commit and
-   result-file SHA-256 alongside the runner's samples/manifest/media/runner/spec
-   hashes. Keep generated data in ignored `outputs/`, not tracked `results/`.
-3. **Measure latency separately**, with the same input and question per candidate:
-   ```sh
-   python .claude/skills/event-benchmark/scripts/latency_bench.py \
-     --candidate luna --video /path/to/representative-clip.mp4 \
-     --concurrency 12 --rounds 6 --out outputs/event-benchmark/lat-luna.json
-   ```
-   This is single-frame, single-predicate request latency, not product latency or
-   twelve-camera throughput. Inspect failures and completion status before reporting.
-4. **Report** using `references/report-format.md`, including coverage and provenance.
-   Use `bench-sheet-contribute` only when publishing is requested. Its default
-   preparation is an offline preview, with no sheet write.
+Read the [handoff checklist](../../../tools/unified_benchmark/README.md#handoff-checklist).
+It covers the code revision, eight private frozen JSON files (five original plus three202 files), original videos,
+credentials or pinned weights, hardware, cost authorization and output locations.
+Keep the original input bytes and filenames in a private `--inputs` directory.
+Do not substitute the repository's legacy manifest or alter hashes to pass a check.
+Another agent must read this file and its selected execution guide; discovering
+`.claude/skills` automatically is not a prerequisite.
 
-## Download media when needed
+## Current202 workflow
 
-Use the selected samples/manifest pair for every source. The downloader handles
-samples with `filename`, `size_bytes` and a `drive_file_id` (or a filename-keyed
-download link). For other source schemas, obtain the exact media through the
-source's authorized transfer method; do not invent metadata or change frozen files
-to fit the downloader. On Vast, download directly to the GPU machine. Private
-Drive files need `GOOGLE_DRIVE_ACCESS_TOKEN` or a private `--links` JSON map of
-filenames/Drive IDs to temporary HTTPS download URLs; a Drive view link is not a
-direct download URL. Keep credentials and temporary link maps outside Git.
+1. **Preflight:** run `tools.unified_benchmark.preflight` for the selected profiles.
+   Verify all eight frozen inputs and video hashes, decode frames and save the new
+   request/code snapshot. Keep pending hardware/provider/authorization checks
+   separate from input validity. This step performs no model calls.
+2. **Environment:** follow the execution route below. Verify pinned versions,
+   credentials/access and hardware; do the authorized original warmup/smoke before
+   evaluation. Offline checks do not prove a new GPU deployment can run.
+3. **Validation:** run the same frozen configuration on validation24. Preserve
+   receipts, complete scores, missing units and run identity.
+4. **Thresholds, when applicable:** use `bench-threshold-tune` and the route's own
+   selector for Luna/CLIP/SigLIP2; require complete validation, then freeze the
+   artifact before test. Boolean/argmax models do not gain a scalar threshold.
+5. **Test:** run the frozen configuration on all 202 questions. Preserve successful
+   answers and the cumulative three-attempt budget across interruptions. For the
+   four-model native CLI, use explicit `--resume`; other routes follow their own
+   documented continuation support, never a fresh ledger to reset the budget.
+6. **Local report:** verify counts, coverage, unknowns, source identities, matching
+   speed and actual costs using [report fields](references/report-format.md).
+   Retain raw receipts, frozen inputs/configs and historical results.
+
+The [202 dataset guide](../../../tools/unified_benchmark/DATASET202.md) defines
+questions1–120 unchanged plus82 single views in test, while validation stays24.
+Keep inherited/unreviewed labels explicit; preflight is not human review. Report
+original120 and robot82 separately alongside correct/202, and never count the old41
+stereo sources again. Do not tune on the new test questions.
+
+## Execution routes
+
+| Selected models | Guide and entrypoint |
+|---|---|
+| OpenRouter API profiles | [API guide](../../../tools/unified_benchmark/README.md#api-execution-after-cost-approval); `tools.unified_benchmark.api_run` |
+| CLIP, SigLIP2, VideoJev, Decision3 | [Native guide](../../../tools/unified_benchmark/NATIVE.md); pinned deployment then `native_run --phase validation\|test\|both` |
+| Qwen8B R2 / Transformers | [Self-hosted Qwen guide](../../../tools/unified_benchmark/README.md#self-hosted-qwen8b-from-r2); `qwen8b_r2_host` via `tools.start_qwen8b_r2` |
+| Qwen8B R2 / vLLM | Same guide; `qwen8b_r2_vllm` via `tools.start_qwen8b_vllm` |
+
+The four-model native CLI without `--execute` checks files only. Qwen R2 launchers
+can rent a GPU and run the selected phases; they are not offline preflight commands.
+Keep the HF, vLLM and OpenRouter Qwen variants separate. The active vLLM environment
+is `envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz`; use the exact registry digest
+and restore instructions in [the package guide](../../../tools/qwen8b_vllm/BUILD.md#restore-the-current-package).
+The old cu128 and incomplete cu130 `…ada.tar.gz` objects remain historical, not
+fallbacks. Preserve the HF pack. Do not rebuild an environment during an ordinary
+rerun or lower concurrency, shrink images or shorten outputs to fit the GPU.
+
+## Fixed interpretation
+
+The current variant uses exact 1 FPS shared 720px JPEGs and current-image API prompts.
+For current202, the last decoded video timestamp bounds the sampling grid;
+`media-audit.json` records any excluded tail points without duplicating frames.
+Retained frames must all decode successfully. The variant also uses
+explicit effort settings when supported, and exact JSON string `"true"`/`"false"`
+normalization (never general truthiness). It uses 12 queue slots; that is not proof
+of twelve-camera real-time throughput. Each unit has at most three total attempts
+(initial plus two retries); keep the first valid answer.
+
+Every planned response must be valid before a question can contribute a correct
+answer. For complete evidence: any yes → yes; otherwise any no → no; otherwise
+unknown. Headline accuracy is correct / all planned questions (202 for the full
+test). Missing questions stay in the denominator and are reported separately.
+Native/bag unknown is a valid response; a final unknown is wrong against the binary
+references. Refusal or malformed output is missing, not unknown.
+
+CLIP/SigLIP2 retain single-frame margins. VideoJev/Decision3 retain adjacent
+two-frame windows and native argmax; the proposed single-frame experiment was
+not run. Changing prompts, effort, windows, parser, thresholds or provider creates
+a new recorded variant. Historical bundles need their retained source snapshot;
+do not relabel their protocol or silently re-score old output files.
+
+## Results and shared-sheet publication
+
+An agent can prepare the local update preview and perform an authorized sheet
+update; manual cell-by-cell transcription is not required. Route publication to
+[bench-sheet-contribute](../bench-sheet-contribute/SKILL.md), which reads live
+headers, matches the run/variant, preserves styling and verifies saved cells.
+The user chooses the result version, target tabs and overwrite/append scope.
+Show the proposed cell/note changes first when review was requested. An evaluation
+request alone does not authorize overwriting the shared results, and publication
+does not authorize new model calls. No new columns or tabs by default.
+
+## Other protocols (read only when selected)
+
+- `unified-frame-120-v2`: explicit `preflight --protocol unified-frame-120-v2`;
+  five original frozen files,120 test questions. Old bundles keep their original code.
+- [Legacy v2.1](references/legacy-v2.1.md): historical centered sampling and strict
+  parser. This checkout includes its controlled/legacy CLI; keep the matching
+  retained code and inputs with historical artifacts.
+- [Robot41 supplement](references/robot41.md): historical 41-question fall/weapon
+  cohort. Its downloader and reviewed JSON files are included; use their matching
+  fingerprints for an explicitly selected run. Never mix it into the 120 denominator.
+- [Model classes](references/model-classes.md): historical runner boundaries.
+
+Current202, current120 and legacy protocols have different fingerprints and interpretation.
+Shared table formatting does not make their results a controlled comparison.
+
+For an explicitly requested robot41 legacy run after its own input verification,
+the retained entrypoint is:
 
 ```sh
-python tools/event_benchmark/download_media.py \
-  --samples /path/to/samples.json --manifest /path/to/reviewed-manifest.json \
-  --output /path/to/media \
-  --links /path/to/private-temporary-links.json
-python tools/event_benchmark/download_media.py \
-  --samples /path/to/samples.json --manifest /path/to/reviewed-manifest.json \
-  --output /path/to/media --check-only
+python tools/event_benchmark/run_eval.py --legacy-baseline --candidate qwen \
+  --samples tools/event_benchmark/datasets/samples_robot41.json \
+  --manifest tools/event_benchmark/datasets/manifest_robot41.json \
+  --media outputs/robot41/media --interval 1.0 --workers 12 \
+  --out outputs/event-benchmark/robot41-qwen.json
 ```
 
-`--check-only` works with every evaluator-compatible samples/manifest pair and
-uses the evaluator's input loader to verify reviewed labels and hashes of existing
-local media. It reports scored video/question counts by category without downloading
-or calling a model. A download's size check is not frozen-hash verification; run
-`--check-only` after transfer, then use the accuracy command above with the same files.
-
-## Frozen v2 baseline
-
-- Same questions from `samples.json`, same media, 1 fps centered frame schedule,
-  720px width, one independent request per frame; output envelope fixed by backend.
-- Language: complete JSON boolean. Luna: finite numeric probability in [0,1].
-  No truthiness coercion of strings/numbers, no invalid response treated as negative.
-- Clip score = maximum of **all scheduled valid frames**; `score >= 0.5` is yes.
-  Any missing frame or invalid answer after three total attempts makes the clip an
-  error, even if another frame was positive.
-- Accuracy is correct/all questions, per event and overall. Errors and missing
-  answers stay in the denominator and are reported separately, never as negatives.
-- `--dense` or changed cadence is a separately labeled sensitivity experiment.
-  Tuning is a separate variant; see `bench-threshold-tune`.
-- Dataset growth changes the dataset fingerprint and comparison cohort. It does not
-  itself change the sampling spec; rerun every compared candidate on the same set.
-- Provisional labels may be described as historical/exploratory evidence only, never
-  as reviewed v2 results. No new official run until the manifest is reviewed.
-  Explicitly authorized `--provisional` diagnostics use `base4-provisional-v2`
-  (`tools/event_benchmark/PROVISIONAL.md`), support only binary base-4 questions,
-  and record rather than verify input hashes. They cannot be used for v2 tuning.
-  Bag yes/no/unknown questions require a separate reviewed scoring protocol;
-  never collapse unknown into no or remove the third answer to fit this runner.
-- No negatives means specificity unavailable, not zero false positives.
-
-## Other model classes
-
-`run_eval.py` currently supports language and Luna decision backends. Native
-VideoJev and CLIP have different protocols. Read `references/model-classes.md`
-before importing their results; shared formatting does not establish a controlled
-comparison. Do not coerce margins or native verdicts into Luna probabilities.
-
-## Files
-
-- `references/methodology.md`: input, scoring and provenance checklist.
-- `references/model-classes.md`: runner boundaries and cross-class reporting.
-- `references/report-format.md`: columns and coverage notes.
-- `scripts/latency_bench.py`: separate request latency measurement.
+Explicitly requested legacy base-four diagnostics may use `run_eval.py --provisional`.
+They use the separate `base4-provisional-v2` protocol, record rather than verify
+media hashes, and cannot be combined with reviewed manifests, controlled provider/
+split options or `--legacy-baseline`. Only binary base-four questions are supported;
+bag events, unknown labels and ternary prompts require their own protocol. These
+diagnostics are not reviewed v2 calibration evidence and do not clear PR #61's hold.

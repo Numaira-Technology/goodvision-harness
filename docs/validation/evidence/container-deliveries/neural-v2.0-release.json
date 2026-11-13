@@ -1,0 +1,137 @@
+{
+  "schema": 1,
+  "module": "goodvision-neural",
+  "version": "v2.0",
+  "kind": "initial-standalone-container",
+  "platform": "linux/amd64",
+  "image": {
+    "name": "goodvision-neural:v2.0-603f20d-20261112",
+    "id": "sha256:de292f54234aadbd00cfbdb8b627cfe64676546e39b9b8967a88dc7395c3c42c",
+    "os": "linux",
+    "architecture": "amd64",
+    "config_id": "sha256:74c97df9c11517d4a5633d97c7a2b5d3adcbfee1a088616a8b182c7d6276fd7f"
+  },
+  "image_blobs": {
+    "sha256:de292f54234aadbd00cfbdb8b627cfe64676546e39b9b8967a88dc7395c3c42c": 4686,
+    "sha256:5a7813e071bfadf18aaa6ca8318be4824a9b6297b3240f2cc84c1db6f4113040": 29754290,
+    "sha256:a102f36d092c0e9e0bef8c97854f606af9156aa36ab408e6fa4b88e27124a7e6": 6947129,
+    "sha256:05ec76e31584ec109785cc7045bd88df0240411233c2fcdad66b621c662034c0": 64290636,
+    "sha256:398182656c471d6ecca3c2d6d30e97193b40ffc8028a94515093960322f3d64e": 183,
+    "sha256:73389fbd088f5ed5d9fd258baced59de092978b4f483920ea6d074522a105119": 6885,
+    "sha256:cbb9175a9bc5f6553f8c0c5025ea9521898b8a3956ee24798dc35c24c6185053": 2058008382,
+    "sha256:3d6ab8c799cda2f4c6a6277b0e24dd2231c5de83b0316968b7cce81156bb8be0": 59618,
+    "sha256:7209097bfb98d6f8b422984480f1fddead5ea62f8900ff6b6548e060b71aca76": 1684,
+    "sha256:545a3ada5b6bc612a11c13a659775d67eeda5a61615e7f49c76ecd24adcad626": 1524,
+    "sha256:abf026459f528efac0543168ff07d7037e9415fe3eb956b82f8fd617c7d2db1f": 3002837213,
+    "sha256:93e2721b7dddc8fb00723395d1865e71805c41b3d8f166c6753b2cb7e92b0da6": 89517,
+    "sha256:f0138af194c38283ce0b865b9da40945f393199d661f9131b7c3cb0bc2fbbb6d": 128739145,
+    "sha256:4fc5f6e43a8a0d9d819a8366ef0e6846ceeadcc0779cd10aa33c0bebd4a3b407": 4198365,
+    "sha256:fb9fd304906cadf36a77d3736a6769f7ebf23c436a5acff9c352f01f09330d8e": 6973323,
+    "sha256:c08b64a53e2eb7799fdc912cc9f487ba3d843e1be15ed7772165ed49e060fb42": 4009912431,
+    "sha256:38c91a074ce1b238bcb944f5a0c310c739c41ec72154f865f850906da1fa0ea9": 93,
+    "sha256:3167138ae876e409d843d720c8b69ff27cfc5779e23f9fc70ce740c625766b9f": 600,
+    "sha256:75c48e698c094bbe3037a84b5fc3569ee773a7e78e12c0f8c0fcafa29e5c629c": 320,
+    "sha256:4f962ce2405d9097d23ee91314a9a2f15573a70d274fbe01e60b0bbc126bf9ce": 755995301,
+    "sha256:79810187d3a42a21f6d478ff12794d56fc831961a77f6d0f77713ac40bedcbe1": 5736,
+    "sha256:9014137e3bd2e0fbadc016f98b167ba64942d9641bdcaee3fba9391e380847ea": 18078540,
+    "sha256:1b41f1b50b70c5d67d8932859716b1e4c55b288a96267f37400c491e453e265f": 37633054,
+    "sha256:fc014ad2b64d66e721db00637edc58863cdd5a03106e822988b2c10800f63bbb": 449,
+    "sha256:74c97df9c11517d4a5633d97c7a2b5d3adcbfee1a088616a8b182c7d6276fd7f": 27419
+  },
+  "requires": [
+    {
+      "name": "goodvision-system1:pr75-603f20d",
+      "id": "sha256:b7e2098b9aa4e6dcf98810797d490df5993027db31e476ad22d326e73750f779",
+      "os": "linux",
+      "architecture": "amd64",
+      "config_id": "sha256:e5685ef8ac313ef5455e9ac29c9ab1546d97b9b74cf552c45da26f0cd0d71ff0"
+    }
+  ],
+  "image_archive": {
+    "file": "images.tar.gz",
+    "bytes": 8409,
+    "sha256": "55d498980998575b55a9cabd669357085789242df88fce5f60a6455e1574fcdc",
+    "kind": "oci-delta",
+    "requires_containerd_image_store": true
+  },
+  "source": {
+    "repository_revision": "8f526925127f9336c46679713b602f7c7d815a5a",
+    "application_revision": "603f20dc0089cc0b0f21429d8432f3c32aa4b2a6",
+    "application_update": false,
+    "baseline_metadata_sha256": "6a660c0304531ddce352ed9c0c0bf9ca2a7815a021f7b5defef5ea3bb75af78c",
+    "files_sha256": {
+      "workers/neural/Dockerfile": "5304c3ae1e58da41ce54d5f38b1ad6e18668561069e7c85d9d996c972eca00ed",
+      "workers/neural/Dockerfile.dockerignore": "b6034a8badbd53604b52ad1bb4c40296c344718440a5741d6215ced120cf1087",
+      "workers/neural/healthcheck.py": "c3eac5da8298c1e645cb528815a0f1dd74b36f81ff215828cbde0c0f66077e72",
+      "workers/neural/README.md": "4f7012851fedfc5dc0edef0a15a3350ca4877960c18b5e2d4d4be46cdb90d94f",
+      "tools/neural_container.py": "d5ca64795e876e3d1600f059537859209027a9b6a74dda6d0a5831f9c3f6a480",
+      "tools/package_neural_container.py": "77d3a0cffa52bbc8e4a385340b57142ab367c4395f1a889f93fafd0ddffc7516",
+      "tools/neural_delivery/Install-Neural.cmd": "ff9138441457582d7e56edd5c979537ac02eb440e95ec406c2c217073015b3cd",
+      "tools/neural_delivery/Start-Neural.cmd": "f649a92ab3154d0eb9c2cd3ebe5096117325c80abb9b3327625988deaee54dfd",
+      "tools/neural_delivery/Status-Neural.cmd": "d3a4897c1d6f8f14a4768c31275f8295feae3d2d083c4dd11724b355c03bc8f9"
+    }
+  },
+  "source_files": [
+    {
+      "file": "source/workers/neural/Dockerfile",
+      "bytes": 1319,
+      "sha256": "5304c3ae1e58da41ce54d5f38b1ad6e18668561069e7c85d9d996c972eca00ed"
+    },
+    {
+      "file": "source/workers/neural/Dockerfile.dockerignore",
+      "bytes": 88,
+      "sha256": "b6034a8badbd53604b52ad1bb4c40296c344718440a5741d6215ced120cf1087"
+    },
+    {
+      "file": "source/workers/neural/healthcheck.py",
+      "bytes": 454,
+      "sha256": "c3eac5da8298c1e645cb528815a0f1dd74b36f81ff215828cbde0c0f66077e72"
+    },
+    {
+      "file": "source/workers/neural/README.md",
+      "bytes": 4966,
+      "sha256": "4f7012851fedfc5dc0edef0a15a3350ca4877960c18b5e2d4d4be46cdb90d94f"
+    },
+    {
+      "file": "source/tools/neural_container.py",
+      "bytes": 28427,
+      "sha256": "d5ca64795e876e3d1600f059537859209027a9b6a74dda6d0a5831f9c3f6a480"
+    },
+    {
+      "file": "source/tools/package_neural_container.py",
+      "bytes": 12359,
+      "sha256": "77d3a0cffa52bbc8e4a385340b57142ab367c4395f1a889f93fafd0ddffc7516"
+    },
+    {
+      "file": "source/tools/neural_delivery/Install-Neural.cmd",
+      "bytes": 90,
+      "sha256": "ff9138441457582d7e56edd5c979537ac02eb440e95ec406c2c217073015b3cd"
+    },
+    {
+      "file": "source/tools/neural_delivery/Start-Neural.cmd",
+      "bytes": 88,
+      "sha256": "f649a92ab3154d0eb9c2cd3ebe5096117325c80abb9b3327625988deaee54dfd"
+    },
+    {
+      "file": "source/tools/neural_delivery/Status-Neural.cmd",
+      "bytes": 89,
+      "sha256": "d3a4897c1d6f8f14a4768c31275f8295feae3d2d083c4dd11724b355c03bc8f9"
+    }
+  ],
+  "build": {
+    "dockerfile": "source/workers/neural/Dockerfile",
+    "context": "source",
+    "base_image": "goodvision-system1:pr75-603f20d",
+    "base_image_id": "sha256:b7e2098b9aa4e6dcf98810797d490df5993027db31e476ad22d326e73750f779",
+    "network": "none",
+    "pull": false
+  },
+  "omitted_existing_blob_bytes": 10123533969,
+  "model_payload_included": false,
+  "customer_deployment_status": "unknown",
+  "validation": {
+    "file": "VALIDATION.json",
+    "bytes": 3478,
+    "sha256": "566357bc6737eff5c66811df67833aa0d7aa56c68b08aa7cdb4a3741c23f4df5"
+  }
+}
