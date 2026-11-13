@@ -758,3 +758,47 @@ def test_cancelled_request_keeps_gpu_serial_and_next_request_completes():
     app = create_app(Blocking())
     with TestClient(app):
         asyncio.run(run())
+
+
+def test_overloaded_queue_sheds_load_with_429():
+    # The pending queue is bounded: once a request is in the worker and the
+    # backlog is full, further requests are shed with 429 instead of queuing
+    # without limit. Recovery drains the backlog and serves the waiting work.
+    _, payload, _ = client_and_request()
+    entered, release = Event(), Event()
+
+    class Blocking(Encoder):
+        def scores(self, images, labels):
+            entered.set()
+            assert release.wait(5)
+            return [[0.9, 0.1], [0.2, 0.8]]
+
+    # max_batch_size=1 keeps the worker on one request at a time; max_queue=1
+    # means a single waiting request fills the backlog and the next is shed.
+    app = create_app(Blocking(), max_batch_size=1, max_queue=1)
+
+    async def run():
+        async with app.router.lifespan_context(app):
+            worker = app.state.recognition_worker
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://offline.test",
+            ) as client:
+                first = asyncio.create_task(client.post("/predict", json=payload))
+                try:
+                    assert await asyncio.to_thread(entered.wait, 3)
+                    second = asyncio.create_task(client.post("/predict", json=payload))
+                    for _ in range(100):
+                        if worker.pending.full():
+                            break
+                        await asyncio.sleep(0.02)
+                    assert worker.pending.full()
+                    shed = await client.post("/predict", json=payload)
+                    assert shed.status_code == 429
+                    assert shed.json()["detail"] == "recognition service busy"
+                finally:
+                    release.set()
+                assert (await first).status_code == 200
+                assert (await second).status_code == 200
+
+    asyncio.run(run())

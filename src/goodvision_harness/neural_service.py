@@ -168,18 +168,26 @@ class Encoder:
 
 
 class _BatchWorker:
-    """Score up to four already-prepared requests without waiting to fill a batch."""
+    """Score up to four already-prepared requests without waiting to fill a batch.
 
-    def __init__(self, score_batch, max_batch_size):
+    The pending queue is bounded. Once ``max_queue`` requests are waiting, further
+    submissions are rejected so the server sheds load (HTTP 429) instead of
+    growing an unbounded backlog.
+    """
+
+    def __init__(self, score_batch, max_batch_size, max_queue=32):
+        if type(max_queue) is not int or max_queue < 1:
+            raise ValueError("max_queue must be a positive integer")
         self.score_batch, self.max_batch_size = score_batch, max_batch_size
-        self.pending = queue.Queue()
+        self.pending = queue.Queue(maxsize=max_queue)
         self.thread = threading.Thread(
             target=self.run, name="clip-inference", daemon=True
         )
 
     def submit(self, pixels, labels, finish):
         result = Future()
-        self.pending.put((result, pixels, labels, finish, time.perf_counter()))
+        # put_nowait raises queue.Full when the backlog is at capacity.
+        self.pending.put_nowait((result, pixels, labels, finish, time.perf_counter()))
         return result
 
     def run(self):
@@ -243,7 +251,9 @@ def _window_pairs(frame_pairs):
     return result
 
 
-def create_app(encoder, *, max_batch_size=4):
+def create_app(encoder, *, max_batch_size=4, max_queue=32):
+    if type(max_queue) is not int or max_queue < 1:
+        raise ValueError("max_queue must be a positive integer")
     ppe, shared_error = None, None
 
     def score_batch(pixels, labels):
@@ -257,13 +267,15 @@ def create_app(encoder, *, max_batch_size=4):
     async def lifespan(_app):
         nonlocal worker
 
-        active = _BatchWorker(score_batch, max_batch_size)
+        active = _BatchWorker(score_batch, max_batch_size, max_queue)
         active.thread.start()
         worker = active
+        _app.state.recognition_worker = active
         try:
             yield
         finally:
             worker = None
+            _app.state.recognition_worker = None
             while True:
                 try:
                     item = active.pending.get_nowait()
@@ -498,7 +510,11 @@ def create_app(encoder, *, max_batch_size=4):
             )
         if worker is None:
             raise HTTPException(503, "recognition service unavailable")
-        pending = asyncio.wrap_future(worker.submit(pixels, labels, infer))
+        try:
+            submitted = worker.submit(pixels, labels, infer)
+        except queue.Full:
+            raise HTTPException(429, "recognition service busy") from None
+        pending = asyncio.wrap_future(submitted)
         try:
             while not pending.done():
                 await asyncio.wait({pending}, timeout=0.1)
@@ -525,7 +541,10 @@ def main():
         "--thresholds", default=os.environ.get("NEURAL_THRESHOLDS_FILE"),
         help="versioned JSON artifact of validation-frozen core-event cosine margins",
     )
+    parser.add_argument("--max-queue", type=int, default=32)
     args = parser.parse_args()
+    if args.max_queue < 1:
+        parser.error("--max-queue must be at least 1")
     import uvicorn
 
     encoder = (
@@ -534,7 +553,9 @@ def main():
     )
     encoder.warmup()
     uvicorn.run(
-        create_app(encoder, max_batch_size=args.max_batch_size),
+        create_app(
+            encoder, max_batch_size=args.max_batch_size, max_queue=args.max_queue
+        ),
         host=args.host, port=args.port,
     )
 
