@@ -70,3 +70,11 @@ raw evidence remains in the originating run, not bundled here as new results.
 Headline accuracy uses all planned questions, with incomplete/unknown counts
 separate. Preserve original artifacts; write new reports without model calls for
 an offline replay. Publishing is a separate requested step via bench-sheet-contribute.
+
+## PR #61 acceptance hold
+
+The imported software and separately reported unified runs do not clear PR #61's
+explicit keep-unmerged hold. That study still requires its complete reviewed
+24-clip validation/media-hash manifest, independently reviewed source isolation,
+and fresh compatible lossless calibration/test evidence. Historical v1 or
+provisional results and review flags alone do not supply those requirements.

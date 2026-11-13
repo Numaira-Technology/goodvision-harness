@@ -1,0 +1,17 @@
+{
+ "candidate": "qwen",
+ "model": "qwen/qwen3-vl-8b-instruct",
+ "backend": "language",
+ "single_inference_s": null,
+ "single_mean_s": null,
+ "single_n_ok": 0,
+ "single_n": 20,
+ "concurrency": 12,
+ "rounds": 6,
+ "conc_n_ok": 0,
+ "conc_n": 72,
+ "p50_s": null,
+ "p95_s": null,
+ "single_raw": [],
+ "conc_raw": []
+}

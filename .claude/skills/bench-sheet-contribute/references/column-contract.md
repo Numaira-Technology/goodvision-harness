@@ -8,7 +8,7 @@ mapping. Current field meanings, rather than fixed column letters, are recorded 
 [results-column-contract.md](results-column-contract.md).
 
 In this historical layout, headers occupy rows 1–2 and data begins at 3.
-The old repository A:Q config does not describe even this A:W schema. Do not
+The repository A:W config is likewise only a saved historical description. Do not
 rebuild or migrate formatting as a contribution. Rules below describe this
 historical contract, not a replacement for the current unified scoring policy.
 

@@ -121,9 +121,13 @@ def validate_run(per_video, metadata, *, validation=False):
     scored = len(per_video) - errors
     expected = {"attempted": len(per_video), "total": len(per_video) if metadata["spec_version"] == "v2.1" else scored, "errors": errors}
     overall = metadata.get("overall", {})
-    if not isinstance(overall, dict) or any(overall.get(key) != value for key, value in expected.items()):
+    if (not isinstance(overall, dict)
+            or any(type(overall.get(key)) is not int or overall[key] != value
+                   for key, value in expected.items())
+            or ("scored" in overall and (type(overall["scored"]) is not int
+                                        or overall["scored"] != scored))):
         raise ValueError("run attempted/scored/error totals disagree with its questions")
-    if not scored:
+    if not scored and metadata["spec_version"] != "v2.1":
         raise ValueError("run has no eligible scored questions")
     if validation:
         for event in EVENTS:
@@ -136,7 +140,7 @@ def validate_run(per_video, metadata, *, validation=False):
     if not _digest(metadata.get("evidence_sha256")):
         raise ValueError("evidence helper fingerprint required")
     evidence.verify_provider_evidence(metadata, per_video)
-    return expected
+    return {**expected, "scored": scored}
 
 
 def validate_manifest(per_video, metadata, path, split_manifest=None, split=None):
@@ -246,6 +250,13 @@ def confusion(items, tau):
     return {"TP": tp, "FN": fn, "TN": tn, "FP": fp, "n": n,
             "accuracy": round(100 * acc, 1) if n else None, "precision": prec, "recall": rec,
             "youden_j": round(tpr - fpr, 4) if (tp + fn) and (tn + fp) else None}
+
+
+def all_question_metrics(items, tau, attempted):
+    """Keep incomplete questions in headline accuracy without inventing verdicts."""
+    correct = sum((score >= tau) == gt for score, gt in items)
+    return {"correct": correct, "total": attempted,
+            "accuracy": round(100 * correct / attempted, 1) if attempted else None}
 
 
 def pick_tau(items):
@@ -391,24 +402,30 @@ def evaluate_thresholds(artifact_path, expected_digest, test_paths, manifest_pat
             events[event] = {
                 "tau": tau, "at_tau": confusion(items, tau),
                 "at_0.5": confusion(items, 0.5),
+                "all_questions_at_tau": all_question_metrics(items, tau, attempted),
+                "all_questions_at_0.5": all_question_metrics(items, 0.5, attempted),
                 "counts": {"attempted": attempted, "total": len(items),
-                           "errors": attempted - len(items)},
+                           "scored": len(items), "errors": attempted - len(items)},
             }
             if artifact.get("reference_thresholds"):
                 previous_tau = artifact["reference_thresholds"]["thresholds"][event]
                 events[event]["previous_tau"] = previous_tau
                 events[event]["at_previous_tau"] = confusion(items, previous_tau)
+                events[event]["all_questions_at_previous_tau"] = all_question_metrics(items, previous_tau, attempted)
                 all_previous.extend((float(score >= previous_tau), gt) for score, gt in items)
             # Confusion over hard predictions combines per-event gates without
             # introducing a second score threshold or rounding the original score.
             all_tuned.extend((float(score >= tau), gt) for score, gt in items)
             all_fixed.extend(items)
         total = len(test_pv)
-        all_metrics = lambda items: {"correct": sum(s >= .5 if gt else s < .5 for s, gt in items), "total": total}
         report["test"][str(test_path)] = {
+            "spec_version": test_meta["spec_version"],
+            "accuracy_denominator": "attempted",
+            "confusion_denominator": "scored",
             "n_total": counts["total"], "counts": counts,
-            "all_questions_at_tau": all_metrics(all_tuned),
-            "all_questions_at_0.5": all_metrics(all_fixed),
+            "all_questions_at_tau": all_question_metrics(all_tuned, 0.5, total),
+            "all_questions_at_0.5": all_question_metrics(all_fixed, 0.5, total),
+            "all_questions_at_previous_tau": all_question_metrics(all_previous, 0.5, total) if artifact.get("reference_thresholds") else None,
             "legacy_confusion_note": "overall_at_* accuracy is complete-only; use all_questions_* for headline denominators",
             "result_sha256": result_digest, "manifest_sha256": test_meta["manifest_sha256"],
             "overall_at_tau": confusion(all_tuned, 0.5),

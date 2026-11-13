@@ -133,3 +133,10 @@ python tools/event_benchmark/run_eval.py --legacy-baseline --candidate qwen \
   --media outputs/robot41/media --interval 1.0 --workers 12 \
   --out outputs/event-benchmark/robot41-qwen.json
 ```
+
+Explicitly requested legacy base-four diagnostics may use `run_eval.py --provisional`.
+They use the separate `base4-provisional-v2` protocol, record rather than verify
+media hashes, and cannot be combined with reviewed manifests, controlled provider/
+split options or `--legacy-baseline`. Only binary base-four questions are supported;
+bag events, unknown labels and ternary prompts require their own protocol. These
+diagnostics are not reviewed v2 calibration evidence and do not clear PR #61's hold.
