@@ -108,7 +108,7 @@ def test_vllm_serve_remote_keeps_exam_and_avoids_repo_pythonpath():
     assert "source " not in remote
     assert "conda activate" not in remote
     assert "PYTHONNOUSERSITE=1" in remote
-    assert "/opt/env/qwen8b-vllm/bin/python -s -c" in remote
+    assert "/opt/env/qwen8b-vllm/bin/python -I -s -c" in remote
     assert "sys.prefix" in remote
     assert "vllm.entrypoints.openai.api_server" in remote
     assert "--max-num-seqs" in remote
@@ -133,7 +133,7 @@ def test_verify_restored_env_uses_absolute_python_and_surfaces_output(monkeypatc
         _verify_restored_env(["ssh"], "/opt/env/qwen8b-vllm/bin/activate")
     first = captured["cmds"][0][-1]
     assert "/opt/env/qwen8b-vllm/bin/python" in first
-    assert " -s -c " in first
+    assert " -I -s -c " in first
     assert "PYTHONNOUSERSITE=1" in first
     assert "sys.prefix" in first
     assert "source " not in first

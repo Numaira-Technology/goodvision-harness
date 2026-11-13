@@ -1,6 +1,7 @@
 """Diagnostic acceptance and cleanup tests with no cloud or GPU operations."""
 
 import copy
+import io
 import json
 import socket
 import sys
@@ -11,6 +12,41 @@ import pytest
 from test_qwen8b_release import FakeVast
 
 from tools import diag_qwen8b_vllm_import as diag
+
+
+@pytest.mark.parametrize("default_encoding", ["cp1252", "utf-16"])
+def test_report_and_mirror_use_utf8(tmp_path, monkeypatch, default_encoding):
+    report = tmp_path / "reports" / "diagnostic.json"
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    monkeypatch.setattr(
+        diag,
+        "Path",
+        lambda value: artifacts if value == "/opt/cursor/artifacts" else Path(value),
+    )
+    payload = {"phase": "failed", "error": "诊断失败 — café ☃", "检查": ["CUDA 不可用"]}
+    text_encoding = io.text_encoding
+    # Model a non-UTF-8 text default without changing the process locale.
+    # JSON's existing ASCII escapes already work under cp1252; UTF-16 exposes
+    # an implicit file encoding even when every serialized character is ASCII.
+    with monkeypatch.context() as encoding_patch:
+        encoding_patch.setattr(
+            io,
+            "text_encoding",
+            lambda encoding, stacklevel=2: (
+                default_encoding
+                if encoding is None
+                else text_encoding(encoding, stacklevel)
+            ),
+        )
+        diag._write(report, payload)
+
+    expected = json.dumps(payload, indent=2) + "\n"
+    for path in (report, artifacts / report.name):
+        text = path.read_bytes().decode("utf-8")
+        assert text.replace("\r\n", "\n") == expected
+        assert json.loads(text) == payload
+    assert (artifacts / report.name).read_bytes() == report.read_bytes()
 
 
 @pytest.mark.parametrize("available,count", [(False, 0), (True, 0), (True, 1)])

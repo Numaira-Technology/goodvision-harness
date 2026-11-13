@@ -168,7 +168,7 @@ def _prefix_guard(unpack_to: str) -> str:
 
 
 def _vllm_serve_remote(activate: str, snapshot: str) -> str:
-    """Packed python -s, no repo PYTHONPATH. Exam knobs stay 12 / bf16 / eager."""
+    """Isolated packed python. Exam knobs stay 12 / bf16 / eager."""
     cfg = DEFAULTS
     python = _packed_python(activate)
     unpack = _unpack_to(activate)
@@ -213,7 +213,7 @@ def _vllm_serve_remote(activate: str, snapshot: str) -> str:
         f"echo packed interpreter missing: {shlex.quote(python)} >&2; exit 1; fi; "
         f"cd /tmp && exec env PYTHONNOUSERSITE=1 HF_HUB_OFFLINE=1 "
         f"TRANSFORMERS_OFFLINE=1 VLLM_NO_USAGE_STATS=1 "
-        f"{shlex.quote(python)} -s -c {shlex.quote(code)}"
+        f"{shlex.quote(python)} -I -s -c {shlex.quote(code)}"
     )
 
 
@@ -292,12 +292,13 @@ def _verify_eval_bundle(bundle: Path, phase: str, env_spec: dict) -> str:
         raise ValueError("vLLM config is not sealed in the bundle")
     config = json.loads((bundle / config_name).read_text())
     expected = model_configs(["qwen8b_r2_vllm"])["qwen8b_r2_vllm"]
-    if config != expected:
+    # Python equality conflates bool/int and int/float; bind the JSON types too.
+    if digest(config) != digest(expected):
         raise ValueError(
             "vLLM profile differs; create a new bundle for the reviewed ada2 profile"
         )
     identity = {k: env_spec[k] for k in ("r2_key", "sha256", "size")}
-    if config.get("env_artifact") != identity:
+    if digest(config.get("env_artifact")) != digest(identity):
         raise ValueError(
             "vLLM profile pack identity differs from the restored registry artifact"
         )
@@ -482,7 +483,8 @@ def _require_r2_pack(env_spec: dict) -> str:
 def _verify_restored_env(ssh, activate: str) -> None:
     """Import check only. Missing modules are a pack bug, not a GPU pip job.
 
-    Call the packed interpreter by absolute path with -s and PYTHONNOUSERSITE=1.
+    Call the packed interpreter by absolute path with -I -s, excluding ambient
+    PYTHONPATH/PYTHONHOME and the working directory from Python import lookup.
     The launched process itself rejects a mismatched sys.prefix. No conda
     activate, no PATH python, no second-chance source fallback.
     """
@@ -511,7 +513,7 @@ def _verify_restored_env(ssh, activate: str) -> None:
         f"set -eo pipefail; "
         f"if [ ! -x {shlex.quote(python)} ]; then "
         f"echo packed interpreter missing: {shlex.quote(python)} >&2; exit 1; fi; "
-        f"{smi}; PYTHONNOUSERSITE=1 {shlex.quote(python)} -s -c {shlex.quote(probe)}"
+        f"{smi}; PYTHONNOUSERSITE=1 {shlex.quote(python)} -I -s -c {shlex.quote(probe)}"
     )
     try:
         out = subprocess.check_output(

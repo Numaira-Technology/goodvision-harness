@@ -74,10 +74,10 @@ CUDA_PROBE = (
 
 def _write(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     art = Path("/opt/cursor/artifacts") / path.name
     try:
-        art.write_text(path.read_text())
+        art.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
     except OSError:
         pass
 
@@ -113,7 +113,7 @@ def _isolated_probe_remote(packed_python: str, code: str) -> str:
     guarded = V._prefix_guard(V._unpack_to(python)) + code
     return (
         "unset PYTHONPATH PYTHONHOME; export PYTHONNOUSERSITE=1; "
-        f"{shlex.quote(python)} -s -c {shlex.quote(guarded)}"
+        f"{shlex.quote(python)} -I -s -c {shlex.quote(guarded)}"
     )
 
 
