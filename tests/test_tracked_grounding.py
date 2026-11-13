@@ -515,18 +515,6 @@ def test_twelve_sources_through_http_broker_and_spawned_workers(
 
     output = tmp_path
     result, detector_counts = run_once(output)
-    if not result["input_timing_valid"]:
-        # input_timing_valid measures the host, not routing: on a shared CI
-        # runner the single feeder thread can be starved behind twelve live
-        # pipelines and their spawned workers, releasing each camera a little
-        # later than the last. Re-run once in a fresh directory; a real
-        # regression fails both runs, and every assertion below is unchanged.
-        diagnostic["first_run_input_release_lag_seconds"] = result[
-            "input_release_lag_seconds"
-        ]
-        output = tmp_path / "retry"
-        output.mkdir()
-        result, detector_counts = run_once(output)
     assert result["input_timing_valid"], {
         "sender_missed_samples": result["sender_missed_samples"],
         "sender_missed_samples_by_stream": result["sender_missed_samples_by_stream"],

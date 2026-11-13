@@ -94,14 +94,6 @@ def test_twelve_sources_fp8_and_person_reports(tmp_path, monkeypatch, mode, sequ
 
     output = tmp_path
     result = run_once(output)
-    if not result["input_timing_valid"]:
-        # A starved feeder thread on a shared CI runner skips late source
-        # samples, which then reach neither the detector nor the lanes. That
-        # measures the host, not routing: re-run once in a fresh directory.
-        # A real regression fails both runs; the assertions are unchanged.
-        output = tmp_path / "retry"
-        output.mkdir()
-        result = run_once(output)
     assert result["all_drained"] and not result["result_records_missing"]
     assert result["result_retention"]["valid"]
     assert len(calls) == len(set(calls)) == 48
