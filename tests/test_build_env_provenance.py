@@ -365,3 +365,57 @@ def test_probe_emits_measured_runtime_facts(monkeypatch, capsys, flash):
     captured = capsys.readouterr()
     assert json.loads(captured.out) == runtime_facts(flash)
     assert "synthetic dependency import diagnostic" in captured.err
+
+
+def _pack_with_python_mode(path, mode, link_kind):
+    """Synthetic archive metadata only; its contents are never executed."""
+    target = "bin/python" if link_kind == "regular" else "lib/python3.12"
+    with tarfile.open(path, "w:gz") as archive:
+        for name in (target, "bin/activate", "bin/conda-unpack"):
+            member = tarfile.TarInfo(name)
+            data = b"synthetic, non-executable test content"
+            member.size = len(data)
+            member.mode = mode if name == target else 0o644
+            archive.addfile(member, io.BytesIO(data))
+        if link_kind != "regular":
+            alias = tarfile.TarInfo("bin/python")
+            alias.type = tarfile.SYMTYPE if link_kind == "symlink" else tarfile.LNKTYPE
+            alias.linkname = "../lib/python3.12" if link_kind == "symlink" else target
+            alias.mode = 0o777  # The target's restored mode is authoritative.
+            archive.addfile(alias)
+
+
+@pytest.mark.parametrize("link_kind", ["regular", "symlink", "hardlink"])
+@pytest.mark.parametrize("mode", [0o001, 0o010, 0o011, 0o100, 0o755])
+def test_archive_preflight_agrees_with_restored_python_mode(tmp_path, mode, link_kind):
+    pack = tmp_path / "mode.tar.gz"
+    _pack_with_python_mode(pack, mode, link_kind)
+    restored = tmp_path / "restored"
+    if mode in (0o001, 0o010, 0o011):
+        with pytest.raises(ValueError, match="packed Python is not executable"):
+            be._check_pack(pack)
+        with pytest.raises(ValueError, match="packed bin/python is not executable"):
+            be.env_source._safe_extract(pack, restored)
+        assert not os.access(restored / "bin/python", os.X_OK)
+    else:
+        be._check_pack(pack)
+        be.env_source._safe_extract(pack, restored)
+        assert os.access(restored / "bin/python", os.X_OK)
+
+
+@pytest.mark.parametrize("link_kind", ["regular", "symlink", "hardlink"])
+@pytest.mark.parametrize("mode", [0o001, 0o010, 0o011])
+def test_upload_only_rejects_python_mode_stripped_by_restore(
+    fake_builder, monkeypatch, mode, link_kind
+):
+    build, _ = fake_builder
+    pack, record = build()
+    _pack_with_python_mode(pack, mode, link_kind)
+    # Model the matching producer metadata of a historical synthetic pack.
+    record.update(sha256=be._sha256(pack), size=pack.stat().st_size)
+    be._record_path(pack).write_text(json.dumps(record))
+    monkeypatch.setattr(
+        be.model_source, "r2_client", lambda: pytest.fail("invalid pack reached R2")
+    )
+    with pytest.raises(ValueError, match="packed Python is not executable"):
+        be.main(["--model", "qwen8b", "--out", str(pack), "--upload-only"])
