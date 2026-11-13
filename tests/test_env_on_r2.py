@@ -10,9 +10,10 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from env_build_helpers import completed_probe, runtime_facts
 
+from tools import build_env, registry
 from tools import env_source as es
-from tools import registry
 
 
 def test_registry_ships_and_parses():
@@ -21,16 +22,43 @@ def test_registry_ships_and_parses():
         "1c1a253bf90dfa66176124d25a48ffb791d517d5",
     )
     assert registry.env_of("videojev")["compat"]["gpu_family"] == "ada"
-    clip = registry.env_of("clip")
-    assert clip["r2_key"] == "envs/clip/cu128-py312-torch280-ada.tar.gz"
-    assert clip["sha256"] == (
-        "7920dbee3e4f271434936e887ad39ab05bdb760c2f31adf8fdaac6ee864b06fa"
-    )
     assert "videojev" in registry.model_names()
     with pytest.raises(registry.RegistryError):
         registry.weights_of("does-not-exist")
+
+
+def test_env_of_clip_has_env_without_flash_attn():
+    env = registry.get_model("clip")["env"]
+    assert env["r2_key"].startswith("envs/clip/")
+    assert env["unpack_to"] == "/opt/env/clip"
+    assert env["build"]["flash_attn"] is False
+
+
+def test_new_models_registered_with_pinned_revisions():
+    names = registry.model_names()
+    for name in ("siglip2", "d3-nano", "qwen8b"):
+        assert name in names
+        registry.weights_of(name)
+        assert registry.get_model(name)["env"]["compat"]["gpu_family"] == "ada"
+    assert registry.weights_of("qwen8b") == (
+        "Qwen/Qwen3-VL-8B-Instruct",
+        "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+    )
+    assert registry.get_model("qwen8b")["env"]["build"]["flash_attn"] is True
+    assert registry.get_model("d3-nano")["env"]["build"]["flash_attn"] is True
+    assert registry.get_model("siglip2")["env"]["build"]["flash_attn"] is False
+
+
+def test_ensure_env_errors_without_packed_env(tmp_path):
+    # A model whose env is null has no packed env to restore.
+    reg = tmp_path / "models.yaml"
+    reg.write_text(
+        "version: 1\nmodels:\n  noenv:\n    repo: a/b\n"
+        "    revision: " + ("a" * 40) + "\n    env: null\n"
+        "    weights:\n      r2_prefix: models/a/b/" + ("a" * 40) + "/\n"
+    )
     with pytest.raises(registry.RegistryError):
-        es.ensure_env("does-not-exist")
+        es.ensure_env("noenv", registry_path=reg)
 
 
 @pytest.mark.parametrize(
@@ -671,7 +699,7 @@ def test_launch_argv_aborts_when_sys_prefix_does_not_match(tmp_path):
     prefix = tmp_path / "opt/env"
     (prefix / "bin").mkdir(parents=True)
     python = prefix / "bin/python"
-    python.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n")
+    python.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
     python.chmod(0o755)
     env = _launch_spec(prefix)
     with pytest.raises(RuntimeError, match=r"sys\.prefix"):
@@ -684,3 +712,134 @@ def test_eval_subprocess_env_disables_user_site_and_drops_injection():
     assert "PYTHONPATH" not in child
     assert "PYTHONUSERBASE" not in child
     assert child["PATH"].startswith("/opt/env/videojev/bin" + os.pathsep)
+
+
+def _captured_build_prefix(tmp_path, monkeypatch, flash_attn):
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        return completed_probe(flash_attn)
+
+    monkeypatch.setattr(build_env, "_run", run)
+    prefix = tmp_path / "env"
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("numpy\n")
+    build_env._build_prefix(
+        tmp_path / "conda",
+        prefix,
+        requirements,
+        "3.12",
+        "8.9",
+        flash_attn=flash_attn,
+    )
+    return calls, str(prefix / "bin/python")
+
+
+def test_build_prefix_includes_flash_attn_by_default(tmp_path, monkeypatch):
+    calls, python = _captured_build_prefix(tmp_path, monkeypatch, True)
+    assert all(call[0] != "python" for call in calls)
+    assert any(call[0] == python and "-I" in call for call in calls)
+    assert any("flash-attn==2.8.3.post2" in call for call in calls)
+    assert any("causal-conv1d==1.7.0" in call for call in calls)
+    assert any("flash_attn" in call[-1] for call in calls if call[-2:-1] == ["-c"])
+
+
+def test_build_prefix_skips_flash_attn_when_false(tmp_path, monkeypatch):
+    calls, python = _captured_build_prefix(tmp_path, monkeypatch, False)
+    assert all("flash-attn==2.8.3.post2" not in call for call in calls)
+    assert all("--no-build-isolation" not in call for call in calls)
+    verify = next(call[-1] for call in calls if call[:3] == [python, "-I", "-c"])
+    assert "flash_attn" not in verify
+    assert "import sys, torch" in verify
+    assert any("torch==2.8.0" in call for call in calls)
+
+
+def test_build_prefix_always_installs_torch_and_requirements(tmp_path, monkeypatch):
+    for flash_attn in (True, False):
+        calls, python = _captured_build_prefix(tmp_path, monkeypatch, flash_attn)
+        assert any(
+            "torch==2.8.0" in call and "torchvision==0.23.0" in call for call in calls
+        )
+        assert any(
+            "-r" in call and str(tmp_path / "requirements.txt") in call
+            for call in calls
+        )
+        assert all(call[0] in {str(tmp_path / "conda"), python} for call in calls)
+
+
+def test_skip_and_upload_only_are_mutually_exclusive(tmp_path):
+    with pytest.raises(SystemExit):
+        build_env.main(
+            [
+                "--model",
+                "videojev",
+                "--skip-upload",
+                "--upload-only",
+                "--out",
+                str(tmp_path / "x.tar.gz"),
+            ]
+        )
+
+
+def test_upload_only_requires_existing_tarball(tmp_path):
+    missing = tmp_path / "nope.tar.gz"
+    with pytest.raises(SystemExit):
+        build_env.main(["--model", "videojev", "--upload-only", "--out", str(missing)])
+
+
+def test_upload_only_uploads_without_building(tmp_path, monkeypatch, capsys):
+    tarball = tmp_path / "videojev-env.tar.gz"
+    archive(tarball)
+    env = registry.env_of("videojev")
+    build_env._new_record(
+        env,
+        "videojev",
+        tarball,
+        "@".join(registry.weights_of("videojev")),
+        build_env._sha256(build_env._requirements("videojev")),
+        runtime_facts(),
+    )
+    calls = []
+
+    class FakeR2:
+        def put_object(self, **kw):
+            calls.append(kw)
+            if hasattr(kw["Body"], "read"):
+                kw["Body"].read()
+
+    monkeypatch.setattr(build_env.model_source, "r2_client", lambda: FakeR2())
+    monkeypatch.setenv("R2_BUCKET", "goodvision-models")
+
+    def boom(*a, **k):
+        raise AssertionError("upload-only must not build/pack")
+
+    monkeypatch.setattr(build_env, "_ensure_miniconda", boom)
+    monkeypatch.setattr(build_env, "_build_prefix", boom)
+    monkeypatch.setattr(build_env, "_pack", boom)
+    monkeypatch.setattr(build_env.env_source, "check_compatibility", boom)
+
+    build_env.main(["--model", "videojev", "--upload-only", "--out", str(tarball)])
+
+    result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert result["uploaded"] is True
+    assert result["r2_key"].startswith("envs/videojev/")
+    assert [c["Key"] for c in calls] == [result["r2_key"], result["manifest_key"]]
+    assert all(c["IfNoneMatch"] == "*" for c in calls)
+
+
+@pytest.mark.parametrize("name", ["videojev", "clip", "siglip2", "d3-nano", "qwen8b"])
+def test_each_registry_env_launch_path_is_absolute_packed_python(name, tmp_path):
+    env = copy.deepcopy(registry.env_of(name))
+    prefix = tmp_path / "opt" / name
+    (prefix / "bin").mkdir(parents=True)
+    python = prefix / "bin/python"
+    python.write_text("#!/bin/sh\nexit 0\n")
+    python.chmod(0o755)
+    env["unpack_to"] = str(prefix)
+    assert es.packed_python(env) == str(python)
+    absent = copy.deepcopy(env)
+    absent["unpack_to"] = str(tmp_path / "missing" / name)
+    Path(absent["unpack_to"]).mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="packed interpreter missing"):
+        es.packed_python(absent)
