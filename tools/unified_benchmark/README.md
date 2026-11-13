@@ -239,16 +239,78 @@ python -m tools.unified_benchmark.api_run \
   --authorization-note 'Approved test scope and cost' --execute
 ```
 
+## Self-hosted Qwen8B from R2
+
+### Prepare the control machine
+
+The control machine runs the launcher, SSH tunnel and evaluator. Restoring an R2
+environment on the GPU does not install this machine's dependencies. In the
+isolated Python 3.12 preflight environment, install the additional controller
+packages below. The Vast SDK pin matches this repository's controller Dockerfile;
+keep GPU/model environments separate.
+
+```sh
+python -m pip install 'vastai==1.5.6' 'python-dotenv>=1,<2' 'PyYAML>=6,<7'
+python -m pip check
+```
+
+Local tools required on PATH: Git, OpenSSH (`ssh`, `scp`, `ssh-keygen`), `tar`,
+FFmpeg and ffprobe. Then check imports and tools **offline**, without loading
+credentials, constructing a Vast client, contacting R2 or starting a launcher:
+
+```sh
+python - <<'PY'
+import importlib
+from importlib.metadata import version
+import shutil
+import sys
+
+if sys.version_info[:2] != (3, 12):
+    raise SystemExit("Use the Python 3.12 preflight environment")
+for distribution, module in [("vastai", "vastai"), ("python-dotenv", "dotenv"),
+                              ("PyYAML", "yaml"), ("Pillow", "PIL"), ("certifi", "certifi")]:
+    loaded = importlib.import_module(module)
+    installed = version(distribution)
+    if distribution == "vastai" and (installed != "1.5.6" or not hasattr(loaded, "VastAI")):
+        raise SystemExit("Install the documented vastai==1.5.6 controller SDK")
+    print(distribution, installed)
+missing = [name for name in ("git", "ssh", "scp", "ssh-keygen", "tar", "ffmpeg", "ffprobe")
+           if shutil.which(name) is None]
+if missing:
+    raise SystemExit("Missing local tools: " + ", ".join(missing))
+print("Controller imports/tools ready; credentials, R2 access and GPU remain unchecked.")
+PY
+```
+
+Retain installed package versions with the run record. Missing imports/tools must
+be resolved before using either launcher. This check is not rental authorization.
+
+### Prepare the bundle and run the selected engine
+
 Self-hosted Qwen3-VL-8B on a rented 4090 uses `qwen8b_r2_host` (HF generate +
 FA2) or the independent engine profile `qwen8b_r2_vllm` (vLLM), not the
 OpenRouter `qwen8b` profile and not a `qwen8b_selfhost` alias. Both keep the
 same frozen JPEGs, prompts, parser, temperature, max_tokens=30, and **12 client
-slots**. Do not relabel the completed HF run as vLLM. After a verified
-preflight bundle:
+slots**. Do not relabel the completed HF run as vLLM. First create an offline
+bundle containing the selected self-hosted aliases (omit an alias if not needed):
+
+```sh
+python -m tools.unified_benchmark.preflight \
+  --inputs /private/goodvision-inputs --media /data/goodvision \
+  --models qwen8b_r2_host qwen8b_r2_vllm \
+  --output outputs/new-qwen-r2-bundle
+```
+
+After preflight passes, use the corresponding launcher below only within the
+approved rental/run scope. The launcher commands can create a billed Vast
+instance; they are not dry runs and do not use the four-model native CLI's
+`--execute` gate.
+
+Transformers:
 
 ```sh
 PYTHONPATH=. python -m tools.start_qwen8b_r2 \
-  --eval-bundle outputs/new-current-frame-bundle \
+  --eval-bundle outputs/new-qwen-r2-bundle \
   --eval-output outputs/qwen8b-r2-host \
   --eval-phase both \
   --authorization-note 'Approved self-hosted qwen8b R2 4090 run'
@@ -272,11 +334,16 @@ vLLM (independent engine, same exam):
 
 ```sh
 PYTHONPATH=. python -m tools.start_qwen8b_vllm \
-  --eval-bundle <bundle-with-qwen8b_r2_vllm-plans> \
+  --eval-bundle outputs/new-qwen-r2-bundle \
   --eval-output outputs/qwen8b-r2-vllm \
   --eval-phase both \
   --authorization-note 'Approved self-hosted qwen8b R2 vLLM 4090 run'
 ```
+
+The Qwen evaluator currently requires a new output path and has no supported
+`--resume` CLI. `--resume-instance-id` only reconnects to a rental; it does not
+resume evaluation. Preserve interrupted ledgers and receipts. Do not restart the
+same units with a fresh output to reset the three-attempt budget.
 
 `eval_local` still uses 12 slots. vLLM may batch those 12 internally. Do not
 change JPEG size, prompts, max_tokens, or client concurrency to fit VRAM.
