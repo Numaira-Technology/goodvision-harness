@@ -12,7 +12,7 @@ remains available with its original inputs and source fingerprints.
 
 | Profile | Input / decision | Precision | Validation |
 |---|---|---|---|
-| `clip` | One common JPEG; positive-minus-contrast cosine margin | FP32, TF32 off | Select four base-event thresholds on complete validation24 |
+| `clip` | One common JPEG; positive-minus-contrast cosine margin | FP32, TF32 off | Four base events on validation24 by default, six events with the optional bag supplement |
 | `siglip2` | Same; original lowercase text preprocessing | FP32, TF32 off | Same selection, independently for this model |
 | `videojev` | Two adjacent distinct 1 FPS frames; native yes/no/unknown argmax | BF16 backbone, original FP32 scoring | Evaluate native decisions; no scalar threshold |
 | `decision3` | Two adjacent distinct 1 FPS frames; native yes/no/unknown argmax | BF16 backbone, FP32 readout | Same; no scalar threshold |
@@ -33,7 +33,8 @@ two frames, so missing windows and missing single-frame calls are different unit
 This does not establish twelve-camera real-time throughput.
 The added82 test references remain inherited and pending individual-view review;
 keep [the dataset limitations](DATASET202.md) and original120/robot82 breakdowns.
-Validation24 is unchanged; added test labels are not calibration data.
+Validation24 remains the default. The optional bag supplement below extends it
+to validation44; added test labels are never calibration data.
 
 ## 1. Inputs, media and offline preflight
 
@@ -59,6 +60,35 @@ after changing runner code; never edit an old bundle's hashes. Copy the complete
 bundle to the GPU machine without changing its contents, using the same checkout.
 For a deliberately selected legacy120 run, add `--protocol unified-frame-120-v2`
 and use its five original JSON inputs. Preserve historical bundles unchanged.
+
+### Optional CLIP/SigLIP2 bag validation
+
+For current202, select `--models clip siglip2` (or either alias) and add the
+following preflight arguments to use a private, versioned validation supplement.
+
+```sh
+  --bag-validation /private/goodvision-inputs/bag-validation.json \
+  --bag-validation-sha256 FROZEN_MANIFEST_SHA256
+```
+
+The manifest has `schema: "bag-validation10-v1"` and a `videos` array of ten
+original clips under the existing media `validation/` directory. Each entry
+contains `filename`, media `sha256`, `source_video_group` and two `questions`.
+Each question contains its `event` (`bag_knife` or `bag_alcohol_bottle`),
+`proposed_answer` (`yes` or `no`) and `human_review` describing the actual
+reference provenance, including any absence of individual human review. Record
+the manifest digest before preflight. Preflight preserves its bytes and checks
+both labels occur per event, unique video hashes and split separation by source
+group. Recording cuts can share a group within validation.
+
+Original validation questions 1–24 retain their identifiers. The supplement
+adds 25–44 in manifest video order, knife then bottle. The two questions per
+clip share the same 1 FPS frames. Use the existing `native_run --phase both`
+command with an authorization note covering 34 validation videos / 44 questions
+and test202. Each model selects all six midpoints on complete validation44 and
+freezes them before its first test request. The top level of each completed
+phase report gives calibrated results. Its `zero_margin_baseline` gives the
+same scores evaluated at zero, including per-event and test-cohort counts.
 
 ## 2. Prepare the GPU deployment (no evaluation inference)
 
@@ -148,11 +178,11 @@ runs the original service warmup plus a synthetic smoke, then starts evaluation.
 A failed startup consumes **no** evaluation attempt budget. Runtime and smoke
 records live under `invocations/<id>/`. Cleanup stops only its own service process.
 
-`--phase both` runs validation before test. For CLIP/SigLIP2 it requires all 24
-validation questions, chooses each base threshold using the original widest
-finite optimal interval midpoint and strict `>` comparator, and writes
-`thresholds.json` **before** test starts. No bag validation exists: both bag
-thresholds remain 0, labelled uncalibrated. Missing validation evidence blocks
+`--phase both` runs validation before test. With default validation24, each
+margin model requires all 24 answers, chooses each base threshold using the
+original widest finite optimal interval midpoint and strict `>` comparator,
+and writes `thresholds.json` **before** test starts. Both bag thresholds stay
+at zero for validation24. Missing validation evidence blocks
 selection and test; there is no silent zero-threshold fallback. VideoJev/Decision3
 have no threshold selection; their validation coverage remains separately reported.
 

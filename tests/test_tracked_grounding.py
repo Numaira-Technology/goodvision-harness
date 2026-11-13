@@ -12,8 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pytest
 from benchmark_runtime_fixtures import (
-    ContractSourceFeeder,
     BOX,
+    ContractSourceFeeder,
     assert_admission_drained,
     config,
     configure_ephemeral_admission,

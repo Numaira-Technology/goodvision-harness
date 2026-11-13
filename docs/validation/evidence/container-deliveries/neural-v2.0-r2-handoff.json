@@ -1,0 +1,19 @@
+{
+  "module": "goodvision-neural",
+  "version": "v2.0",
+  "delivery_revision": "r2",
+  "zip_file": "GoodVision-Neural-V2.0-r2.zip",
+  "zip_bytes": 105854,
+  "zip_sha256": "03a20c49ffdcbe1f4b59adbf804e46dede9a75ca2c0466b6136c304f3d17417d",
+  "image_archive": {
+    "file": "images.tar.gz",
+    "bytes": 8409,
+    "sha256": "55d498980998575b55a9cabd669357085789242df88fce5f60a6455e1574fcdc",
+    "kind": "oci-delta",
+    "requires_containerd_image_store": true
+  },
+  "source_files_verified": 9,
+  "package_files_verified": true,
+  "image_unchanged_from_initial_delivery": true,
+  "customer_deployment_status": "unknown"
+}

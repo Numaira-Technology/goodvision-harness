@@ -37,7 +37,10 @@ own protocol; do not substitute it for the shared-JPEG unified run.
 
 Test: 202 questions / 192 videos, fight32, smoking22, fall62, weapon66, bag knife10,
 bag alcohol bottle10. Validation: 24 videos/questions, six per base event with
-three yes and three no. There is no bag validation and no fabricated train split.
+three yes and three no. There is no fabricated train split. An optional
+[CLIP/SigLIP2 bag supplement](NATIVE.md#optional-clipsiglip2-bag-validation)
+adds ten validation videos/twenty questions, requiring complete validation44
+before six-event calibration. Test202 remains separate and unchanged.
 Source-group/hash separation is checked; unknown training/actor/scene overlap and
 prior test reuse remain limitations. Original120 and robot82 stay separately
 reported. The original41 stereo sources are not counted again, and the added82
@@ -300,8 +303,11 @@ Luna: 0.01 grid, longest optimal contiguous run midpoint, `>=`; recheck midpoint
 optimality and stop if it is worse. CLIP/SigLIP2: widest finite optimal margin
 interval midpoint, strict `>`, with FP/FN tie rules. Selection requires complete
 validation and cannot read test predictions. Freeze model/config/rules/bundle hashes.
-Bag remains Luna0.5 or margin0, explicitly uncalibrated. Boolean/argmax models have
-no scalar threshold. Past calibrated values are comparisons, not new-run defaults.
+Without the optional bag supplement, bag remains Luna0.5 or margin0, explicitly
+uncalibrated. CLIP/SigLIP2 with the separately frozen validation44 supplement
+select all six event margins; Luna still uses validation24 and bag0.5.
+Boolean/argmax models have no scalar threshold. Past calibrated values are
+comparisons, not new-run defaults.
 Successful native CLIP/SigLIP2 validation reports use the selected thresholds and
 cite their artifact hash, as does the subsequent test. Provisional202 test labels
 remain outside validation selection.

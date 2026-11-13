@@ -104,7 +104,7 @@ def test_twelve_sources_fp8_and_person_reports(tmp_path, monkeypatch, mode, sequ
     assert_admission_drained(result, args, 12 * len(result["lanes"]))
     records = [
         json.loads(s)["report"]
-        for s in (output / "streams-12-repeat-1/reports.jsonl")
+        for s in (tmp_path / "streams-12-repeat-1/reports.jsonl")
         .read_text()
         .splitlines()
     ]
