@@ -1,4 +1,4 @@
-"""Deterministic module partition and incremental evidence for Linux CI."""
+"""Deterministic module partition and incremental evidence for regression CI."""
 
 from __future__ import annotations
 

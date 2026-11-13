@@ -344,7 +344,7 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, *, recover=True):
 
 def selected_calibration(plan, cfg, ledger, bundle_digest, deployment_hash):
     selected = select_thresholds(plan, collect(plan, cfg, ledger), cfg["kind"], cfg["model"])
-    selected.update(calibration="selected_on_complete_validation24", config_sha256=digest(cfg),
+    selected.update(config_sha256=digest(cfg),
         rules_sha256=digest(plan_rules(plan)), bundle_sha256=bundle_digest, model=cfg["model"],
         native_deployment_sha256=deployment_hash)
     return selected

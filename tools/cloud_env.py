@@ -19,7 +19,12 @@ from tools.cloud_prefetch import R2_KEYS, credential_blob
 from tools.env_source import restore_identity
 
 TOOLS = Path(__file__).resolve().parent
-UPLOAD = ("model_source.py", "registry.py", "env_source.py", "models.yaml")
+# prefix_lock imports this standalone helper at restore time. Ship its package
+# too: the isolated remote reader cannot rely on a full repository checkout.
+UPLOAD = (
+    "model_source.py", "registry.py", "env_source.py", "models.yaml",
+    "unified_benchmark/__init__.py", "unified_benchmark/locking.py",
+)
 
 
 def _default_runner(command, *, input=None, timeout=1800):
