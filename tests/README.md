@@ -78,7 +78,7 @@ the required environment and authorized inputs. Store generated results in an
 ignored output directory and keep reviewed summaries in
 [docs/validation](../docs/README.md#validation-records).
 
-## Linux CI partition and timeout evidence
+## CI partition and timeout evidence
 
 The two Linux regression shards deterministically assign entire test modules using
 SHA-256 of the collected module path. They retain each module's original test
@@ -87,7 +87,14 @@ Every shard records the full collection and its selected node IDs; the existing
 `Tests (ubuntu-latest, Python 3.11)` aggregate check fails unless both shards pass
 and the manifests plus completed setup/call/teardown records prove every collected
 test was executed exactly once. Legitimate recorded setup skips remain skips.
-Windows retains its unpartitioned suite and existing check name and time limit.
+Windows uses four shards with the same partition and evidence plugin. Its
+existing `Tests (windows-latest, Python 3.12)` check independently verifies all
+Windows tests were covered exactly once. Each Windows shard retains the 25-minute
+job limit and bounds the test step to 20 minutes. Its parent process stops the
+test process tree after 16 minutes; stdout/stderr go to files so console output
+cannot block pytest shutdown. This leaves time to upload collection, incremental
+stage records, logs and JUnit. A timed-out step or missing
+completion record fails the aggregate gate; it never becomes a successful skip.
 
 Linux shards use a 16-minute test-process deadline inside the unchanged 20-minute
 job limit, leaving time for `always()` artifact upload. The `regression-linux-*`

@@ -74,38 +74,22 @@ def test_twelve_sources_native_decisions_and_person_reports(
             }
         ]
 
-    def run_once(output):
-        calls.clear()
-        with DetectorBroker(
-            "http://127.0.0.1:1", output, transport=detector
-        ) as broker:
-            stage = run_stage(
-                args,
-                base,
-                12,
-                [[jpeg()] * 4],
-                output,
-                1,
-                inspector_factory=partial(
-                    offline_inspector,
-                    broker_url=broker.endpoint,
-                    audit_dir=output / "api-audit",
-                ),
-                source_hook=broker.submit,
-            )
-            broker.drain()
-        return stage
-
-    output = tmp_path
-    result = run_once(output)
-    if not result["input_timing_valid"]:
-        # A starved feeder thread on a shared CI runner skips late source
-        # samples, which then reach neither the detector nor the lanes. That
-        # measures the host, not routing: re-run once in a fresh directory.
-        # A real regression fails both runs; the assertions are unchanged.
-        output = tmp_path / "retry"
-        output.mkdir()
-        result = run_once(output)
+    with DetectorBroker("http://127.0.0.1:1", tmp_path, transport=detector) as broker:
+        result = run_stage(
+            args,
+            base,
+            12,
+            [[jpeg()] * 4],
+            tmp_path,
+            1,
+            inspector_factory=partial(
+                offline_inspector,
+                broker_url=broker.endpoint,
+                audit_dir=tmp_path / "api-audit",
+            ),
+            source_hook=broker.submit,
+        )
+        broker.drain()
     assert result["all_drained"] and not result["result_records_missing"]
     assert result["result_retention"]["valid"]
     assert len(calls) == len(set(calls)) == 48
@@ -119,11 +103,11 @@ def test_twelve_sources_native_decisions_and_person_reports(
     assert_admission_drained(result, args, 12 * len(result["lanes"]))
     records = [
         json.loads(s)["report"]
-        for s in (output / "streams-12-repeat-1/reports.jsonl")
+        for s in (tmp_path / "streams-12-repeat-1/reports.jsonl")
         .read_text()
         .splitlines()
     ]
-    assert audit_coverage(records, audit_rows(output))["valid"]
+    assert audit_coverage(records, audit_rows(tmp_path))["valid"]
     for row in records:
         if report_lane(row) == "grounding":
             assert row["subject_id_scope"] == "stream_session"

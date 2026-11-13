@@ -266,21 +266,38 @@ def test_workflow_preserves_required_names_limits_and_optional_jobs():
     assert jobs["tests"]["name"] == "Tests (ubuntu-latest, Python 3.11)"
     assert jobs["tests"]["if"] == "always()" and jobs["tests"]["needs"] == "linux-tests"
     assert jobs["windows-tests"]["name"] == "Tests (windows-latest, Python 3.12)"
-    assert jobs["windows-tests"]["timeout-minutes"] == 25
+    assert jobs["windows-tests"]["if"] == "always()"
+    assert jobs["windows-tests"]["needs"] == "windows-regressions"
+    windows = jobs["windows-regressions"]
+    assert windows["runs-on"] == "windows-latest"
+    assert windows["timeout-minutes"] == 25
+    assert windows["strategy"]["fail-fast"] is False
+    assert windows["strategy"]["matrix"]["shard"] == [0, 1, 2, 3]
+    assert "--shards 4" in jobs["windows-tests"]["steps"][-1]["run"]
+    execution = next(step for step in windows["steps"]
+                     if "--ci-evidence" in step.get("run", ""))
+    assert execution["timeout-minutes"] == 20
+    assert "'--ci-shards', '4'" in execution["run"]
+    assert "exit $testExitCode" in execution["run"]
+    assert "WaitForExit(960000)" in execution["run"]
+    assert "taskkill /F /T /PID $process.Id" in execution["run"]
+    assert '-RedirectStandardOutput "$evidence/stdout.log"' in execution["run"]
+    assert '-RedirectStandardError "$evidence/stderr.log"' in execution["run"]
+    assert "timed_out=$timedOut" in execution["run"]
     linux = jobs["linux-tests"]
     assert linux["timeout-minutes"] == 20 and linux["strategy"]["fail-fast"] is False
     assert linux["strategy"]["matrix"]["shard"] == [0, 1]
     assert not any(job.get("continue-on-error") for job in jobs.values())
-    for name in ["linux-tests", "windows-tests"]:
+    for name in ["linux-tests", "windows-regressions"]:
         steps = jobs[name]["steps"]
         assert any('".[dev,webrtc,vlm]"' in step.get("run", "") for step in steps)
         assert any("Fetch pinned historical" in step.get("name", "") for step in steps)
-    uploads = [
-        step
-        for step in linux["steps"]
-        if step.get("uses", "").startswith("actions/upload-artifact@")
-    ]
-    assert len(uploads) == 1 and uploads[0]["if"] == "always()"
+    for platform_job in (linux, windows):
+        uploads = [
+            step for step in platform_job["steps"]
+            if step.get("uses", "").startswith("actions/upload-artifact@")
+        ]
+        assert len(uploads) == 1 and uploads[0]["if"] == "always()"
     assert {
         "sam3-onnx-contract",
         "preview-browser",
@@ -969,7 +986,7 @@ def test_stack_request_failure_still_cleans_and_records_failure(tmp_path, monkey
         assert (pid, sig) == (child.pid, signal.SIGUSR1)
         raise OSError("synthetic diagnostic failure")
 
-    ticks = iter([0, 961, 961])
+    ticks = iter([0, 61, 61])
     monkeypatch.setattr(runner, "_become_subreaper", lambda: None)
     monkeypatch.setattr(runner, "_snapshot", lambda stream: None)
     monkeypatch.setattr(runner, "_cleanup", cleanup)

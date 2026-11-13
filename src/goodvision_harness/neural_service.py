@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from PIL import Image, ImageOps
+from PIL import Image
 
 from .neural_calibration import (
     CALIBRATED_PROMPTS,
@@ -28,6 +28,10 @@ from .neural_calibration import (
     valid_margin,
     valid_sampling,
 )
+
+# Pinned CLIP checkpoint resizes the shortest edge before center cropping.
+_CLIP_RESIZE_EDGE = 224
+_MAX_IMAGE_PIXELS = 16_000_000
 
 PROMPTS = {
     "fight": (
@@ -98,14 +102,7 @@ class Encoder:
 
     def prepare(self, image):
         images = [image] if isinstance(image, Image.Image) else image
-        padded = [
-            ImageOps.pad(
-                frame, (224, 224), method=Image.Resampling.BICUBIC,
-                color=(123, 117, 104),
-            )
-            for frame in images
-        ]
-        return self.processor(images=padded, return_tensors="pt")["pixel_values"]
+        return self.processor(images=images, return_tensors="pt")["pixel_values"]
 
     def score_batch(self, pixels, labels):
         torch = self.torch
@@ -368,7 +365,10 @@ def create_app(encoder, *, max_batch_size=4, max_queue=32):
                     ) as source:
                         if (
                             source.format != "JPEG"
-                            or source.width * source.height > 16_000_000
+                            or source.width * source.height > _MAX_IMAGE_PIXELS
+                            # Tiny extreme-aspect JPEGs can expand before cropping.
+                            or _CLIP_RESIZE_EDGE ** 2 * max(source.size)
+                            > _MAX_IMAGE_PIXELS * min(source.size)
                         ):
                             raise ValueError("invalid JPEG")
                         decoded.append(source.convert("RGB"))

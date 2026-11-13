@@ -28,7 +28,7 @@ The file must have exactly these fields:
 | `model` | `openai/clip-vit-large-patch14` |
 | `revision` | `32bd64288804d66eefd0ccbe215aa642df71cc41` |
 | `prompts` | Object mapping the four events to the exact two strings below |
-| `preprocessing` | `rgb-bicubic-proportional-pad-224-fill-123-117-104-clip-processor-v1` |
+| `preprocessing` | `rgb-clip-checkpoint-processor-v1` |
 | `aggregation` | `max_all_images` |
 | `comparison` | `>` |
 | `sampling` | The exact policy and cadence described below |
@@ -95,16 +95,13 @@ is negative or unknown; its argmax does not override the threshold. It is not an
 accuracy estimate or event confidence. The client validates the complete window,
 winner, artifact identity and threshold choice, and preserves PPE derived unknowns.
 
-Validation must match the full service preprocessing: incoming RGB JPEGs,
-proportional bicubic padding to 224 by 224 with fill `(123, 117, 104)`, then the
-processor from the pinned model revision. Upstream image selection, JPEG resizing,
-window cadence and source grouping also need to match the reviewed validation
-protocol. The sampling contract checks configured policy and received timestamps;
-it does not certify upstream delivery, source grouping, or validation evidence.
-Center-cropped validation
-is incompatible with the full-frame production path. Use the pinned neural extra
-versions; offline tests exercise PyTorch 2.8.0 and Transformers 5.14.1 interfaces
-with tiny random CPU weights, which does not establish GPU or model accuracy.
+For validation, pass each decoded RGB image directly to the pinned CLIP processor.
+Thresholds fitted on padded images require recalibration for this input.
+Image selection, JPEG resizing, window cadence and source grouping must also
+match the reviewed validation protocol. The sampling contract checks the
+configured policy and received timestamps. Use the pinned neural extra versions.
+The offline tests cover the PyTorch 2.8.0 and Transformers 5.14.1 interfaces
+with tiny random CPU weights. GPU performance and model accuracy require separate measurements.
 
 This change supplies no production thresholds, reviewed validation split, calibration
 results or held-out accuracy claim. The separate benchmark/threshold-selection

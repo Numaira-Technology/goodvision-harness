@@ -49,7 +49,9 @@ def test_local_model_identity_is_never_invented(host, monkeypatch, model):
 
 @pytest.mark.parametrize('bad_body', [b'[]', b'null', b'{"model":"qwen/qwen3-vl-8b-instruct","x":NaN}',
                                      b'<html>bad upstream</html>', b'\xff', b'x' * (2 * 1024 * 1024 + 1),
-                                     'incomplete_http', 'bad_status'])
+                                     'incomplete_http', 'bad_status'],
+                         ids=['array', 'null', 'nonfinite', 'html', 'invalid-utf8',
+                              'oversized', 'incomplete-http', 'bad-status'])
 def test_local_bad_responses_retry_three_times_without_stopping_good_units(host, monkeypatch, bad_body):
     bundle, config, unit, ledger, client = host
     good = unit | {'id': 'good', 'question': 'GOOD synthetic question'}

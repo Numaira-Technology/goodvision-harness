@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 from uuid import uuid4
@@ -224,16 +224,8 @@ def _require_r2_pack(env_spec: dict) -> str:
 
 
 def _packed_python(activate: str) -> str:
-    """Interpreter next to conda-pack's activate script (bin/python).
-
-    A registry prefix such as ``/opt/env/...`` must stay a POSIX string.
-    pathlib rewrites a leading slash to the current drive root on Windows.
-    """
-    text = str(activate)
-    if text.startswith("/") and not text.startswith("//"):
-        parent = text.rstrip("/").rsplit("/", 1)[0]
-        return parent + "/python"
-    return str(Path(text).parent / "python")
+    """Remote Linux interpreter, independent of the launcher's host platform."""
+    return str(PurePosixPath(activate).parent / "python")
 
 
 def _verify_restored_env(ssh, activate: str) -> None:
