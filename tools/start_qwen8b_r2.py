@@ -282,9 +282,14 @@ def _verify_eval_bundle(bundle: Path, phase: str, env_spec=None) -> str:
     return bundle_sha
 
 
-def _require_new_eval_output(output: Path) -> None:
+def _require_new_eval_output(output: Path, status: Path | None = None) -> None:
     if output.exists() or output.is_symlink():
         raise ValueError(f"evaluation output already exists: {output}")
+    if status is not None:
+        output_path, status_path = output.resolve(), status.resolve()
+        if (status_path.is_relative_to(output_path)
+                or output_path.is_relative_to(status_path)):
+            raise ValueError("status file must not overlap the evaluation output")
 
 
 def _release_instance_checked(vast, instance_id: int) -> None:
@@ -331,7 +336,7 @@ def main() -> int:
     registry.validate_env(env_spec)
     bundle_sha = None
     if args.eval_bundle:
-        _require_new_eval_output(args.eval_output)
+        _require_new_eval_output(args.eval_output, args.status_file)
         bundle_sha = _verify_eval_bundle(args.eval_bundle, args.eval_phase, env_spec)
 
     from dotenv import load_dotenv
@@ -457,7 +462,7 @@ def main() -> int:
                 f"gpu={state.get('gpu', '')}\n"
             )
         if args.eval_bundle:
-            _require_new_eval_output(args.eval_output)
+            _require_new_eval_output(args.eval_output, args.status_file)
             if (
                 _verify_eval_bundle(args.eval_bundle, args.eval_phase, env_spec)
                 != bundle_sha

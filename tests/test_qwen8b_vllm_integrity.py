@@ -182,7 +182,7 @@ def test_changed_request_plan_fails_before_sending(frozen, change):
     expected = {
         "request": "request fingerprint differs",
         "config_hash": "preflight plan identity differs",
-        "rules_hash": "preflight plan identity differs",
+        "rules_hash": "plan protocol/rules fingerprint differs",
         "split": "preflight plan identity differs",
         "unsealed": "bundle inventory contains unsealed or missing files",
         "empty": "requires unique request units",

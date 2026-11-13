@@ -10,7 +10,7 @@ from PIL import Image
 
 from tools.unified_benchmark import native_deploy as deploy, native_run as run, preflight, workflow
 from tools.unified_benchmark.adapters import D3_OPTIONS, request_body
-from tools.unified_benchmark.contract import EVENTS, RULES, digest, file_hash, write_new
+from tools.unified_benchmark.contract import CURRENT_VERSION, EVENTS, RULES, digest, file_hash, rules_for, write_new
 from tools.unified_benchmark.retry import Ledger, Queue, PausedRun
 
 
@@ -1200,3 +1200,67 @@ def test_fatal_orphan_requires_authoritative_completion_timestamp(frozen, tmp_pa
     assert not FakeBackend.instances and not FakeBackend.calls
     assert output_snapshot(output) == before
     assert not (output / "invocations").exists()
+
+
+@pytest.mark.parametrize("alias", ["clip", "siglip2"])
+def test_validation_report_uses_selected_nonzero_thresholds(frozen, tmp_path, alias):
+    def positive_margins(self, unit, body):
+        margin = .3 if unit["id"].endswith("/yes") else .1
+        return 200, {event: {"margin": margin, "positive_cosine": .5 + margin,
+                            "contrast_cosine": .5} for event in unit["targets"]}, {}
+    FakeBackend.behavior = positive_margins
+    out = tmp_path / "validation"
+    execute(frozen, out, alias, phase="validation")
+    artifact = json.loads((out / "thresholds.json").read_text())
+    result = json.loads((out / "validation/report.json").read_text())
+    assert artifact["thresholds"]["fight"] == pytest.approx(.2)
+    assert result["thresholds"] == artifact["thresholds"]
+    assert result["threshold_artifact_sha256"] == file_hash(out / "thresholds.json")
+    assert result["correct"] == result["complete_valid_questions"] == 24
+    assert not (out / "test").exists()
+
+
+@pytest.mark.parametrize("alias", deploy.ALIASES)
+def test_native202_validation_to_test_keeps_method(frozen, tmp_path, alias):
+    """Exercise the same native pipeline with 82 extra synthetic test questions."""
+    bundle, _, _ = frozen
+    cfg = deploy.profile(alias)
+    for path in (bundle / 'plans').glob('*.json'):
+        plan = json.loads(path.read_text())
+        plan_cfg = deploy.profile(path.name.rsplit('-', 1)[0])
+        plan.update(protocol=CURRENT_VERSION, rules_sha256=digest(rules_for(CURRENT_VERSION)))
+        if plan['split'] == 'test':
+            for i in range(82):
+                event, answer = ('fall' if i < 36 else 'weapon'), ('yes' if i % 2 else 'no')
+                uid = f'test/robot/{i}/{answer}'
+                source = next(u for u in plan['units'] if event in u['targets'])
+                unit = source | {'id': uid, 'source_id': uid}
+                unit['request_sha256'] = digest(request_body(plan_cfg, unit, bundle)[1])
+                plan['units'].append(unit)
+                plan['questions'].append({'number': 121 + i, 'event': event, 'reference': answer, 'unit_ids': [uid]})
+            plan['dataset_context'] = {'review_status': 'inherited robot82 labels pending review'}
+        path.write_text(json.dumps(plan))
+    (bundle / 'rules.json').write_text(json.dumps(rules_for(CURRENT_VERSION)))
+    preflight_path = bundle / 'preflight.json'
+    manifest = json.loads(preflight_path.read_text())
+    for path in (bundle / 'plans').glob('*.json'):
+        model_alias, split = path.stem.rsplit('-', 1)
+        manifest['models'][model_alias][split]['plan_sha256'] = digest(json.loads(path.read_text()))
+    preflight_path.write_text(json.dumps(manifest))
+    seal(bundle)
+    out = tmp_path / 'run202'
+    execute(frozen, out, alias)
+    result = json.loads((out / 'test/report.json').read_text())
+    assert result['correct'] == result['accuracy_denominator'] == 202
+    assert result['cohorts']['robot82']['correct'] == 82
+    assert result['cohorts']['original120']['correct'] == 120
+    assert result['final_missing_unique_units'] == result['incomplete_questions'] == 0
+    assert len(FakeBackend.calls) == 226
+    if cfg['kind'] == 'margin':
+        artifact = json.loads((out / 'thresholds.json').read_text())
+        assert artifact['rules_sha256'] == digest(rules_for(CURRENT_VERSION))
+        assert artifact['validation_summary']['complete_valid_questions'] == 24
+    # Resume verifies the same protocol-bound calibration without new calls.
+    calls = list(FakeBackend.calls)
+    execute(frozen, out, alias, resume=True)
+    assert FakeBackend.calls == calls

@@ -44,7 +44,7 @@ EXPECTED_SIZE = 4252375781
 # Do not rent a GPU against this object; do not overwrite it.
 INCOMPLETE_VLLM_KEY = "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz"
 MAX_DPH = 1.85  # refuse silently upgrading past ~1.5x the prior $1.2296/hr
-STATUS_DEFAULT = Path("outputs/qwen8b-r2-vllm/STATUS.md")
+STATUS_DEFAULT = Path("outputs/qwen8b-r2-vllm-STATUS.md")
 MIN_CUDA = 13.0
 MIN_DRIVER_BRANCH = 580
 
@@ -286,11 +286,11 @@ def _verify_eval_bundle(bundle: Path, phase: str, env_spec: dict) -> str:
     from tools.unified_benchmark.workflow import verify_bundle
 
     bundle_sha = verify_bundle(bundle)
-    hashes = json.loads((bundle / "bundle-files-sha256.json").read_text())
+    hashes = json.loads((bundle / "bundle-files-sha256.json").read_text(encoding="utf-8"))
     config_name = "configs/qwen8b_r2_vllm.json"
     if config_name not in hashes:
         raise ValueError("vLLM config is not sealed in the bundle")
-    config = json.loads((bundle / config_name).read_text())
+    config = json.loads((bundle / config_name).read_text(encoding="utf-8"))
     expected = model_configs(["qwen8b_r2_vllm"])["qwen8b_r2_vllm"]
     # Python equality conflates bool/int and int/float; bind the JSON types too.
     if digest(config) != digest(expected):
@@ -308,7 +308,7 @@ def _verify_eval_bundle(bundle: Path, phase: str, env_spec: dict) -> str:
         name = f"plans/qwen8b_r2_vllm-{split}.json"
         if name not in hashes:
             raise ValueError(f"vLLM {split} plan is not sealed in the bundle")
-        plan = json.loads((bundle / name).read_text())
+        plan = json.loads((bundle / name).read_text(encoding="utf-8"))
         if (
             plan.get("protocol") != VERSION
             or plan.get("split") != split
@@ -558,7 +558,7 @@ def main() -> int:
     env_spec = copy.deepcopy(registry.env_of(ENV_NAME))
     pack_sha = _require_r2_pack(env_spec)
     bundle_sha = _verify_eval_bundle(args.eval_bundle, args.eval_phase, env_spec)
-    H._require_new_eval_output(args.eval_output)
+    H._require_new_eval_output(args.eval_output, args.status_file)
 
     from dotenv import load_dotenv
     from vastai import VastAI
@@ -715,7 +715,7 @@ def main() -> int:
         vllm_log = args.eval_output.parent / f"vllm-server-{instance_id}.log"
         worker = _server_process(ssh, activate, snapshot, vllm_log)
         _wait_ready(worker)
-        H._require_new_eval_output(args.eval_output)
+        H._require_new_eval_output(args.eval_output, args.status_file)
         smi_serve = subprocess.check_output(
             [*ssh, "nvidia-smi"],
             text=True,

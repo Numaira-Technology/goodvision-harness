@@ -11,7 +11,6 @@ from pathlib import Path, PurePosixPath
 
 from .contract import (
     EVENTS,
-    RULES,
     digest,
     file_hash,
     plan_rules,
@@ -102,13 +101,9 @@ def _verify_plan_bindings(bundle, report, hashes, frozen_rules):
             if name not in hashes:
                 raise ValueError("unsealed bundle plan: " + name)
             plan = json.loads((bundle / name).read_text(encoding="utf-8"))
-            planned_rules = None
-            if isinstance(plan, dict):
-                try:
-                    planned_rules = plan_rules(plan)
-                except ValueError:
-                    planned_rules = None
-            if planned_rules is not None and planned_rules != frozen_rules:
+            if not isinstance(plan, dict):
+                raise ValueError("preflight plan must be an object: " + name)
+            if plan_rules(plan) != frozen_rules:
                 raise ValueError("plan protocol differs from bundle")
             if (
                 not isinstance(recorded, dict)
@@ -200,11 +195,12 @@ def load_threshold_artifact(path, expected_hash, *, bundle, alias, config, bundl
     if not path or not expected_hash or file_hash(path) != expected_hash:
         raise ValueError("test requires frozen validation thresholds and their SHA256")
     artifact = json.loads(Path(path).read_text(encoding="utf-8"))
+    frozen_rules = json.loads((Path(bundle) / "rules.json").read_text(encoding="utf-8"))
     if (not isinstance(artifact, dict) or artifact.get("validation_only") is not True
             or artifact.get("calibration") != "selected_on_complete_validation24"):
         raise ValueError("successful validation-only calibration required; test blocked")
     for field, expected in {"config_sha256": digest(config), "bundle_sha256": bundle_digest,
-                            "rules_sha256": digest(RULES), "model": config["model"]}.items():
+                            "rules_sha256": digest(frozen_rules), "model": config["model"]}.items():
         if artifact.get(field) != expected:
             raise ValueError("threshold configuration mismatch: " + field)
     kind = config["kind"]
@@ -228,7 +224,7 @@ def load_threshold_artifact(path, expected_hash, *, bundle, alias, config, bundl
 
 
 def context_for(plan, config, bundle_digest):
-    return {"plan_sha256": digest(plan), "config_sha256": digest(config), "rules_sha256": digest(RULES),
+    return {"plan_sha256": digest(plan), "config_sha256": digest(config), "rules_sha256": digest(plan_rules(plan)),
             "bundle_sha256": bundle_digest}
 
 
@@ -296,7 +292,7 @@ def main(argv=None):
         observed = collect(plan, config, ledger)
         if args.phase == "select":
             result = select_thresholds(plan, observed, config["kind"], config["model"])
-            result.update(calibration="selected_on_complete_validation24", config_sha256=digest(config), rules_sha256=digest(RULES), bundle_sha256=bundle_digest,
+            result.update(calibration="selected_on_complete_validation24", config_sha256=digest(config), rules_sha256=digest(plan_rules(plan)), bundle_sha256=bundle_digest,
                           model=config["model"], selected_at=datetime.now(timezone.utc).isoformat())
         else:
             result = report(plan, config, ledger, thresholds)
