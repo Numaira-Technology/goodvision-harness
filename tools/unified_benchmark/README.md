@@ -291,11 +291,19 @@ Self-hosted Qwen3-VL-8B on a rented 4090 uses `qwen8b_r2_host` (HF generate +
 FA2) or the independent engine profile `qwen8b_r2_vllm` (vLLM), not the
 OpenRouter `qwen8b` profile and not a `qwen8b_selfhost` alias. Both keep the
 same frozen JPEGs, prompts, parser, temperature, max_tokens=30, and **12 client
-slots**. Do not relabel the completed HF run as vLLM. First create an offline
-bundle containing the selected self-hosted aliases (omit an alias if not needed):
+slots**. Do not relabel the completed HF run as vLLM.
+
+These two launchers currently accept only the historical `unified-frame-120-v2`
+protocol (validation24/test120). Explicitly select it below and supply its five
+original frozen JSON inputs. The default 202-question bundle is rejected by these launchers
+before rental. This limitation does not change the general preflight default or
+make historical results evidence for the 202 protocol. Preserve existing bundles unchanged.
+Create a fresh offline bundle containing the selected self-hosted aliases
+(omit an alias if not needed):
 
 ```sh
 python -m tools.unified_benchmark.preflight \
+  --protocol unified-frame-120-v2 \
   --inputs /private/goodvision-inputs --media /data/goodvision \
   --models qwen8b_r2_host qwen8b_r2_vllm \
   --output outputs/new-qwen-r2-bundle
@@ -323,12 +331,10 @@ keys `VAST_API_KEY`, `SAM_SSH_KEY`, `R2_ENDPOINT`, `R2_BUCKET`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`. Attach SSH immediately after create;
 always release the labelled instance. Headline scoring remains correct/all.
 
-The active HF and vLLM profiles now include a typed `env_artifact` identity.
-Prepare a fresh bundle for those active profiles; retain historical bundles and
-their original source snapshots. The launcher captures the selected environment
-before preflight, and restore must acknowledge that same artifact, manifest,
-prefix and compatibility. A registry change during preparation fails closed
-before serving or evaluation and still attempts confirmed instance cleanup.
+The active HF and vLLM profiles bind typed `env_artifact` identities. Create fresh
+bundles for updated active profiles and preserve historical bundles unchanged.
+The captured preflight environment is authoritative through the final restore
+acknowledgement; a changed registry or artifact stops before service/evaluation.
 
 vLLM (independent engine, same exam):
 
@@ -347,17 +353,24 @@ same units with a fresh output to reset the three-attempt budget.
 
 `eval_local` still uses 12 slots. vLLM may batch those 12 internally. Do not
 change JPEG size, prompts, max_tokens, or client concurrency to fit VRAM.
-The source profile retains the published
-`envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz` identity. That key and the HF
-pack are frozen. #98 records this active cu128 object as missing
-`typing_extensions` in the prefix. That gap belongs to this profile. The
-separate ada2 pack and its exam do not validate this pin. This note is not
-producer provenance, a full-archive readback, or a restore/import log. Rebuilds require a reviewed successor entry, fresh prefix and
-new immutable identity; follow the [local build and provenance procedure](../qwen8b_vllm/BUILD.md).
-CPU import evidence is not GPU acceptance. The launcher checks sealed profile
-and request identities before rental and again before inference, and retains a
-separate synthetic 720px smoke receipt outside the scored ledger. Changed active
-profiles require new bundles; preserve historical bundles byte-for-byte.
+The active declared vLLM artifact is
+`envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz`, SHA-256
+`59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b`,
+4,252,375,781 bytes. The profile records this identity and the launcher checks
+it against the registry before rental. The cu130 pack requires host CUDA >=13.0
+and NVIDIA driver >=580; the HF CUDA 12.8 image label is not a driver guarantee.
+The old cu130 `ada` pack is incomplete and refused. All published Qwen pack keys,
+including ada2, are frozen; CPU rebuilds require a new reviewed key. The 4090 only
+restores the pinned object and existing weights. A CPU import is not a GPU serve.
+See [pack evidence limitations](../qwen8b_vllm/BUILD.md); the declared identity
+does not independently verify the claimed historical exam.
+
+Bundle/profile/request hashes are checked before rental and rechecked before
+inference. A separate synthetic 720px JPEG is used for smoke, with its request
+and response saved to `vllm-smoke-<instance>.json` beside the evaluation output.
+It is excluded from scored attempts and latency. Scored validation/test units
+are sent only through the evaluation ledger. Create a new bundle for the updated
+ada2 profile; never rewrite a historical bundle to pass identity checks.
 
 Hard-answer profiles omit the threshold flags. Use a fresh output path per phase;
 the public CLI refuses an existing run. The ledger supports bounded continuation,

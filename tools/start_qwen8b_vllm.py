@@ -13,6 +13,7 @@ import base64
 import copy
 import io
 import json
+import math
 import os
 import shlex
 import signal
@@ -34,8 +35,59 @@ from tools.qwen8b.serve_vllm import DEFAULTS, MODEL_ID, REVISION
 
 ENV_NAME = "qwen8b-vllm"
 HF_ENV_KEY = "envs/qwen8b/cu128-py312-torch280-ada.tar.gz"
+OLD_VLLM_KEY = "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz"
+EXPECTED_R2_KEY = "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz"
+EXPECTED_SHA256 = "59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b"
+EXPECTED_SIZE = 4252375781
+# Mixed conda-forge setuptools 84.2.1 + pip 80.10.2; conda-pack
+# --ignore-missing-files dropped compilers.errors / compilers.platform.
+# Do not rent a GPU against this object; do not overwrite it.
+INCOMPLETE_VLLM_KEY = "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz"
 MAX_DPH = 1.85  # refuse silently upgrading past ~1.5x the prior $1.2296/hr
 STATUS_DEFAULT = Path("outputs/qwen8b-r2-vllm-STATUS.md")
+MIN_CUDA = 13.0
+MIN_DRIVER_BRANCH = 580
+
+
+def _vast_query(disk_gb: int) -> str:
+    """The cu130 pack has a different host requirement from the HF cu128 pack."""
+    gpu = os.environ.get("QWEN8B_GPU", "RTX_4090")
+    return (
+        f"gpu_name={gpu} num_gpus=1 cuda_max_good>={MIN_CUDA} gpu_ram>=23 "
+        f"disk_space>={disk_gb} inet_down>=200 reliability>0.95 rentable=true "
+        "verified=true datacenter=true"
+    )
+
+
+def _cuda_compatible(host: dict) -> bool:
+    """Require the advertised CUDA capability and driver; missing data fails closed."""
+    try:
+        cuda = float(host["cuda_max_good"])
+        driver = int(str(host["driver_version"]).split(".")[0])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    return math.isfinite(cuda) and cuda >= MIN_CUDA and driver >= MIN_DRIVER_BRANCH
+
+
+def _verify_host_driver(ssh) -> None:
+    """Check actual host compatibility before bootstrap or multi-GB downloads."""
+    out = subprocess.check_output(
+        [*ssh, "nvidia-smi --query-gpu=driver_version --format=csv,noheader"],
+        text=True,
+        timeout=30,
+        stderr=subprocess.STDOUT,
+    )
+    drivers = [line.strip() for line in out.splitlines() if line.strip()]
+    try:
+        compatible = (
+            len(drivers) == 1 and int(drivers[0].split(".")[0]) >= MIN_DRIVER_BRANCH
+        )
+    except ValueError:
+        compatible = False
+    if not compatible:
+        raise RuntimeError(
+            f"cu130 requires one GPU with NVIDIA driver >=580; observed {drivers}"
+        )
 
 
 def _status(path: Path | None, text: str) -> None:
@@ -55,14 +107,17 @@ def _eligible_offers(offers: list[dict]) -> list[dict]:
     usable = [
         o
         for o in offers
-        if int(o.get("num_gpus") or 1) == 1 and float(o["dph_total"]) <= MAX_DPH
+        if int(o.get("num_gpus") or 1) == 1
+        and float(o["dph_total"]) <= MAX_DPH
+        and _cuda_compatible(o)
     ]
     if not offers:
-        raise RuntimeError("No eligible RTX 4090 / CUDA 12.8 offer available.")
+        raise RuntimeError("No eligible RTX 4090 / CUDA 13.0 offer available.")
     if not usable:
         cheapest = min(float(o["dph_total"]) for o in offers)
         raise RuntimeError(
-            f"No single-GPU 4090 at <= ${MAX_DPH}/hr (cheapest ${cheapest:.4f}/hr); "
+            f"No CUDA 13.0 / driver >=580 single-GPU 4090 at <= ${MAX_DPH}/hr "
+            f"(cheapest ${cheapest:.4f}/hr); "
             "not silently renting a much more expensive or multi-GPU card."
         )
     return usable
@@ -113,7 +168,7 @@ def _prefix_guard(unpack_to: str) -> str:
 
 
 def _vllm_serve_remote(activate: str, snapshot: str) -> str:
-    """Packed python -s, no repo PYTHONPATH. Exam knobs stay 12 / bf16 / eager."""
+    """Isolated packed python. Exam knobs stay 12 / bf16 / eager."""
     cfg = DEFAULTS
     python = _packed_python(activate)
     unpack = _unpack_to(activate)
@@ -158,30 +213,48 @@ def _vllm_serve_remote(activate: str, snapshot: str) -> str:
         f"echo packed interpreter missing: {shlex.quote(python)} >&2; exit 1; fi; "
         f"cd /tmp && exec env PYTHONNOUSERSITE=1 HF_HUB_OFFLINE=1 "
         f"TRANSFORMERS_OFFLINE=1 VLLM_NO_USAGE_STATS=1 "
-        f"{shlex.quote(python)} -s -c {shlex.quote(code)}"
+        f"{shlex.quote(python)} -I -s -c {shlex.quote(code)}"
     )
 
 
-def _server_process(ssh, activate: str, snapshot: str):
+def _server_process(ssh, activate: str, snapshot: str, log_path: Path | None = None):
     remote = _vllm_serve_remote(activate, snapshot)
     print(
         "Starting vLLM OpenAI server + SSH tunnel "
         "(12 client slots stay in eval_local)...",
         flush=True,
     )
-    return subprocess.Popen(
-        [
-            *ssh[:-1],
-            "-o",
-            "ExitOnForwardFailure=yes",
-            "-L",
-            f"127.0.0.1:{H.LOCAL_PORT}:127.0.0.1:8000",
-            ssh[-1],
-            remote,
-        ],
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    logf = None
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Never replace retained evidence. POSIX O_EXCL already refuses any
+        # existing path, including a dangling symlink; Windows follows a
+        # dangling link and creates its target, so check the link itself too.
+        if log_path.is_symlink() or log_path.exists():
+            raise FileExistsError(f"server log already exists: {log_path}")
+        logf = open(log_path, "x", buffering=1)
+    try:
+        proc = subprocess.Popen(
+            [
+                *ssh[:-1],
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-L",
+                f"127.0.0.1:{H.LOCAL_PORT}:127.0.0.1:8000",
+                ssh[-1],
+                remote,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=logf or None,
+            stderr=subprocess.STDOUT if logf else None,
+            start_new_session=True,
+        )
+    except BaseException:
+        if logf is not None:
+            logf.close()
+        raise
+    proc._log_file = logf  # type: ignore[attr-defined]
+    return proc
 
 
 def _wait_ready(process, timeout=25 * 60):
@@ -219,12 +292,13 @@ def _verify_eval_bundle(bundle: Path, phase: str, env_spec: dict) -> str:
         raise ValueError("vLLM config is not sealed in the bundle")
     config = json.loads((bundle / config_name).read_text(encoding="utf-8"))
     expected = model_configs(["qwen8b_r2_vllm"])["qwen8b_r2_vllm"]
-    if config != expected:
+    # Python equality conflates bool/int and int/float; bind the JSON types too.
+    if digest(config) != digest(expected):
         raise ValueError(
-            "vLLM profile differs; create a new bundle for the reviewed source profile"
+            "vLLM profile differs; create a new bundle for the reviewed ada2 profile"
         )
     identity = {k: env_spec[k] for k in ("r2_key", "sha256", "size")}
-    if config.get("env_artifact") != identity:
+    if digest(config.get("env_artifact")) != digest(identity):
         raise ValueError(
             "vLLM profile pack identity differs from the restored registry artifact"
         )
@@ -363,19 +437,45 @@ def _remote_snapshot(ssh) -> str:
 
 
 def _require_r2_pack(env_spec: dict) -> str:
-    """Validate local pack declarations; this does not check remote availability."""
-    if env_spec.get("r2_key") == HF_ENV_KEY:
+    """Validate local declarations; remote object availability is not checked."""
+    key = env_spec.get("r2_key")
+    if key == HF_ENV_KEY:
         raise RuntimeError("qwen8b-vllm must not reuse the HF env R2 key")
+    if key == OLD_VLLM_KEY:
+        raise RuntimeError(
+            "qwen8b-vllm must not restore the superseded cu128 pack "
+            f"{OLD_VLLM_KEY}; use a complete successor, not GPU file patches"
+        )
+    if key == INCOMPLETE_VLLM_KEY:
+        raise RuntimeError(
+            "qwen8b-vllm must not restore incomplete "
+            f"{INCOMPLETE_VLLM_KEY} (conda setuptools 84.2.1 mixed with pip "
+            "80.10.2; distutils compilers.errors/platform missing from the "
+            "tarball). Pack a new versioned R2 object on CPU; do not write "
+            "omitted files on the GPU and do not overwrite this key"
+        )
+    if key != EXPECTED_R2_KEY:
+        raise RuntimeError(f"qwen8b-vllm r2_key must be {EXPECTED_R2_KEY}, got {key}")
     sha = str(env_spec.get("sha256") or "").strip()
     if not sha:
         raise RuntimeError(
             "qwen8b-vllm R2 pack is missing (env.sha256 empty). "
-            "Pack CUDA wheels on the CPU VM with "
+            "Review a new versioned key before rebuilding; published ada2 is frozen. "
+            "Build CUDA wheels locally on the CPU VM with "
             "`PYTHONPATH=. python -m tools.build_env --model qwen8b-vllm "
-            "--requirements tools/qwen8b_vllm/requirements.txt` "
-            "and fill env.sha256/size. The 4090 only restores "
-            "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz; "
+            "--requirements tools/qwen8b_vllm/requirements.txt --skip-upload` "
+            "and review successor identity/evidence separately. The 4090 only restores "
+            f"{env_spec.get('r2_key') or 'the versioned qwen8b-vllm R2 key'}; "
             "it does not pip-install vLLM."
+        )
+    if sha != EXPECTED_SHA256:
+        raise RuntimeError(
+            f"qwen8b-vllm sha256 mismatch: registry {sha} != {EXPECTED_SHA256}"
+        )
+    if int(env_spec.get("size") or 0) != EXPECTED_SIZE:
+        raise RuntimeError(
+            f"qwen8b-vllm size mismatch: registry {env_spec.get('size')} "
+            f"!= {EXPECTED_SIZE}"
         )
     return sha
 
@@ -383,7 +483,8 @@ def _require_r2_pack(env_spec: dict) -> str:
 def _verify_restored_env(ssh, activate: str) -> None:
     """Import check only. Missing modules are a pack bug, not a GPU pip job.
 
-    Call the packed interpreter by absolute path with -s and PYTHONNOUSERSITE=1.
+    Call the packed interpreter by absolute path with -I -s, excluding ambient
+    PYTHONPATH/PYTHONHOME and the working directory from Python import lookup.
     The launched process itself rejects a mismatched sys.prefix. No conda
     activate, no PATH python, no second-chance source fallback.
     """
@@ -412,7 +513,7 @@ def _verify_restored_env(ssh, activate: str) -> None:
         f"set -eo pipefail; "
         f"if [ ! -x {shlex.quote(python)} ]; then "
         f"echo packed interpreter missing: {shlex.quote(python)} >&2; exit 1; fi; "
-        f"{smi}; PYTHONNOUSERSITE=1 {shlex.quote(python)} -s -c {shlex.quote(probe)}"
+        f"{smi}; PYTHONNOUSERSITE=1 {shlex.quote(python)} -I -s -c {shlex.quote(probe)}"
     )
     try:
         out = subprocess.check_output(
@@ -455,7 +556,7 @@ def main() -> int:
     args = ap.parse_args()
 
     env_spec = copy.deepcopy(registry.env_of(ENV_NAME))
-    _require_r2_pack(env_spec)
+    pack_sha = _require_r2_pack(env_spec)
     bundle_sha = _verify_eval_bundle(args.eval_bundle, args.eval_phase, env_spec)
     H._require_new_eval_output(args.eval_output, args.status_file)
 
@@ -474,9 +575,16 @@ def main() -> int:
             "Set R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY"
         )
 
+    print(
+        f"Restoring R2 pack {env_spec['r2_key']} sha256={pack_sha} "
+        f"size={env_spec.get('size')} (old cu128 pack forbidden)",
+        flush=True,
+    )
+
     vast = VastAI(api_key=api_key, retry=1)
     instance_id = None
     worker = None
+    last_error = ""
     label = f"goodvision-qwen8b-vllm-{uuid4().hex[:12]}"
     exit_code = 1
     creation_attempted = False
@@ -520,19 +628,24 @@ def main() -> int:
             inst = vast.show_instance(id=args.resume_instance_id) or {}
             if not str(inst.get("label", "")).startswith("goodvision-qwen8b"):
                 raise RuntimeError("Resume requires an existing qwen8b instance.")
+            if not _cuda_compatible(inst):
+                raise RuntimeError(
+                    "Resume requires verified CUDA >=13.0 / driver >=580 metadata; "
+                    "the existing instance was not modified or released."
+                )
             instance_id = args.resume_instance_id
             print(f"Recovering instance {instance_id}; no new rental.", flush=True)
         else:
-            print(f"Searching Vast for {H._vast_query(args.disk_gb)} ...", flush=True)
+            print(f"Searching Vast for {_vast_query(args.disk_gb)} ...", flush=True)
             offers = vast.search_offers(
-                query=H._vast_query(args.disk_gb),
+                query=_vast_query(args.disk_gb),
                 type="on-demand",
                 order="dph_total",
                 storage=float(args.disk_gb),
                 limit=10,
             )
             if not offers:
-                raise RuntimeError("No eligible RTX 4090 / CUDA 12.8 offer available.")
+                raise RuntimeError("No eligible RTX 4090 / CUDA 13.0 offer available.")
             chosen = _eligible_offers(offers)
             cheapest = min(float(o["dph_total"]) for o in chosen)
             print(
@@ -554,6 +667,7 @@ def main() -> int:
         H.attach_key(vast, instance_id, ssh_key_path)
         host, port = H.wait_for_ssh(vast, instance_id, options, ssh_key_path)
         ssh = ["ssh", *options, "-p", str(port), f"root@{host}"]
+        _verify_host_driver(ssh)
         print("Bootstrapping python3/boto3/ffmpeg...", flush=True)
         S.run([*ssh, "bash -s"], input=H.BOOTSTRAP, timeout=15 * 60)
         print("Uploading repo...", flush=True)
@@ -584,17 +698,37 @@ def main() -> int:
             python="python3",
         )
         _verify_restored_env(ssh, activate)
+        smi_ready = subprocess.check_output(
+            [
+                *ssh,
+                "nvidia-smi --query-gpu=driver_version,name,memory.used,memory.total "
+                "--format=csv,noheader",
+            ],
+            text=True,
+            timeout=30,
+            stderr=subprocess.STDOUT,
+        )
+        print("nvidia-smi after restore:\n" + smi_ready, flush=True)
 
         snapshot = _remote_snapshot(ssh)
-        worker = _server_process(ssh, activate, snapshot)
+        args.eval_output.parent.mkdir(parents=True, exist_ok=True)
+        vllm_log = args.eval_output.parent / f"vllm-server-{instance_id}.log"
+        worker = _server_process(ssh, activate, snapshot, vllm_log)
         _wait_ready(worker)
-        opener = build_opener(ProxyHandler({}))
         H._require_new_eval_output(args.eval_output, args.status_file)
+        smi_serve = subprocess.check_output(
+            [*ssh, "nvidia-smi"],
+            text=True,
+            timeout=30,
+            stderr=subprocess.STDOUT,
+        )
+        print("nvidia-smi after vLLM ready:\n" + smi_serve, flush=True)
         if (
             _verify_eval_bundle(args.eval_bundle, args.eval_phase, env_spec)
             != bundle_sha
         ):
-            raise ValueError("evaluation bundle changed during server preparation")
+            raise ValueError("evaluation bundle changed while preparing the server")
+        opener = build_opener(ProxyHandler({}))
         _smoke(opener, args.eval_output.parent / f"vllm-smoke-{instance_id}.json")
 
         _status(
@@ -638,6 +772,7 @@ def main() -> int:
         print("\nStopping vLLM GPU session...", flush=True)
         exit_code = 130
     except Exception as error:
+        last_error = str(error)
         print(f"qwen8b-vllm start failed: {error}", file=sys.stderr, flush=True)
         _status(args.status_file, f"# qwen8b_r2_vllm\nPhase: failed\nError: {error}\n")
     finally:
@@ -647,6 +782,12 @@ def main() -> int:
             S.stop_process(worker)
         except OSError:
             pass
+        logf = getattr(worker, "_log_file", None) if worker is not None else None
+        if logf is not None:
+            try:
+                logf.close()
+            except OSError:
+                pass
         if creation_attempted and instance_id is None:
             try:
                 matches = [i for i in vast.show_instances() if i.get("label") == label]
@@ -657,10 +798,11 @@ def main() -> int:
         if instance_id is not None:
             try:
                 H._release_instance_checked(vast, instance_id)
+                err_line = f"Error: {last_error}\n" if last_error else ""
                 _status(
                     args.status_file,
                     f"# qwen8b_r2_vllm\nPhase: released\nInstance: {instance_id}\n"
-                    f"exit={exit_code}\n",
+                    f"exit={exit_code}\n{err_line}",
                 )
             except Exception as error:
                 exit_code = exit_code or 1

@@ -119,17 +119,20 @@ OpenRouter `qwen8b` Parasail cell for that comparison.
 
 An independently authorized serving engine is profile `qwen8b_r2_vllm` via
 `tools.start_qwen8b_vllm` (vLLM OpenAI server, same R2 weights revision, bf16).
-The source branch declares `envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz`.
-#98 records that object as missing `typing_extensions` in the prefix. The ada2
-pack and its exam do not validate this pin.
-This published identity is frozen; rebuilds require a new reviewed key and actual
-artifact/runtime evidence. The launcher checks the active source profile and
-sealed request bundle before rental and again before inference. A separate
-synthetic 720px smoke is retained outside the scoring ledger. Preserve historical
-bundles; changed active profiles require fresh bundles. This path does not relabel
-the HF run, and CPU imports do not establish GPU acceptance. Frozen JPEGs, prompts,
-parser, temperature, max_tokens=30, thresholds, retries and 12 queue slots remain
-unchanged. Do not shrink inputs or reduce concurrency to fit a GPU.
+The active declared pack is `envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz`
+(torch `+cu130`; requires host CUDA >=13.0 and NVIDIA driver >=580). Its exact
+digest/size are in the profile and registry. This published key is frozen;
+any CPU rebuild needs a new reviewed key. The older cu130 `ada` pack is
+incomplete and refused. Keep historical objects and records. The 4090 only
+restores the pinned artifact. Do not overwrite the HF qwen8b pack. CPU import ≠ GPU serve. It does not
+replace or relabel the HF run. Unified-frame-120-v2 exam rules stay
+exactly as below: frozen JPEGs, prompts, parser, temperature, max_tokens=30,
+thresholds, retries, and **12 queue slots**. Do not lower client concurrency,
+shrink images, truncate context, or shorten outputs to fit a GPU.
+The launcher verifies the frozen bundle and active pack identity before rental
+and again before inference. Its separate 720px synthetic smoke is retained as a
+diagnostic; it must never resend a scored validation/test unit outside the ledger.
+Updated profiles require a fresh bundle. Preserve historical bundles unchanged.
 
 This historical variant uses exact 1 FPS shared 720px JPEGs, current-image API prompts,
 explicit effort settings when supported, and exact JSON string `"true"`/`"false"`

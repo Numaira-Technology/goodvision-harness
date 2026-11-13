@@ -1,12 +1,17 @@
 """Offline producer/consumer regressions found in independent stack review."""
 
 import io
+import os
+import shlex
+import subprocess
+import sys
 import threading
 import urllib.error
 import urllib.request
 
 import pytest
 
+from tools import diag_qwen8b_vllm_import as diag
 from tools.unified_benchmark import adapters, api_run
 from tools.unified_benchmark.contract import digest, file_hash
 from tools.unified_benchmark.preflight import model_configs
@@ -136,3 +141,25 @@ def test_cloud_redirect_never_forwards_bearer_key():
         api_run._NoRedirect().redirect_request(
             req, None, 302, "redirect", {}, "https://synthetic.invalid/steal"
         )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the diagnostic script is a POSIX bash source command")
+def test_diagnostic_uses_activate_sibling_and_stops_if_activation_fails(tmp_path):
+    packed_python = tmp_path / "prefix/bin/python"
+    remote = diag._old_verify_remote(str(packed_python))
+    inner = shlex.split(remote)[2]
+    assert f"source {packed_python.with_name('activate')}" in inner
+    marker = tmp_path / "fell-through"
+    script = f"python() {{ touch {shlex.quote(str(marker))}; }}; " + inner
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert result.returncode != 0 and not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the probe script is executed by bash with a POSIX interpreter path")
+def test_new_diagnostic_uses_isolated_packed_prefix(monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", "/synthetic/injection")
+    remote = diag._isolated_probe_remote(sys.executable, "print('synthetic-probe-ok')")
+    result = subprocess.run(
+        ["bash", "-c", remote], capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == "synthetic-probe-ok"

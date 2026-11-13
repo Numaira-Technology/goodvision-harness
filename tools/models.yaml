@@ -131,24 +131,34 @@ models:
     weights:
       r2_prefix: models/Qwen/Qwen3-VL-8B-Instruct/0c351dd01ed87e9c1b53cbc748cba10e6187ff3b/
     env:
-      # Recorded gap for this active pin, not a new artifact: #98 records this
-      # cu128 object as missing typing_extensions in the prefix. The ada2 pack
-      # and its exam do not validate this identity. Producer provenance,
-      # full-archive readback and isolated restore/import evidence are still
-      # outstanding. Do not overwrite the object.
-      r2_key: envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz
-      manifest_key: envs/qwen8b-vllm/cu128-py312-vllm0310-ada.json
-      sha256: 2a3dcb1fc6a8d84439263512c65dae0bb576c50d4f559ae9f069407eb2e86db6
-      size: 4236991211                       # 4.24 GB conda-pack tarball
+      r2_key: envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz
+      manifest_key: envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.json
+      sha256: 59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b
+      size: 4252375781                       # 4.25 GB; HEAD+GET sha verified 2026-11-08
+      complete: true                         # author-declared; evidence limits in qwen8b_vllm/pack_provenance.json
       unpack_to: /opt/env/qwen8b-vllm
       activate_rel: bin/activate
       build:
         flash_attn: false                    # vLLM wheel ships attention kernels
         install_default_torch: false         # let vllm==0.31.0 pull torch 2.13.x
         require_cuda: false                  # pack CUDA wheels on a CPU VM; GPU only restores
+        verify_imports: [vllm, filelock, tqdm]
+        verify_modules:
+          - vllm.entrypoints.openai.api_server
+          - torch.utils.cpp_extension
       compat:
         python: "3.12"
-        cuda: "12.8"
-        torch: "2.13.0"                      # vLLM 0.31.0 in-repo lock; attested at build
+        cuda: "13.0"                         # torch 2.13.0+cu130; not the CUDA 12.8 image label
+        torch: "2.13.0"
         gpu_family: ada
         vllm: "0.31.0"
+      superseded:
+        r2_key: envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz
+        sha256: 2a3dcb1fc6a8d84439263512c65dae0bb576c50d4f559ae9f069407eb2e86db6
+        size: 4236991211
+        note: "kept for provenance; missing typing_extensions in the prefix"
+      incomplete_cu130:
+        r2_key: envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz
+        sha256: 24f1eb0cc264a9794979eb6c2225eca47d67d68025407d51db86aa171ce7ba7e
+        size: 4252947071
+        note: "frozen; mixed conda setuptools 84.2.1 sources + pip 80.10.2 RECORD"
