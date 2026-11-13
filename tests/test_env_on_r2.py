@@ -1006,3 +1006,70 @@ def test_directory_attributes_are_applied_after_contents_and_links(tmp_path):
     assert (out / "share/alias").read_bytes() == b"x"
     # Writing doc and alias would bump the mtime had it been set first.
     assert (out / "share").stat().st_mtime == 1_000_000
+
+
+@pytest.mark.parametrize("chunk_size", [17, 4 << 20])
+@pytest.mark.parametrize("padding", [1, 2, 51])
+def test_inflater_accepts_zero_padding_between_and_after_members(
+    tmp_path, monkeypatch, chunk_size, padding
+):
+    import gzip
+
+    monkeypatch.setattr(es._Inflater, "_CHUNK", chunk_size)
+    monkeypatch.setattr(es._Inflater, "_OUT", 4096)
+    parts = [b"a" * 60000, b"", b"b" * 47]
+    data = b"".join(gzip.compress(part) + b"\0" * padding for part in parts)
+    path = tmp_path / "padded.gz"
+    path.write_bytes(data)
+    with es._Inflater(path) as reader:
+        assert reader.read() == gzip.decompress(data) == b"".join(parts)
+
+
+@pytest.mark.parametrize(
+    "damage, error", [("junk", zlib.error), ("truncate", EOFError)]
+)
+def test_inflater_rejects_invalid_member_after_zero_padding(tmp_path, damage, error):
+    import gzip
+
+    tail = b"not gzip" if damage == "junk" else gzip.compress(b"second")[:-1]
+    path = tmp_path / "bad-padded.gz"
+    path.write_bytes(gzip.compress(b"first") + b"\0" * 51 + tail)
+    with pytest.raises(error), es._Inflater(path) as reader:
+        reader.read()
+
+
+@pytest.mark.parametrize(
+    "damage, error",
+    [("trailer", EOFError), ("next-member", EOFError), ("next-member-crc", zlib.error)],
+)
+def test_safe_extract_rejects_late_gzip_errors(tmp_path, damage, error):
+    import gzip
+
+    path = tmp_path / "late-error.tar.gz"
+    alias = tarfile.TarInfo("python-link")
+    alias.type, alias.linkname = tarfile.SYMTYPE, "bin/python"
+    _gz_tar(path, _core([(alias, None)]))
+    data = path.read_bytes()
+    if damage == "trailer":
+        data = data[:-1]
+    else:
+        tail = bytearray(gzip.compress(b""))
+        if damage == "next-member":
+            tail = tail[:-1]
+        else:
+            tail[-8] ^= 1
+        data += tail
+    path.write_bytes(data)
+    out = tmp_path / "out"
+    with pytest.raises(error):
+        es._safe_extract(path, out)
+    assert not (out / "python-link").is_symlink()
+
+
+def test_safe_extract_accepts_zero_padded_archive(tmp_path):
+    path = tmp_path / "padded.tar.gz"
+    _gz_tar(path, _core())
+    path.write_bytes(path.read_bytes() + b"\0" * 51)
+    out = tmp_path / "out"
+    es._safe_extract(path, out)
+    assert (out / "bin/python").read_bytes() == b"synthetic Python"

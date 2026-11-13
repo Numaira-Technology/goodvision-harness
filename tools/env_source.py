@@ -434,15 +434,18 @@ class _Inflater(io.RawIOBase):
                 if inflater.eof:
                     # At EOF unused_data already includes any unconsumed_tail
                     # left by output-limited calls; adding both repeats members.
-                    data = inflater.unused_data
+                    data = inflater.unused_data.lstrip(b"\0")
                     inflater = zlib.decompressobj(31)
-                    if not data:
+                    # Like gzip.GzipFile, accept zero padding between members
+                    # and at EOF, including padding spanning input chunks.
+                    while not data and not self._stop.is_set():
                         data = self._source.read(self._CHUNK)
                         if not data:
-                            if out and not self._put(bytes(out)):
+                            if out and not self._put(out):
                                 return
                             self._put(None)
                             return
+                        data = data.lstrip(b"\0")
                 if out and not self._put(out):
                     return
             if not self._stop.is_set():
@@ -511,7 +514,8 @@ def _safe_extract(tarball, dest):
     paths, implied, links, dirs = {}, set(), [], []
     with (
         _Inflater(tarball) as raw,
-        tarfile.open(fileobj=io.BufferedReader(raw, 1 << 20), mode="r|") as tf,
+        io.BufferedReader(raw, 1 << 20) as stream,
+        tarfile.open(fileobj=stream, mode="r|") as tf,
     ):
         for member in tf:
             if member.name in {".", "./"} and member.isdir():
@@ -542,6 +546,11 @@ def _safe_extract(tarball, dest):
             tf.extract(member, dest, set_attrs=not member.isdir(), filter=data_filter)
             if member.isdir():
                 dirs.append(member)
+        # tarfile stops at the tar end marker, possibly before the gzip trailer
+        # or later gzip members. Consume the rest so late inflate errors cannot
+        # be discarded by close() and a damaged staging dir cannot be published.
+        while stream.read(1 << 20):
+            pass
         for member in links:
             target = member.linkname
             if (
