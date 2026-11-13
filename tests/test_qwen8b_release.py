@@ -1,6 +1,7 @@
 """Run real launcher cleanup with synthetic cloud/SSH/evaluation operations."""
 
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -164,3 +165,60 @@ def test_interrupt_still_attempts_release_and_stays_nonzero(
     assert stopped == [True] and vast.destroyed == [123]
     if fault:
         assert "release-unconfirmed" in status.read_text()
+
+
+@pytest.mark.parametrize("module", [host, vllm], ids=["hf", "vllm"])
+@pytest.mark.parametrize("location", ["inside", "same", "ancestor", "symlink"])
+def test_overlapping_status_rejected_before_credentials(
+    tmp_path, monkeypatch, module, location
+):
+    vast, _, _ = fake_runtime(monkeypatch, tmp_path, module, None)
+    output = tmp_path / "eval"
+    status = output / "STATUS.md"
+    if location == "same":
+        status = output
+    elif location == "ancestor":
+        status = tmp_path
+    elif location == "symlink":
+        alias = tmp_path / "alias"
+        alias.symlink_to(output, target_is_directory=True)
+        status = alias / "STATUS.md"
+    monkeypatch.setattr(sys, "argv", sys.argv[:-2] + ["--status-file", str(status)])
+    monkeypatch.setattr(
+        sys.modules["dotenv"], "load_dotenv",
+        lambda *a, **k: pytest.fail("credentials read before offline rejection"),
+    )
+    with pytest.raises(ValueError, match="status.*evaluation output"):
+        module.main()
+    assert not vast.alive and not vast.destroyed
+    assert not output.exists()
+
+
+def test_default_vllm_status_allows_documented_fresh_output(tmp_path, monkeypatch):
+    real_status = vllm._status
+    vast, _, _ = fake_runtime(monkeypatch, tmp_path, vllm, None)
+    monkeypatch.chdir(tmp_path)
+    output = Path("outputs/qwen8b-r2-vllm")
+    monkeypatch.setattr(sys, "argv", [
+        "launcher", "--eval-bundle", str(tmp_path / "bundle"),
+        "--eval-output", str(output),
+    ])
+    # Exercise real status writes, keeping its optional artifact mirror local.
+    monkeypatch.setattr(vllm, "Path", lambda value: (
+        tmp_path / "mirror-status.md"
+        if str(value) == "/opt/cursor/artifacts/qwen8b-r2-vllm-STATUS.md"
+        else Path(value)
+    ))
+    monkeypatch.setattr(vllm, "_status", real_status)
+    evaluated = []
+
+    def evaluate(argv):
+        assert not output.exists()
+        output.mkdir(parents=True)
+        evaluated.append(argv)
+        return 0
+
+    monkeypatch.setattr(eval_local, "main", evaluate)
+    assert vllm.main() == 0
+    assert len(evaluated) == 1 and vast.destroyed == [123]
+    assert "Phase: released" in vllm.STATUS_DEFAULT.read_text()

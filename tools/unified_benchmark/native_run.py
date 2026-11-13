@@ -25,11 +25,11 @@ from pathlib import Path
 from .adapters import frame_bytes, parse_response, request_body
 from .contract import (
     EVENTS,
-    RULES,
     canonical,
     digest,
     file_hash,
     finite_number,
+    plan_rules,
     select_thresholds,
     write_new,
 )
@@ -772,7 +772,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                 if split == "validation" and cfg["kind"] == "margin":
                     selected = select_thresholds(plan, collect(plan, cfg, ledger), cfg["kind"], cfg["model"])
                     selected.update(calibration="selected_on_complete_validation24", config_sha256=digest(cfg),
-                        rules_sha256=digest(RULES), bundle_sha256=bundle_digest, model=cfg["model"],
+                        rules_sha256=digest(plan_rules(plan)), bundle_sha256=bundle_digest, model=cfg["model"],
                         native_deployment_sha256=deployment_hash)
                     threshold_path = output / "thresholds.json"
                     if threshold_path.exists():
@@ -784,10 +784,11 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     threshold_hash = file_hash(threshold_path)
                     artifact = load_threshold_artifact(threshold_path, threshold_hash, bundle=bundle, alias=alias,
                                                       config=cfg, bundle_digest=bundle_digest)
+                    thresholds = artifact["thresholds"]
                 if not completion_path.exists():
                     result = report(plan, cfg, ledger, thresholds)
                     result["native_deployment_sha256"] = deployment_hash
-                    result["threshold_artifact_sha256"] = threshold_hash if split == "test" else None
+                    result["threshold_artifact_sha256"] = threshold_hash
                     # Incomplete validation still produces a report in the exception handler below.
                     save_status(phase_dir / "report.json", result)
                     files = [ledger.path, phase_dir / "report.json", phase_record]
@@ -868,7 +869,7 @@ def validate_completion(output, split, cfg):
 def selected_calibration(plan, cfg, ledger, bundle_digest, deployment_hash):
     selected = select_thresholds(plan, collect(plan, cfg, ledger), cfg["kind"], cfg["model"])
     selected.update(calibration="selected_on_complete_validation24", config_sha256=digest(cfg),
-        rules_sha256=digest(RULES), bundle_sha256=bundle_digest, model=cfg["model"],
+        rules_sha256=digest(plan_rules(plan)), bundle_sha256=bundle_digest, model=cfg["model"],
         native_deployment_sha256=deployment_hash)
     return selected
 
