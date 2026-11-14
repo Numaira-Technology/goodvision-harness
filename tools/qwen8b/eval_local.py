@@ -162,7 +162,7 @@ class LocalTransport:
 
 def execute(alias, bundle, root, endpoint, bundle_digest, phase):
     output = root / alias
-    config = json.loads((bundle / "configs" / f"{alias}.json").read_text())
+    config = json.loads((bundle / "configs" / f"{alias}.json").read_text(encoding="utf-8"))
     if (
         config.get("execution") != "self_hosted_r2"
         or config.get("backend") != "language"
@@ -175,7 +175,7 @@ def execute(alias, bundle, root, endpoint, bundle_digest, phase):
     output.mkdir(exist_ok=False)
     stage_results = {}
     for split in (("validation", "test") if phase == "both" else (phase,)):
-        plan = json.loads((bundle / "plans" / f"{alias}-{split}.json").read_text())
+        plan = json.loads((bundle / "plans" / f"{alias}-{split}.json").read_text(encoding="utf-8"))
         directory = output / split
         directory.mkdir()
         ledger = Ledger(directory / "attempts.jsonl", context_for(plan, config, bundle_digest))
@@ -195,7 +195,7 @@ def execute(alias, bundle, root, endpoint, bundle_digest, phase):
                       execution="self_hosted_r2", endpoint=endpoint)
         if split == "test":
             for label, events in (("base100", EVENTS[:4]), ("bag20", EVENTS[4:])):
-                subset_q = [q for q in plan["questions"] if q["event"] in events]
+                subset_q = [q for q in plan["questions"] if q["event"] in events and q["number"] <= 120]
                 wanted = {uid for q in subset_q for uid in q["unit_ids"]}
                 subset = plan | {"questions": subset_q, "units": [u for u in plan["units"] if u["id"] in wanted]}
                 result[label] = score(subset, {uid: v for uid, v in observed.items() if uid in wanted},
@@ -226,7 +226,7 @@ def main(argv=None):
         parser.error("no inference without explicit --execute")
     bundle_digest = verify_bundle(args.bundle)
     args.output.mkdir(parents=True, exist_ok=False)
-    config = json.loads((args.bundle / "configs" / (args.model + ".json")).read_text())
+    config = json.loads((args.bundle / "configs" / (args.model + ".json")).read_text(encoding="utf-8"))
     write_new(args.output / "run-manifest.json", {
         "bundle_sha256": bundle_digest, "runner_sha256": file_hash(__file__),
         "alias": args.model, "endpoint": args.endpoint, "phase": args.phase,
@@ -236,7 +236,7 @@ def main(argv=None):
         "engine_version": config.get("engine_version"),
         "slots_per_model": 12})
     execute(args.model, args.bundle, args.output, args.endpoint, bundle_digest, args.phase)
-    status = json.loads((args.output / args.model / "status.json").read_text())
+    status = json.loads((args.output / args.model / "status.json").read_text(encoding="utf-8"))
     write_new(args.output / "completion.json", {
         "finished_at": datetime.now(timezone.utc).isoformat(), "model_status": status})
     return 0 if status.get("state") == "completed" else 1

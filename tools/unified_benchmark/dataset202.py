@@ -1,8 +1,10 @@
 """Pinned 202-question test extension. No inference, downloads or label edits."""
 from collections import Counter, defaultdict
+import hashlib
 import json
+from pathlib import Path
 
-from .contract import EVENTS, file_hash
+from .contract import BAG_VALIDATION_SCHEMA, EVENTS, file_hash
 
 PINNED_202_INPUTS = {
     "manifest_202.json": "d5c019130d672afd40638a6ca51c1c84ca8e8c7fad0dbe3faf493187002bb11d",
@@ -105,3 +107,53 @@ def load_extension(out, frozen, parts):
             f.write(path.read_bytes())
     return extend_test(parts, *(json.loads((frozen / name).read_text())
                                for name in ("manifest_202.json", "samples.json", "videos.json")))
+
+
+def add_bag_validation(out, parts, path, expected_hash):
+    """Append two validation questions per original bag video. Test membership is frozen."""
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_hash:
+        raise ValueError("bag validation manifest SHA256 differs")
+    doc = json.loads(raw)
+    if doc["schema"] != BAG_VALIDATION_SCHEMA or len(doc["videos"]) != 10:
+        raise ValueError("bag-validation10-v1 requires exactly ten videos")
+    original = parts["validation"]["rows"]
+    test = parts["test"]["rows"]
+    filenames = {r["filename"] for r in original + test}
+    hashes = {r["sha256"] for r in original + test}
+    test_groups = {r["source_video_group"] for r in test}
+    added = []
+    for video in doc["videos"]:
+        name, sha, group = (video[k] for k in ("filename", "sha256", "source_video_group"))
+        if (not isinstance(name, str) or not name or Path(name).name != name or "\\" in name
+                or name in {".", ".."} or name in filenames):
+            raise ValueError("invalid or overlapping bag validation filename")
+        if (not isinstance(sha, str) or len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha)
+                or sha in hashes):
+            raise ValueError("invalid or overlapping bag validation media SHA256")
+        if not isinstance(group, str) or not group or group != group.strip() or group in test_groups:
+            raise ValueError("invalid or test-overlapping bag validation source group")
+        filenames.add(name)
+        hashes.add(sha)
+        questions = indexed(video["questions"], "event")
+        if set(questions) != set(EVENTS[4:]):
+            raise ValueError("each bag validation video requires both bag questions")
+        for event in EVENTS[4:]:
+            question = questions[event]
+            review = question["human_review"]
+            if question["proposed_answer"] not in ("yes", "no") or not isinstance(review, str) or not review.strip():
+                raise ValueError("binary bag validation reference and review provenance required")
+            added.append({"number": len(original) + len(added) + 1, "filename": name, "sha256": sha,
+                          "source_video_group": group, "event": event, "proposed_answer": question["proposed_answer"],
+                          "human_review": review})
+    for event in EVENTS[4:]:
+        if {r["proposed_answer"] for r in added if r["event"] == event} != {"yes", "no"}:
+            raise ValueError("both validation reference labels required for " + event)
+    with (out / "inputs" / "bag-validation.json").open("xb") as f:
+        f.write(raw)
+    overlay = {"schema": BAG_VALIDATION_SCHEMA, "sha256": expected_hash,
+               "review_status": sorted({r["human_review"] for r in added})}
+    context = {"bag_validation": overlay, "validation_videos": 34, "validation_questions": 44}
+    parts["validation"] = {"rows": original + added, "dataset_context": context,
+                           "split_context": {"original24": parts["validation"]["split_context"], "bag_validation": overlay}}
+    parts["test"]["dataset_context"].update(context)

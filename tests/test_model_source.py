@@ -445,6 +445,12 @@ class BotoLikeS3(FakeS3):
 BotoLikeS3.__module__ = "botocore.client"
 
 
+def _environment_client(client):
+    """Mark a synthetic client as if built by r2_client from this environment."""
+    client._goodvision_r2_environment = ms._r2_connection_identity()
+    return client
+
+
 def test_process_mode_uses_one_process_per_file_with_own_client(tmp_path, monkeypatch):
     """R2_PULL_PROCESSES routes each file through _fetch_in_child, never argv."""
     from concurrent.futures import ThreadPoolExecutor
@@ -471,7 +477,9 @@ def test_process_mode_uses_one_process_per_file_with_own_client(tmp_path, monkey
     children = []
     monkeypatch.setattr(ms, "ProcessPoolExecutor", InlinePool)
     monkeypatch.setattr(
-        ms, "r2_client", lambda: children.append(1) or BotoLikeS3(objects)
+        ms,
+        "r2_client",
+        lambda: children.append(1) or _environment_client(BotoLikeS3(objects)),
     )
     snap = ms.snapshot_dir(tmp_path, REPO, REV)
     ms.pull_from_r2(REPO, REV, snap, bucket="b")
@@ -531,7 +539,7 @@ def test_broken_process_pool_falls_back_to_threads(tmp_path, monkeypatch):
             raise BrokenProcessPool("cannot spawn")
 
     monkeypatch.setattr(ms, "ProcessPoolExecutor", BrokenPool)
-    client = BotoLikeS3(objects)
+    client = _environment_client(BotoLikeS3(objects))
     snap = ms.snapshot_dir(tmp_path, REPO, REV)
     ms.pull_from_r2(REPO, REV, snap, client=client, bucket="b")
     assert client.gets == len(FILES)  # every file fetched once, in threads
@@ -563,7 +571,10 @@ def test_download_object_writes_every_range_in_place(tmp_path, monkeypatch):
         data
     )
     assert dest.read_bytes() == data
-    assert len(client.ranges) == 11 and client.ranges[-1] == (10000, 10495)
+    assert sorted(client.ranges) == [
+        (start, min(start + 1000, len(data)) - 1)
+        for start in range(0, len(data), 1000)
+    ]
 
 
 def test_download_object_uses_processes_for_real_clients(tmp_path, monkeypatch):
@@ -586,9 +597,11 @@ def test_download_object_uses_processes_for_real_clients(tmp_path, monkeypatch):
 
     BotoRanged.__module__ = "botocore.client"
     monkeypatch.setattr(ms, "ProcessPoolExecutor", InlinePool)
-    monkeypatch.setattr(ms, "r2_client", lambda: BotoRanged({"k": data}))
+    monkeypatch.setattr(
+        ms, "r2_client", lambda: _environment_client(BotoRanged({"k": data}))
+    )
     dest = tmp_path / "out"
-    ms.download_object(BotoRanged({"k": data}), "b", "k", dest, len(data))
+    ms.download_object(ms.r2_client(), "b", "k", dest, len(data))
     assert pools == [4]  # 5 ranges, capped at DEFAULT_PROCESSES
     assert dest.read_bytes() == data
 
@@ -610,3 +623,175 @@ def test_download_object_retries_a_failed_range(tmp_path, monkeypatch):
     dest = tmp_path / "out"
     ms.download_object(Flaky({"k": data}), "b", "k", dest, len(data))
     assert dest.read_bytes() == data
+
+
+@pytest.mark.parametrize("payload", [b"abc", b"abcde"])
+def test_range_read_closes_body_and_never_overwrites_next_part(tmp_path, payload):
+    body = io.BytesIO(payload)
+
+    class Client:
+        def get_object(self, **kwargs):
+            return {"Body": body}
+
+    dest = tmp_path / "out"
+    dest.write_bytes(b"0000NEXT")
+    with pytest.raises(OSError):
+        ms._get_range(Client(), "b", "k", dest, 0, 3, attempts=1)
+    assert body.closed
+    assert dest.read_bytes()[4:] == b"NEXT"
+
+
+def test_successful_range_read_closes_body(tmp_path):
+    body = io.BytesIO(b"data")
+
+    class Client:
+        def get_object(self, **kwargs):
+            return {"Body": body}
+
+    dest = tmp_path / "out"
+    dest.write_bytes(b"0000")
+    assert ms._get_range(Client(), "b", "k", dest, 0, 3) == 4
+    assert body.closed
+    assert dest.read_bytes() == b"data"
+
+
+def test_explicit_boto_client_keeps_its_connection_for_model_files(
+    tmp_path, monkeypatch
+):
+    objects, manifest = _bucket(REPO, REV, FILES)
+    for k in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+        monkeypatch.setenv(k, "unrelated-ambient-connection")
+    monkeypatch.setattr(
+        ms, "ProcessPoolExecutor", lambda **kw: pytest.fail("must use supplied client")
+    )
+    snap = ms.snapshot_dir(tmp_path, REPO, REV)
+    client = BotoLikeS3(objects)
+    ms.pull_from_r2(REPO, REV, snap, client=client, bucket="explicit")
+    assert client.gets == len(FILES)
+    assert ms.verify_snapshot(snap, manifest)
+
+
+def test_explicit_boto_client_keeps_its_connection_for_ranges(tmp_path, monkeypatch):
+    class BotoRanged(RangedS3):
+        pass
+
+    BotoRanged.__module__ = "botocore.client"
+    monkeypatch.setattr(ms, "PART_SIZE", 2)
+    for k in ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+        monkeypatch.setenv(k, "unrelated-ambient-connection")
+    monkeypatch.setattr(
+        ms, "ProcessPoolExecutor", lambda **kw: pytest.fail("must use supplied client")
+    )
+    dest = tmp_path / "out"
+    ms.download_object(BotoRanged({"k": b"right"}), "explicit", "k", dest, 5)
+    assert dest.read_bytes() == b"right"
+
+
+@pytest.mark.parametrize("entrypoint", ["script", "module", "ranges"])
+def test_real_spawn_entrypoints_with_synthetic_local_storage(tmp_path, entrypoint):
+    """Exercise OS spawn and imports, without boto3, network, credentials or weights."""
+    import os
+    import subprocess
+    import sys
+    import textwrap
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    fake = tmp_path / "sdk"
+    (fake / "boto3/s3").mkdir(parents=True)
+    (fake / "botocore").mkdir()
+    (fake / "boto3/s3/__init__.py").write_text("")
+    (fake / "botocore/__init__.py").write_text("")
+    config = "class Config:\n    def __init__(self, **kwargs): pass\n"
+    (fake / "botocore/config.py").write_text(config)
+    (fake / "boto3/s3/transfer.py").write_text(
+        config.replace("Config", "TransferConfig")
+    )
+    (fake / "boto3/__init__.py").write_text(
+        textwrap.dedent("""\
+        import io, os
+        from pathlib import Path
+        class Client:
+            def get_object(self, Bucket, Key, Range=None):
+                data = (Path(os.environ["R2_ENDPOINT"]) / Key).read_bytes()
+                if Range:
+                    a, b = map(int, Range.removeprefix("bytes=").split("-"))
+                    data = data[a:b+1]
+                    self.record()
+                return {"Body": io.BytesIO(data)}
+            def download_file(self, Bucket, Key, Filename, **kwargs):
+                self.record()
+                Path(Filename).write_bytes(self.get_object(Bucket, Key)["Body"].read())
+            def record(self):
+                (Path(os.environ["R2_ENDPOINT"]) / str(os.getpid())).touch()
+        Client.__module__ = "botocore.client"
+        def client(*args, **kwargs): return Client()
+    """)
+    )
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    objects, manifest = _bucket(REPO, REV, FILES)
+    for key, data in objects.items():
+        path = storage / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join([str(fake), str(root)]),
+        "R2_ENDPOINT": str(storage),
+        "R2_BUCKET": "synthetic",
+        "R2_ACCESS_KEY_ID": "synthetic-id",
+        "R2_SECRET_ACCESS_KEY": "synthetic-key",
+        "R2_PULL_PROCESSES": "2",
+        "R2_PULL_STREAMS": "2",
+    }
+    if entrypoint == "ranges":
+        (storage / "object").write_bytes(b"local synthetic ranges")
+        script = tmp_path / "run_ranges.py"
+        script.write_text(
+            textwrap.dedent("""\
+            import os, sys
+            from pathlib import Path
+            from tools import model_source as ms
+            if __name__ == "__main__":
+                ms.PART_SIZE = 4
+                data = (Path(os.environ["R2_ENDPOINT"]) / "object").read_bytes()
+                ms.download_object(ms.r2_client(), "synthetic", "object",
+                                   sys.argv[1], len(data))
+        """)
+        )
+        command = [sys.executable, str(script), str(tmp_path / "out")]
+    else:
+        command = [sys.executable]
+        command += (
+            [str(root / "tools/model_source.py")]
+            if entrypoint == "script"
+            else ["-m", "tools.model_source"]
+        )
+        command += [
+            "--repo",
+            REPO,
+            "--revision",
+            REV,
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ]
+    process = subprocess.Popen(
+        command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=30)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    assert process.returncode == 0, (stdout, stderr)
+    assert "process pool unavailable" not in stderr
+    worker_ids = {int(p.name) for p in storage.iterdir() if p.name.isdigit()}
+    assert worker_ids and process.pid not in worker_ids
+    if entrypoint == "ranges":
+        assert (tmp_path / "out").read_bytes() == b"local synthetic ranges"
+    else:
+        assert ms.verify_snapshot(
+            ms.snapshot_dir(tmp_path / "cache", REPO, REV), manifest
+        )

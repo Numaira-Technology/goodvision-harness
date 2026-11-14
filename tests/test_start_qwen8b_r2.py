@@ -1,4 +1,5 @@
 """No-GPU tests for the qwen8b R2 host launcher and local eval transport."""
+
 from __future__ import annotations
 
 import json
@@ -10,7 +11,12 @@ import pytest
 from tools import registry
 from tools.qwen8b.eval_local import LocalTransport
 from tools.qwen8b.serve import require_packed_prefix
-from tools.start_qwen8b_r2 import _packed_python, _serve_remote, attach_key, wait_for_ssh
+from tools.start_qwen8b_r2 import (
+    _packed_python,
+    _serve_remote,
+    attach_key,
+    wait_for_ssh,
+)
 from tools.unified_benchmark.preflight import model_configs
 
 
@@ -39,7 +45,7 @@ def test_serve_remote_uses_absolute_packed_python_without_activate():
 
 
 def test_serve_require_packed_prefix_rejects_host_python():
-    with pytest.raises(SystemExit, match="sys.prefix"):
+    with pytest.raises(SystemExit, match=r"sys\.prefix"):
         require_packed_prefix("qwen8b")
 
 
@@ -59,7 +65,9 @@ def test_self_hosted_profile_skips_openrouter_pin():
 def test_attach_key_sends_public_material(tmp_path, monkeypatch):
     key = tmp_path / "id"
     key.write_text("secret")
-    pub = Mock(return_value=Mock(stdout="ssh-ed25519 AAAA test\n", stderr="", returncode=0))
+    pub = Mock(
+        return_value=Mock(stdout="ssh-ed25519 AAAA test\n", stderr="", returncode=0)
+    )
     monkeypatch.setattr("tools.start_qwen8b_r2.subprocess.run", pub)
     vast = Mock()
     vast.attach_ssh.return_value = {"msg": "ok"}
@@ -92,8 +100,9 @@ def test_wait_for_ssh_fails_fast_on_publickey_denial(monkeypatch):
     monkeypatch.setattr("tools.start_qwen8b_r2.subprocess.run", run)
     monkeypatch.setattr("tools.start_qwen8b_r2.time.sleep", lambda _s: None)
     with pytest.raises(RuntimeError, match="publickey denied"):
-        wait_for_ssh(vast, 7, ["-o", "BatchMode=yes"], Path("id"),
-                     deny_budget=0, boot_budget=30)
+        wait_for_ssh(
+            vast, 7, ["-o", "BatchMode=yes"], Path("id"), deny_budget=0, boot_budget=30
+        )
     assert calls["attach"] == 1
     assert calls["ssh"] >= 1
     assert calls["ssh"] < 40  # must not burn a 20-minute poll
@@ -107,8 +116,10 @@ def test_wait_for_ssh_returns_on_first_success(monkeypatch):
         "ssh_port": 2222,
         "ports": {},
     }
-    monkeypatch.setattr("tools.start_qwen8b_r2.subprocess.run",
-                        lambda *a, **k: Mock(returncode=0, stderr=""))
+    monkeypatch.setattr(
+        "tools.start_qwen8b_r2.subprocess.run",
+        lambda *a, **k: Mock(returncode=0, stderr=""),
+    )
     monkeypatch.setattr("tools.start_qwen8b_r2.time.sleep", lambda _s: None)
     host, port = wait_for_ssh(vast, 3, ["-o", "BatchMode=yes"], Path("id"))
     assert (host, port) == ("gw.vast.ai", 2222)
@@ -117,6 +128,7 @@ def test_wait_for_ssh_returns_on_first_success(monkeypatch):
 def test_local_transport_rejects_fingerprint_mismatch(tmp_path):
     import hashlib
     import io
+
     from PIL import Image
 
     buf = io.BytesIO()
@@ -125,9 +137,12 @@ def test_local_transport_rejects_fingerprint_mismatch(tmp_path):
     frame = tmp_path / "f.jpg"
     frame.write_bytes(raw)
     digest = hashlib.sha256(raw).hexdigest()
-    config = json.loads(Path("tools/unified_benchmark/profiles/qwen8b_r2_host.json").read_text())
+    config = json.loads(
+        Path("tools/unified_benchmark/profiles/qwen8b_r2_host.json").read_text()
+    )
     unit = {
-        "id": "u1", "targets": ["fight"],
+        "id": "u1",
+        "targets": ["fight"],
         "question": "Is any fighting visible in the current image?",
         "frames": [{"path": "f.jpg", "sha256": digest}],
         "request_sha256": "deadbeef",
@@ -136,6 +151,7 @@ def test_local_transport_rejects_fingerprint_mismatch(tmp_path):
     ledger.state.return_value = (1, {})
     transport = LocalTransport(tmp_path, config, "http://127.0.0.1:9", tmp_path, ledger)
     from tools.unified_benchmark.retry import RequestFailure
+
     with pytest.raises(RequestFailure, match="fingerprint"):
         transport(unit)
 
@@ -145,17 +161,31 @@ def test_provider_body_skips_selfhost_routing():
     from tools.event_benchmark.run_eval import build_request
 
     assert provider_body(None) is None
-    assert provider_body({"config": {"transport": "selfhost", "provider": {"only": ["x"]}}}) is None
-    url, body = build_request(
-        "language", "qwen/qwen3-vl-8b-instruct", "Is fighting visible?",
+    assert (
+        provider_body(
+            {"config": {"transport": "selfhost", "provider": {"only": ["x"]}}}
+        )
+        is None
+    )
+    _url, body = build_request(
+        "language",
+        "qwen/qwen3-vl-8b-instruct",
+        "Is fighting visible?",
         "data:image/jpeg;base64,xx",
         {"config": {"transport": "selfhost", "provider": {"only": ["x"]}}},
     )
     assert "provider" not in body
     _, routed = build_request(
-        "language", "qwen/qwen3-vl-8b-instruct", "Is fighting visible?",
+        "language",
+        "qwen/qwen3-vl-8b-instruct",
+        "Is fighting visible?",
         "data:image/jpeg;base64,xx",
-        {"config": {"transport": "openrouter", "provider": {"only": ["parasail"], "allow_fallbacks": False}}},
+        {
+            "config": {
+                "transport": "openrouter",
+                "provider": {"only": ["parasail"], "allow_fallbacks": False},
+            }
+        },
     )
     assert routed["provider"]["only"] == ["parasail"]
 
@@ -231,9 +261,24 @@ def test_prefer_near_bucket_falls_back_when_east_is_too_expensive():
 def test_download_fees_outweigh_a_cheap_hourly_price():
     from tools import start_qwen8b_r2 as launcher
 
-    texas = {"id": 1, "dph_total": 0.136, "inet_down_cost": 0.0391, "geolocation": "Texas, US"}
-    virginia = {"id": 2, "dph_total": 0.301, "inet_down_cost": 0.0026, "geolocation": "Virginia, US"}
-    washington = {"id": 3, "dph_total": 0.401, "inet_down_cost": 0.0, "geolocation": "Washington, US"}
+    texas = {
+        "id": 1,
+        "dph_total": 0.136,
+        "inet_down_cost": 0.0391,
+        "geolocation": "Texas, US",
+    }
+    virginia = {
+        "id": 2,
+        "dph_total": 0.301,
+        "inet_down_cost": 0.0026,
+        "geolocation": "Virginia, US",
+    }
+    washington = {
+        "id": 3,
+        "dph_total": 0.401,
+        "inet_down_cost": 0.0,
+        "geolocation": "Washington, US",
+    }
     kept = launcher.drop_costly_downloads([texas, virginia, washington])
     # Texas: 0.136*0.6 + 0.0391*25 = $1.06 per run; Virginia ~$0.25; Washington ~$0.24.
     assert texas not in kept and virginia in kept and washington in kept
@@ -245,4 +290,6 @@ def test_unpriced_offers_are_left_unchanged():
 
     offers = [{"id": 1, "dph_total": "n/a"}]
     assert launcher.drop_costly_downloads(offers) is offers
-    assert launcher.drop_costly_downloads([{"id": 2, "dph_total": 0.3}]) == [{"id": 2, "dph_total": 0.3}]
+    assert launcher.drop_costly_downloads([{"id": 2, "dph_total": 0.3}]) == [
+        {"id": 2, "dph_total": 0.3}
+    ]

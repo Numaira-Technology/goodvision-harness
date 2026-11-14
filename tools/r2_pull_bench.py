@@ -37,7 +37,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -75,7 +77,44 @@ def parse_variant(text):
     a, _, b = shape.partition("x")
     if kind not in {"threads", "procs", "s5cmd"} or not (a.isdigit() and b.isdigit()):
         raise argparse.ArgumentTypeError(f"bad variant {text!r} (e.g. threads:4x16)")
-    return kind, int(a), int(b)
+    a, b = int(a), int(b)
+    if not 1 <= a <= (32 if kind == "procs" else 128) or not 1 <= b <= 128:
+        raise argparse.ArgumentTypeError("parallelism is outside the supported range")
+    return kind, a, b
+
+
+def _positive_price(text):
+    value = float(text)
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError("price cap must be finite and positive")
+    return value
+
+
+def _positive_int(text):
+    value = int(text)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return value
+
+
+def _box_command(args, remote):
+    variants = [
+        f"{k}:{a}" if b is None else f"{k}:{a}x{b}" for k, a, b in args.variants
+    ]
+    command = shlex.join(
+        [
+            "python3",
+            "-u",
+            "r2_pull_bench.py",
+            "box",
+            "--repo",
+            args.repo,
+            "--revision",
+            args.revision,
+            *variants,
+        ]
+    )
+    return f"cd {shlex.quote(remote)} && {command}"
 
 
 # --------------------------------------------------------------------- box side
@@ -124,6 +163,8 @@ def _pull_s5cmd(ms, repo, revision, out, workers, parts, workdir):
         client.get_object(Bucket=bucket, Key=prefix + ms.MANIFEST_NAME)["Body"].read()
     )
     files = ms._manifest_files(manifest)
+    if (manifest.get("model"), manifest.get("revision")) != (repo, revision):
+        raise ValueError("R2 manifest repo/revision mismatch")
     t = time.monotonic()
     subprocess.run(
         [
@@ -141,6 +182,7 @@ def _pull_s5cmd(ms, repo, revision, out, workers, parts, workdir):
         env=env,
         check=True,
         stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     download = time.monotonic() - t
     with ProcessPoolExecutor() as pool:
@@ -267,11 +309,15 @@ def _env_variant(kind, name, ms, args, out, env_root=None):
     )
     es.model_source.download_object = timed("download(parallel)", real_download)
 
+    owned_prefix = None
+
     def restore():
+        nonlocal owned_prefix
         client = ms.r2_client()  # real boto3 client -> parallel ranged download
         if kind == "envold":
             client = OldPathClient(client)
         es.pull_env(env, client=client)
+        owned_prefix = prefix.stat()
         return time.monotonic() - start
 
     def weights():
@@ -282,7 +328,8 @@ def _env_variant(kind, name, ms, args, out, env_root=None):
 
     start = time.monotonic()
     try:
-        shutil.rmtree(prefix, ignore_errors=True)
+        if prefix.exists() or prefix.is_symlink():
+            raise FileExistsError("benchmark requires an absent environment prefix")
         prefix.parent.mkdir(parents=True, exist_ok=True)
         start = time.monotonic()
         if kind in {"env", "envold", "extractold"}:
@@ -301,7 +348,17 @@ def _env_variant(kind, name, ms, args, out, env_root=None):
         )
         return
     finally:
-        shutil.rmtree(prefix, ignore_errors=True)
+        # pull_env owns cleanup of failed restores. Only remove our successfully
+        # restored directory, never an existing prefix or a competing publisher.
+        if owned_prefix is not None:
+            with es.prefix_lock(prefix):
+                if prefix.exists() and not prefix.is_symlink():
+                    current = prefix.stat()
+                    if (current.st_dev, current.st_ino) == (
+                        owned_prefix.st_dev,
+                        owned_prefix.st_ino,
+                    ):
+                        shutil.rmtree(prefix)
         shutil.rmtree(out, ignore_errors=True)
     total = time.monotonic() - start
     parts = ", ".join(f"{k} {v:.0f}s" for k, v in steps.items())
@@ -369,21 +426,59 @@ def find_approved_offer(vast, args):
     return None
 
 
+def _release_owned(vast, instance_id, label, release):
+    """Reconcile a lost create reply and require absence of this run's instances."""
+
+    def instances():
+        rows = vast.show_instances()
+        if not isinstance(rows, list) or any(
+            not isinstance(row, dict) or row.get("id") is None for row in rows
+        ):
+            raise RuntimeError("cannot confirm owned instance cleanup")
+        return rows
+
+    owned = (
+        {str(instance_id)}
+        if instance_id is not None
+        else {str(row["id"]) for row in instances() if row.get("label") == label}
+    )
+    for instance in sorted(owned):
+        release(vast, int(instance))
+    if any(str(row["id"]) in owned or row.get("label") == label for row in instances()):
+        raise RuntimeError("owned benchmark instance remains after destruction")
+
+
 def rent(argv):
     ap = argparse.ArgumentParser(prog="r2_pull_bench rent")
-    ap.add_argument("--offer", type=int, required=True, help="offer id you approved")
-    ap.add_argument("--max-dph", type=float, required=True, help="refuse above $/hr")
+    ap.add_argument(
+        "--offer", type=_positive_int, required=True, help="offer id you approved"
+    )
+    ap.add_argument(
+        "--max-dph", type=_positive_price, required=True, help="refuse above $/hr"
+    )
     ap.add_argument(
         "--machine",
-        type=int,
+        type=_positive_int,
         help="machine id of the approved offer: a host lists one offer per GPU "
         "slot, so accept another single-GPU offer on it at or under --max-dph",
     )
-    ap.add_argument("--disk-gb", type=int, default=60)
+    ap.add_argument("--disk-gb", type=_positive_int, default=60)
     ap.add_argument("--repo", default=DEFAULT_REPO)
     ap.add_argument("--revision", default=DEFAULT_REVISION)
     ap.add_argument("--variants", nargs="+", type=parse_variant, required=True)
     args = ap.parse_args(argv)
+
+    from tools import registry
+
+    for kind, name, _ in args.variants:
+        if kind in {"env", "envold", "both"}:
+            try:
+                if registry.env_of(name) is None:
+                    raise ValueError("no packed environment")
+            except (registry.RegistryError, ValueError):
+                ap.error(
+                    "environment variant must name a registered packed environment"
+                )
 
     from dotenv import dotenv_values
     from vastai import VastAI
@@ -395,6 +490,7 @@ def rent(argv):
     missing = [k for k in ("VAST_API_KEY", "SAM_SSH_KEY", *R2_KEYS) if not env.get(k)]
     if missing:
         raise SystemExit(f"missing in .env: {', '.join(missing)}")
+    previous_image = S.IMAGE
     S.IMAGE = IMAGE
     label = f"{LABEL_PREFIX}{uuid4().hex[:10]}"
     vast = VastAI(api_key=env["VAST_API_KEY"], retry=1)
@@ -402,9 +498,12 @@ def rent(argv):
     def interrupt(*_):
         raise KeyboardInterrupt
 
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, interrupt)
+    handled = (signal.SIGINT, signal.SIGTERM) + (
+        (signal.SIGHUP,) if hasattr(signal, "SIGHUP") else ()
+    )
+    previous_handlers = {sig: signal.signal(sig, interrupt) for sig in handled}
     instance_id = None
+    creation_attempted = False
     ssh_dir = tempfile.TemporaryDirectory(prefix="r2bench-ssh-")
     try:
         key = S.prepare_ssh_key(
@@ -413,15 +512,17 @@ def rent(argv):
         offer = find_approved_offer(vast, args)
         if offer is None:
             raise SystemExit("approved offer is gone; nothing rented")
-        if float(offer["dph_total"]) > args.max_dph:
+        price = float(offer["dph_total"])
+        if not math.isfinite(price) or price < 0 or price > args.max_dph:
             raise SystemExit(
-                f"offer now ${offer['dph_total']:.3f}/hr > cap; nothing rented"
+                "offer price is invalid or exceeds the cap; nothing rented"
             )
         print(
             f"offer {offer['id']} {offer.get('gpu_name')} {offer.get('geolocation')} "
             f"${float(offer['dph_total']):.3f}/hr",
             flush=True,
         )
+        creation_attempted = True
         instance_id = S.create_from_offers(
             vast, [offer], disk_gb=args.disk_gb, label=label
         )
@@ -430,6 +531,8 @@ def rent(argv):
             capture_output=True,
             text=True,
             check=True,
+            stdin=subprocess.DEVNULL,
+            timeout=10,
         ).stdout.strip()
         for _ in range(10):  # team key: attach at minute 0 (see vast-gpu-rent)
             try:
@@ -438,6 +541,8 @@ def rent(argv):
             except Exception as e:
                 print(f"attach retry ({type(e).__name__})", flush=True)
                 time.sleep(6)
+        else:
+            raise RuntimeError("could not attach SSH key to owned instance")
         opts = [
             "-i",
             str(key),
@@ -446,15 +551,17 @@ def rent(argv):
             "-o",
             "BatchMode=yes",
             "-o",
-            "StrictHostKeyChecking=no",
+            "StrictHostKeyChecking=accept-new",
             "-o",
-            "UserKnownHostsFile=/dev/null",
+            f"UserKnownHostsFile={Path(ssh_dir.name) / 'known_hosts'}",
             "-o",
             "ConnectTimeout=10",
             "-o",
             "LogLevel=ERROR",
             "-o",
             "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=3",
         ]
         host, port = S.wait_for_ssh(vast, instance_id, opts)
         remote = "/root/r2bench"
@@ -504,9 +611,6 @@ def rent(argv):
             ],
             timeout=120,
         )
-        variants = " ".join(
-            f"{k}:{a}" if b is None else f"{k}:{a}x{b}" for k, a, b in args.variants
-        )
         creds = json.dumps({k: env[k] for k in R2_KEYS}) + "\n"
         S.run(
             [
@@ -515,26 +619,21 @@ def rent(argv):
                 "-p",
                 str(port),
                 f"root@{host}",
-                f"cd {remote} && python3 -u r2_pull_bench.py box --repo {args.repo} "
-                f"--revision {args.revision} {variants}",
+                _box_command(args, remote),
             ],
             input=creds,
             timeout=3600,
         )
     finally:
-        if instance_id is not None:
-            S.release_instance(vast, instance_id)
-        else:  # a lost create response may still have made an instance
-            for inst in vast.show_instances() or []:
-                if inst.get("label") == label:
-                    S.release_instance(vast, int(inst["id"]))
-        left = [
-            i.get("id")
-            for i in vast.show_instances() or []
-            if str(i.get("label", "")).startswith(LABEL_PREFIX)
-        ]
-        print(f"remaining {LABEL_PREFIX}* instances: {left}", flush=True)
-        ssh_dir.cleanup()
+        try:
+            if creation_attempted:
+                _release_owned(vast, instance_id, label, S.release_instance)
+                print("owned benchmark instance cleanup verified", flush=True)
+        finally:
+            ssh_dir.cleanup()
+            S.IMAGE = previous_image
+            for sig, handler in previous_handlers.items():
+                signal.signal(sig, handler)
 
 
 def main(argv=None):

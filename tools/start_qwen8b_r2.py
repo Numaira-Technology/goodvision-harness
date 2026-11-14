@@ -94,9 +94,10 @@ RUN_COST_TOLERANCE = 0.10
 
 
 def estimated_run_cost(offer, *, download_gb=RUN_DOWNLOAD_GB, hours=RUN_HOURS):
-    return float(offer["dph_total"]) * hours + float(
-        offer.get("inet_down_cost") or 0.0
-    ) * download_gb
+    return (
+        float(offer["dph_total"]) * hours
+        + float(offer.get("inet_down_cost") or 0.0) * download_gb
+    )
 
 
 def drop_costly_downloads(offers, *, tolerance=RUN_COST_TOLERANCE):
@@ -110,7 +111,9 @@ def drop_costly_downloads(offers, *, tolerance=RUN_COST_TOLERANCE):
         best = min(costs)
     except (TypeError, KeyError, ValueError):
         return offers
-    kept = [o for o, c in zip(offers, costs) if c <= best * (1 + tolerance)]
+    kept = [
+        o for o, c in zip(offers, costs, strict=True) if c <= best * (1 + tolerance)
+    ]
     if len(kept) < len(offers):
         print(
             f"Skipping {len(offers) - len(kept)} offer(s) whose download fees make "
@@ -409,9 +412,14 @@ def _verify_eval_bundle(bundle: Path, phase: str, env_spec=None) -> str:
     return bundle_sha
 
 
-def _require_new_eval_output(output: Path) -> None:
+def _require_new_eval_output(output: Path, status: Path | None = None) -> None:
     if output.exists() or output.is_symlink():
         raise ValueError(f"evaluation output already exists: {output}")
+    if status is not None:
+        output_path, status_path = output.resolve(), status.resolve()
+        if (status_path.is_relative_to(output_path)
+                or output_path.is_relative_to(status_path)):
+            raise ValueError("status file must not overlap the evaluation output")
 
 
 def _release_instance_checked(vast, instance_id: int) -> None:
@@ -458,7 +466,7 @@ def main() -> int:
     registry.validate_env(env_spec)
     bundle_sha = None
     if args.eval_bundle:
-        _require_new_eval_output(args.eval_output)
+        _require_new_eval_output(args.eval_output, args.status_file)
         bundle_sha = _verify_eval_bundle(args.eval_bundle, args.eval_phase, env_spec)
 
     from dotenv import load_dotenv
@@ -531,7 +539,10 @@ def main() -> int:
                 raise RuntimeError("No eligible RTX 4090 / CUDA 12.8 offer available.")
             creation_attempted = True
             instance_id = S.create_from_offers(
-                vast, prefer_near_bucket(drop_costly_downloads(offers)), disk_gb=args.disk_gb, label=label
+                vast,
+                prefer_near_bucket(drop_costly_downloads(offers)),
+                disk_gb=args.disk_gb,
+                label=label,
             )
             print(f"Created instance: {instance_id}", flush=True)
 
@@ -589,7 +600,7 @@ def main() -> int:
                 f"gpu={state.get('gpu', '')}\n"
             )
         if args.eval_bundle:
-            _require_new_eval_output(args.eval_output)
+            _require_new_eval_output(args.eval_output, args.status_file)
             if (
                 _verify_eval_bundle(args.eval_bundle, args.eval_phase, env_spec)
                 != bundle_sha

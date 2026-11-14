@@ -43,7 +43,7 @@ For the retained legacy v2/v2.1 report, preserve the following measurement rules
 - Historical/provisional evidence is explicitly labeled and separated from reviewed
   v2 comparisons. An existing draft manifest blocks an official v2 run.
 
-For current120, price means actual run spend (USD), including the stated validation/test/retry scope.
+For unified current-frame runs, price means actual run spend (USD), including the stated validation/test/retry scope.
 Record known receipt cost and unknown-cost attempts separately. Provider token
 quotes and estimated GPU rent are estimates, not an actual bill. Unknown is not zero.
 

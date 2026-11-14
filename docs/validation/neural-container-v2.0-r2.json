@@ -1,0 +1,82 @@
+{
+  "module": "goodvision-neural",
+  "version": "v2.0",
+  "date": "2026-11-12",
+  "timezone": "Asia/Hong_Kong",
+  "repository_base_revision": "69e45012c2dbb94ef4f71489278cbd8d413ecca8",
+  "application_revision": "603f20dc0089cc0b0f21429d8432f3c32aa4b2a6",
+  "application_upgraded": false,
+  "prebuilt_image": {
+    "name": "goodvision-neural:v2.0-603f20d-20261112",
+    "id": "sha256:de292f54234aadbd00cfbdb8b627cfe64676546e39b9b8967a88dc7395c3c42c",
+    "config_id": "sha256:74c97df9c11517d4a5633d97c7a2b5d3adcbfee1a088616a8b182c7d6276fd7f"
+  },
+  "environment": {
+    "host": "macOS arm64, Docker Desktop",
+    "docker_engine": "29.7.2 Linux/arm64",
+    "target": "Linux/amd64, emulated locally",
+    "compose": "v5.5.1",
+    "nvidia_gpu_available": false
+  },
+  "automated_checks": {
+    "command": ".venv/bin/python -m pytest tests/test_neural_container.py tests/test_neural_packaging.py tests/test_docker_modules.py tests/test_module_updates.py tests/test_neural_workflow.py",
+    "passed": 144,
+    "skipped": 2,
+    "installer_cases": 28,
+    "packaging_cases": 9,
+    "ruff": "passed",
+    "git_diff_check": "passed",
+    "repository_hygiene": "passed"
+  },
+  "docker_checks": {
+    "network_disabled_build_from_exact_original_base": "passed",
+    "delivery_source_offline_build": "passed on local containerd BuildKit; classic-store logic covered by automated tests, no classic-engine integration run",
+    "rebuilt_image_id": "sha256:acbe59778ccc4576a5f77322c814386cc34c5e6c77a5500b9ab8b610fb1e309f",
+    "rebuilt_application_config_id_matches_prebuilt": true,
+    "baseline_python_source_files_verified_per_copy": 134,
+    "baseline_source_copies": [
+      "/opt/runtime/lib/python3.12/site-packages/goodvision_harness",
+      "/app/src/goodvision_harness"
+    ],
+    "dedicated_neural_entrypoint_help": "passed",
+    "no_cuda_default_start": "failed explicitly with a CUDA GPU is required, as expected",
+    "generated_compose_schema": "passed docker compose config --quiet, custom network/alias/GPU/bind fixture",
+    "mock_http_contract": {
+      "description": "Python stdlib fake /health response, no model inference",
+      "correct_model_and_ready": "healthy",
+      "unready_response": "rejected",
+      "wrong_model_response": "rejected",
+      "network_alias_resolution": "passed",
+      "read_only_model_mount_write_rejected": true,
+      "restart_and_health": "passed",
+      "restart_policy": "unless-stopped"
+    },
+    "original_preview_containers": "goodvision-main and goodvision-bbox remained running and healthy; no stop/restart/update performed",
+    "temporary_validation_containers_and_network": "removed",
+    "validation_scope": "Image and Dockerfile unchanged from initial V2.0; original Docker validation applies to the same image. Installer recovery verified by regression tests."
+  },
+  "dependencies_verified_inside_image": {
+    "torch": "2.8.0+cu128",
+    "torchvision": "0.23.0+cu128",
+    "transformers": "5.14.1",
+    "safetensors": "0.8.0",
+    "ultralytics": "8.4.198"
+  },
+  "model": {
+    "name": "openai/clip-vit-large-patch14",
+    "revision": "32bd64288804d66eefd0ccbe215aa642df71cc41",
+    "payload_included": false,
+    "reuse": "original state/models/neural, read-only"
+  },
+  "real_gpu_inference_tested": false,
+  "videojev_clip_concurrent_gpu_tested": false,
+  "windows_cmd_execution_tested": false,
+  "paid_gpu_rented": false,
+  "customer_server_deployment": "unknown; no customer server accessed",
+  "historical_gpu_evidence": "docs/validation/pr75-gpu-v2.0.json and evidence/container-deliveries/v2.0-gpu-acceptance-runner.py: temporary CLIP with VideoJev stopped, not this standalone deployment",
+  "delivery_revision": "r2",
+  "revision_changes": [
+    "Allow changing only the published port when retrying an installer-owned prepared or failed deployment.",
+    "Preserve successful, customized and foreign deployments; five regression cases added."
+  ]
+}

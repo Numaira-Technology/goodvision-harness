@@ -16,11 +16,16 @@ import uuid
 from pathlib import Path
 
 from tools import registry
-from tools.cloud_prefetch import R2_KEYS, credential_blob
+from tools.cloud_prefetch import R2_KEYS, credential_blob, pull_tuning
 from tools.env_source import restore_identity
 
 TOOLS = Path(__file__).resolve().parent
-UPLOAD = ("model_source.py", "registry.py", "env_source.py", "models.yaml")
+# prefix_lock imports this standalone helper at restore time. Ship its package
+# too: the isolated remote reader cannot rely on a full repository checkout.
+UPLOAD = (
+    "model_source.py", "registry.py", "env_source.py", "models.yaml",
+    "unified_benchmark/__init__.py", "unified_benchmark/locking.py",
+)
 
 
 def _default_runner(command, *, input=None, timeout=1800):
@@ -52,7 +57,7 @@ def remote_command(name, *, python="python3", remote_dir="."):
     inner = shlex.join([python, "-I", "-c", program, "--model", name])
     return (
         f"set +x; set +v; unset {' '.join(R2_KEYS)} HF_TOKEN; "
-        f". /dev/stdin || exit; exec {inner}"
+        f". /dev/stdin || exit; exec env {pull_tuning()}{inner}"
     )
 
 

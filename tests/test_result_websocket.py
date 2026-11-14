@@ -4,12 +4,14 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 from test_branch_result_delivery import observation, runtime_without_workers
 from test_fleet import make_app
 
 from goodvision_harness import result_websocket as transport
+from goodvision_harness.dynamic_cameras import DynamicCameras
 from goodvision_harness.fleet_outputs import output_urls
 from goodvision_harness.result_bus import ResultBus
 from goodvision_harness.service import create_app
@@ -258,6 +260,63 @@ def test_fleet_invalid_camera_and_secondary_host_rejected(monkeypatch, index, ca
             with pytest.raises(WebSocketDisconnect) as error:
                 ws.receive_json()
             assert error.value.code == 1008
+
+
+@pytest.mark.parametrize("previous_origin", [None, "http://127.0.0.1:1234"])
+def test_fleet_result_subscription_starts_or_recovers_dynamic_worker(
+    monkeypatch, tmp_path, previous_origin,
+):
+    app = make_app(monkeypatch, capacity=1, tracking=False)
+    controller = app.state.fleet
+    controller.dynamic = DynamicCameras(controller, tmp_path)
+    controller.capacity = 2
+    if previous_origin is not None:
+        controller.dynamic.origins[2] = previous_origin
+    origin = "http://127.0.0.1:5678"
+    calls = []
+
+    async def ensure(index):
+        calls.append(("ensure", index))
+        controller.dynamic.origins[index] = origin
+
+    async def proxy(socket, target, path, *, camera_id):
+        calls.append(("proxy", target, path, camera_id))
+        await socket.send_json({"type": "hello", "camera_id": camera_id})
+        await socket.close()
+
+    monkeypatch.setattr(controller.dynamic, "ensure", ensure)
+    monkeypatch.setattr(transport, "proxy_results", proxy)
+    with TestClient(app) as client:
+        with client.websocket_connect(output_urls("camera02")["results/ws"]) as ws:
+            assert ws.receive_json() == {"type": "hello", "camera_id": "camera02"}
+    assert calls == [
+        ("ensure", 2),
+        ("proxy", origin, "/v1/results/ws", "camera02"),
+    ]
+
+
+def test_fleet_dynamic_worker_failure_rejects_result_subscription(
+    monkeypatch, tmp_path,
+):
+    app = make_app(monkeypatch, capacity=1, tracking=False)
+    controller = app.state.fleet
+    controller.dynamic = DynamicCameras(controller, tmp_path)
+    controller.capacity = 2
+
+    async def unavailable(index):
+        raise HTTPException(503, "private worker path /data/cameras/camera02")
+
+    monkeypatch.setattr(controller.dynamic, "ensure", unavailable)
+    with TestClient(app) as client:
+        with client.websocket_connect(output_urls("camera02")["results/ws"]) as ws:
+            assert ws.receive_json() == {
+                "type": "error",
+                "message": "result service unavailable",
+                "camera_id": "camera02",
+            }
+            with pytest.raises(WebSocketDisconnect) as error:
+                ws.receive_json()
+            assert error.value.code == 1013
 
 
 def test_slow_writer_times_out_and_cancels_disconnect_reader(monkeypatch):

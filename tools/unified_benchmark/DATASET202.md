@@ -73,9 +73,12 @@ class mix as well as the footage, so its headline delta is not a model-only chan
 API `base100` field continues to mean only original base questions1–100; it must
 not silently become182. Bag20 is separate from Weapon.
 
-Tune Luna/CLIP/SigLIP2 only on complete validation24 and freeze their artifact
-before test. Do not tune to the new82 test labels. Bag remains uncalibrated at
-Luna0.5 / margin0; boolean/argmax models have no numerical threshold.
+By default, tune Luna/CLIP/SigLIP2 only on complete validation24 and freeze their
+artifact before test. The optional [CLIP/SigLIP2 bag supplement](NATIVE.md#optional-clipsiglip2-bag-validation)
+adds ten validation videos/twenty questions, requiring complete validation44 for
+six-event margin selection. Do not tune to the new82 test labels. Without that
+supplement, bag remains uncalibrated at Luna0.5 / margin0; Luna retains its bag0.5
+baseline. Boolean/argmax models have no numerical threshold.
 Report protocol, dataset hashes and the review limitation with any future sheet
 update. A `Dataset all120` header cannot receive a202 headline: use the same-run
 original120 subset there, or agree on changing the target block to202 before

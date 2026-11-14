@@ -23,7 +23,7 @@ import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from pathlib import Path
 from tempfile import TemporaryDirectory, mkdtemp
 
@@ -171,9 +171,24 @@ def verify_snapshot(snap, manifest):
     return True
 
 
-def _r2_env_ready():
+def _r2_connection_identity():
     need = ("R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY")
-    return all(os.environ.get(k) for k in need)
+    return tuple(os.environ.get(k) for k in need)
+
+
+def _r2_env_ready():
+    return all(_r2_connection_identity())
+
+
+def _can_spawn(client):
+    # Children recreate clients from the environment. An arbitrary boto3 client
+    # may point at another endpoint/account; never silently replace its source.
+    return (
+        _is_real_client(client)
+        and _r2_env_ready()
+        and getattr(client, "_goodvision_r2_environment", None)
+        == _r2_connection_identity()
+    )
 
 
 def r2_client():
@@ -184,7 +199,7 @@ def r2_client():
     from botocore.config import Config
 
     file_workers, streams = _parallelism()
-    return boto3.client(
+    client = boto3.client(
         "s3",
         endpoint_url=os.environ["R2_ENDPOINT"],
         aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
@@ -196,6 +211,8 @@ def r2_client():
             max_pool_connections=file_workers * streams + 4,
         ),
     )
+    client._goodvision_r2_environment = _r2_connection_identity()
+    return client
 
 
 def _log(*a):
@@ -243,8 +260,10 @@ def _run_pool(pool, order, submit):
     """
     pulled = 0
     with pool:
-        futures = [submit(pool, rel, meta) for rel, meta in order]
+        futures = []
         try:
+            for rel, meta in order:
+                futures.append(submit(pool, rel, meta))
             for future in as_completed(futures):
                 pulled += future.result()
         except BaseException:
@@ -269,8 +288,10 @@ def _get_range(client, bucket, key, dest, start, end, attempts=3):
                 Bucket=bucket, Key=key, Range=f"bytes={start}-{end}"
             )["Body"]
             offset = start
-            with open(dest, "r+b") as f:
+            with closing(body), open(dest, "r+b") as f:
                 while chunk := body.read(1 << 20):
+                    if len(chunk) > end + 1 - offset:
+                        raise OSError("range response exceeds requested length")
                     f.seek(offset)
                     f.write(chunk)
                     offset += len(chunk)
@@ -310,8 +331,8 @@ def download_object(client, bucket, key, dest, size):
 
     Same parallelism as the weight pull: R2_PULL_PROCESSES processes, each
     with R2_PULL_STREAMS ranged GETs, every part written at its own offset.
-    Only a real boto3 client with R2_* in the environment uses processes;
-    anything else (tests, injected clients) uses threads, and a pool that
+    Only a client built by r2_client from the current R2_* environment uses
+    processes; other injected clients use threads, and a pool that
     cannot start falls back to threads too. The caller verifies the result.
     """
     dest = Path(dest)
@@ -324,7 +345,7 @@ def download_object(client, bucket, key, dest, size):
         return 0
     _, streams = _parallelism()
     processes = min(_processes(), len(ranges))
-    if processes > 1 and _r2_env_ready() and _is_real_client(client):
+    if processes > 1 and _can_spawn(client):
         shares = [ranges[i::processes] for i in range(processes)]
         try:
             pool = ProcessPoolExecutor(
@@ -381,13 +402,9 @@ def pull_from_r2(repo, revision, snap, *, client=None, bucket=None):
     # Largest first so the long shards start early and small files fill gaps.
     order = sorted(files.items(), key=lambda kv: kv[1]["size"], reverse=True)
     # Children log in with their own client from the inherited environment, so
-    # only a real boto3 client with R2_* set qualifies; injected fakes and
-    # explicit clients without env credentials keep the in-process threads.
-    use_processes = (
-        processes > 1
-        and _r2_env_ready()
-        and type(client).__module__.startswith("botocore")
-    )
+    # only clients made by r2_client from the unchanged environment qualify.
+    # Other injected clients must retain their endpoint and credentials.
+    use_processes = processes > 1 and _can_spawn(client)
     started = time.monotonic()
     if use_processes:
         try:

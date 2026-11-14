@@ -8,6 +8,7 @@ reader must acquire this same lock before touching the protected state.
 import importlib
 import os
 import sys
+import threading
 
 
 def _load_backend(name):
@@ -34,12 +35,29 @@ def lock_exclusive(file):
         # a/a+ opens at EOF; locking there would let a second opener lock a
         # different byte after the first append. Do not write a sentinel into
         # JSONL evidence. CRT locking permits a region beyond the current EOF.
-        position = file.tell()
-        try:
-            file.seek(0)
-            backend.locking(file.fileno(), backend.LK_NBLCK, 1)
-        finally:
-            file.seek(position)
+        # Same-process LK_NBLCK can sit inside the CRT instead of returning,
+        # which stalls the Windows CI shard. Bound the call and fail closed.
+        error = []
+        done = threading.Event()
+
+        def acquire():
+            position = file.tell()
+            try:
+                file.seek(0)
+                backend.locking(file.fileno(), backend.LK_NBLCK, 1)
+            except BaseException as exc:
+                error.append(exc)
+            finally:
+                try:
+                    file.seek(position)
+                finally:
+                    done.set()
+
+        threading.Thread(target=acquire, name="benchmark-file-lock", daemon=True).start()
+        if not done.wait(1):
+            raise OSError("exclusive lock is held")
+        if error:
+            raise error[0]
     else:
         raise RuntimeError(
             "exclusive benchmark locking is unsupported on this platform"

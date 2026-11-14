@@ -1,0 +1,41 @@
+{
+  "version": "V2.1",
+  "source_revision": "77362bd30f5a31cbaaeb16798d8d0c483e2daa2c",
+  "pull_request": "https://github.com/Numaira-Technology/goodvision-harness/pull/108",
+  "baseline": "V2.0 / pr75-603f20d",
+  "also_supports_main": "20261104-dynamic-summary1",
+  "platform": "linux/amd64",
+  "modules": {
+    "main": {
+      "manifest": "main/update.json",
+      "image": "goodvision-main:v2.1-77362bd",
+      "id": "sha256:d2d7178bdd5c869ea431a80a39c801ee3f87af7db7f98400b29e6693fcea6179",
+      "delta_bytes": 442725,
+      "requires": [
+        {
+          "name": "goodvision-main:pr75-603f20d",
+          "id": "sha256:26b03fbe21d6be0f704554189abc5487e9997ca3129eead1ba093f67f548f307",
+          "os": "linux",
+          "architecture": "amd64"
+        }
+      ]
+    },
+    "system1": {
+      "manifest": "system1/update.json",
+      "image": "goodvision-system1:v2.1-77362bd",
+      "id": "sha256:5f9b0e677e2acf5a9a8e8e6175a068052f1afd4f4b84b7bf36166ac3a2cf09e4",
+      "delta_bytes": 444829,
+      "requires": [
+        {
+          "name": "goodvision-system1:pr75-603f20d",
+          "id": "sha256:b7e2098b9aa4e6dcf98810797d490df5993027db31e476ad22d326e73750f779",
+          "os": "linux",
+          "architecture": "amd64"
+        }
+      ]
+    }
+  },
+  "validated_repository_revision": "01bcfa6e7770284585bd40cc32b0032188b31d9d",
+  "merge_commit": "8f526925127f9336c46679713b602f7c7d815a5a",
+  "ci_run": "https://github.com/Numaira-Technology/goodvision-harness/actions/runs/43214646934"
+}
