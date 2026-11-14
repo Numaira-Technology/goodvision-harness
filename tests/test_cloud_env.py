@@ -21,6 +21,33 @@ ACTIVATE = "/opt/env/videojev/bin/activate"
 PYTHON = "/opt/env/videojev/bin/python"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="remote POSIX shell")
+def test_remote_environment_restore_receives_download_tuning(tmp_path, monkeypatch):
+    remote = tmp_path / "reader"
+    (remote / "tools").mkdir(parents=True)
+    (remote / "tools/__init__.py").write_text("")
+    (remote / "tools/env_source.py").write_text(
+        "import json, os\nprint(json.dumps({k: os.environ.get(k) "
+        "for k in ['R2_PULL_PROCESSES', 'R2_PULL_STREAMS']}))\n"
+    )
+    monkeypatch.setenv("R2_PULL_PROCESSES", "1")
+    monkeypatch.setenv("R2_PULL_STREAMS", "4")
+    cmd = ce.remote_command("synthetic", python=sys.executable, remote_dir=str(remote))
+    # Remote shell starts without the controller's tuning variables.
+    result = subprocess.run(
+        ["sh", "-c", cmd],
+        input=ce.credential_blob(R2_ENV),
+        text=True,
+        capture_output=True,
+        check=True,
+        env={"PATH": os.defpath},
+    )
+    assert json.loads(result.stdout) == {
+        "R2_PULL_PROCESSES": "1",
+        "R2_PULL_STREAMS": "4",
+    }
+
+
 def test_restore_env_carries_secret_only_on_stdin_and_cleans():
     uploads, cleanups = [], []
 

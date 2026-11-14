@@ -213,7 +213,9 @@ def _verify_eval_bundle(bundle: Path, phase: str, env_spec: dict) -> str:
     from tools.unified_benchmark.workflow import verify_bundle
 
     bundle_sha = verify_bundle(bundle)
-    hashes = json.loads((bundle / "bundle-files-sha256.json").read_text(encoding="utf-8"))
+    hashes = json.loads(
+        (bundle / "bundle-files-sha256.json").read_text(encoding="utf-8")
+    )
     config_name = "configs/qwen8b_r2_vllm.json"
     if config_name not in hashes:
         raise ValueError("vLLM config is not sealed in the bundle")
