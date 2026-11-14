@@ -471,7 +471,7 @@ def rent(argv):
     from tools import registry
 
     for kind, name, _ in args.variants:
-        if kind in {"env", "envold", "both"}:
+        if kind in {"env", "envold", "extractold", "both"}:
             try:
                 if registry.env_of(name) is None:
                     raise ValueError("no packed environment")

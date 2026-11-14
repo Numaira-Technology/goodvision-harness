@@ -1073,3 +1073,80 @@ def test_safe_extract_accepts_zero_padded_archive(tmp_path):
     out = tmp_path / "out"
     es._safe_extract(path, out)
     assert (out / "bin/python").read_bytes() == b"synthetic Python"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="synthetic POSIX interpreter shim")
+@pytest.mark.parametrize(
+    "encoding", ["single", "multi", "padded", "trailer", "next-member", "next-crc"]
+)
+def test_streamed_whole_restore_and_late_error_cleanup(tmp_path, monkeypatch, encoding):
+    """Exercise the real validators, publication and unpack subprocess offline.
+
+    Only the object store and host/GPU compatibility boundary are synthetic;
+    this is not evidence of a real conda-pack producer or GPU ABI.
+    """
+    import gzip
+    import shlex
+
+    prefix = tmp_path / "opt/env"
+    path = tmp_path / "env.tar.gz"
+    alias = tarfile.TarInfo("python-link")
+    alias.type, alias.linkname = tarfile.SYMTYPE, "bin/python"
+    hardlink = tarfile.TarInfo("payload-copy")
+    hardlink.type, hardlink.linkname = tarfile.LNKTYPE, "payload"
+    payload = b"payload" * 10000
+    script = (
+        "#!/missing/build/python\n"
+        "import os, sys\nfrom pathlib import Path\n"
+        "from conda_unpack_progress import progressbar\n"
+        "assert sys.flags.isolated\n"
+        "assert 'R2_SECRET_ACCESS_KEY' not in os.environ\n"
+        "Path(__file__).with_name('ran').write_text(progressbar(sys.argv[0]))\n"
+    )
+    entries = [
+        (hardlink, None),
+        (alias, None),
+        _file(
+            "bin/python",
+            f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n'.encode(),
+            0o755,
+        ),
+        _file("bin/activate", b"# synthetic activate\n"),
+        _file("bin/conda-unpack", script.encode()),
+        _file("bin/conda_unpack_progress.py", b"def progressbar(x): return x\n"),
+        _file("payload", payload),
+    ]
+    _gz_tar(path, entries, members=3 if encoding == "multi" else 1)
+    data = path.read_bytes()
+    if encoding == "padded":
+        data += b"\0" * 51 + gzip.compress(b"") + b"\0" * 17
+    elif encoding == "trailer":
+        data = data[:-1]
+    elif encoding == "next-member":
+        data += gzip.compress(b"")[:-1]
+    elif encoding == "next-crc":
+        tail = bytearray(gzip.compress(b""))
+        tail[-8] ^= 1
+        data += tail
+    path.write_bytes(data)
+    env = copy.deepcopy(registry.env_of("videojev"))
+    env.update(unpack_to=str(prefix), size=len(data), sha256=es._sha256(path))
+    client = FakeR2(path, env)
+    monkeypatch.setattr(es, "check_compatibility", lambda env: None)
+    monkeypatch.setattr(es._Inflater, "_OUT", 4096)
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "synthetic-must-not-reach-unpack")
+    if encoding in {"trailer", "next-member", "next-crc"}:
+        with pytest.raises(zlib.error if encoding == "next-crc" else EOFError):
+            pull((env, client), tmp_path)
+        assert_clean(tmp_path, env)
+        assert not es._marker(prefix).exists()
+    else:
+        assert pull((env, client), tmp_path) == str(prefix / "bin/activate")
+        assert es._already_restored(env)
+        assert (prefix / "bin/ran").read_text() == str(prefix / "bin/conda-unpack")
+        assert (prefix / "payload-copy").read_bytes() == payload
+        assert (prefix / "payload-copy").samefile(prefix / "payload")
+        assert (prefix / "python-link").resolve() == prefix / "bin/python"
+        assert not list((tmp_path / "scratch").iterdir())
+        assert not list(prefix.parent.glob(".r2-env-stage-*"))
+    assert all(body.closed for body in client.bodies)
