@@ -212,7 +212,26 @@ class FaceGallery:
         self._embedding_dimension: int | None = None
         self._revision = uuid4().hex
         self._snapshot_cache = None
+        self._file_stamp = None
         self._load()
+
+    @staticmethod
+    def _stamp(info):
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+    def refresh(self):
+        """Reload another process's atomic edit and return old/new snapshots."""
+        with self._lock:
+            try:
+                stamp = self._stamp(self.path.stat())
+            except FileNotFoundError:
+                stamp = None
+            if stamp == self._file_stamp:
+                return None
+            previous = self.private_snapshot()
+            self._load()
+            self._revision, self._snapshot_cache = uuid4().hex, None
+            return previous, self.private_snapshot()
 
     def private_snapshot(self) -> FaceGallerySnapshot:
         with self._lock:
@@ -325,12 +344,18 @@ class FaceGallery:
             )
 
     def _load(self) -> None:
-        if not self.path.exists():
-            return
         try:
-            with self.path.open("r", encoding="utf-8") as handle:
+            try:
+                handle = self.path.open("r", encoding="utf-8")
+            except FileNotFoundError:
+                self._people, self._embedding_dimension = {}, None
+                self._file_stamp = None
+                return
+            with handle:
                 payload = json.load(handle)
+                stamp = self._stamp(os.fstat(handle.fileno()))
             migrate_legacy = self._load_payload(payload)
+            self._file_stamp = stamp
             if migrate_legacy:
                 self._persist_locked()
         except (OSError, TypeError, ValueError) as exc:
@@ -426,7 +451,9 @@ class FaceGallery:
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
+                stamp = self._stamp(os.fstat(handle.fileno()))
             os.replace(temporary, self.path)
+            self._file_stamp = stamp
         finally:
             temporary.unlink(missing_ok=True)
 

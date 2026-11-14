@@ -25,11 +25,11 @@ from pathlib import Path
 from .adapters import frame_bytes, parse_response, request_body
 from .contract import (
     EVENTS,
-    RULES,
     canonical,
     digest,
     file_hash,
     finite_number,
+    plan_rules,
     select_thresholds,
     write_new,
 )
@@ -519,7 +519,7 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, sealed_receipts=Non
 
 
 
-def _verify_completion(output, phase_dir, *, calibration=False):
+def _verify_completion(output, phase_dir, *, calibration=False, ledger=None):
     path = phase_dir / "completion.json"
     if not path.exists():
         return
@@ -544,13 +544,22 @@ def _verify_completion(output, phase_dir, *, calibration=False):
         if (
             relative.is_absolute()
             or ".." in relative.parts
-            or str(relative) != name
+            or relative.as_posix() != name  # keys are canonical posix paths
             or artifact.is_symlink()
             or not artifact.resolve().is_relative_to(output.resolve())
             or not artifact.is_file()
-            or file_hash(artifact) != expected
+            or _evidence_hash(artifact, ledger) != expected
         ):
             raise ValueError("completed phase evidence differs: " + name)
+
+
+def _evidence_hash(artifact, ledger):
+    # The owner holds an exclusive lock on its ledger. On Windows that CRT
+    # byte lock also blocks reads through a second handle (PermissionError),
+    # so hash the ledger through its own owning handle, as before.
+    if ledger is not None and artifact.resolve() == ledger.path.resolve():
+        return ledger.file_hash()
+    return file_hash(artifact)
 
 
 def _verify_existing_phase_records(
@@ -750,6 +759,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     _verify_completion(
                         output, phase_dir,
                         calibration=split == "validation" and cfg["kind"] == "margin",
+                        ledger=ledger,
                     )
                 else:
                     if any(used < 3 and set(answers) != set(unit["targets"])
@@ -760,10 +770,9 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     save_status(output / "status.json", {"state": "running", "split": split, "pid": os.getpid(), "at": stamp()})
                     video_groups(plan["units"], queue)
                 if split == "validation" and cfg["kind"] == "margin":
-                    selected = select_thresholds(plan, collect(plan, cfg, ledger), cfg["kind"], cfg["model"])
-                    selected.update(calibration="selected_on_complete_validation24", config_sha256=digest(cfg),
-                        rules_sha256=digest(RULES), bundle_sha256=bundle_digest, model=cfg["model"],
-                        native_deployment_sha256=deployment_hash)
+                    selected = selected_calibration(
+                        plan, cfg, ledger, bundle_digest, deployment_hash
+                    )
                     threshold_path = output / "thresholds.json"
                     if threshold_path.exists():
                         artifact = json.loads(threshold_path.read_text())
@@ -774,10 +783,11 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     threshold_hash = file_hash(threshold_path)
                     artifact = load_threshold_artifact(threshold_path, threshold_hash, bundle=bundle, alias=alias,
                                                       config=cfg, bundle_digest=bundle_digest)
+                    thresholds = artifact["thresholds"]
                 if not completion_path.exists():
                     result = report(plan, cfg, ledger, thresholds)
                     result["native_deployment_sha256"] = deployment_hash
-                    result["threshold_artifact_sha256"] = threshold_hash if split == "test" else None
+                    result["threshold_artifact_sha256"] = threshold_hash
                     # Incomplete validation still produces a report in the exception handler below.
                     save_status(phase_dir / "report.json", result)
                     files = [ledger.path, phase_dir / "report.json", phase_record]
@@ -857,8 +867,8 @@ def validate_completion(output, split, cfg):
 
 def selected_calibration(plan, cfg, ledger, bundle_digest, deployment_hash):
     selected = select_thresholds(plan, collect(plan, cfg, ledger), cfg["kind"], cfg["model"])
-    selected.update(calibration="selected_on_complete_validation24", config_sha256=digest(cfg),
-        rules_sha256=digest(RULES), bundle_sha256=bundle_digest, model=cfg["model"],
+    selected.update(config_sha256=digest(cfg),
+        rules_sha256=digest(plan_rules(plan)), bundle_sha256=bundle_digest, model=cfg["model"],
         native_deployment_sha256=deployment_hash)
     return selected
 

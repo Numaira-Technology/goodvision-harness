@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from .rich_label_models import validate_rich_label_model
 from .service_locations import SERVICE_LOCATION_FIELDS, validate_service_location
+from .summary_service import summary_service_settings
 
 SETTINGS_SCHEMA_VERSION = 1
 # Stable neutral filenames preserve existing OpenRouter and other active keys.
@@ -214,6 +215,21 @@ class DeploymentSettingsStore:
         except KeyError as exc:
             raise ValueError("unsupported inference provider") from exc
         return self.path.with_name(filename)
+
+    def load_summary_service(self) -> dict:
+        # All camera workers sharing this data directory use the same connection.
+        path = self.path.with_name("summary-service.json")
+        with self._lock:
+            value = (
+                json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+            )
+        return summary_service_settings(value)
+
+    def save_summary_service(self, value: dict) -> None:
+        self._atomic_write(
+            self.path.with_name("summary-service.json"),
+            json.dumps(summary_service_settings(value), indent=2) + "\n",
+        )
 
     def load_api_key(self, *, provider: str = "openrouter") -> str | None:
         key_path = self._provider_api_key_path(provider)

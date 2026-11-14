@@ -56,7 +56,7 @@ def _verify_execution(directory, selected):
 
 def verify_coverage(directory: Path, count: int, result: str) -> int:
     if result != "success":
-        raise ValueError(f"Linux test jobs did not succeed: {result}")
+        raise ValueError(f"Regression test jobs did not succeed: {result}")
     manifests = list(directory.rglob("collection.json"))
     if len(manifests) != count:
         raise ValueError("missing or extra shard collection manifests")

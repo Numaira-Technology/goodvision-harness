@@ -35,7 +35,7 @@ from tools.qwen8b.serve_vllm import DEFAULTS, MODEL_ID, REVISION
 ENV_NAME = "qwen8b-vllm"
 HF_ENV_KEY = "envs/qwen8b/cu128-py312-torch280-ada.tar.gz"
 MAX_DPH = 1.85  # refuse silently upgrading past ~1.5x the prior $1.2296/hr
-STATUS_DEFAULT = Path("outputs/qwen8b-r2-vllm/STATUS.md")
+STATUS_DEFAULT = Path("outputs/qwen8b-r2-vllm-STATUS.md")
 
 
 def _status(path: Path | None, text: str) -> None:
@@ -213,11 +213,11 @@ def _verify_eval_bundle(bundle: Path, phase: str, env_spec: dict) -> str:
     from tools.unified_benchmark.workflow import verify_bundle
 
     bundle_sha = verify_bundle(bundle)
-    hashes = json.loads((bundle / "bundle-files-sha256.json").read_text())
+    hashes = json.loads((bundle / "bundle-files-sha256.json").read_text(encoding="utf-8"))
     config_name = "configs/qwen8b_r2_vllm.json"
     if config_name not in hashes:
         raise ValueError("vLLM config is not sealed in the bundle")
-    config = json.loads((bundle / config_name).read_text())
+    config = json.loads((bundle / config_name).read_text(encoding="utf-8"))
     expected = model_configs(["qwen8b_r2_vllm"])["qwen8b_r2_vllm"]
     if config != expected:
         raise ValueError(
@@ -234,7 +234,7 @@ def _verify_eval_bundle(bundle: Path, phase: str, env_spec: dict) -> str:
         name = f"plans/qwen8b_r2_vllm-{split}.json"
         if name not in hashes:
             raise ValueError(f"vLLM {split} plan is not sealed in the bundle")
-        plan = json.loads((bundle / name).read_text())
+        plan = json.loads((bundle / name).read_text(encoding="utf-8"))
         if (
             plan.get("protocol") != VERSION
             or plan.get("split") != split
@@ -457,7 +457,7 @@ def main() -> int:
     env_spec = copy.deepcopy(registry.env_of(ENV_NAME))
     _require_r2_pack(env_spec)
     bundle_sha = _verify_eval_bundle(args.eval_bundle, args.eval_phase, env_spec)
-    H._require_new_eval_output(args.eval_output)
+    H._require_new_eval_output(args.eval_output, args.status_file)
 
     from dotenv import load_dotenv
     from vastai import VastAI
@@ -593,7 +593,7 @@ def main() -> int:
         worker = _server_process(ssh, activate, snapshot)
         _wait_ready(worker)
         opener = build_opener(ProxyHandler({}))
-        H._require_new_eval_output(args.eval_output)
+        H._require_new_eval_output(args.eval_output, args.status_file)
         if (
             _verify_eval_bundle(args.eval_bundle, args.eval_phase, env_spec)
             != bundle_sha
