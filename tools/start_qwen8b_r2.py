@@ -94,9 +94,10 @@ RUN_COST_TOLERANCE = 0.10
 
 
 def estimated_run_cost(offer, *, download_gb=RUN_DOWNLOAD_GB, hours=RUN_HOURS):
-    return float(offer["dph_total"]) * hours + float(
-        offer.get("inet_down_cost") or 0.0
-    ) * download_gb
+    return (
+        float(offer["dph_total"]) * hours
+        + float(offer.get("inet_down_cost") or 0.0) * download_gb
+    )
 
 
 def drop_costly_downloads(offers, *, tolerance=RUN_COST_TOLERANCE):
@@ -110,7 +111,9 @@ def drop_costly_downloads(offers, *, tolerance=RUN_COST_TOLERANCE):
         best = min(costs)
     except (TypeError, KeyError, ValueError):
         return offers
-    kept = [o for o, c in zip(offers, costs) if c <= best * (1 + tolerance)]
+    kept = [
+        o for o, c in zip(offers, costs, strict=True) if c <= best * (1 + tolerance)
+    ]
     if len(kept) < len(offers):
         print(
             f"Skipping {len(offers) - len(kept)} offer(s) whose download fees make "
@@ -531,7 +534,10 @@ def main() -> int:
                 raise RuntimeError("No eligible RTX 4090 / CUDA 12.8 offer available.")
             creation_attempted = True
             instance_id = S.create_from_offers(
-                vast, prefer_near_bucket(drop_costly_downloads(offers)), disk_gb=args.disk_gb, label=label
+                vast,
+                prefer_near_bucket(drop_costly_downloads(offers)),
+                disk_gb=args.disk_gb,
+                label=label,
             )
             print(f"Created instance: {instance_id}", flush=True)
 
