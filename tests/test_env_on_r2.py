@@ -1132,6 +1132,14 @@ def test_streamed_whole_restore_and_late_error_cleanup(tmp_path, monkeypatch, en
     env = copy.deepcopy(registry.env_of("videojev"))
     env.update(unpack_to=str(prefix), size=len(data), sha256=es._sha256(path))
     client = FakeR2(path, env)
+    published = []
+    publish = es._publish_prefix
+
+    def record_publication(staged, target):
+        published.append(target)
+        publish(staged, target)
+
+    monkeypatch.setattr(es, "_publish_prefix", record_publication)
     monkeypatch.setattr(es, "check_compatibility", lambda env: None)
     monkeypatch.setattr(es._Inflater, "_OUT", 4096)
     monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "synthetic-must-not-reach-unpack")
@@ -1139,10 +1147,12 @@ def test_streamed_whole_restore_and_late_error_cleanup(tmp_path, monkeypatch, en
         with pytest.raises(zlib.error if encoding == "next-crc" else EOFError):
             pull((env, client), tmp_path)
         assert_clean(tmp_path, env)
+        assert published == []
         assert not es._marker(prefix).exists()
     else:
         assert pull((env, client), tmp_path) == str(prefix / "bin/activate")
         assert es._already_restored(env)
+        assert published == [prefix]
         assert (prefix / "bin/ran").read_text() == str(prefix / "bin/conda-unpack")
         assert (prefix / "payload-copy").read_bytes() == payload
         assert (prefix / "payload-copy").samefile(prefix / "payload")
