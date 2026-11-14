@@ -291,11 +291,19 @@ Self-hosted Qwen3-VL-8B on a rented 4090 uses `qwen8b_r2_host` (HF generate +
 FA2) or the independent engine profile `qwen8b_r2_vllm` (vLLM), not the
 OpenRouter `qwen8b` profile and not a `qwen8b_selfhost` alias. Both keep the
 same frozen JPEGs, prompts, parser, temperature, max_tokens=30, and **12 client
-slots**. Do not relabel the completed HF run as vLLM. First create an offline
-bundle containing the selected self-hosted aliases (omit an alias if not needed):
+slots**. Do not relabel the completed HF run as vLLM.
+
+These two launchers currently accept only the historical `unified-frame-120-v2`
+protocol (validation24/test120). Explicitly select it below and supply its five
+original frozen JSON inputs. The default 202-question bundle is rejected by these launchers
+before rental. This limitation does not change the general preflight default or
+make historical results evidence for the 202 protocol. Preserve existing bundles unchanged.
+Create a fresh offline bundle containing the selected self-hosted aliases
+(omit an alias if not needed):
 
 ```sh
 python -m tools.unified_benchmark.preflight \
+  --protocol unified-frame-120-v2 \
   --inputs /private/goodvision-inputs --media /data/goodvision \
   --models qwen8b_r2_host qwen8b_r2_vllm \
   --output outputs/new-qwen-r2-bundle
