@@ -72,12 +72,10 @@ def export_service(alias, output, repository=ROOT):
         else:
             path.write_bytes(subprocess.check_output(
                 ["git", "-C", str(repository), "show", spec["commit"] + ":" + name]))
-    # Windows builds of GNU patch open files in text mode and fail on the
-    # LF-only patches and sources; --binary keeps the exact bytes. POSIX is
-    # unchanged (the flag is a no-op there, and production runs on Linux).
-    binary = ["--binary"] if os.name == "nt" else []
+    # --binary keeps the LF-only patches and sources byte-exact on Windows
+    # builds of GNU patch (text mode otherwise); it is a no-op on POSIX.
     try:
-        subprocess.run(["patch", "-p1", *binary, "--batch", "--forward",
+        subprocess.run(["patch", "-p1", "--binary", "--batch", "--forward",
                         "--input", str(ASSETS / spec["patch"])],
                        cwd=output, check=True, capture_output=True)
     except subprocess.CalledProcessError as exc:

@@ -731,6 +731,7 @@
   "可使用已部署的视频通道；人物描边未启用。": "Deployed video channels are available. Person contours are disabled.",
   "可用路数由追踪服务器容量与已部署通道共同决定。": "Available channels depend on tracking-server capacity and the deployed channel count.",
   "可按需添加通道，实际可同时运行的路数以本机 GPU 负载为准。": "Add deployed channels as needed. Concurrent capacity depends on local GPU load.",
+  "可在页面按需添加视频源。无需预设路数或重新部署。": "Add video sources on demand in the console. No preset channel count or redeployment is required.",
   "可按需部署 N 路通道；各路分配到云 GPU，实际容量取决于租用算力和负载。": "Deploy the required channel count. Channels are assigned to cloud GPUs; capacity depends on rented compute and load.",
   "原部署追踪服务仅支持单路；选择本机 GPU 或独立 GPU 追踪服务器后可使用多路通道。": "Legacy tracking supports one channel. Select local GPU or dedicated GPU tracking for multiple channels.",
   "已部署 ": "Deployed: ",

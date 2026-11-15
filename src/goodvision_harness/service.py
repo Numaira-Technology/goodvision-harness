@@ -1901,25 +1901,53 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             deleted = self._ensure_face_runtime().delete_person(person_id)
             if deleted:
                 self._invalidate_fast_face_gallery()
-                with self._state_lock:
-                    targets = [(self._session, self._scene)]
-                    targets.extend(
-                        (run.session, run.scene)
-                        for run in self._run_postprocess.values()
-                        if run.state != "finalized" and run.session is not None
-                    )
-                seen = set()
-                for session, scene in targets:
-                    if session is None or id(session) in seen:
-                        continue
-                    seen.add(id(session))
-                    registry = getattr(session, "person_registry", None)
-                    if registry is not None:
-                        registry.forget_person(person_id)
-                    if scene is not None:
-                        scene.forget_identity(person_id)
-                self._camera_display_metadata.forget_identity(person_id)
+                self._forget_face_identity(person_id)
             return deleted
+
+    def _forget_face_identity(self, person_id):
+        with self._state_lock:
+            targets = [(self._session, self._scene)]
+            targets.extend(
+                (run.session, run.scene)
+                for run in self._run_postprocess.values()
+                if run.state != "finalized" and run.session is not None
+            )
+        seen = set()
+        for session, scene in targets:
+            if session is None or id(session) in seen:
+                continue
+            seen.add(id(session))
+            registry = getattr(session, "person_registry", None)
+            if registry is not None:
+                registry.forget_person(person_id)
+            if scene is not None:
+                scene.forget_identity(person_id)
+        self._camera_display_metadata.forget_identity(person_id)
+
+    def refresh_face_gallery(self):
+        # Each process owns its recognition/identity caches, even when the
+        # underlying gallery is shared with the primary console.
+        with self._identity_control_lock:
+            if not isinstance(self._face_runtime, FaceRecognitionRuntime):
+                return
+            changed = self._face_runtime.gallery.refresh()
+            if changed is None:
+                return
+            previous, current = changed
+            self._invalidate_fast_face_gallery()
+            old = {entry[0]: entry for entry in previous.entries}
+            new = {entry[0]: entry for entry in current.entries}
+            for person_id in old:
+                if old[person_id] != new.get(person_id):
+                    self._forget_face_identity(person_id)
+            for person_id in new:
+                if new[person_id] != old.get(person_id):
+                    with self._state_lock:
+                        registry = getattr(self._session, "person_registry", None)
+                        self._observe_scene("allow_identity", person_id)
+                    if registry is not None:
+                        registry.allow_person(person_id)
+                    self._camera_display_metadata.allow_identity(person_id)
 
     def _invalidate_fast_face_gallery(self) -> None:
         if isinstance(self._face_runtime, FaceRecognitionRuntime):
@@ -2217,9 +2245,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                     and summary_config.model_api.provider != "local"):
                 raise MissingAPIKeyError(PUBLIC_MISSING_API_KEY_ERROR)
             if (not self.dry_run
-                    and (any(item in model_labels for item in features)
-                         or bool(self._workflow_plan
-                                 and self._workflow_plan["summaries"]))
+                    and any(item in model_labels for item in features)
                     and not self._aiclub_api_key
                     and self._workflow_event_configuration().model_api.provider
                     != "local"):
@@ -2346,7 +2372,13 @@ class HarnessRuntime(WorkflowRuntimeMixin):
             raise ValueError("Synthetic analysis is no longer supported.")
         if self.config is None or self.config_error is not None:
             raise RuntimeError(self.config_error or "configuration unavailable")
-        if self._fleet_camera_index > self.tracking_camera_capacity():
+        needs_tracking = (
+            self._workflow_plan.get("tracking_enabled", False)
+            and self._workflow_plan.get("tracking_engine") != "bbox"
+            if self._workflow_plan is not None
+            else self._tracking_requested
+        )
+        if needs_tracking and self._fleet_camera_index > self.tracking_camera_capacity():
             raise RuntimeError("该视频通道超出人员追踪模块的配置容量。")
         self._ensure_rich_readiness_probe()
         if mode not in {CAMERA_MODE, STREAM_MODE}:
@@ -4938,11 +4970,46 @@ def create_app(
         runtime._local_camera_stream_options = (
             application.state.local_cameras.stream_options
         )
+        fleet = application.state.fleet
+        if (
+            fleet.is_primary
+            and os.environ.get("HARNESS_FLEET_DYNAMIC", "true").lower()
+            not in {"false", "0", "no"}
+            and getattr(runtime, "_deployment_store", None) is not None
+        ):
+            from .dynamic_cameras import DynamicCameras
+
+            if DynamicCameras.supported():
+                fleet.dynamic = DynamicCameras(
+                    fleet, runtime._deployment_store.path.parent,
+                )
         runtime.start()
         start_resource_sampling()
+
+        gallery_shutdown = asyncio.Event()
+
+        async def refresh_shared_gallery():
+            while True:
+                try:
+                    await asyncio.wait_for(gallery_shutdown.wait(), timeout=1)
+                    return
+                except asyncio.TimeoutError:
+                    pass
+                try:
+                    await asyncio.to_thread(runtime.refresh_face_gallery)
+                except Exception:
+                    LOGGER.warning("could not refresh shared face gallery")
+
+        gallery_refresh = (
+            asyncio.create_task(refresh_shared_gallery())
+            if callable(getattr(runtime, "refresh_face_gallery", None)) else None
+        )
         try:
             yield
         finally:
+            gallery_shutdown.set()
+            if gallery_refresh is not None:
+                await gallery_refresh
             stop_resource_sampling()
             await application.state.local_cameras.aclose()
             runtime.stop()
@@ -5522,6 +5589,25 @@ def create_app(
             _runtime(request).workflow_summary_results(limit=limit, node_id=node_id),
             headers={"Cache-Control": "no-store"},
         )
+
+    @application.get("/v1/deployment/summary-service")
+    def workflow_summary_service(request: Request) -> JSONResponse:
+        # Operator-entered connection values must round-trip verbatim. Only the
+        # key-presence flag is returned; credentials never enter workflow graphs.
+        return JSONResponse(
+            _runtime(request).workflow_summary_service(),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @application.put("/v1/deployment/summary-service")
+    async def update_workflow_summary_service(request: Request) -> Any:
+        payload = await camera_payload(request)
+        async with application.state.fleet.control_lock:
+            await application.state.fleet.assert_can_disable_multicamera()
+            result = await camera_action(
+                _runtime(request).update_workflow_summary_service, payload,
+            )
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
     @application.put("/v1/analysis/settings")
     async def update_analysis_settings(request: Request) -> dict[str, Any]:

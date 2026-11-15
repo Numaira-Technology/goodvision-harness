@@ -3,16 +3,14 @@
 This records `results` in spreadsheet
 `1D3-fwFW5Fv1ASDlbt3VUIFJJfAKKsrH2LXVNMkoPLjA` as checked on **2026-11-01**.
 It is retained to interpret historical payloads and `scripts/validate_row.py`;
-it is **not the current schema of either results or eval**. For
-`eval-2026-11-04`, use [the current eval contract](eval-column-contract.md).
-For any other destination, read its live headers before choosing a mapping.
-The current `results` A:Z mapping is recorded in
+it is **not the current schema of results**. Read live headers before choosing a
+mapping. Current field meanings, rather than fixed column letters, are recorded in
 [results-column-contract.md](results-column-contract.md).
 
 In this historical layout, headers occupy rows 1–2 and data begins at 3.
 The old repository A:Q config does not describe even this A:W schema. Do not
 rebuild or migrate formatting as a contribution. Rules below describe this
-historical contract, not a replacement for the unified-120 scoring policy.
+historical contract, not a replacement for the current unified scoring policy.
 
 | Column | Row-2 header | Value |
 |---|---|---|

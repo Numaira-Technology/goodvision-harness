@@ -1,0 +1,121 @@
+{
+  "repository_revision": "01bcfa6e7770284585bd40cc32b0032188b31d9d",
+  "supported_runtime": "Linux/amd64 Docker (including Docker Desktop Linux containers on Windows)",
+  "native_windows_python_supported": false,
+  "image_source_revision": "77362bd30f5a31cbaaeb16798d8d0c483e2daa2c",
+  "application_files_match_validated_revision": 157,
+  "ci": {
+    "url": "https://github.com/Numaira-Technology/goodvision-harness/actions/runs/43214646934",
+    "conclusion": null,
+    "accepted_checks": [
+      "Linux regression shard 0",
+      "Linux regression shard 1",
+      "Optional SAM3 ONNX contract (no weights)",
+      "Preview layouts and live recordings (Chromium)",
+      "Tests (ubuntu-latest, Python 3.11)",
+      "Two-route WHEP gateway (Linux container)"
+    ],
+    "checks": [
+      {
+        "name": "Two-route WHEP gateway (Linux container)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Linux regression shard 0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Preview layouts and live recordings (Chromium)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Linux regression shard 1",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Windows regression shard 3",
+        "status": "in_progress",
+        "conclusion": null
+      },
+      {
+        "name": "Windows regression shard 2",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Windows regression shard 1",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Optional SAM3 ONNX contract (no weights)",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Windows regression shard 0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Tests (ubuntu-latest, Python 3.11)",
+        "status": "completed",
+        "conclusion": "success"
+      }
+    ],
+    "coverage": "Linux aggregate gate verified every collected test exactly once, including recorded platform skips. Native Windows check results are retained separately and are outside the delivery support scope."
+  },
+  "local_focused_checks": {
+    "face_and_camera_regressions_passed": 133,
+    "websocket_summary_and_timing_followups_passed": 105,
+    "routing_sender_and_remote_tool_regressions_passed": 95,
+    "workflow_canvas_cases_passed": 98,
+    "dashboard_suite_wrappers_passed": 19,
+    "windows_portability_followups_passed": 272,
+    "windows_portability_followups_skipped": 1,
+    "ci_contracts_passed": 34,
+    "ci_contracts_platform_skips": 20
+  },
+  "docker": {
+    "gpu_inference_tested": false,
+    "upgrade_preserves_mounts_environment_ports_and_data": true,
+    "november_4_channels_streams_and_summary_key_preserved": true,
+    "repeated_update_preserves_rollback": true,
+    "rollback_restores_november_4_image_and_data": true,
+    "cold_dynamic_worker_result_websocket": true,
+    "video_and_summary": {
+      "channels_restored_after_restart": true,
+      "two_simultaneous_video_connections_and_scoped_previews": true,
+      "shared_gallery_enrollment_and_deletion_reach_existing_processes": true,
+      "custom_openai_summary_snapshot_test_on_new_workers": true,
+      "live_summaries_use_camera_specific_frames": true,
+      "stop_analysis_preserves_connections": true
+    },
+    "source": {
+      "verified_files_per_copy": 157,
+      "copies": [
+        "/usr/local/lib/python3.11/site-packages/goodvision_harness",
+        "/app/src/goodvision_harness"
+      ],
+      "linux_dynamic_workers_supported": true
+    },
+    "passed": true,
+    "existing_deployments_unchanged": true
+  },
+  "system1_source": {
+    "verified_files_per_copy": 157,
+    "copies": [
+      "/opt/runtime/lib/python3.12/site-packages/goodvision_harness",
+      "/app/src/goodvision_harness"
+    ],
+    "linux_dynamic_workers_supported": true
+  },
+  "delta_archives_and_installer_hashes_verified": true,
+  "system1_delta_load_verified": true,
+  "gpu_inference_tested": false,
+  "paid_api_tested": false
+}

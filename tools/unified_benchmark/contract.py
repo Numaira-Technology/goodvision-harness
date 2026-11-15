@@ -6,6 +6,8 @@ from collections import Counter
 from pathlib import Path
 
 VERSION = "unified-frame-120-v2"
+CURRENT_VERSION = "unified-frame-202-v1"
+BAG_VALIDATION_SCHEMA = "bag-validation10-v1"
 EVENTS = ("fight", "smoking", "fall", "weapon", "bag_knife", "bag_alcohol_bottle")
 RULES = {
     "version": VERSION,
@@ -21,6 +23,25 @@ RULES = {
     "report": "combined test120 headline; final unique missing units and incomplete questions separately",
     "backpressure": "wait, never drop planned input; not a 12-camera real-time throughput claim",
 }
+
+
+def rules_for(version):
+    """Keep the legacy contract intact; dataset expansion has a distinct identity."""
+    if version == VERSION:
+        return dict(RULES)
+    if version == CURRENT_VERSION:
+        return RULES | {"version": CURRENT_VERSION,
+            "sampling": "t=0,1,... seconds, strictly before container duration and at/before last decoded video frame timestamp relative to container start; common decoded JPEGs; excluded tail points recorded",
+            "report": "combined test202 headline; original120 and robot82 separately; final missing units and incomplete questions",
+            "reference_review": "original120 reviewed; robot82 inherited source labels pending single-view review"}
+    raise ValueError("unsupported unified protocol: " + str(version))
+
+
+def plan_rules(plan):
+    rules = rules_for(plan.get("protocol", VERSION))
+    if plan.get("rules_sha256") != digest(rules):
+        raise ValueError("plan protocol/rules fingerprint differs")
+    return rules
 
 
 def canonical(value):
@@ -44,7 +65,12 @@ def source_files():
     root = Path(__file__).resolve().parents[2]
     paths = list((root / "tools/unified_benchmark").glob("*.py"))
     paths += [p for p in (root / "tools/unified_benchmark/native_assets").rglob("*") if p.is_file() and p.suffix in (".py", ".json", ".patch")]
+    paths += list((root / "tools/qwen8b").glob("*.py"))
     paths += [root / name for name in (
+        "tools/models.yaml", "tools/registry.py", "tools/model_source.py",
+        "tools/env_source.py", "tools/cloud_env.py", "tools/cloud_prefetch.py",
+        "tools/start_qwen8b_r2.py", "tools/start_qwen8b_vllm.py", "tools/start_sam.py",
+        "tools/qwen8b/requirements.txt", "tools/qwen8b_vllm/requirements.txt",
         "tools/event_benchmark/run_eval.py", "tools/event_benchmark/evidence.py",
         "tools/event_benchmark/tune_threshold.py", "tools/clip_benchmark/scoring.py",
         "tools/clip_benchmark/runtime.py", "tools/clip_benchmark/base_timing.py",
@@ -99,10 +125,14 @@ def read_receipt(path):
     return record
 
 
-def sample_times(duration):
+def sample_times(duration, *, last_frame_time=None):
     if type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0:
         raise ValueError("positive finite duration required")
-    return [float(i) for i in range(math.ceil(duration)) if i < duration]
+    if last_frame_time is not None and (type(last_frame_time) not in (int, float)
+            or not math.isfinite(last_frame_time) or last_frame_time < 0):
+        raise ValueError("nonnegative finite last frame timestamp required")
+    return [float(i) for i in range(math.ceil(duration))
+            if i < duration and (last_frame_time is None or i <= last_frame_time)]
 
 
 def finite_number(value):
@@ -171,27 +201,53 @@ def score(plan, evidence, kind, thresholds=None):
                 "accuracy_denominator": len(group),
                 "complete_only_accuracy": correct / len(complete) if complete else None,
                 "incomplete_questions": len(group) - len(complete),
+                "final_missing_unique_units": len({uid for r in group for uid in r["missing_unit_ids"]}),
                 "final_unknown_questions": sum(r["prediction"] == "unknown" for r in complete)}
-    return {"protocol": VERSION, **metrics(rows), "planned_unique_units": len(units),
+    result = {"protocol": plan.get("protocol", VERSION), **metrics(rows), "planned_unique_units": len(units),
             "final_missing_unique_units": len(missing_units),
             "valid_unit_coverage": (len(units) - len(missing_units)) / len(units) if units else None,
             "per_event": {e: metrics([r for r in rows if r["event"] == e]) for e in EVENTS},
             "questions": rows}
+    if plan.get("dataset_context"):
+        result["dataset_context"] = plan["dataset_context"]
+    if plan.get("split") == "test" and plan.get("protocol") == CURRENT_VERSION:
+        result["cohorts"] = {label: metrics([r for r in rows if start <= r["number"] <= end])
+                             for label, start, end in (("original120", 1, 120), ("robot82", 121, 202))}
+    return result
+
+
+def has_bag_validation(plan):
+    overlay = (plan.get("dataset_context") or {}).get("bag_validation")
+    if overlay is None:
+        return False
+    if (plan.get("protocol") != CURRENT_VERSION or not isinstance(overlay, dict)
+            or overlay.get("schema") != BAG_VALIDATION_SCHEMA):
+        raise ValueError("unsupported bag validation overlay")
+    return True
 
 
 def select_thresholds(plan, evidence, kind, model):
     """Reuse the existing midpoint algorithms; never accept incomplete validation."""
     from tools.event_benchmark.tune_threshold import pick_tau
+    from tools.clip_benchmark.protocol import REVISIONS
     from tools.clip_benchmark.scoring import _optimal_midpoint
-    if plan["split"] != "validation" or len(plan["questions"]) != 24 or kind not in ("margin", "probability"):
-        raise ValueError("threshold selection requires frozen validation24 and continuous scores")
+    include_bags = has_bag_validation(plan)
+    count = 44 if include_bags else 24
+    if include_bags and (kind != "margin" or model not in REVISIONS):
+        raise ValueError("supplementary bag calibration requires CLIP/SigLIP2 margin scores")
+    if plan["split"] != "validation" or len(plan["questions"]) != count or kind not in ("margin", "probability"):
+        raise ValueError(f"threshold selection requires frozen validation{count} and continuous scores")
     baseline = score(plan, evidence, kind)
-    if baseline["complete_valid_questions"] != 24:
+    if baseline["complete_valid_questions"] != count:
         raise ValueError("incomplete validation blocks threshold selection; no silent fallback")
     values, details = {e: 0.0 if kind == "margin" else .5 for e in EVENTS}, {}
-    for event in EVENTS[:4]:
+    for event in (EVENTS if include_bags else EVENTS[:4]):
         subset = [q for q in plan["questions"] if q["event"] == event]
-        if Counter(q["reference"] for q in subset) != {"yes": 3, "no": 3}:
+        labels = Counter(q["reference"] for q in subset)
+        if event in EVENTS[4:]:
+            if len(subset) != 10 or set(labels) != {"yes", "no"}:
+                raise ValueError("expected ten bag validation questions with both references per class")
+        elif labels != {"yes": 3, "no": 3}:
             raise ValueError("expected three positive and three negative validation questions per class")
         maxima = [max(evidence[uid][event]["score"] for uid in q["unit_ids"]) for q in subset]
         if kind == "probability":
@@ -201,10 +257,15 @@ def select_thresholds(plan, evidence, kind, model):
         else:
             samples = [{"filename": str(q["number"]), "event": event, "proposed_answer": q["reference"]} for q in subset]
             indexed = {str(q["number"]): [{"errors": None, "predictions": {event: {"margin": val}}}] for q, val in zip(subset, maxima)}
-            result = _optimal_midpoint(samples, indexed, model)
+            try:
+                result = _optimal_midpoint(samples, indexed, model)
+            except ValueError as error:
+                raise ValueError(f"{event}: {error}") from error
             values[event], details[event] = result[0], result[1:]
     return {"thresholds": values, "details": details, "comparator": ">" if kind == "margin" else ">=",
+            "calibration": f"selected_on_complete_validation{count}",
             "validation_plan_sha256": digest(plan), "validation_evidence_sha256": digest(evidence),
             "validation_summary": {k: baseline[k] for k in ("planned_questions", "complete_valid_questions",
                 "incomplete_questions", "final_missing_unique_units")},
-            "bag_calibration": "uncalibrated_no_bag_validation", "validation_only": True}
+            "bag_calibration": BAG_VALIDATION_SCHEMA if include_bags else "uncalibrated_no_bag_validation",
+            "validation_only": True}

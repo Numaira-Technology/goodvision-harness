@@ -30,6 +30,30 @@ test('source layout edits require saving and removed source drafts do not block 
  app.graph.nodes=app.graph.nodes.filter(n=>n!==source);assert.equal(app.sourceSettingsDirty(),false);
 });
 
+test('adding a source provisions a worker on demand and keeps pending edits and wiring',async()=>{
+ const app=appFixture();app.graph.nodes[0].config.camera_id='camera01';app.data.dynamic_sources=true;
+ app.graph.nodes[1].config.name='Pending edit';const edges=clone(app.graph.edges);let calls=0;
+ app.request=async(url,options)=>{calls++;assert.equal(url,'/v1/fleet/cameras');assert.equal(options.method,'POST');return {camera:{id:'camera02',enabled:true,status:{analysis_state:'idle'}}};};
+ const pending=app.add('source',{x:42,y:430});assert.equal(app.busy,true);app.add('source');await pending;
+ assert.equal(calls,1);assert.equal(app.busy,false);assert.equal(app.graph.nodes.at(-1).config.camera_id,'camera02');
+ assert.equal(app.graph.nodes.at(-1).x,42);assert.equal(app.graph.nodes[1].config.name,'Pending edit');assert.deepEqual(app.graph.edges,edges);
+ app.handleAction('undo',{});assert.equal(app.graph.nodes.filter(n=>n.type==='source').length,1);
+ app.add('source');assert.equal(calls,1);assert.equal(app.graph.nodes.at(-1).config.camera_id,'camera02');
+});
+
+test('worker startup failure preserves the draft and permits retry',async()=>{
+ const app=appFixture();app.graph.nodes[0].config.camera_id='camera01';app.data.dynamic_sources=true;const before=clone(app.graph);
+ app.request=async()=>{throw new Error('Container resources unavailable');};await app.add('source');
+ assert.equal(app.busy,false);assert.equal(app.error,true);assert.deepEqual(app.graph,before);assert.match(app.notice,/resources/);
+});
+
+test('a metadata request started before allocation cannot discard the new camera',async()=>{
+ const app=appFixture();app.graph.nodes[0].config.camera_id='camera01';app.data.dynamic_sources=true;
+ let resolveMetadata;app.request=(url,options)=>options?.method?Promise.resolve({camera:{id:'camera02',enabled:true,status:{analysis_state:'idle'}}}):new Promise(resolve=>{resolveMetadata=resolve;});
+ const polling=app.refreshMetadata();await app.add('source');resolveMetadata({cameras:[{id:'camera01',enabled:true,status:{analysis_state:'idle'}}]});await polling;
+ assert.equal(app.cameras.length,2);assert.equal(app.graph.nodes.at(-1).config.camera_id,'camera02');
+});
+
 test('video URL saves through the scoped channel API and never enters a workflow graph',async()=>{
  const app=appFixture();app.selected='input';app.graph.nodes[0].config.camera_id='camera01';
  const camera=app.data.cameras[0];camera.settings_url='/v1/fleet/cameras/camera01/settings';
@@ -669,4 +693,45 @@ test('hidden workspaces stop requesting output frames',async()=>{
  const app=appFixture();app.testCamera='camera01';app.selected='out';app.data.cameras[0].status={analysis_state:'running'};
  const img={dataset:{wcOutputPreview:'out'},hidden:false};app.el.querySelector=()=>img;app.el.ownerDocument.hidden=true;
  app.fetch=async()=>assert.fail('hidden preview must not fetch');await app.updateOutputPreview();assert.equal(img.hidden,true);
+});
+
+test('summary API settings live in its sidebar and never enter workflow graph or Apply payload',async()=>{
+ const app=appFixture(),original=clone(app.graph);app.selected='summary';
+ const saved={mode:'custom',endpoint:'https://gateway.example/prefix/chat/completions',model:'vision-model',request_parameters:{},api_key_present:true,persistence_available:true};
+ app.request=async()=>saved;await app.loadSummaryService();
+ const markup=app.renderInspector();assert.match(markup,/data-wc-summary-service="endpoint"/);assert.match(markup,/Save summary service/);assert(!markup.includes('data-wc-service="analysis"'));
+ app.editSummaryService({dataset:{wcSummaryService:'api_key'},type:'password',value:'private-summary-key'});
+ assert(app.summaryServiceDirty());assert(app.anyDirty());assert.deepEqual(app.graph,original);
+ const seen=[];app.request=async(url,options)=>{seen.push([url,JSON.parse(options.body)]);return saved;};
+ assert.equal(await app.saveSummaryService(),true);assert.equal(seen[0][0],'/v1/deployment/summary-service');assert.equal(seen[0][1].api_key,'private-summary-key');
+ assert.equal(app.summaryServiceDraft.api_key,'');assert(!app.summaryServiceDirty());assert(!app.renderInspector().includes('private-summary-key'));assert.deepEqual(app.graph,original);
+});
+test('summary service edits and saves are locked by any active camera and preserve pending fields',async()=>{
+ const app=appFixture();app.acceptSummaryService({mode:'custom',endpoint:'https://api.example/chat',model:'vision',request_parameters:{},persistence_available:true});
+ app.summaryServiceDraft.api_key='pending-key';app.data.cameras.push({id:'camera02',status:{analysis_state:'running'}});
+ let requested=false;app.request=async()=>{requested=true;};
+ app.editSummaryService({dataset:{wcSummaryService:'api_key'},type:'password',value:'changed'});
+ assert.equal(await app.saveSummaryService(),false);assert.equal(app.summaryServiceDraft.api_key,'pending-key');assert.equal(requested,false);
+});
+test('summary service save failures retain edits and invalid parameters never reach the API',async()=>{
+ const app=appFixture();app.acceptSummaryService({mode:'custom',endpoint:'https://api.example/chat',model:'vision',request_parameters:{},persistence_available:true});
+ app.summaryServiceDraft.api_key='pending-key';app.summaryServiceDraft.request_parameters='[]';
+ let requested=false;app.request=async()=>{requested=true;throw new Error('service unavailable');};
+ assert.equal(await app.saveSummaryService(),false);assert.equal(requested,false);
+ app.summaryServiceDraft.request_parameters='{}';assert.equal(await app.saveSummaryService(),false);
+ assert.equal(app.summaryServiceDraft.api_key,'pending-key');assert(app.summaryServiceDirty());assert.equal(app.summaryServiceSaving,false);
+});
+for(const outcome of ['success','cancel','failed-workflows','failed-summary'])test('summary draft reload: '+outcome,async()=>{
+ const app=appFixture(),workflows=clone(app.data),saved={mode:'custom',endpoint:'https://api.example/chat',model:'saved',request_parameters:{},persistence_available:true};
+ app.acceptSummaryService(saved);app.summaryServiceDraft.model='discard-me';app.summaryServiceDraft.api_key='unsaved-key';app.summaryServiceDraft.clear_api_key=true;
+ app.graph.nodes[0].config.name='unsaved workflow';const edited=clone(app.graph),requests=[];
+ app.confirm=()=>outcome!=='cancel';app.request=async url=>{requests.push(url);if(outcome==='failed-workflows'||outcome==='failed-summary'&&url.includes('summary-service'))throw new Error('reload unavailable');return url==='/v1/workflows'?workflows:{...saved,model:'latest saved'};};
+ const previous=globalThis.requestAnimationFrame;globalThis.requestAnimationFrame=()=>0;
+ try{await app.load(true);}finally{if(previous===undefined)delete globalThis.requestAnimationFrame;else globalThis.requestAnimationFrame=previous;}
+ assert.equal(app.busy,false);
+ if(outcome==='success'){
+  assert.deepEqual(requests,['/v1/workflows','/v1/deployment/summary-service']);assert.equal(app.summaryServiceDraft.model,'latest saved');assert.equal(app.summaryServiceDraft.api_key,'');assert.equal(app.summaryServiceDraft.clear_api_key,false);assert.equal(app.anyDirty(),false);
+ }else{
+  assert.equal(app.summaryServiceDraft.model,'discard-me');assert.equal(app.summaryServiceDraft.api_key,'unsaved-key');assert.deepEqual(app.graph,edited);assert(app.anyDirty());if(outcome==='cancel')assert.deepEqual(requests,[]);else assert.equal(app.error,true);
+ }
 });

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import ctypes
 import faulthandler
 import hashlib
@@ -55,7 +56,7 @@ def _verify_execution(directory, selected):
 
 def verify_coverage(directory: Path, count: int, result: str) -> int:
     if result != "success":
-        raise ValueError(f"Linux test jobs did not succeed: {result}")
+        raise ValueError(f"Regression test jobs did not succeed: {result}")
     manifests = list(directory.rglob("collection.json"))
     if len(manifests) != count:
         raise ValueError("missing or extra shard collection manifests")
@@ -235,6 +236,7 @@ def run_shard(directory: Path, index: int, count: int, seconds: float, tests=())
     record_path = directory / "run.json"
     record_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     started = time.monotonic()
+    next_stack = started + 60
     with (
         (directory / "stdout.log").open("wb") as stdout,
         (directory / "stderr.log").open("wb") as stderr,
@@ -258,20 +260,20 @@ def run_shard(directory: Path, index: int, count: int, seconds: float, tests=())
         try:
             while child.poll() is None:
                 _snapshot(processes)
-                # Do not poke SIGUSR1 on a timer. A dump pauses every thread and
-                # a second signal while the handler runs uses the default
-                # terminate action, so a finished successful session can die
-                # with status -SIGUSR1. The timeout path below still asks for
-                # one stack before the hard stop.
+                if time.monotonic() >= next_stack:
+                    try:
+                        os.kill(child.pid, signal.SIGUSR1)
+                    except ProcessLookupError:
+                        pass
+                    next_stack = time.monotonic() + 60
                 remaining = seconds - (time.monotonic() - started)
                 if remaining <= 0:
-                    # A failed diagnostic signal is not a completed timeout.
+                    record["timed_out"] = True
                     # Bootstrap keeps timeout stacks outside pytest capture.
                     try:
                         os.kill(child.pid, signal.SIGUSR1)
                     except ProcessLookupError:
                         pass
-                    record["timed_out"] = True
                     time.sleep(1)
                     break
                 try:
@@ -289,15 +291,14 @@ def run_shard(directory: Path, index: int, count: int, seconds: float, tests=())
             except Exception as error:
                 record["cleanup_error"] = str(error)
             _snapshot(processes)
-            code = (
-                128 + record["cancelled_signal"]
-                if record["cancelled_signal"]
-                else 124
-                if record["timed_out"]
-                else child.returncode
-            )
             record.update(
-                exit_code=code,
+                exit_code=(
+                    128 + record["cancelled_signal"]
+                    if record["cancelled_signal"]
+                    else 124
+                    if record["timed_out"]
+                    else child.returncode
+                ),
                 elapsed_seconds=time.monotonic() - started,
                 finished_unix=time.time(),
             )
@@ -307,21 +308,6 @@ def run_shard(directory: Path, index: int, count: int, seconds: float, tests=())
             for sig, handler in handlers.items():
                 signal.signal(sig, handler)
     return record["exit_code"]
-
-
-def _session_exit(directory: Path):
-    path = directory / "progress.jsonl"
-    if not path.exists():
-        return None
-    finished = None
-    for line in path.read_text(encoding="utf-8").splitlines():
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if row.get("event") == "finished":
-            finished = row.get("exit_code")
-    return finished
 
 
 def _install_stack_dump(path: Path) -> int:
@@ -335,12 +321,21 @@ def _install_stack_dump(path: Path) -> int:
         dump(file=stack_fd, all_threads=True)
 
     try:
-        signal.signal(signal.SIGUSR1, requested_dump)
+        previous = signal.signal(signal.SIGUSR1, requested_dump)
+        try:
+            # Register before pytest imports: this runs after later-registered
+            # atexit cleanup and non-daemon joins. CPython subsequently resets
+            # callable handlers to SIG_DFL, but preserves SIG_IGN through final
+            # GC/module teardown. Retaining the closure/FD alone is not enough.
+            atexit.register(signal.signal, signal.SIGUSR1, signal.SIG_IGN)
+        except BaseException:
+            signal.signal(signal.SIGUSR1, previous)
+            raise
     except BaseException:
         os.close(stack_fd)
         raise
-    # Keep the closure and FD until OS exit: pytest can return before Python
-    # blocks joining a leaked non-daemon thread during interpreter shutdown.
+    # Keep the closure and FD through non-daemon joins and atexit cleanup.
+    # After the final SIG_IGN transition, GC/module teardown has no stack dump.
     # A fully blocked interpreter may not service this handler; the parent
     # still retains progress/process evidence and enforces its hard deadline.
     return stack_fd

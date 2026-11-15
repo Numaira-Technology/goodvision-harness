@@ -1,0 +1,42 @@
+{
+  "captured_on": "2026-11-12",
+  "purpose": "Read-only snapshots of historical delivered artifacts; not evidence of customer deployment. GPU acceptance is also in ../../pr75-gpu-v2.0.json.",
+  "files": [
+    {
+      "snapshot": "v2.0-components.json",
+      "source": "/Users/frank/Documents/Codex/2026-11-02/task-5/pr75-gpu-delivery/server-handoff/GoodVision/COMPONENTS.json",
+      "bytes": 3598,
+      "sha256": "156566d5ccd4082f698e198bb285420c340b8d44733f0783fef40b5346a03f58"
+    },
+    {
+      "snapshot": "v2.0-handoff.json",
+      "source": "/Users/frank/Documents/Codex/2026-11-02/task-5/pr75-gpu-delivery/server-handoff/GoodVision/handoff.json",
+      "bytes": 12226,
+      "sha256": "3fc8d1ea2f84fe1967ba1aa5e60b15202cf832632631bf8037be2b63da757503"
+    },
+    {
+      "snapshot": "v2.0-gpu-acceptance-runner.py",
+      "source": "/Users/frank/Documents/Codex/2026-11-02/task-5/pr75-review/outputs/pr75-vast/acceptance/run_acceptance.py",
+      "bytes": 3964,
+      "sha256": "f01810bf852d39d580d391aa436b03223a530d3a43f9618c2a4cc4332bfe05a4"
+    },
+    {
+      "snapshot": "v2.1-release.json",
+      "source": "/Users/frank/Documents/Numaira/code/goodvision-harness/dist/GoodVision-V2.1-reviewed/RELEASE.json",
+      "bytes": 1504,
+      "sha256": "5f5808b6ac7abcf1e540333fdb9674ed9dab38ae3707ad2fd73162a8b35c70a6"
+    },
+    {
+      "snapshot": "v2.1-validation.json",
+      "source": "/Users/frank/Documents/Numaira/code/goodvision-harness/dist/GoodVision-V2.1-reviewed/VALIDATION.json",
+      "bytes": 4209,
+      "sha256": "c5e4576cd62b8db861b35ab68ddf0fe25df449716cbe1d0d20d2816f0584a538"
+    },
+    {
+      "snapshot": "v2.0-model-manifest.json",
+      "source": "/Users/frank/Documents/Codex/2026-11-02/task-5/pr75-gpu-delivery/server-handoff/GoodVision/goodvision-pr75-models.json",
+      "bytes": 7432,
+      "sha256": "ac7d2aac320efa02a7d6ac0b1ccf1eb3e929e11ae73d12f440b39543c46d936e"
+    }
+  ]
+}

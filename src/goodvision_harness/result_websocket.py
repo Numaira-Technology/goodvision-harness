@@ -308,6 +308,14 @@ def install_fleet_result_socket_routes(application, controller):
                 camera_id=camera_id,
             )
         else:
+            if controller.dynamic is not None:
+                try:
+                    await controller.dynamic.ensure(index)
+                except HTTPException:
+                    await reject_subscription(
+                        socket, "result service unavailable", 1013, camera_id,
+                    )
+                    return
             await proxy_results(
                 socket,
                 controller._url(index, ""),

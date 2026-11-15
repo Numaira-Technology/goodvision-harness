@@ -1,4 +1,4 @@
-"""Deterministic module partition and incremental evidence for Linux CI."""
+"""Deterministic module partition and incremental evidence for regression CI."""
 
 from __future__ import annotations
 
@@ -13,11 +13,13 @@ import pytest
 
 from tools.ci_regression import shard_for
 
-# GitHub cancels a job that reaches its timeout-minutes and keeps no log for
-# it, so a hung Windows shard leaves nothing to diagnose. On Windows CI only,
-# end the shard first: dump every thread and exit nonzero, keeping the log.
+# The Windows workflow's PowerShell parent hard-kills pytest after 960 s
+# (WaitForExit(960000) + taskkill) and keeps stdout/stderr file logs, but a
+# taskkill leaves no Python stacks. On Windows CI only, end the shard a minute
+# earlier from inside: dump every thread and the last stage to stderr.log and
+# exit nonzero. Keep this below the workflow's parent deadline.
 _WATCHDOG_ARMED = "GOODVISION_CI_WATCHDOG_ARMED"
-_WATCHDOG_SECONDS = 20 * 60
+_WATCHDOG_SECONDS = 15 * 60
 
 
 def _arm_windows_watchdog(config):

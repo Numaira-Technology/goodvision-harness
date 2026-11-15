@@ -1,0 +1,5 @@
+**
+!workers/
+!workers/neural/
+!workers/neural/Dockerfile
+!workers/neural/healthcheck.py

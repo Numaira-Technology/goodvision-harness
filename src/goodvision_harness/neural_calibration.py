@@ -33,7 +33,7 @@ CALIBRATED_PROMPTS = {
         "A person is holding an ordinary object such as a phone.",
     ),
 }
-PREPROCESSING = "rgb-bicubic-proportional-pad-224-fill-123-117-104-clip-processor-v1"
+PREPROCESSING = "rgb-clip-checkpoint-processor-v1"
 _MAX_ARTIFACT_BYTES = 64 * 1024
 
 
