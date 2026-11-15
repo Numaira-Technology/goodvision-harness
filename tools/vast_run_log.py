@@ -42,16 +42,31 @@ _SECRET_VALUE = re.compile(
     r"xox[baprs]-[A-Za-z0-9-]{8,}|ghp_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9\-]{20,}|"
     r"bearer\s+[A-Za-z0-9._\-]{8,})"
 )
+# One POSIX sh command. The controller may be Windows; the shell runs on the
+# Linux instance over SSH. Host facts are a HOST-tab line so a CPU model that
+# contains commas still parses. Empty facts stay "unknown", never 0.
 _PROBE = (
     "nvidia-smi --query-gpu=name,pci.bus_id,pcie.link.gen.current,pcie.link.gen.max,"
     "pcie.link.width.current,pcie.link.width.max,power.limit,clocks.sm,clocks.max.sm,"
-    "clocks.mem,driver_version,memory.total --format=csv,noheader"
+    "clocks.mem,driver_version,memory.total,utilization.gpu --format=csv,noheader; "
+    "smi_status=$?; "
+    "cpu=$(awk -F: '/^model name/ {sub(/^[ \\t]+/, \"\", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null); "
+    "cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true); "
+    "ram=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null); "
+    "cuda=$(nvidia-smi -q 2>/dev/null | awk -F: '/^CUDA Version/ {sub(/^[ \\t]+/, \"\", $2); print $2; exit}'); "
+    "[ -n \"$cpu\" ] || cpu=unknown; "
+    "[ -n \"$cores\" ] || cores=unknown; "
+    "if [ -n \"$ram\" ]; then ram=\"$ram kB\"; else ram=unknown; fi; "
+    "[ -n \"$cuda\" ] || cuda=unknown; "
+    "printf '\\nHOST\\t%s\\t%s\\t%s\\t%s\\n' \"$cpu\" \"$cores\" \"$ram\" \"$cuda\"; "
+    "exit \"$smi_status\""
 )
 _PROBE_COLUMNS = (
     "name", "pci_bus_id", "pcie_gen_current", "pcie_gen_max", "pcie_width_current",
     "pcie_width_max", "power_limit", "clock_sm", "clock_max_sm", "clock_mem",
-    "driver_version", "memory_total",
+    "driver_version", "memory_total", "utilization_gpu",
 )
+_HOST_FIELDS = ("cpu_model", "cpu_cores", "ram_total", "cuda_version")
 _SCORE_FIELDS = (
     "accuracy", "correct", "planned_questions", "complete_valid_questions",
     "incomplete_questions", "final_unknown_questions", "final_missing_unique_units",
@@ -98,19 +113,47 @@ def offer_fields(offer) -> dict:
 
 
 def parse_probe(text: str) -> dict:
-    """Parse one nvidia-smi CSV query. Unusable output is unknown, not 0."""
+    """Parse one nvidia-smi CSV query plus an optional HOST line.
+
+    Unusable GPU output is unknown, not 0. A usable GPU table with no host
+    line keeps the GPUs and marks each host fact unknown.
+    """
     rows = []
+    host = None
     for line in (text or "").splitlines():
-        if not line.strip():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("HOST\t") or stripped == "HOST":
+            host = _parse_host_line(stripped)
             continue
         cells = next(csv.reader([line]))
-        cells = [cell.strip() for cell in cells]
+        cells = [cell.strip().replace("\r", "") for cell in cells]
         if len(cells) != len(_PROBE_COLUMNS):
-            return {"status": "unknown", "gpus": "unknown", "raw": redact_text(text)}
+            return _unknown_probe(text)
         rows.append(dict(zip(_PROBE_COLUMNS, cells)))
     if not rows:
-        return {"status": "unknown", "gpus": "unknown", "raw": redact_text(text)}
-    return {"status": "ok", "gpus": rows}
+        return _unknown_probe(text)
+    return {"status": "ok", "gpus": rows, "host": host if host is not None else _unknown_host()}
+
+
+def _unknown_host() -> dict:
+    return {name: "unknown" for name in _HOST_FIELDS}
+
+
+def _unknown_probe(text: str) -> dict:
+    return {"status": "unknown", "gpus": "unknown", "host": "unknown", "raw": redact_text(text)}
+
+
+def _parse_host_line(line: str) -> dict:
+    parts = line.split("\t")
+    if parts[0].strip() != "HOST" or len(parts) != 1 + len(_HOST_FIELDS):
+        return _unknown_host()
+    parsed = {}
+    for name, value in zip(_HOST_FIELDS, parts[1:]):
+        text = value.replace("\r", "").strip()
+        parsed[name] = text if text else "unknown"
+    return parsed
 
 
 def summarize_score(eval_output, alias) -> dict | str:

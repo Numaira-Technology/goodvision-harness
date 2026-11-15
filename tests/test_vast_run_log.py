@@ -11,8 +11,8 @@ import pytest
 
 from tools import start_sam
 from tools.vast_run_log import (
-    RunLog, _wrap_create, _wrap_eval, logs_directory, offer_fields, parse_probe,
-    redact, summarize_score,
+    RunLog, _HOST_FIELDS, _PROBE, _wrap_create, _wrap_eval, logs_directory,
+    offer_fields, parse_probe, redact, summarize_score,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -57,13 +57,73 @@ def test_missing_offer_fields_are_unknown_not_zero():
 
 
 def test_probe_parser_and_bad_rows():
-    text = "RTX 4090, 0000:81:00.0, 4, 4, 8, 16, 450.00 W, 2520 MHz, 3105 MHz, 10251 MHz, 550.90, 24564 MiB\n"
+    text = (
+        "RTX 4090, 0000:81:00.0, 4, 4, 8, 16, 450.00 W, 2520 MHz, 3105 MHz, "
+        "10251 MHz, 550.90, 24564 MiB, 37 %\n"
+        "HOST\tAMD EPYC 7763 64-Core Processor\t32\t257564 kB\t12.4\n"
+    )
     parsed = parse_probe(text)
     assert parsed["status"] == "ok"
     assert parsed["gpus"][0]["pcie_gen_current"] == "4"
+    assert parsed["gpus"][0]["pcie_width_max"] == "16"
     assert parsed["gpus"][0]["power_limit"] == "450.00 W"
+    assert parsed["gpus"][0]["clock_sm"] == "2520 MHz"
+    assert parsed["gpus"][0]["utilization_gpu"] == "37 %"
+    assert parsed["gpus"][0]["driver_version"] == "550.90"
+    assert parsed["host"]["cpu_model"] == "AMD EPYC 7763 64-Core Processor"
+    assert parsed["host"]["cpu_cores"] == "32"
+    assert parsed["host"]["ram_total"] == "257564 kB"
+    assert parsed["host"]["cuda_version"] == "12.4"
+    short = (
+        "RTX 4090, 0000:81:00.0, 4, 4, 8, 16, 450.00 W, 2520 MHz, 3105 MHz, "
+        "10251 MHz, 550.90, 24564 MiB\n"
+    )
+    assert parse_probe(short)["status"] == "unknown"
     assert parse_probe("nope")["status"] == "unknown"
     assert parse_probe("")["gpus"] == "unknown"
+    assert parse_probe("")["host"] == "unknown"
+
+
+def test_probe_keeps_zero_utilization_and_cpu_commas_on_crlf():
+    text = (
+        "RTX 4090, 0000:81:00.0, 4, 4, 8, 16, 450.00 W, 2520 MHz, 3105 MHz, "
+        "10251 MHz, 550.90, 24564 MiB, 0 %\r\n"
+        "HOST\tIntel(R) Xeon(R) CPU, E5-2680 v4 @ 2.40GHz\t64\t0 kB\t12.8\r\n"
+    )
+    parsed = parse_probe(text)
+    assert parsed["status"] == "ok"
+    assert parsed["gpus"][0]["utilization_gpu"] == "0 %"
+    assert parsed["gpus"][0]["pcie_gen_max"] == "4"
+    assert parsed["gpus"][0]["pcie_width_current"] == "8"
+    assert parsed["host"]["cpu_model"] == "Intel(R) Xeon(R) CPU, E5-2680 v4 @ 2.40GHz"
+    assert parsed["host"]["cpu_cores"] == "64"
+    assert parsed["host"]["ram_total"] == "0 kB"
+    assert parsed["host"]["cuda_version"] == "12.8"
+
+
+def test_probe_missing_host_facts_are_unknown_not_zero():
+    gpus = (
+        "RTX 4090, 0000:81:00.0, 4, 4, 8, 16, 450.00 W, 2520 MHz, 3105 MHz, "
+        "10251 MHz, 550.90, 24564 MiB, 1 %\n"
+    )
+    missing = parse_probe(gpus)
+    assert missing["status"] == "ok"
+    assert missing["host"] == {name: "unknown" for name in _HOST_FIELDS}
+    blank = parse_probe(gpus + "HOST\t\t\t\t\n")
+    assert blank["host"] == {name: "unknown" for name in _HOST_FIELDS}
+    assert "0" not in blank["host"].values()
+
+
+def test_probe_command_asks_for_cpu_utilization_and_cuda():
+    assert "utilization.gpu" in _PROBE
+    assert "CUDA Version" in _PROBE
+    assert "/proc/cpuinfo" in _PROBE
+    assert "MemTotal" in _PROBE
+    assert "_NPROCESSORS_ONLN" in _PROBE
+    assert "[[" not in _PROBE
+    assert "wmic" not in _PROBE
+    assert "\r" not in _PROBE
+    assert _PROBE.count("exit ") == 1
 
 
 def test_score_summary_preserves_zero_and_marks_missing_unknown(tmp_path):
