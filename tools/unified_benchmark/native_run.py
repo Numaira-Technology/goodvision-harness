@@ -321,7 +321,7 @@ def _verify_sealed_receipts(output):
             or file_hash(path) != expected
         ):
             raise ValueError("saved receipt differs from retained seal: " + name)
-        receipts[name] = expected
+        receipts[relative.as_posix()] = expected
     return receipts
 
 
@@ -390,7 +390,7 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, sealed_receipts=Non
         path = phase_dir / "receipts" / f"{digest(unit['id'])}-{row['attempt']}.json"
         validate_saved_path(path, output)
         result = results.get((row["unit"], row["attempt"]))
-        name = str(path.relative_to(output))
+        name = path.relative_to(output).as_posix()
         if result:
             metadata = result.get("metadata", {})
             if not isinstance(metadata, dict) or metadata.get("receipt") not in (
@@ -742,7 +742,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     **raw_fields(response=raw, timings=timing)})
                 metadata = {
                     "actual_provider": "self-hosted",
-                    "receipt": str(path.relative_to(output)),
+                    "receipt": path.relative_to(output).as_posix(),
                     "receipt_sha256": file_hash(path), "http_status": code,
                 }
                 if error:
@@ -818,7 +818,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
             manifest = output / "result-files-sha256.json"
             if manifest.exists():
                 write_new(invocation / "previous-result-files-sha256.json", json.loads(manifest.read_text()))
-            save_status(manifest, {str(p.relative_to(output)): file_hash(p)
+            save_status(manifest, {p.relative_to(output).as_posix(): file_hash(p)
                 for p in sorted(output.rglob("*")) if p.is_file() and p != manifest})
 
 
