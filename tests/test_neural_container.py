@@ -125,7 +125,7 @@ def kit(tmp_path, monkeypatch):
         target.write_bytes((root / "workers/neural" / name).read_bytes())
         info["source_files"].append(
             {
-                "file": str(target.relative_to(directory)),
+                "file": target.relative_to(directory).as_posix(),
                 "bytes": target.stat().st_size,
                 "sha256": neural.digest(target),
             }

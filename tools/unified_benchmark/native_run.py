@@ -393,10 +393,11 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, sealed_receipts=Non
         name = path.relative_to(output).as_posix()
         if result:
             metadata = result.get("metadata", {})
-            if not isinstance(metadata, dict) or metadata.get("receipt") not in (
-                None,
-                name,
-            ):
+            saved_name = metadata.get("receipt") if isinstance(metadata, dict) else None
+            if isinstance(saved_name, str):
+                # Ledgers written on Windows before names were POSIX use "\\".
+                saved_name = saved_name.replace("\\", "/")
+            if not isinstance(metadata, dict) or saved_name not in (None, name):
                 raise ValueError("saved receipt path differs from its attempt")
             # Only historical rows without metadata may use the retained seal.
             # A partially stripped modern anchor is evidence corruption.
