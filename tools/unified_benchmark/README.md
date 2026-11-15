@@ -355,12 +355,16 @@ same units with a fresh output to reset the three-attempt budget.
 
 `eval_local` still uses 12 slots. vLLM may batch those 12 internally. Do not
 change JPEG size, prompts, max_tokens, or client concurrency to fit VRAM.
-The source profile retains the published
-`envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz` identity. That key and the HF
-pack are frozen. #98 records this active cu128 object as missing
-`typing_extensions` in the prefix. That gap belongs to this profile. The
-separate ada2 pack and its exam do not validate this pin. This note is not
-producer provenance, a full-archive readback, or a restore/import log. Rebuilds require a reviewed successor entry, fresh prefix and
+The active declared vLLM artifact is
+`envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz`, SHA-256
+`59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b`,
+4,252,375,781 bytes (torch `+cu130`). It needs host CUDA >=13.0 and NVIDIA driver
+>=580; this launcher does not check the host driver yet (that check is added in
+#98). The superseded `cu128-py312-vllm0310-ada` object is kept frozen for
+provenance only: it is missing `typing_extensions` in the prefix and is never
+restored. The incomplete cu130 `ada` pack is also frozen. The declared ada2
+identity is not producer provenance, a full-archive readback, or a
+restore/import log. Rebuilds require a reviewed successor entry, fresh prefix and
 new immutable identity; follow the [local build and provenance procedure](../qwen8b_vllm/BUILD.md).
 CPU import evidence is not GPU acceptance. The launcher checks sealed profile
 and request identities before rental and again before inference, and retains a
