@@ -1074,10 +1074,6 @@ def bag_frozen(frozen):
     from tools.unified_benchmark.contract import BAG_VALIDATION_SCHEMA
 
     bundle, _, _ = frozen
-    for alias in ("videojev", "decision3"):
-        (bundle / f"configs/{alias}.json").unlink()
-        for phase in ("validation", "test"):
-            (bundle / f"plans/{alias}-{phase}.json").unlink()
     manifest = bundle / "inputs/bag-validation.json"
     manifest.parent.mkdir()
     manifest.write_text(json.dumps(bag_manifest()), encoding="utf-8")
@@ -1137,7 +1133,7 @@ def bag_frozen(frozen):
     )
     audit = json.loads((bundle / "preflight.json").read_text())
     audit["dataset_context"] = context
-    audit["models"] = {alias: {} for alias in ("clip", "siglip2")}
+    audit["models"] = {alias: {} for alias in deploy.ALIASES}
     for path in (bundle / "plans").glob("*.json"):
         alias, split = path.stem.rsplit("-", 1)
         audit["models"][alias][split] = {
@@ -1146,6 +1142,45 @@ def bag_frozen(frozen):
     (bundle / "preflight.json").write_text(json.dumps(audit), encoding="utf-8")
     seal(bundle)
     return frozen
+
+
+@pytest.mark.parametrize("alias", ["videojev", "decision3"])
+def test_argmax_models_validate_all44_without_threshold_artifact(bag_frozen, tmp_path, alias):
+    out = tmp_path / alias
+    execute(bag_frozen, out, alias)
+    assert not (out / "thresholds.json").exists()
+    for split, count in (("validation", 44), ("test", 202)):
+        result = json.loads((out / split / "report.json").read_text())
+        assert result["complete_valid_questions"] == result["correct"] == count
+        assert "zero_margin_baseline" not in result
+    calls = list(FakeBackend.calls)
+    execute(bag_frozen, out, alias, resume=True)
+    assert FakeBackend.calls == calls
+
+
+@pytest.mark.parametrize("alias", deploy.ALIASES)
+def test_batch_native_worker_uses_validation_then_separate_test(bag_frozen, tmp_path, monkeypatch, alias):
+    from tools.unified_benchmark import batch
+    from tools.unified_benchmark.contract import atomic_json
+    bundle, deployment, sha = bag_frozen
+    root = tmp_path / "batch"
+    root.mkdir()
+    item = {"alias": alias, "route": "native", "bundle": str(bundle),
+            "bundle_sha256": workflow.verify_bundle(bundle),
+            "deployment": str(deployment), "deployment_sha256": sha}
+    write_new(root / "config.json", {"models": [item]})
+    rows = [{"id": alias + "/" + label, "output": alias + "/" + label, "alias": alias,
+             "split": split, "state": "running", "invocations": 1}
+            for label, split in (("validation", "validation"), ("round-01", "test"))]
+    atomic_json(root / "state.json", {"matrix": rows})
+    monkeypatch.setattr(batch, "hardware_check", lambda *_: None)
+    original = run.execute
+    def fake(*args, **kwargs):
+        return original(*args, **kwargs, backend_factory=FakeBackend, queue_factory=immediate_queue)
+    monkeypatch.setattr(run, "execute", fake)
+    assert batch.worker(root, rows[0]["id"], "synthetic") == 0
+    assert batch.worker(root, rows[1]["id"], "synthetic") == 0
+    assert batch.verify_finished(root, item, rows[1])["complete_valid_questions"] == 202
 
 
 @pytest.mark.parametrize("alias", ["clip", "siglip2"])

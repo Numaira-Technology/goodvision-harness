@@ -206,7 +206,11 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--inputs", type=Path, required=True, help="Private frozen inputs: eight JSON files for 202, five for legacy120")
     parser.add_argument("--protocol", choices=(CURRENT_VERSION, VERSION), default=CURRENT_VERSION)
-    parser.add_argument("--bag-validation", type=Path, help="Optional private bag-validation10-v1 manifest for current202 CLIP/SigLIP2")
+    parser.add_argument("--phase", choices=("validation", "both"), default="both",
+                        help="validation prepares no test frames or execution plans")
+    parser.add_argument("--require-validation44", action="store_true",
+                        help="fail before media processing if the frozen bag supplement is missing")
+    parser.add_argument("--bag-validation", type=Path, help="Private bag-validation10-v1 manifest for current202, supported by every recorded profile")
     parser.add_argument("--bag-validation-sha256", help="Pinned raw SHA256 of the supplementary manifest")
     parser.add_argument("--media", type=Path, required=True, help="contains validation/ and test/ videos")
     parser.add_argument("--profiles", type=Path, default=PROFILES)
@@ -214,8 +218,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if bool(args.bag_validation) != bool(args.bag_validation_sha256):
         parser.error("--bag-validation and --bag-validation-sha256 must be supplied together")
-    if args.bag_validation and (args.protocol != CURRENT_VERSION or set(args.models) - {"clip", "siglip2"}):
-        parser.error("--bag-validation requires current202 and only clip/siglip2")
+    if args.bag_validation and args.protocol != CURRENT_VERSION:
+        parser.error("--bag-validation requires current202")
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     report = {"protocol": args.protocol, "started_at": datetime.now(timezone.utc).isoformat(),
@@ -223,16 +227,23 @@ def main(argv=None):
     try:
         parts = load_inputs(out, args.inputs, args.protocol)
         configs = model_configs(args.models, args.profiles)
+        if args.require_validation44 and (not args.bag_validation or args.protocol != CURRENT_VERSION):
+            raise ValueError("validation44 requires the frozen bag-validation10-v1 manifest and independent SHA256")
         if args.bag_validation:
             if configs != model_configs(args.models):
-                raise ValueError("bag validation requires the recorded CLIP/SigLIP2 profiles")
+                raise ValueError("bag validation requires the recorded model profiles")
             add_bag_validation(out, parts, args.bag_validation, args.bag_validation_sha256)
         report["dataset_context"] = parts["test"].get("dataset_context")
+        if args.phase == "validation":
+            # Retain all frozen input hashes for leakage checks, but do not
+            # require test media or create a test execution plan for this scope.
+            parts = {"validation": parts["validation"]}
+        report["prepared_splits"] = list(parts)
         write_new(out / "split-audit.json", {split: {"context": part["split_context"],
             "members": [{k: row[k] for k in ("number", "filename", "sha256", "source_video_group", "human_review")}
                         for row in part["rows"]]} for split, part in parts.items()})
         write_new(out / "rules.json", rules_for(args.protocol))
-        tasks, inspected = [], {"validation": {}, "test": {}}
+        tasks, inspected = [], {split: {} for split in parts}
         for split, part in parts.items():
             unique = {r["filename"]: r for r in part["rows"]}
             expected_videos = 192 if args.protocol == CURRENT_VERSION else 110

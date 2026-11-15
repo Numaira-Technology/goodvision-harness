@@ -2,6 +2,8 @@
 import hashlib
 import json
 import math
+import os
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -92,8 +94,41 @@ def write_new(path, value):
     data = canonical(value) + b"\n"
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("xb") as f:
-        f.write(data)
+    fd, temporary = tempfile.mkstemp(prefix="." + path.name + "-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.link(temporary, path)  # Atomic create-only publication.
+        sync_directory(path.parent)
+    finally:
+        os.unlink(temporary)
+
+
+def sync_directory(path):
+    if os.name == "posix":
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def atomic_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix="." + path.name + "-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(canonical(value) + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        sync_directory(path.parent)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def write_receipt(path, record):
@@ -113,16 +148,8 @@ def write_receipt(path, record):
 
 
 def read_receipt(path):
-    record = json.loads(Path(path).read_text())
-    if "raw_json_encoding" in record:
-        if record["raw_json_encoding"] != "python-json-nonfinite-v1":
-            raise ValueError("unsupported raw receipt encoding")
-        for field in ("response", "generation_metadata"):
-            if field + "_json" in record:
-                if record.get(field) is not None or not isinstance(record[field + "_json"], str):
-                    raise ValueError("invalid raw receipt encoding")
-                record[field] = json.loads(record[field + "_json"])
-    return record
+    from .receipts import read_receipt as read_strict_receipt
+    return read_strict_receipt(path)
 
 
 def sample_times(duration, *, last_frame_time=None):
@@ -233,8 +260,8 @@ def select_thresholds(plan, evidence, kind, model):
     from tools.clip_benchmark.scoring import _optimal_midpoint
     include_bags = has_bag_validation(plan)
     count = 44 if include_bags else 24
-    if include_bags and (kind != "margin" or model not in REVISIONS):
-        raise ValueError("supplementary bag calibration requires CLIP/SigLIP2 margin scores")
+    if include_bags and kind == "margin" and model not in REVISIONS:
+        raise ValueError("supplementary margin calibration requires a recorded CLIP/SigLIP2 model")
     if plan["split"] != "validation" or len(plan["questions"]) != count or kind not in ("margin", "probability"):
         raise ValueError(f"threshold selection requires frozen validation{count} and continuous scores")
     baseline = score(plan, evidence, kind)

@@ -36,17 +36,18 @@ Another agent must read this file and its selected execution guide; discovering
 2. **Environment:** follow the execution route below. Verify pinned versions,
    credentials/access and hardware; do the authorized original warmup/smoke before
    evaluation. Offline checks do not prove a new GPU deployment can run.
-3. **Validation:** use validation24 by default. For a requested CLIP/SigLIP2
-   [bag validation supplement](../../../tools/unified_benchmark/NATIVE.md#optional-clipsiglip2-bag-validation),
-   use the frozen 44-question plan on 34 videos. Preserve
+3. **Validation:** for the current repeated-evaluation task, use validation44 on
+   34 videos for every selected model. Include the existing private
+   [bag validation supplement](../../../tools/unified_benchmark/NATIVE.md#bag-validation-for-every-model)
+   in preflight; missing inputs block execution, with no fallback to validation24. Preserve
    receipts, complete scores, missing units and run identity.
 4. **Thresholds, when applicable:** use `bench-threshold-tune` and the route's own
    selector for Luna/CLIP/SigLIP2; require complete validation, then freeze the
    artifact before test. Boolean/argmax models do not gain a scalar threshold.
 5. **Test:** run the frozen configuration on all 202 questions. Preserve successful
    answers and the cumulative three-attempt budget across interruptions. For the
-   four-model native CLI, use explicit `--resume`; other routes follow their own
-   documented continuation support, never a fresh ledger to reset the budget.
+   native, API and local Qwen CLIs, use explicit `--resume` for compatible
+   outputs; never use a fresh ledger to reset the budget.
 6. **Local report:** verify counts, coverage, unknowns, source identities, matching
    speed and actual costs using [report fields](references/report-format.md).
    Retain raw receipts, frozen inputs/configs and historical results.
@@ -56,6 +57,24 @@ questions1–120 unchanged plus82 single views in test, with 24 base validation 
 Keep inherited/unreviewed labels explicit; preflight is not human review. Report
 original120 and robot82 separately alongside correct/202, and never count the old41
 stereo sources again. Do not tune on the new test questions.
+
+## Repeated runs
+
+For the current ten-round task, follow [BATCH.md](../../../tools/unified_benchmark/BATCH.md).
+Run `batch check` first, then the authorized `batch run`. Use `--detach` only when
+the host's network and credentials remain available after the attached command
+ends; otherwise keep an attached command session. Detached mode supervises bounded
+controller restarts, but cannot preserve a session-scoped network proxy.
+Validate once, freeze applicable thresholds,
+and execute ten independent test rounds. Resume the original matrix and deadlines.
+Read `state.json`, logs and final coverage; a PID or exit zero is not proof of complete
+evidence. Preserve incomplete/failed rounds; do not add a replacement eleventh run.
+
+The batch supports pre-existing GPU deployments/services. It does not rent or
+release instances, restore R2 packs, or prove a live deployment from offline tests.
+Verify ownership or independent lease cleanup, actual hardware identity, pinned
+runtime, current provider access and bounded costs before paid execution. Missing
+materials or an unverified cleanup arrangement remain concrete blockers.
 
 ## Execution routes
 
