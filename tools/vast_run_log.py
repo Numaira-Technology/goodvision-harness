@@ -3,6 +3,13 @@
 Writing a log must never change offer selection, the eval, or the process
 exit code. Failures are printed and stored on the entry. Missing measurements
 are the string ``unknown``, never a fabricated 0.
+
+An idle GPU often reports PCIe gen 1, an SM clock around 210 MHz, and 0%
+utilization. That is the normal power-saving state, not throttling. The max
+link generation, the power limit, and the max SM clock are the capability
+readings. ``host_*`` probe fields are the whole machine. ``container_*`` fields
+are the cgroup limit of this rental, which is smaller than the host when the
+offer's ``cpu_cores_effective`` and ``cpu_ram`` do not cover the machine.
 """
 from __future__ import annotations
 
@@ -25,7 +32,7 @@ OFFER_FIELDS = (
     "num_gpus", "gpu_ram", "gpu_frac", "gpu_lanes", "pci_gen", "pcie_bw",
     "gpu_max_power", "cpu_name", "cpu_cores_effective", "cpu_ram", "inet_up",
     "inet_down", "disk_name", "disk_bw", "driver_version", "cuda_max_good",
-    "reliability", "verified", "datacenter", "dlperf",
+    "reliability", "verification", "datacenter", "dlperf",
 )
 LAUNCHERS = {
     "start_qwen8b_r2.py": ("tools.start_qwen8b_r2", "qwen8b_r2_host", "transformers"),
@@ -44,7 +51,11 @@ _SECRET_VALUE = re.compile(
 )
 # One POSIX sh command. The controller may be Windows; the shell runs on the
 # Linux instance over SSH. Host facts are a HOST-tab line so a CPU model that
-# contains commas still parses. Empty facts stay "unknown", never 0.
+# contains commas still parses. getconf and MemTotal are the whole machine.
+# cpu.max / memory.max (cgroup v2, else v1) are this container's limit.
+# Empty facts stay "unknown", never 0.
+# Current PCIe gen and the SM clock fall while the GPU is idle. On the reviewed
+# 4090 that was gen 1, 210 MHz, and 0% utilization: power-saving, not throttling.
 _PROBE = (
     "nvidia-smi --query-gpu=name,pci.bus_id,pcie.link.gen.current,pcie.link.gen.max,"
     "pcie.link.width.current,pcie.link.width.max,power.limit,clocks.sm,clocks.max.sm,"
@@ -54,11 +65,29 @@ _PROBE = (
     "cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true); "
     "ram=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null); "
     "cuda=$(nvidia-smi -q 2>/dev/null | awk -F: '/^CUDA Version/ {sub(/^[ \\t]+/, \"\", $2); print $2; exit}'); "
+    "if [ -r /sys/fs/cgroup/cpu.max ]; then "
+    "container_cpu=\"v2 $(awk 'NR==1 { printf \"%s %s\", $1, $2; exit }' /sys/fs/cgroup/cpu.max)\"; "
+    "elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ] && [ -r /sys/fs/cgroup/cpu/cpu.cfs_period_us ]; then "
+    "container_cpu=\"v1 $(awk 'NR==1 { printf \"%s\", $1; exit }' /sys/fs/cgroup/cpu/cpu.cfs_quota_us) "
+    "$(awk 'NR==1 { printf \"%s\", $1; exit }' /sys/fs/cgroup/cpu/cpu.cfs_period_us)\"; "
+    "elif [ -r /sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us ] && "
+    "[ -r /sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us ]; then "
+    "container_cpu=\"v1 $(awk 'NR==1 { printf \"%s\", $1; exit }' /sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us) "
+    "$(awk 'NR==1 { printf \"%s\", $1; exit }' /sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us)\"; "
+    "else container_cpu=unknown; fi; "
+    "if [ -r /sys/fs/cgroup/memory.max ]; then "
+    "container_mem=\"v2 $(awk 'NR==1 { printf \"%s\", $1; exit }' /sys/fs/cgroup/memory.max)\"; "
+    "elif [ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then "
+    "container_mem=\"v1 $(awk 'NR==1 { printf \"%s\", $1; exit }' /sys/fs/cgroup/memory/memory.limit_in_bytes)\"; "
+    "else container_mem=unknown; fi; "
     "[ -n \"$cpu\" ] || cpu=unknown; "
     "[ -n \"$cores\" ] || cores=unknown; "
     "if [ -n \"$ram\" ]; then ram=\"$ram kB\"; else ram=unknown; fi; "
     "[ -n \"$cuda\" ] || cuda=unknown; "
-    "printf '\\nHOST\\t%s\\t%s\\t%s\\t%s\\n' \"$cpu\" \"$cores\" \"$ram\" \"$cuda\"; "
+    "[ -n \"$container_cpu\" ] || container_cpu=unknown; "
+    "[ -n \"$container_mem\" ] || container_mem=unknown; "
+    "printf '\\nHOST\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "
+    "\"$cpu\" \"$cores\" \"$ram\" \"$cuda\" \"$container_cpu\" \"$container_mem\"; "
     "exit \"$smi_status\""
 )
 _PROBE_COLUMNS = (
@@ -66,7 +95,17 @@ _PROBE_COLUMNS = (
     "pcie_width_max", "power_limit", "clock_sm", "clock_max_sm", "clock_mem",
     "driver_version", "memory_total", "utilization_gpu",
 )
-_HOST_FIELDS = ("cpu_model", "cpu_cores", "ram_total", "cuda_version")
+# First four match the HOST line from probes that predate container limits.
+_HOST_LEGACY = ("cpu_model", "host_cpu_cores", "host_ram_total", "cuda_version")
+_HOST_CONTAINER = ("container_cpu_limit", "container_memory_limit")
+_HOST_FIELDS = _HOST_LEGACY + _HOST_CONTAINER
+_IDLE_NOTE = (
+    "Idle PCIe gen 1, a low SM clock such as 210 MHz, and 0% utilization are "
+    "the GPU's normal power-saving state, not throttling. pcie_gen_max, "
+    "power_limit, and clock_max_sm are the capability readings. host_cpu_cores "
+    "and host_ram_total are the whole machine; container_cpu_limit and "
+    "container_memory_limit are this rental's cgroup limit."
+)
 _SCORE_FIELDS = (
     "accuracy", "correct", "planned_questions", "complete_valid_questions",
     "incomplete_questions", "final_unknown_questions", "final_missing_unique_units",
@@ -113,10 +152,12 @@ def offer_fields(offer) -> dict:
 
 
 def parse_probe(text: str) -> dict:
-    """Parse one nvidia-smi CSV query plus an optional HOST line.
+    """Parse nvidia-smi CSV rows plus optional HOST lines.
 
-    Unusable GPU output is unknown, not 0. A usable GPU table with no host
-    line keeps the GPUs and marks each host fact unknown.
+    Lines that are not a GPU row or a HOST record are ignored. One banner
+    line must not drop a good reading. A probe with no GPU row is unknown,
+    not 0. A usable GPU table with no host line keeps the GPUs and marks
+    each host fact unknown.
     """
     rows = []
     host = None
@@ -125,16 +166,23 @@ def parse_probe(text: str) -> dict:
         if not stripped:
             continue
         if stripped.startswith("HOST\t") or stripped == "HOST":
-            host = _parse_host_line(stripped)
+            parsed = _parse_host_line(stripped)
+            if parsed is not None:
+                host = parsed
             continue
         cells = next(csv.reader([line]))
         cells = [cell.strip().replace("\r", "") for cell in cells]
         if len(cells) != len(_PROBE_COLUMNS):
-            return _unknown_probe(text)
+            continue
         rows.append(dict(zip(_PROBE_COLUMNS, cells)))
     if not rows:
         return _unknown_probe(text)
-    return {"status": "ok", "gpus": rows, "host": host if host is not None else _unknown_host()}
+    return {
+        "status": "ok",
+        "gpus": rows,
+        "host": host if host is not None else _unknown_host(),
+        "note": _IDLE_NOTE,
+    }
 
 
 def _unknown_host() -> dict:
@@ -145,15 +193,72 @@ def _unknown_probe(text: str) -> dict:
     return {"status": "unknown", "gpus": "unknown", "host": "unknown", "raw": redact_text(text)}
 
 
-def _parse_host_line(line: str) -> dict:
+def _parse_host_line(line: str):
     parts = line.split("\t")
-    if parts[0].strip() != "HOST" or len(parts) != 1 + len(_HOST_FIELDS):
-        return _unknown_host()
-    parsed = {}
-    for name, value in zip(_HOST_FIELDS, parts[1:]):
+    if not parts or parts[0].strip() != "HOST":
+        return None
+    values = parts[1:]
+    if len(values) == len(_HOST_LEGACY):
+        names = _HOST_LEGACY
+    elif len(values) == len(_HOST_FIELDS):
+        names = _HOST_FIELDS
+    else:
+        return None
+    parsed = _unknown_host()
+    for name, value in zip(names, values):
         text = value.replace("\r", "").strip()
-        parsed[name] = text if text else "unknown"
+        if not text:
+            continue
+        if name == "container_cpu_limit":
+            text = _format_container_cpu(text)
+        elif name == "container_memory_limit":
+            text = _format_container_memory(text)
+        parsed[name] = text
     return parsed
+
+
+def _cores_from_quota(quota: str, period: str) -> str:
+    if not quota.isdigit() or not period.isdigit():
+        return "unknown"
+    q, p = int(quota), int(period)
+    if p == 0:
+        return "unknown"
+    whole, rem = divmod(q, p)
+    if rem == 0:
+        return str(whole)
+    scaled = (q * 1000) // p
+    text = "%d.%03d" % divmod(scaled, 1000)
+    return text.rstrip("0")
+
+
+def _format_container_cpu(raw: str) -> str:
+    parts = raw.split()
+    if len(parts) != 3 or parts[0] not in {"v1", "v2"}:
+        return "unknown"
+    kind, quota, period = parts
+    source = "cgroup v2 cpu.max" if kind == "v2" else "cgroup v1 cpu.cfs_quota_us"
+    if quota in {"max", "-1"}:
+        return "max (%s)" % source
+    cores = _cores_from_quota(quota, period)
+    if cores == "unknown":
+        return "unknown"
+    return "%s cores (%s %s %s)" % (cores, source, quota, period)
+
+
+def _format_container_memory(raw: str) -> str:
+    parts = raw.split()
+    if len(parts) != 2 or parts[0] not in {"v1", "v2"}:
+        return "unknown"
+    kind, value = parts
+    source = "cgroup v2 memory.max" if kind == "v2" else "cgroup v1 memory.limit_in_bytes"
+    if value == "max":
+        return "max (%s)" % source
+    if not value.isdigit():
+        return "unknown"
+    number = int(value)
+    if kind == "v1" and number >= 1 << 62:
+        return "max (%s)" % source
+    return "%d B (%s)" % (number, source)
 
 
 def summarize_score(eval_output, alias) -> dict | str:
@@ -329,12 +434,18 @@ class RunLog:
             self.probe = "unknown"
             self._error("probe", exc)
             return
-        text = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
         if result.returncode != 0:
-            self.probe = {"status": "unknown", "gpus": "unknown", "raw": redact_text(text)}
+            self.probe = {
+                "status": "unknown", "gpus": "unknown", "host": "unknown",
+                "raw": redact_text(stdout + ("\n" + stderr if stderr else "")),
+            }
             self._error("probe", "nvidia-smi exited %s" % result.returncode)
             return
-        self.probe = parse_probe(text)
+        self.probe = parse_probe(stdout)
+        if stderr:
+            self.probe["raw"] = redact_text(stderr)
         self._write_entry()
 
     def capture_score(self) -> None:

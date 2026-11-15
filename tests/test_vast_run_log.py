@@ -71,9 +71,13 @@ def test_probe_parser_and_bad_rows():
     assert parsed["gpus"][0]["utilization_gpu"] == "37 %"
     assert parsed["gpus"][0]["driver_version"] == "550.90"
     assert parsed["host"]["cpu_model"] == "AMD EPYC 7763 64-Core Processor"
-    assert parsed["host"]["cpu_cores"] == "32"
-    assert parsed["host"]["ram_total"] == "257564 kB"
+    assert parsed["host"]["host_cpu_cores"] == "32"
+    assert parsed["host"]["host_ram_total"] == "257564 kB"
     assert parsed["host"]["cuda_version"] == "12.4"
+    assert parsed["host"]["container_cpu_limit"] == "unknown"
+    assert parsed["host"]["container_memory_limit"] == "unknown"
+    assert "power-saving" in parsed["note"]
+    assert "not throttling" in parsed["note"]
     short = (
         "RTX 4090, 0000:81:00.0, 4, 4, 8, 16, 450.00 W, 2520 MHz, 3105 MHz, "
         "10251 MHz, 550.90, 24564 MiB\n"
@@ -96,8 +100,8 @@ def test_probe_keeps_zero_utilization_and_cpu_commas_on_crlf():
     assert parsed["gpus"][0]["pcie_gen_max"] == "4"
     assert parsed["gpus"][0]["pcie_width_current"] == "8"
     assert parsed["host"]["cpu_model"] == "Intel(R) Xeon(R) CPU, E5-2680 v4 @ 2.40GHz"
-    assert parsed["host"]["cpu_cores"] == "64"
-    assert parsed["host"]["ram_total"] == "0 kB"
+    assert parsed["host"]["host_cpu_cores"] == "64"
+    assert parsed["host"]["host_ram_total"] == "0 kB"
     assert parsed["host"]["cuda_version"] == "12.8"
 
 
@@ -120,10 +124,122 @@ def test_probe_command_asks_for_cpu_utilization_and_cuda():
     assert "/proc/cpuinfo" in _PROBE
     assert "MemTotal" in _PROBE
     assert "_NPROCESSORS_ONLN" in _PROBE
+    assert "/sys/fs/cgroup/cpu.max" in _PROBE
+    assert "/sys/fs/cgroup/memory.max" in _PROBE
+    assert "cpu.cfs_quota_us" in _PROBE
+    assert "memory.limit_in_bytes" in _PROBE
     assert "[[" not in _PROBE
     assert "wmic" not in _PROBE
     assert "\r" not in _PROBE
-    assert _PROBE.count("exit ") == 1
+    assert _PROBE.count('exit "$smi_status"') == 1
+
+
+def _live_probe_streams():
+    text = (REPO / "tests/fixtures/vast_probe_raw.txt").read_text(encoding="utf-8")
+    stdout, stderr = text.split("[stderr]\n", 1)
+    return stdout, stderr
+
+
+def test_live_probe_banner_does_not_drop_the_gpu_row():
+    """Regression for instance 60852547: Vast's SSH banner arrives on stderr."""
+    stdout, stderr = _live_probe_streams()
+    combined = stdout + stderr
+    parsed = parse_probe(combined)
+    gpu = parsed["gpus"][0]
+    assert parsed["status"] == "ok"
+    assert gpu["name"] == "NVIDIA GeForce RTX 4090"
+    assert gpu["pci_bus_id"] == "00000000:C1:00.0"
+    assert gpu["pcie_gen_current"] == "1"
+    assert gpu["pcie_gen_max"] == "4"
+    assert gpu["pcie_width_current"] == "16"
+    assert gpu["pcie_width_max"] == "16"
+    assert gpu["power_limit"] == "450.00 W"
+    assert gpu["clock_sm"] == "210 MHz"
+    assert gpu["clock_max_sm"] == "3150 MHz"
+    assert gpu["utilization_gpu"] == "0 %"
+    assert gpu["driver_version"] == "595.99.02"
+    assert parsed["host"]["cpu_model"] == "AMD EPYC 7702P 64-Core Processor"
+    assert parsed["host"]["host_cpu_cores"] == "128"
+    assert parsed["host"]["host_ram_total"] == "527980792 kB"
+    assert parsed["host"]["cuda_version"] == "13.2"
+    assert parsed["host"]["container_cpu_limit"] == "unknown"
+    assert parsed["host"]["container_memory_limit"] == "unknown"
+    assert "Welcome to vast.ai" in combined
+    assert "power-saving" in parsed["note"]
+    assert "Have fun!" not in json.dumps(parsed["gpus"])
+    offer = json.loads((REPO / "tests/fixtures/vast_offer.json").read_text(encoding="utf-8"))
+    fields = offer_fields(offer)
+    assert fields["verification"] == "verified"
+    assert "verified" not in fields
+    assert fields["cpu_cores_effective"] == 32.0
+    assert fields["cpu_ram"] == 128901
+    assert fields["gpu_frac"] == 0.25
+    assert fields["machine_id"] == 12592
+    assert "84.1.117.74" not in json.dumps(fields)
+
+
+def test_container_limits_are_labeled_apart_from_the_host(tmp_path, monkeypatch):
+    stdout = (
+        "NVIDIA GeForce RTX 4090, 00000000:C1:00.0, 1, 4, 16, 16, 450.00 W, "
+        "210 MHz, 3150 MHz, 405 MHz, 595.99.02, 24564 MiB, 0 %\n"
+        "HOST\tAMD EPYC 7702P 64-Core Processor\t128\t527980792 kB\t13.2\t"
+        "v2 3200000 100000\tv2 135107444736\n"
+    )
+    parsed = parse_probe(stdout + "Welcome to vast.ai. Have fun!\n")
+    assert parsed["status"] == "ok"
+    assert parsed["host"]["host_cpu_cores"] == "128"
+    assert parsed["host"]["host_ram_total"] == "527980792 kB"
+    assert parsed["host"]["container_cpu_limit"] == (
+        "32 cores (cgroup v2 cpu.max 3200000 100000)"
+    )
+    assert parsed["host"]["container_memory_limit"] == (
+        "135107444736 B (cgroup v2 memory.max)"
+    )
+    v1 = parse_probe(
+        "RTX 4090, 0000:81:00.0, 4, 4, 8, 16, 450.00 W, 2520 MHz, 3105 MHz, "
+        "10251 MHz, 550.90, 24564 MiB, 0 %\n"
+        "HOST\tAMD EPYC\t128\t527980792 kB\t13.2\t"
+        "v1 -1 100000\tv1 9223372036854771712\n"
+    )
+    assert v1["host"]["container_cpu_limit"] == "max (cgroup v1 cpu.cfs_quota_us)"
+    assert v1["host"]["container_memory_limit"] == "max (cgroup v1 memory.limit_in_bytes)"
+    partial = parse_probe(
+        "RTX 4090, 0000:81:00.0, 4, 4, 8, 16, 450.00 W, 2520 MHz, 3105 MHz, "
+        "10251 MHz, 550.90, 24564 MiB, 0 %\n"
+        "HOST\tAMD EPYC\t128\t527980792 kB\t13.2\tv1 150000 100000\tv2 0\n"
+    )
+    assert partial["host"]["container_cpu_limit"] == (
+        "1.5 cores (cgroup v1 cpu.cfs_quota_us 150000 100000)"
+    )
+    assert partial["host"]["container_memory_limit"] == "0 B (cgroup v2 memory.max)"
+    zero = parse_probe(
+        "RTX 4090, 0000:81:00.0, 4, 4, 8, 16, 450.00 W, 2520 MHz, 3105 MHz, "
+        "10251 MHz, 550.90, 24564 MiB, 0 %\n"
+        "HOST\tAMD EPYC\t128\t527980792 kB\t13.2\tv2 0 100000\tv2 max\n"
+    )
+    assert zero["host"]["container_cpu_limit"].startswith("0 cores ")
+    assert zero["host"]["container_memory_limit"] == "max (cgroup v2 memory.max)"
+
+    banner = (
+        "Welcome to vast.ai. If authentication fails, try again after a few seconds, "
+        "and double check your ssh key.\nHave fun!\n"
+    )
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout, banner)
+
+    monkeypatch.setattr("tools.vast_run_log.subprocess.run", fake_run)
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    session = RunLog("tools.start_qwen8b_vllm", "qwen8b_r2_vllm", "vllm")
+    session.maybe_probe(["ssh", "-p", "22", "root@example", "true"])
+    assert session.probe["status"] == "ok"
+    assert session.probe["gpus"][0]["clock_sm"] == "210 MHz"
+    assert session.probe["raw"].startswith("Welcome to vast.ai")
+    assert "Have fun!" in session.probe["raw"]
+    assert "3200000" not in session.probe["raw"]
+    saved = json.loads((session.run_dir / "entry.json").read_text(encoding="utf-8"))
+    assert saved["hardware"]["probe"]["host"]["container_cpu_limit"].startswith("32 cores")
+    assert "Welcome to vast.ai" in saved["hardware"]["probe"]["raw"]
 
 
 def test_score_summary_preserves_zero_and_marks_missing_unknown(tmp_path):
