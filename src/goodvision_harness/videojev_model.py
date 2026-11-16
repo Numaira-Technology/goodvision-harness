@@ -188,7 +188,9 @@ class VideoJevInspector:
                 self.last_http_timing.update(
                     request_build_seconds=time.monotonic() - start,
                     request_bytes=len(body),
-                    encoded_image_bytes=sum(len(f.jpeg_bytes) for f in self._input_frames(job)),
+                    encoded_image_bytes=sum(
+                        len(f.jpeg_bytes) for f in self._input_frames(job)
+                    ),
                 )
                 self.last_inspection_timing["request_prepare_seconds"] = (
                     time.monotonic() - start
