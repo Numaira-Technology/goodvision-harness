@@ -116,6 +116,53 @@ def test_twelve_processes_share_concurrency_rate_and_all_make_progress(tmp_path)
             queue.cancel_join_thread()
 
 
+def test_snapshot_waits_for_transient_writer_and_reads_committed_state(
+    tmp_path, monkeypatch
+):
+    gate = SharedAdmission(settings(tmp_path))
+    started, done = Event(), Event()
+    snapshots, errors = [], []
+    connect = sqlite3.connect
+
+    class SnapshotConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if sql == "BEGIN IMMEDIATE":
+                started.set()
+            return super().execute(sql, *args, **kwargs)
+
+    def snapshot_connect(*args, **kwargs):
+        return connect(*args, factory=SnapshotConnection, **kwargs)
+
+    def read_snapshot():
+        try:
+            snapshots.append(gate.snapshot())
+        except Exception as error:
+            errors.append(error)
+        finally:
+            done.set()
+
+    # Hold the writer longer than the normal 100 ms admission transaction wait.
+    # A snapshot must wait for its commit, without changing admission deadlines.
+    with closing(connect(gate.settings.database, isolation_level=None)) as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("UPDATE policy SET grants=17 WHERE id=1")
+        monkeypatch.setattr(admission.sqlite3, "connect", snapshot_connect)
+        reader = Thread(target=read_snapshot)
+        reader.start()
+        try:
+            assert started.wait(3)
+            assert not done.wait(0.25), errors
+            writer.commit()
+            assert done.wait(3)
+            assert not errors
+            assert snapshots[0]["grants"] == 17
+            assert snapshots[0]["active"] == snapshots[0]["waiting"] == 0
+        finally:
+            writer.rollback()
+            reader.join(6)
+    assert not reader.is_alive()
+
+
 def test_shared_rate_and_release_on_error(tmp_path):
     gate = SharedAdmission(settings(tmp_path, requests_per_second=10))
     for i in range(4):
