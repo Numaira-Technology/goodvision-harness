@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import ctypes
 import io
 import json
+import os
 import subprocess
 import tarfile
 from pathlib import Path
@@ -12,6 +14,41 @@ from pathlib import Path
 import pytest
 
 from tools import neural_container as neural
+
+
+def reserve(path, size):
+    """Expose the real byte length without allocating it on the runner disk.
+
+    Later shard-3 tests create their own temp directories. A non-sparse
+    Windows truncate of the CLIP safetensors stand-in (about 1.7 GiB) is
+    repeated for every case and fills the system drive; setup then fails
+    with "could not create numbered dir". Linux truncate is already sparse.
+    """
+    with path.open("wb") as stream:
+        if os.name == "nt" and size:
+            import msvcrt
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.DeviceIoControl.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.POINTER(ctypes.c_uint32),
+                ctypes.c_void_p,
+            ]
+            kernel32.DeviceIoControl.restype = ctypes.c_int
+            returned = ctypes.c_uint32()
+            handle = ctypes.c_void_p(msvcrt.get_osfhandle(stream.fileno()))
+            # FSCTL_SET_SPARSE: SetEndOfFile then keeps a hole instead of zeros.
+            if not kernel32.DeviceIoControl(
+                handle, 0x000900C4, None, 0, None, 0, ctypes.byref(returned), None
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+        stream.truncate(size)
+
 
 IMAGE = {
     "name": "goodvision-neural:v2.0-test",
@@ -91,10 +128,8 @@ def kit(tmp_path):
     )
     snapshot.mkdir(parents=True)
     for name, size in neural.MODEL_FILES.items():
-        with (snapshot / name).open("wb") as stream:
-            stream.truncate(size)
-    with (state / "models/neural/yolo26s.pt").open("wb") as stream:
-        stream.truncate(20422725)
+        reserve(snapshot / name, size)
+    reserve(state / "models/neural/yolo26s.pt", 20422725)
     directory = tmp_path / "New Neural V2.0"
     directory.mkdir()
     payload = directory / "neural.tar"
