@@ -14,7 +14,12 @@
   "weight_repo": "Qwen/Qwen3-VL-8B-Instruct",
   "weight_revision": "0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
   "weights_source": "Cloudflare R2 goodvision-models: models/Qwen/Qwen3-VL-8B-Instruct/0c351dd01ed87e9c1b53cbc748cba10e6187ff3b/",
-  "env_source": "Cloudflare R2 goodvision-models: envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz (new object; not the HF pack d101d333\u2026)",
+  "env_source": "Cloudflare R2 goodvision-models: envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz; sha256 59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b; 4252375781 bytes. Declared registry identity; separate deployment evidence is required.",
+  "env_artifact": {
+    "r2_key": "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz",
+    "sha256": "59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b",
+    "size": 4252375781
+  },
   "precision": "bf16 via vLLM dtype=bfloat16; attention backend chosen by vLLM (often FLASH_ATTN/FA2 on Ada). Not a replacement for the HF qwen8b_r2_host row.",
   "serving": "vLLM OpenAI-compatible /v1/chat/completions (tools.qwen8b.serve_vllm). Continuous batching / paged KV; no process-wide generate lock. Distinct from transformers generate() and from OpenRouter.",
   "hardware": "one RTX 4090 24GB",
@@ -26,17 +31,9 @@
     "max_model_len": 8192,
     "max_num_seqs": 12,
     "max_num_batched_tokens": 8192,
-    "gpu_memory_utilization": 0.9,
+    "gpu_memory_utilization": 0.90,
     "enforce_eager": true,
-    "limit_mm_per_prompt": {
-      "image": 1,
-      "video": 0
-    },
+    "limit_mm_per_prompt": {"image": 1, "video": 0},
     "served_model_name": "qwen/qwen3-vl-8b-instruct"
-  },
-  "env_artifact": {
-    "r2_key": "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz",
-    "sha256": "2a3dcb1fc6a8d84439263512c65dae0bb576c50d4f559ae9f069407eb2e86db6",
-    "size": 4236991211
   }
 }
