@@ -359,8 +359,9 @@ The active declared vLLM artifact is
 `envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz`, SHA-256
 `59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b`,
 4,252,375,781 bytes (torch `+cu130`). It needs host CUDA >=13.0 and NVIDIA driver
->=580; this launcher does not check the host driver yet (that check is added in
-#98). The superseded `cu128-py312-vllm0310-ada` object is kept frozen for
+>=580. The launcher rejects incompatible or unknown offer/resume metadata and
+checks the actual driver after SSH, before bootstrap or downloads. These checks
+do not establish artifact or GPU acceptance. The superseded `cu128-py312-vllm0310-ada` object is kept frozen for
 provenance only: it is missing `typing_extensions` in the prefix and is never
 restored. The incomplete cu130 `ada` pack is also frozen. The declared ada2
 identity is not producer provenance, a full-archive readback, or a

@@ -78,7 +78,8 @@ def test_eligible_offers_reject_expensive_or_multi_gpu():
     with pytest.raises(RuntimeError, match="more expensive"):
         _eligible_offers([{"num_gpus": 1, "dph_total": MAX_DPH + 0.5}])
     ok = _eligible_offers([
-        {"num_gpus": 1, "dph_total": 1.22, "id": 1},
+        {"num_gpus": 1, "dph_total": 1.22, "id": 1,
+         "cuda_max_good": 13.0, "driver_version": "580.65.06"},
         {"num_gpus": 1, "dph_total": 3.0, "id": 2},
     ])
     assert [o["id"] for o in ok] == [1]

@@ -264,8 +264,9 @@ python -m tools.build_env --model videojev \
 
 `qwen8b-vllm` 使用独立的 CPU 构建路径：仅允许 Linux x86_64，按选定注册表条目
 的 `env.compat` 验证 Python/torch/CUDA 和声明的扩展版本，不预装 HF 的 torch。
-本分支保留的 cu128 条目声明 Python 3.12、torch 2.13.0、CUDA 12.8 和 vLLM 0.31.0；
-这些声明不等于已验证的运行事实，也不能用 cu130/ada2 的结果证明。构建后继包前须
+当前有效条目是 cu130/ada2，声明 Python 3.12、torch 2.13.0、CUDA 13.0 和 vLLM 0.31.0；
+旧 cu128 和不完整的 cu130/ada 对象已退役，不能作为回退。当前声明不是独立构建、
+完整读回或 GPU 运行证据，其他对象的结果也不能替代。构建后继包前须
 先审查新的配方与不可变身份，不能为使构建通过而改写历史条目。
 `require_cuda: false` 会明确留下 GPU 验证待完成；不会把 CPU 构建当作 GPU 验收。
 flash-attn 编译仍要求 GPU。构建与打包后检查 conda 文件完整性，并在全新临时

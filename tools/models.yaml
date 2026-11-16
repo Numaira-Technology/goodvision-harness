@@ -134,7 +134,7 @@ models:
       r2_key: envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz
       manifest_key: envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.json
       sha256: 59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b
-      size: 4252375781                       # 4.25 GB; HEAD+GET sha verified 2026-11-08
+      size: 4252375781                       # 4.25 GB; historical readback claim, receipt unavailable
       complete: true                         # author-declared; evidence limits in qwen8b_vllm/pack_provenance.json
       unpack_to: /opt/env/qwen8b-vllm
       activate_rel: bin/activate
