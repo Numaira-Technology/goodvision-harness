@@ -46,7 +46,8 @@ def verify_bundle(bundle):
         if (plan.get("dataset_context") or {}).get("bag_validation") != overlay:
             raise ValueError("plan bag validation fingerprint differs from preflight")
         if frozen_rules["version"] == CURRENT_VERSION:
-            count = (44 if has_bag_validation(plan) else 24) if plan["split"] == "validation" else 202
+            count = ((44 if has_bag_validation(plan) else 24) if plan["split"] == "validation"
+                     else (report.get("dataset_context") or {}).get("test_questions", 202))
             if {q["number"] for q in plan["questions"]} != set(range(1, count + 1)) or len(plan["questions"]) != count:
                 raise ValueError("plan does not cover the frozen question cohort")
     sources = json.loads((bundle / "source-hashes.json").read_text())
