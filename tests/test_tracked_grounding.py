@@ -523,8 +523,12 @@ def test_twelve_sources_through_http_broker_and_spawned_workers(
 
     output = tmp_path
     result, detector_counts = run_once(output)
-    # Host release lag stays under the 0.25s production gate in the
-    # controlled-clock sender tests. One CI pause must not fail this contract.
+    assert result["input_timing_valid"], {
+        "sender_missed_samples": result["sender_missed_samples"],
+        "sender_missed_samples_by_stream": result["sender_missed_samples_by_stream"],
+        "input_release_lag_seconds": result["input_release_lag_seconds"],
+        "offer_rejected_by_stream": result["offer_rejected_by_stream"],
+    }
     assert result["sender_missed_samples"] == 0
     assert result["sender_missed_samples_by_stream"] == [0] * 12
     assert result["offer_rejected_by_stream"] == [0] * 12
