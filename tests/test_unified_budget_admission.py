@@ -83,4 +83,3 @@ def test_receipt_arriving_after_reconcile_does_not_permanently_block(tmp_path,mo
     g(intent(2))
     assert g.state['charged_or_reserved_usd']==pytest.approx(.7)
     assert len(g.state['reservations'])==2
-
