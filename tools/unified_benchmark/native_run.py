@@ -27,6 +27,8 @@ from .contract import EVENTS, plan_rules, canonical, digest, file_hash, finite_n
 from .native_deploy import ALIASES, environment_for, profile, verify_deployment
 from .locking import lock_exclusive
 from .retry import Ledger, PausedRun, Queue, RequestFailure
+from tools.latency_investigation.http_split import begin_open, bind_request, record_split, reset_request
+
 from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
 
 
@@ -123,10 +125,17 @@ class NativeBackend:
     def http(self, body):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/predict", data=canonical(body),
                                      headers={"Content-Type": "application/json"})
+        timings = None
         try:
-            with urllib.request.urlopen(req, timeout=90) as r:
-                return r.status, json.load(r)
+            response, timings = begin_open(req, 90)
+            with response:
+                status = response.status
+                payload = json.load(response)
+            record_split(self.output, timings, http_status=status)
+            return status, payload
         except urllib.error.HTTPError as e:
+            timings = getattr(e, "_gv_timings", timings)
+            record_split(self.output, timings, http_status=e.code)
             return e.code, {"error": e.read().decode(errors="replace")}
 
     def telemetry(self):
@@ -497,18 +506,22 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                 timing = {}
                 parsed = {}
                 fatal = False
+                token = bind_request(unit["id"], attempt)
                 try:
-                    code, raw, timing = backend.infer(unit, body)
-                    if code == 200:
-                        parsed = parse_response(cfg, unit, raw)
-                    else:
-                        error = "HTTP " + str(code)
-                        fatal = code in (401, 403)
-                except (urllib.error.URLError, TimeoutError, ConnectionError, ValueError, KeyError, TypeError) as e:
-                    error = type(e).__name__ + ": " + str(e)
-                    fatal = "identity differs" in error
-                except Exception as e:
-                    error, fatal = type(e).__name__ + ": " + str(e), True
+                    try:
+                        code, raw, timing = backend.infer(unit, body)
+                        if code == 200:
+                            parsed = parse_response(cfg, unit, raw)
+                        else:
+                            error = "HTTP " + str(code)
+                            fatal = code in (401, 403)
+                    except (urllib.error.URLError, TimeoutError, ConnectionError, ValueError, KeyError, TypeError) as e:
+                        error = type(e).__name__ + ": " + str(e)
+                        fatal = "identity differs" in error
+                    except Exception as e:
+                        error, fatal = type(e).__name__ + ": " + str(e), True
+                finally:
+                    reset_request(token)
                 write_receipt(path, {"unit": unit["id"], "attempt": attempt, "request_sha256": unit["request_sha256"],
                     "config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]],
                     "at": stamp(), "http_status": code, "response": raw, "parsed": parsed, "error": error,

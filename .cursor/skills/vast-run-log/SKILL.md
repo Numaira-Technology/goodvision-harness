@@ -112,7 +112,13 @@ The interval is 2 seconds.
 - GPU samples every 2 seconds from ready until eval completion or release:
   PCIe gen and width, power draw and limit, SM clock, utilization, memory
   used, temperature, and `t_unix`.
-- Timings: rent, ready, eval start, eval end, release.
+- Timings: rent, ready, eval start, eval end, release. Weight download and
+  env restore, when the vLLM launcher records them, sit under `timings.setup`
+  and are not request latency.
+- One EXTRA probe line when the host answers: CPU governor, turbo, NUMA node
+  count, each GPU's NUMA node, and compute-app names. Per-GPU utilization
+  stays in the probe rows and `gpu-samples.jsonl`. Client RTT and
+  SSH-local-forward versus direct port are `hardware.client_access`.
 - Score read from that run's `summary.json` when this run created the
   eval-output directory. Otherwise the score is `unknown`.
 - Manifest `status`: `rented` after a contract or a resumed instance id,
