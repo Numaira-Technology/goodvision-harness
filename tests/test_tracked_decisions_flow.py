@@ -54,9 +54,9 @@ def offline_inspector(config, *, broker_url, audit_dir):
 def test_twelve_sources_native_decisions_and_person_reports(
     tmp_path, monkeypatch, mode
 ):
-    # Replay every adapter input despite shared-host scheduling stalls. The
-    # production feeder's intentional expiry/drop behavior is covered by the
-    # controlled-clock source-feeder and sender-lag tests.
+    # This is an adapter/accounting contract, not a host throughput benchmark.
+    # Replay each planned source frame once; production timing/drop rules remain
+    # covered by test_vlm_source_feeder and test_vlm_sender_lag.
     monkeypatch.setattr(
         "tools.vlm_multistream_benchmark.TimedSourceFeeder", ContractSourceFeeder
     )

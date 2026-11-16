@@ -1,3 +1,9 @@
+# Check text files out with LF on every OS. Benchmark preflight pins sha256
+# hashes of source, deployment and bundle files; Windows' default CRLF checkout
+# changed those bytes, so every pinned hash "differed" on Windows CI. All text
+# files are already stored with LF, so this changes no repository content.
+* text=auto eol=lf
+
 # Keep the reviewed vendor bytes and integrity hash identical on Windows.
 src/goodvision_harness/assets/opencv-4.13.0.js -text -whitespace
 # Historical reconstruction verifies exact bytes, including line endings.
