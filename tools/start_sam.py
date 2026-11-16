@@ -504,6 +504,11 @@ def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str,
 
 
 def main() -> int:
+    try:
+        from tools.vast_run_log import attach, finish
+    except ImportError:
+        from vast_run_log import attach, finish
+    attach()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ssh-key", type=Path, help="SSH private key; defaults to SAM_SSH_KEY.")
     parser.add_argument("--disk-gb", type=int, help="Rented disk size; defaults to SAM_DISK_GB or 50 GB.")
@@ -746,6 +751,9 @@ def main() -> int:
                     "Destroy it in Vast Instances.",
                     file=sys.stderr, flush=True,
                 )
+        # Retained analysis instances still need sampling stopped before the
+        # temporary SSH key disappears; the normal release wrapper also stops it.
+        finish()
         if ssh_directory is not None:
             ssh_directory.cleanup()
         for item, handler in previous_handlers.items():

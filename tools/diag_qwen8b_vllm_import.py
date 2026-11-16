@@ -155,6 +155,11 @@ def _eligible(offers: list[dict]) -> list[dict]:
 
 
 def main() -> int:
+    try:
+        from tools.vast_run_log import attach
+    except ImportError:
+        from vast_run_log import attach
+    attach()
     from dotenv import load_dotenv
     from vastai import VastAI
 

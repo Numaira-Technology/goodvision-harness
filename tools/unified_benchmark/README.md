@@ -385,6 +385,63 @@ the public CLI refuses an existing run. The ledger supports bounded continuation
 but there is no automatic restart/recovery command here: inspect stopped records,
 then use a reviewed wrapper retaining their contexts and remaining attempt budget.
 
+## Hardware run log
+
+Vast rentals record the machine through `tools/vast_run_log.py`. Colleagues keep
+the same launcher command. `python -m tools.start_qwen8b_r2` is armed by the
+`tools` package. `python -m tools.start_qwen8b_vllm`, `python tools/start_sam.py`,
+`python tools/start_detector.py`, and `python -m tools.diag_qwen8b_vllm_import`
+call `attach()` themselves. The call pattern, output layout, and checklist are
+in `.cursor/skills/vast-run-log/SKILL.md`. Each eval
+still needs its own new `--eval-output` (the evaluator refuses an existing
+directory). This update changes the frozen SAM and vLLM launcher sources;
+create a new preflight bundle after updating. Existing bundles keep their source
+checks and are not rewritten. Consecutive runs on one model share one index:
+
+```text
+outputs/run-logs/qwen8b_r2_host/logs/manifest.json
+outputs/run-logs/qwen8b_r2_host/logs/<run-id>/vast-offer.json
+outputs/run-logs/qwen8b_r2_host/logs/<run-id>/entry.json
+```
+
+`qwen8b_r2_vllm` uses the same layout under that alias. `vast-offer.json` is the
+selected Vast offer with secret-looking fields removed, written when the
+instance is created. `entry.json` adds the offer's key fields, one nvidia-smi
+probe, rent/ready/eval/release times, and the score read from that run's
+`summary.json`. Scores are captured only when this invocation creates a fresh
+output and the evaluator returns; a rejected or interrupted invocation leaves
+its score unknown and does not modify an older report. `release_status` is
+`released` only after Vast confirms destruction; a failure leaves `release_utc`
+unknown. `manifest.json` has one row per run: time, who, machine id, GPU,
+price, location, and score. Who prefers `GOODVISION_OPERATOR`, then git
+`user.name`, then `$USER` (`%USERNAME%` on Windows). After the model report
+directory exists, the same run folder and an index row are copied to
+`<eval-output>/<alias>/logs/`.
+
+Unknown measurements are the string `unknown`, not 0. A real accuracy of 0 stays
+0. If logging fails, the launcher prints `run log: ...` and still returns the
+eval's own exit code. Offer search, filters, sort, prompts, and scoring are
+unchanged. Concurrent index writes require the manifest lock. If a writer cannot
+acquire it, the index update is skipped with a warning while the per-run entry is
+retained. A lock left by a crashed process needs removal after confirming that
+no writer is active. This log is not uploaded to R2 yet.
+
+Example shape (not a measured run):
+
+```json
+{
+  "run_id": "20261115T230100Z-ab12cd34",
+  "time": "2026-11-15T23:01:00Z",
+  "who": {"display": "ada", "operator_env": "ada", "user": "ada", "git_user": "Ada"},
+  "gpu": {"machine_id": 4242, "gpu_name": "RTX_4090", "dph_total": 0.42, "geolocation": "California, US"},
+  "score": {
+    "validation": {"accuracy": 0.5, "final_unknown_questions": 1, "final_missing_unique_units": 0},
+    "test": {"accuracy": "unknown", "final_unknown_questions": "unknown", "final_missing_unique_units": "unknown"}
+  },
+  "entry": "20261115T230100Z-ab12cd34/entry.json"
+}
+```
+
 ## Thresholds, reports and publication
 
 Luna: 0.01 grid, longest optimal contiguous run midpoint, `>=`; recheck midpoint
