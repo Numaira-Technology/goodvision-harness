@@ -188,10 +188,12 @@ class SharedAdmission:
         )
 
     def snapshot(self):
-        # A cleanup or grant transaction can hold the writer briefly. A 0.1s
-        # busy timeout turns that into "database is locked" instead of the count.
-        # The harness SharedAdmission already waits this long for the same reason.
-        with self._transaction(timeout=5.0) as db:
+        # One slow grant or release can hold the writer past the 0.1s busy
+        # timeout and raise "database is locked" instead of returning the count.
+        # Wait out that transaction, using the same 0.5s cap as _remove, so a
+        # snapshot does not block for the whole release window and expire a
+        # 3s admission deadline.
+        with self._transaction(timeout=0.5) as db:
             self._reap(db, time.monotonic())
             active, waiting = db.execute(
                 "SELECT COALESCE(SUM(active),0), COALESCE(SUM(1-active),0) FROM tickets"
