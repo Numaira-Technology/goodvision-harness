@@ -73,30 +73,34 @@ def test_every_startup_failure_releases_instance(rig, monkeypatch, phase):
     assert json.loads(rig.status.read_text())["cleanup_confirmed"] is True
 
 
-def test_lost_create_response_reconciles_only_unique_label(rig):
+@pytest.mark.parametrize("failure,code", [(TimeoutError, 1), (KeyboardInterrupt, 130)])
+def test_lost_create_response_reconciles_only_unique_label(rig, failure, code):
     label = []
 
     def create(*args, **kwargs):
         label.append(kwargs["label"])
-        raise TimeoutError("creation response lost")
+        raise failure("creation response lost")
 
     launch.S.create_from_offers.side_effect = create
     rig.vast.show_instances.side_effect = lambda: [
         {"id": 88, "label": "unrelated"},
         {"id": 42, "label": label[0]},
     ]
-    assert launch.main(rig.args) == 1
+    assert launch.main(rig.args) == code
     launch.S.release_instance.assert_called_once_with(rig.vast, 42)
     assert json.loads(rig.status.read_text())["cleanup_confirmed"] is True
 
 
+@pytest.mark.parametrize("failure", [TimeoutError, KeyboardInterrupt])
 @pytest.mark.parametrize("lookup", ["none", "failure", "ambiguous"])
-def test_unconfirmed_creation_is_visible_with_recovery_label(rig, capsys, lookup):
+def test_unconfirmed_creation_is_visible_with_recovery_label(
+    rig, capsys, lookup, failure
+):
     label = []
 
     def create(*args, **kwargs):
         label.append(kwargs["label"])
-        raise TimeoutError("synthetic-secret")
+        raise failure("synthetic-secret")
 
     launch.S.create_from_offers.side_effect = create
     if lookup == "failure":

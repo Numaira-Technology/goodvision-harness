@@ -424,7 +424,9 @@ def main(argv=None) -> int:
                     flush=True,
                 )
                 exit_code = 1
-    return exit_code
+    # An interrupted create may still be billing even without an instance ID.
+    # Only a confirmed cleanup may preserve the normal Ctrl+C exit code.
+    return exit_code if cleanup_confirmed else 1
 
 
 if __name__ == "__main__":

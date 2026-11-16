@@ -84,7 +84,8 @@ inference. A lost create reply is reconciled only when the unique label identifi
 one instance. If creation or release is unconfirmed, inspect the reported ID/label
 in Vast, destroy the instance if present, and confirm billing stopped before retrying.
 `--resume-instance-id ID` takes cleanup responsibility only for a bag-demo-labelled
-instance explicitly selected by the operator.
+instance explicitly selected by the operator. Exit 130 means an interruption with
+confirmed cleanup; unresolved creation or release returns 1, including after Ctrl+C.
 
 ## Offline review validation
 
@@ -95,5 +96,7 @@ PYTHONPATH=src python -m pytest tests/test_bag_demo*.py tests/test_start_bag_dem
 The tests use synthetic media and mocked Vast, HTTP and model boundaries. The page's
 actual JavaScript is exercised with delayed responses using Node. They do not rent a
 GPU, download weights, call a paid model or upload customer clips, and cannot replace
-an authorized combined real-model run. The author must confirm whether this PR is to
-land as this partial demo or wait for the missing combined integration and evidence.
+an authorized real-model run. The author accepted this partial scope in
+[PR #85](https://github.com/Numaira-Technology/goodvision-harness/pull/85#issuecomment-6903482356):
+combined server/API/UI alcohol integration and its end-to-end evidence remain a
+follow-up, while this API continues to report `alcohol_status: "not_integrated"`.
