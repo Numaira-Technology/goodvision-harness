@@ -60,38 +60,59 @@ OFFER_FIELDS = (
 # module, model alias, engine, sample-during-run.
 # The HF launcher keeps the offer log and does not sample.
 LAUNCHERS = {
-    "start_qwen8b_r2.py": ("tools.start_qwen8b_r2", "qwen8b_r2_host", "transformers", False),
+    "start_qwen8b_r2.py": (
+        "tools.start_qwen8b_r2",
+        "qwen8b_r2_host",
+        "transformers",
+        False,
+    ),
     "start_qwen8b_vllm.py": ("tools.start_qwen8b_vllm", "qwen8b_r2_vllm", "vllm", True),
     "start_sam.py": ("tools.start_sam", "sam", "sam", True),
     "start_detector.py": ("tools.start_detector", "detector", "detector", True),
     "diag_qwen8b_vllm_import.py": (
-        "tools.diag_qwen8b_vllm_import", "qwen8b_vllm_diag", "vllm-diag", True,
+        "tools.diag_qwen8b_vllm_import",
+        "qwen8b_vllm_diag",
+        "vllm-diag",
+        True,
     ),
 }
 # Armed by tools/__init__.py because that launcher file must not be edited.
 _AUTO_ARM = {"start_qwen8b_r2.py"}
 SAMPLE_INTERVAL = 2
 _SAMPLE_COLUMNS = (
-    "pcie_gen_current", "pcie_width_current", "pcie_gen_max", "pcie_width_max",
-    "power_draw", "power_limit", "clock_sm", "utilization_gpu", "memory_used",
+    "pcie_gen_current",
+    "pcie_width_current",
+    "pcie_gen_max",
+    "pcie_width_max",
+    "power_draw",
+    "power_limit",
+    "clock_sm",
+    "utilization_gpu",
+    "memory_used",
     "temperature_gpu",
 )
 _STATIC_FIELDS = (
-    "driver_version", "cuda_version", "cpu_model", "host_cpu_cores", "host_ram_total",
-    "container_cpu_limit", "container_memory_limit",
+    "driver_version",
+    "cuda_version",
+    "cpu_model",
+    "host_cpu_cores",
+    "host_ram_total",
+    "container_cpu_limit",
+    "container_memory_limit",
 )
 # POSIX sh on the instance. No pip. One nvidia-smi line every two seconds.
 _SAMPLER_SH = (
     "out=$1\n"
     "interval=$2\n"
+    'exec >> "$out" || exit 1\n'
+    'trap "exit 0" TERM INT\n'
     "while true; do\n"
     "  ts=$(date -u +%s 2>/dev/null || printf unknown)\n"
-    "  line=$(nvidia-smi --query-gpu=pcie.link.gen.current,pcie.link.width.current,"
+    "  nvidia-smi --query-gpu=index,pcie.link.gen.current,pcie.link.width.current,"
     "pcie.link.gen.max,pcie.link.width.max,power.draw,power.limit,clocks.sm,"
     "utilization.gpu,memory.used,temperature.gpu --format=csv,noheader "
-    "2>/dev/null | awk 'NR==1 { print; exit }')\n"
-    "  printf '%s\\t%s\\n' \"$ts\" \"${line:-unknown}\"\n"
-    "  sleep \"$interval\"\n"
+    '2>/dev/null | awk -v ts="$ts" \'NF { print ts "\\t" $0 }\'\n'
+    '  sleep "$interval"\n'
     "done\n"
 )
 _SECRET_KEY = re.compile(
@@ -261,11 +282,20 @@ def attach(globals_dict=None) -> None:
         session._error("arm", exc)
 
 
+def finish() -> None:
+    """Flush while SSH credentials still exist, including a retained rental."""
+    if _SESSION is not None:
+        try:
+            _SESSION.finish_once()
+        except Exception as exc:
+            _stderr("finish", exc)
+
+
 def _mocked(fn) -> bool:
     return getattr(type(fn), "__module__", "") == "unittest.mock"
 
 
-def _patch_namespace(mapping, session: "RunLog") -> None:
+def _patch_namespace(mapping, session: RunLog) -> None:
     wrappers = (
         ("create_from_offers", lambda fn: _wrap_create(fn, session)),
         ("run", lambda fn: _wrap_run(fn, session)),
@@ -432,10 +462,17 @@ def parse_sample_line(line: str, offset):
         cells = [cell.strip().replace("\r", "") for cell in next(csv.reader([rest]))]
     except csv.Error:
         return None
+    gpu_index = 0  # Accept legacy single-GPU rows as GPU 0.
+    if len(cells) == len(_SAMPLE_COLUMNS) + 1 and cells[0].isdigit():
+        gpu_index = int(cells.pop(0))
     if len(cells) != len(_SAMPLE_COLUMNS):
         return None
-    row = {"t_remote_unix": remote, "t_unix": round(float(t_unix), 3)}
-    row.update(zip(_SAMPLE_COLUMNS, cells))
+    row = {
+        "t_remote_unix": remote,
+        "t_unix": round(float(t_unix), 3),
+        "gpu_index": gpu_index,
+    }
+    row.update(zip(_SAMPLE_COLUMNS, cells, strict=True))
     return row
 
 
@@ -460,14 +497,18 @@ def _percentile(values, pct: float):
     if len(ordered) == 1:
         return ordered[0]
     rank = (len(ordered) - 1) * (pct / 100.0)
-    lo = int(math.floor(rank))
+    lo = math.floor(rank)
     hi = min(lo + 1, len(ordered) - 1)
     frac = rank - lo
     return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
 
 
 def _round_meas(value):
-    if isinstance(value, bool) or not isinstance(value, float) or not math.isfinite(value):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, float)
+        or not math.isfinite(value)
+    ):
         return value
     rounded = round(value, 4)
     nearest = round(rounded)
@@ -479,20 +520,22 @@ def _round_meas(value):
 def _low_gen_fraction(rows, phase_end, interval):
     busy = 0.0
     low = 0.0
-    for index, row in enumerate(rows):
+    # Consecutive samples must belong to the same GPU, including multi-GPU SAM.
+    following = {}
+    for row in reversed(rows):
+        gpu = row.get("gpu_index", 0)
+        next_time = following.get(gpu, phase_end)
+        following[gpu] = row["t_unix"]
         util = _metric(row.get("utilization_gpu", ""))
-        if index + 1 < len(rows):
-            weight = rows[index + 1]["t_unix"] - row["t_unix"]
-        else:
-            weight = phase_end - row["t_unix"]
-            if weight <= 0:
-                weight = interval
+        weight = min(next_time - row["t_unix"], interval)
         if weight < 0 or util is None or util <= 0:
             continue
-        busy += weight
         current = _metric(row.get("pcie_gen_current", ""))
         maximum = _metric(row.get("pcie_gen_max", ""))
-        if current is not None and maximum is not None and current < maximum:
+        if current is None or maximum is None:
+            continue
+        busy += weight
+        if current < maximum:
             low += weight
     if busy <= 0:
         return "unknown"
@@ -545,8 +588,10 @@ def _phase_windows(eval_output, alias) -> dict:
         if isinstance(start, bool) or isinstance(end, bool):
             continue
         if (
-            isinstance(start, (int, float)) and isinstance(end, (int, float))
-            and math.isfinite(start) and math.isfinite(end)
+            isinstance(start, (int, float))
+            and isinstance(end, (int, float))
+            and math.isfinite(start)
+            and math.isfinite(end)
         ):
             windows[split] = (float(start), float(end))
     return windows
@@ -559,7 +604,7 @@ def summarize_gpu_samples(samples, windows, interval):
         return "unknown"
     if not windows:
         times = [row["t_unix"] for row in usable]
-        windows = {"run": (min(times), max(times))}
+        windows = {"run": (min(times), max(times) + interval)}
     out = {}
     for phase, bounds in windows.items():
         if not isinstance(bounds, tuple):
@@ -569,6 +614,15 @@ def summarize_gpu_samples(samples, windows, interval):
         chosen = [row for row in usable if start <= row["t_unix"] <= end]
         chosen.sort(key=lambda row: row["t_unix"])
         out[phase] = _phase_stats(chosen, end, interval)
+        if chosen:
+            out[phase]["gpus"] = {
+                str(gpu): _phase_stats(
+                    [row for row in chosen if row.get("gpu_index", 0) == gpu],
+                    end,
+                    interval,
+                )
+                for gpu in sorted({row.get("gpu_index", 0) for row in chosen})
+            }
     return out
 
 
@@ -751,6 +805,22 @@ class RunLog:
         contract = _contract(created)
         if contract is None:
             return
+        if self.instance_id is not None and self.instance_id != contract:
+            # SAM and detector may release a failed host and rent a replacement.
+            # Keep each accepted rental's offer/probe/samples in its own entry.
+            self.finish_once()
+            hooks = {
+                name: getattr(self, name)
+                for name in (
+                    "_sam_bound",
+                    "_originals",
+                    "_hooks_ready",
+                    "_expects_ready",
+                )
+            }
+            self.__init__(self.launcher, self.model, self.engine, self.sample)
+            self.__dict__.update(hooks)
+            self.mark_rent_start()
         self.instance_id = contract
         offer_id = kwargs.get("id", args[0] if args else None)
         selected = _find_offer(offers, offer_id)
@@ -858,16 +928,21 @@ class RunLog:
             self._error("sample", "ssh prefix missing")
             return
         self._sample_seq += 1
-        token = "%s-%s" % (self.run_id, self._sample_seq)
+        token = f"{self.run_id}-{self._sample_seq}"
         if not re.fullmatch(r"[A-Za-z0-9T-]+", token):
             self._error("sample", "unsafe sample path")
             return
-        script = "/tmp/gv-gpu-%s.sh" % token
-        out = "/tmp/gv-gpu-%s.tsv" % token
+        directory = f"/tmp/gv-gpu-{token}"
+        script = directory + "/sample.sh"
+        out = directory + "/samples.tsv"
+        # Upload on the foreground SSH stdin. Background only the sampler;
+        # otherwise POSIX sh gives cat /dev/null and reports a useless PID.
+        # An exclusive private directory also prevents shared-/tmp symlink writes.
         launch = (
-            "cat > %s && chmod 700 %s && nohup sh %s %s %s "
-            "</dev/null >/dev/null 2>&1 & echo $!"
-        ) % (script, script, script, out, int(SAMPLE_INTERVAL))
+            f"umask 077; mkdir {directory} && cat > {script} && chmod 700 {script} && "
+            f"{{ nohup sh {script} {out} {int(SAMPLE_INTERVAL)} "
+            "</dev/null >/dev/null 2>&1 & echo $!; }"
+        )
         try:
             if not isinstance(self.probe, dict) or self.probe.get("status") != "ok":
                 probed = self._ssh(_PROBE, timeout=20)
@@ -887,7 +962,11 @@ class RunLog:
             else:
                 self._clock_offset = "unknown"
             started = self._ssh(launch, timeout=20, input=_SAMPLER_SH)
-            lines = [line.strip() for line in (started.stdout or "").splitlines() if line.strip()]
+            lines = [
+                line.strip()
+                for line in (started.stdout or "").splitlines()
+                if line.strip()
+            ]
             pid = lines[-1] if lines else ""
             if started.returncode != 0 or not pid.isdigit():
                 self._error("sample", "sampler did not start")
@@ -907,20 +986,32 @@ class RunLog:
         text = ""
         try:
             if pid and str(pid).isdigit() and out:
-                result = self._ssh("kill %s 2>/dev/null; cat %s" % (pid, out), timeout=20)
+                result = self._ssh(f"kill {pid} 2>/dev/null; cat {out}", timeout=20)
                 text = result.stdout or ""
+                if result.returncode:
+                    self._error("sample", "could not collect sampler output")
         except Exception as exc:
             self._error("sample", exc)
-        self._ingest(text)
+        try:
+            self._ingest(text)
+        except Exception as exc:
+            self._error("sample", exc)
 
     def _ssh(self, remote: str, *, timeout: int, input: str | None = None):
         return subprocess.run(
-            [*self._ssh_prefix, remote], input=input, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout,
+            [*self._ssh_prefix, remote],
+            input=input,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
         )
 
     def _ingest(self, text: str) -> None:
-        offset = self._clock_offset if isinstance(self._clock_offset, (int, float)) else None
+        offset = (
+            self._clock_offset if isinstance(self._clock_offset, (int, float)) else None
+        )
         for line in (text or "").splitlines():
             row = parse_sample_line(line, offset)
             if row is not None:
@@ -929,7 +1020,11 @@ class RunLog:
             return
         _write_lines(self.run_dir / "gpu-samples.jsonl", self._samples)
         self._sample_summary = summarize_gpu_samples(
-            self._samples, _phase_windows(self.eval_output, self.model), SAMPLE_INTERVAL,
+            self._samples,
+            _phase_windows(self.eval_output, self.model)
+            if self._owns_eval_output and offset is not None
+            else {},
+            SAMPLE_INTERVAL,
         )
 
     def capture_score(self) -> None:
@@ -948,6 +1043,9 @@ class RunLog:
         self._mono["finish"] = time.monotonic()
         try:
             self.stop_sampler()
+        except Exception as exc:
+            self._error("sample", exc)
+        try:
             self._write_entry()
             self._update_manifest()
             self._write_entry()
@@ -1026,7 +1124,8 @@ class RunLog:
             "entry": self.run_id + "/entry.json",
             "samples": (
                 self.run_id + "/gpu-samples.jsonl"
-                if (self.run_dir / "gpu-samples.jsonl").is_file() else "unknown"
+                if (self.run_dir / "gpu-samples.jsonl").is_file()
+                else "unknown"
             ),
         }
 
@@ -1064,7 +1163,9 @@ class RunLog:
         samples = self.run_dir / "gpu-samples.jsonl"
         if samples.is_file():
             target = dest / samples.name
-            target.write_text(samples.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+            target.write_text(
+                samples.read_text(encoding="utf-8"), encoding="utf-8", newline="\n"
+            )
         _upsert_manifest(report / "logs" / "manifest.json", self._row(), self)
 
     def _error(self, label, exc) -> None:
@@ -1187,10 +1288,16 @@ def _wrap_eval(fn, session: RunLog):
             except Exception as exc:
                 session._error("timer", exc)
             raise
+        session._owns_eval_output = output_was_absent
         try:
             session.note_eval_end(code)
+        except Exception as exc:
+            session._error("timer", exc)
+        try:
             session.stop_sampler()
-            session._owns_eval_output = output_was_absent
+        except Exception as exc:
+            session._error("sample", exc)
+        try:
             session.capture_score()
             session._write_entry()
         except Exception as exc:
@@ -1382,7 +1489,9 @@ def _write_lines(path: Path, rows) -> None:
     tmp = path.with_name(path.name + ".tmp")
     with tmp.open("w", encoding="utf-8", newline="\n") as handle:
         for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.write(
+                json.dumps(redact(row), ensure_ascii=False, sort_keys=True) + "\n"
+            )
     os.replace(tmp, path)
 
 

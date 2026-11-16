@@ -383,7 +383,9 @@ the same launcher command. `python -m tools.start_qwen8b_r2` is armed by the
 call `attach()` themselves. The call pattern, output layout, and checklist are
 in `.cursor/skills/vast-run-log/SKILL.md`. Each eval
 still needs its own new `--eval-output` (the evaluator refuses an existing
-directory). Consecutive runs on one model share one index:
+directory). This update changes the frozen SAM and vLLM launcher sources;
+create a new preflight bundle after updating. Existing bundles keep their source
+checks and are not rewritten. Consecutive runs on one model share one index:
 
 ```text
 outputs/run-logs/qwen8b_r2_host/logs/manifest.json

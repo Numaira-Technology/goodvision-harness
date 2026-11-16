@@ -13,9 +13,23 @@ import pytest
 from tools import start_sam
 from tools import vast_run_log as run_log
 from tools.vast_run_log import (
-    LAUNCHERS, SAMPLE_INTERVAL, _AUTO_ARM, _HOST_FIELDS, _PROBE, _SAMPLER_SH,
-    RunLog, _wrap_create, _wrap_eval, _wrap_release, attach, logs_directory,
-    offer_fields, parse_probe, parse_sample_line, redact, summarize_gpu_samples,
+    _AUTO_ARM,
+    _HOST_FIELDS,
+    _PROBE,
+    _SAMPLER_SH,
+    LAUNCHERS,
+    SAMPLE_INTERVAL,
+    RunLog,
+    _wrap_create,
+    _wrap_eval,
+    _wrap_release,
+    attach,
+    logs_directory,
+    offer_fields,
+    parse_probe,
+    parse_sample_line,
+    redact,
+    summarize_gpu_samples,
     summarize_score,
 )
 
@@ -550,7 +564,10 @@ def test_every_vast_rental_calls_the_recorder():
     assert _AUTO_ARM == {"start_qwen8b_r2.py"}
     assert LAUNCHERS["start_qwen8b_r2.py"][3] is False
     for name in (
-        "start_qwen8b_vllm.py", "start_sam.py", "start_detector.py", "diag_qwen8b_vllm_import.py",
+        "start_qwen8b_vllm.py",
+        "start_sam.py",
+        "start_detector.py",
+        "diag_qwen8b_vllm_import.py",
     ):
         assert LAUNCHERS[name][3] is True
     assert "pip " not in _SAMPLER_SH
@@ -575,12 +592,15 @@ def test_gpu_sample_summary_keeps_zero_and_low_pcie_fraction():
         (108, "1, 16, 4, 16, 400.00 W, 450.00 W, 3000 MHz, 100 %, 12000 MiB, 70"),
     )
     for stamp, csv in samples:
-        rows.append(parse_sample_line("%s\t%s\r\n" % (stamp, csv), 0))
+        rows.append(parse_sample_line(f"{stamp}\t{csv}\r\n", 0))
     assert rows[0]["utilization_gpu"] == "0 %"
     assert parse_sample_line("Welcome to vast.ai. Have fun!\n", 0) is None
-    assert parse_sample_line("100\tN/A, 16, 4, 16, [N/A], 450.00 W, 210 MHz, N/A, 10 MiB, 35\n", 0)[
-        "power_draw"
-    ] == "[N/A]"
+    assert (
+        parse_sample_line(
+            "100\tN/A, 16, 4, 16, [N/A], 450.00 W, 210 MHz, N/A, 10 MiB, 35\n", 0
+        )["power_draw"]
+        == "[N/A]"
+    )
     summary = summarize_gpu_samples(rows, {"validation": (100, 109)}, SAMPLE_INTERVAL)
     stats = summary["validation"]
     assert stats["utilization_gpu"] == {"min": 0, "median": 80, "p95": 98}
@@ -607,8 +627,10 @@ def test_sampler_stops_before_release_and_records_the_phase(tmp_path, monkeypatc
         remote = command[-1]
         if remote == "date -u +%s":
             return subprocess.CompletedProcess(command, 0, "100\n", "")
-        if remote.startswith("cat >"):
-            return subprocess.CompletedProcess(command, 0, "4242\n", "Welcome to vast.ai. Have fun!\n")
+        if remote.startswith("umask 077;"):
+            return subprocess.CompletedProcess(
+                command, 0, "4242\n", "Welcome to vast.ai. Have fun!\n"
+            )
         if remote.startswith("kill "):
             return subprocess.CompletedProcess(command, 0, tsv, "")
         return subprocess.CompletedProcess(command, 1, "", "missing")
@@ -624,10 +646,18 @@ def test_sampler_stops_before_release_and_records_the_phase(tmp_path, monkeypatc
     )
     phase = tmp_path / "eval" / "qwen8b_r2_vllm" / "validation"
     phase.mkdir(parents=True)
-    (phase / "summary.json").write_text(json.dumps({
-        "accuracy": 0, "started_at_unix": 100, "finished_at_unix": 109,
-    }), encoding="utf-8")
+    (phase / "summary.json").write_text(
+        json.dumps(
+            {
+                "accuracy": 0,
+                "started_at_unix": 100,
+                "finished_at_unix": 109,
+            }
+        ),
+        encoding="utf-8",
+    )
     session.eval_output = str(tmp_path / "eval")
+    session._owns_eval_output = True
     order = []
 
     def release(vast, instance_id):
@@ -660,7 +690,9 @@ def test_hf_log_does_not_start_gpu_sampling(monkeypatch):
     calls = []
     monkeypatch.setattr(
         "tools.vast_run_log.subprocess.run",
-        lambda *args, **kwargs: calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+        lambda *args, **kwargs: (
+            calls.append(args) or subprocess.CompletedProcess(args, 0, "", "")
+        ),
     )
     session.note_ready()
     assert session.sample is False
@@ -670,6 +702,7 @@ def test_hf_log_does_not_start_gpu_sampling(monkeypatch):
 def test_attach_patches_detector_ready_hook(tmp_path, monkeypatch):
     monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
     import tools.vast_run_log as mod
+
     monkeypatch.setattr(mod, "_SESSION", None)
     ready = []
 
@@ -895,3 +928,210 @@ def test_diagnostic_redaction_removes_private_key_body():
         cleaned = run_log.redact_text(text + ending)
         assert "synthetic-key-body" not in cleaned
         assert "PRIVATE KEY" not in cleaned
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="executes the remote Linux shell locally"
+)
+def test_sampler_shell_writes_samples_and_stops(tmp_path, monkeypatch):
+    import shutil
+    import signal
+    import time
+
+    shell = shutil.which("sh")
+    assert shell
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    binary = tmp_path / "nvidia-smi"
+    binary.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' '0, 1, 16, 4, 16, 20 W, 450 W, 210 MHz, 0 %, 10 MiB, 35' "
+        "'1, 4, 16, 4, 16, 200 W, 450 W, 2000 MHz, 50 %, 100 MiB, 40'\n",
+        encoding="utf-8",
+    )
+    binary.chmod(0o700)
+    env = dict(os.environ, PATH=str(tmp_path) + os.pathsep + os.environ["PATH"])
+    groups = []
+
+    def local_ssh(remote, *, timeout, input=None):
+        remote = remote.replace("/tmp/gv-gpu-", str(tmp_path / "gv-gpu-"))
+        process = subprocess.Popen(
+            [shell, "-c", remote],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            start_new_session=True,
+        )
+        groups.append(process.pid)
+        stdout, stderr = process.communicate(input, timeout=timeout)
+        return subprocess.CompletedProcess(remote, process.returncode, stdout, stderr)
+
+    session = RunLog("test", "test", "test", True)
+    session.probe = {"status": "ok"}
+    session._ssh_prefix = ["offline-shell"]
+    monkeypatch.setattr(session, "_ssh", local_ssh)
+    try:
+        session.start_sampler()
+        assert session._sampler_alive
+        output = Path(
+            session._remote_out.replace("/tmp/gv-gpu-", str(tmp_path / "gv-gpu-"))
+        )
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if output.exists() and len(output.read_text().splitlines()) >= 4:
+                break
+            time.sleep(0.05)
+        assert output.exists(), "remote sampler must create its advertised output"
+        assert len(output.read_text().splitlines()) >= 4
+        session.stop_sampler()
+        assert len(session._samples) >= 4
+        assert {row["gpu_index"] for row in session._samples} == {0, 1}
+        assert session._samples[0]["utilization_gpu"] == "0 %"
+        assert (session.run_dir / "gpu-samples.jsonl").is_file()
+        before = output.read_bytes()
+        time.sleep(SAMPLE_INTERVAL + 0.1)
+        assert output.read_bytes() == before
+    finally:
+        for group in groups:
+            try:
+                os.killpg(group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_missing_pcie_measurements_do_not_become_zero():
+    missing = parse_sample_line(
+        "100\tN/A, 16, N/A, 16, 20 W, 450 W, 210 MHz, 50 %, 10 MiB, 35", 0
+    )
+    assert (
+        summarize_gpu_samples([missing], {}, 2)["run"]["low_pcie_gen_while_busy"]
+        == "unknown"
+    )
+    known = dict(missing, t_unix=102, pcie_gen_current="1", pcie_gen_max="4")
+    assert (
+        summarize_gpu_samples([missing, known], {}, 2)["run"]["low_pcie_gen_while_busy"]
+        == 1
+    )
+
+
+def test_retry_preserves_each_rental_and_resets_sampler_target(tmp_path, monkeypatch):
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    session = RunLog("test", "sam", "sam", True)
+    offers = [_offer(), _offer(id=8, machine_id=4243)]
+    session.note_create(offers, (), {"id": 7}, {"success": True, "new_contract": 10})
+    first = session.run_dir
+    session._probed = True
+    session.probe = {"status": "ok", "gpus": [{"name": "first"}]}
+    session._ssh_prefix = ["ssh", "first-host"]
+    session.note_release()
+    session.note_create(offers, (), {"id": 8}, {"success": True, "new_contract": 11})
+    assert session.run_dir != first
+    assert session.probe == "unknown"
+    assert session._probed is False
+    assert session._ssh_prefix is None
+    assert session.release_status == "unknown"
+    session.finish_once()
+    first_entry = json.loads((first / "entry.json").read_text())
+    last_entry = json.loads((session.run_dir / "entry.json").read_text())
+    assert first_entry["instance_id"] == 10
+    assert first_entry["release_status"] == "released"
+    assert last_entry["instance_id"] == 11
+    assert last_entry["hardware"]["offer"]["machine_id"] == 4243
+    assert len(json.loads((session.root / "manifest.json").read_text())) == 2
+
+
+def test_sampler_write_failure_keeps_score_and_final_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    monkeypatch.setattr(
+        sys, "argv", ["launcher", "--eval-output", str(tmp_path / "eval")]
+    )
+    session = RunLog("test", "model", "test", True)
+
+    def evaluate():
+        report = tmp_path / "eval" / "model" / "validation"
+        report.mkdir(parents=True)
+        (report / "summary.json").write_text(json.dumps({"accuracy": 0.75}))
+        return 0
+
+    def fail():
+        raise OSError("samples cannot be written")
+
+    monkeypatch.setattr(session, "stop_sampler", fail)
+    assert _wrap_eval(evaluate, session)() == 0
+    session.finish_once()
+    entry = json.loads((session.run_dir / "entry.json").read_text())
+    assert entry["score"]["validation"]["accuracy"] == 0.75
+    assert entry["eval_returncode"] == 0
+    assert entry["logging_errors"]
+
+
+def test_multi_gpu_samples_preserve_identity_and_busy_time():
+    samples = [
+        parse_sample_line(
+            f"{stamp}\t{gpu}, {gen}, 16, 4, 16, 20 W, 450 W, 210 MHz, 50 %, 10 MiB, 35",
+            0,
+        )
+        for stamp in (100, 102)
+        for gpu, gen in ((0, 1), (1, 4))
+    ]
+    result = summarize_gpu_samples(samples, {}, 2)["run"]
+    assert result["low_pcie_gen_while_busy"] == 0.5
+    assert result["gpus"]["0"]["low_pcie_gen_while_busy"] == 1
+    assert result["gpus"]["1"]["low_pcie_gen_while_busy"] == 0
+
+
+def test_sample_jsonl_redacts_untrusted_values(tmp_path, monkeypatch):
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    session = RunLog("test", "test", "test", True)
+    session._ingest(
+        "100\t1, 16, 4, 16, 20 W, 450 W, token=private-value, 0 %, 10 MiB, 35"
+    )
+    text = (session.run_dir / "gpu-samples.jsonl").read_text()
+    assert "private-value" not in text
+    assert json.loads(text)["clock_sm"] == "redacted"
+
+
+def test_busy_fraction_does_not_count_beyond_the_phase_end():
+    low = parse_sample_line(
+        "100\t1, 16, 4, 16, 20 W, 450 W, 210 MHz, 50 %, 10 MiB, 35", 0
+    )
+    high = dict(low, t_unix=102, pcie_gen_current="4")
+    result = summarize_gpu_samples([low, high], {"test": (100, 102)}, 2)
+    assert result["test"]["low_pcie_gen_while_busy"] == 1
+    assert (
+        summarize_gpu_samples([high], {"test": (102, 102)}, 2)["test"][
+            "low_pcie_gen_while_busy"
+        ]
+        == "unknown"
+    )
+
+
+@pytest.mark.parametrize(
+    "owns,offset,phase",
+    [
+        (False, 0, "run"),
+        (True, "unknown", "run"),
+        (True, 0, "validation"),
+    ],
+)
+def test_sample_phase_requires_owned_report_and_known_clock(
+    tmp_path, monkeypatch, owns, offset, phase
+):
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    session = RunLog("test", "model", "test", True)
+    session.eval_output = str(tmp_path / "eval")
+    session._owns_eval_output = owns
+    session._clock_offset = offset
+    report = tmp_path / "eval" / "model" / "validation"
+    report.mkdir(parents=True)
+    (report / "summary.json").write_text(
+        json.dumps(
+            {
+                "started_at_unix": 99,
+                "finished_at_unix": 102,
+            }
+        )
+    )
+    session._ingest("100\t1, 16, 4, 16, 20 W, 450 W, 210 MHz, 50 %, 10 MiB, 35")
+    assert set(session._sample_summary) == {phase}

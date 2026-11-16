@@ -35,8 +35,13 @@ def main() -> int:
     attach()
 ```
 
-`attach()` takes no arguments. It reads the running filename. A notebook or
-other caller passes its globals: `attach(globals())`.
+`attach()` takes no arguments for a supported launcher. It reads the running
+filename and patches that launcher's shared rental/SSH/readiness helpers.
+It does not intercept arbitrary `VastAI.create_instance`, CLI, or REST calls.
+A new script or notebook needs an explicit `__file__` in the passed namespace,
+a `LAUNCHERS` registration, and the same helper integration, with an offline
+creation/readiness/release test before use. Merely calling `attach(globals())`
+does not provide coverage for an unregistered caller or another transport.
 
 Register that filename in `LAUNCHERS` inside `tools/vast_run_log.py` as
 `(module, alias, engine, sample)` before the run. `sample` is `True`.
@@ -66,9 +71,11 @@ Who is recorded in this order: `GOODVISION_OPERATOR` if set, otherwise
 - One nvidia-smi probe: PCIe gen and width (current and max), power limit,
   SM clocks, utilization, driver, plus CPU model, cores, RAM, cgroup limits,
   and CUDA once.
-- GPU samples every 2 seconds from server-ready until just before release:
-  PCIe gen and width, power draw and limit, SM clock, utilization, memory
-  used, temperature, and `t_unix`.
+- GPU samples every 2 seconds from server-ready until evaluation ends or the
+  instance is released (diagnostics start after the first successful SSH command):
+  GPU index, PCIe gen and width, power draw and limit, SM clock, utilization,
+  memory used, temperature, and `t_unix`. Multi-GPU rentals retain each GPU's
+  rows and separate per-GPU phase statistics.
 - Timings: rent, ready, eval start, eval end, release.
 - Score read from that run's `summary.json` (unknown when there is no exam).
 
@@ -92,7 +99,13 @@ outputs/run-logs/<alias>/logs/<run-id>/gpu-samples.jsonl
 `manifest.json` has one row per run (time, who, machine, GPU, price, location,
 score) and `samples` (a path, or `unknown`). `entry.json` `hardware.samples`
 has the path, the one-time driver / CUDA / CPU record, and the per-phase
-min, median, and p95.
+min, median, and p95. A replacement rental after startup failure gets its own
+run ID and manifest row, so offers and SSH targets cannot mix between hosts.
+Phase labels use only a report created by this invocation and a known clock
+offset; otherwise statistics describe the sampled run without phase attribution.
+Unavailable PCIe generations are excluded from the busy-time fraction.
+A launcher that can retain an instance must call `finish()` before removing its
+temporary SSH credentials; `start_sam.py` does this even if analysis backup fails.
 
 ## Verify
 
