@@ -85,6 +85,7 @@ def test_twelve_sources_native_decisions_and_person_reports(
     source_diagnostics = {}
     diagnostic = {"source": source_diagnostics, "detector_keys": calls}
     register_synthetic_evidence(request.node, tmp_path, diagnostic)
+
     def run_once(output):
         calls.clear()
         source_diagnostics.clear()
@@ -111,6 +112,10 @@ def test_twelve_sources_native_decisions_and_person_reports(
 
     output = tmp_path
     result = run_once(output)
+    assert result["sender_missed_samples"] == 0
+    assert result["sender_missed_samples_by_stream"] == [0] * 12
+    assert result["offer_rejected_by_stream"] == [0] * 12
+    assert diagnostic["drain_counts"] == {"submitted": 48, "ready": 48}
     assert result["all_drained"] and not result["result_records_missing"]
     assert result["result_retention"]["valid"]
     assert len(calls) == len(set(calls)) == 48

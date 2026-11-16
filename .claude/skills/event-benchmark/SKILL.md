@@ -68,6 +68,15 @@ stereo sources again. Do not tune on the new test questions.
 
 The four-model native CLI without `--execute` checks files only. Qwen R2 launchers
 can rent a GPU and run the selected phases; they are not offline preflight commands.
+Those launchers also write a hardware run log with no extra flag. Optional
+`GOODVISION_OPERATOR` sets the name on the index; otherwise the log uses git
+`user.name` and `$USER` (Windows: `%USERNAME%`). The series index is
+`outputs/run-logs/<alias>/logs/manifest.json`. Each run folder there holds
+`vast-offer.json` (redacted offer, written when the instance is created) and
+`entry.json` (offer fields, nvidia-smi probe, timings, score). After the eval
+directory exists, the same files are copied under `<eval-output>/<alias>/logs/`.
+A logging failure is printed and does not change the rental, the exam, or the
+exit code. Details: [Hardware run log](../../../tools/unified_benchmark/README.md#hardware-run-log).
 Keep the HF, vLLM and OpenRouter Qwen variants separate. The active vLLM environment
 is `envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz`; use the exact registry digest
 and restore instructions in [the package guide](../../../tools/qwen8b_vllm/BUILD.md#restore-the-current-package).

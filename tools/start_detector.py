@@ -133,6 +133,11 @@ def wait_for_worker(process: subprocess.Popen, port: int) -> None:
 
 
 def main() -> int:
+    try:
+        from tools.vast_run_log import attach
+    except ImportError:
+        from vast_run_log import attach
+    attach()
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)

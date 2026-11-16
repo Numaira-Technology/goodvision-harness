@@ -84,10 +84,30 @@ def test_full_analysis_is_backed_up_before_cloud_release(recovery, monkeypatch, 
         if backup_fails:
             raise OSError("backup unavailable")
 
+    from tools import vast_run_log
+
+    monkeypatch.setattr(vast_run_log, "finish", lambda: actions.append("log"))
+    temporary_directory = launcher.tempfile.TemporaryDirectory
+
+    def temporary_keys(*args, **kwargs):
+        directory = temporary_directory(*args, **kwargs)
+        cleanup = directory.cleanup
+
+        def clean():
+            actions.append("keys")
+            cleanup()
+
+        directory.cleanup = clean
+        return directory
+
+    monkeypatch.setattr(launcher.tempfile, "TemporaryDirectory", temporary_keys)
     monkeypatch.setattr(launcher.cloud_analysis, "backup", backup)
     recovery.destroy_instance.side_effect = lambda **kwargs: actions.append("release") or {"success": True}
     assert launcher.main() == 1
-    assert actions == (["backup"] if backup_fails else ["backup", "release"])
+    assert actions == (
+        ["backup", "log", "keys"] if backup_fails
+        else ["backup", "release", "log", "keys"]
+    )
     if backup_fails:
         recovery.destroy_instance.assert_not_called()
     command = launcher.subprocess.Popen.call_args.args[0]
