@@ -1687,6 +1687,10 @@ def _acquire_lock(lock: Path) -> bool:
             # Never steal a lock from a paused writer. A crashed writer's lock
             # needs manual removal; the per-run entries remain intact.
             time.sleep(0.05)
+        except PermissionError:
+            # Windows can return access-denied when two exclusive creates race,
+            # instead of file-exists. Wait and try again; do not delete the lock.
+            time.sleep(0.05)
     return False
 
 

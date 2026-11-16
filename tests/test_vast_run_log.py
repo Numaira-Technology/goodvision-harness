@@ -933,6 +933,22 @@ def test_manifest_lock_timeout_preserves_the_previous_index(tmp_path, monkeypatc
     assert session.logging_errors
 
 
+def test_windows_exclusive_create_denial_is_retried(tmp_path, monkeypatch):
+    calls = {"n": 0}
+    real_open = os.open
+
+    def open_once_denied(path, flags, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise PermissionError(13, "Access is denied", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(run_log.os, "open", open_once_denied)
+    monkeypatch.setattr(run_log.time, "sleep", lambda _seconds: None)
+    assert run_log._acquire_lock(tmp_path / ".manifest.lock") is True
+    assert calls["n"] == 2
+
+
 def test_concurrent_manifest_writers_preserve_every_run(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     from types import SimpleNamespace
