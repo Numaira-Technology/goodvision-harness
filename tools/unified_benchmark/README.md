@@ -79,6 +79,10 @@ still needs its own runtime checks. Stop at a failed prerequisite and report the
 
 ## Fixed method
 
+The counts below describe the retained baseline. With an optional test supplement,
+use the expanded frozen plan counts and report its cohort separately as described
+in [the supplement contract](DATASET202.md#optional-test-supplement).
+
 Test: 202 questions / 192 videos, fight32, smoking22, fall62, weapon66, bag knife10,
 bag alcohol bottle10. Validation: 24 videos/questions, six per base event with
 three yes and three no. There is no bag validation and no fabricated train split.
@@ -201,6 +205,13 @@ python -m tools.unified_benchmark.preflight \
   --media /data/goodvision --models qwen8b luna gemini25_off \
   --output outputs/new-current-frame-bundle
 ```
+
+To append the requested test questions, add
+`--test-supplement /private/path/test-supplement.json`. The current supplement adds
+questions203–222 on ten videos: **222 test questions / 202 test videos**. Keep all
+eight frozen inputs intact; the supplement is a separate retained input. See the
+[supplement contract](DATASET202.md#optional-test-supplement) for validation and
+reporting. The validation plan, prompts, routes and preprocessing stay unchanged.
 
 Default `--protocol unified-frame-202-v1` uses202; for a deliberately selected
 legacy120 run pass `--protocol unified-frame-120-v2` with the five original inputs.
@@ -484,6 +495,7 @@ In the prepared lightweight environment with pytest, run:
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python -m pytest \
   tests/test_unified_benchmark.py tests/test_unified_dataset202.py tests/test_unified_luna_adapter.py \
+  tests/test_unified_test_supplement.py \
   tests/test_native_workflow.py tests/test_start_qwen8b_r2.py tests/test_qwen8b_vllm.py \
   -o addopts='' -q -p no:cacheprovider
 ```

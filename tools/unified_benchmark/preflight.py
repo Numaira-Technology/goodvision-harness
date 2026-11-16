@@ -208,7 +208,10 @@ def main(argv=None):
     parser.add_argument("--protocol", choices=(CURRENT_VERSION, VERSION), default=CURRENT_VERSION)
     parser.add_argument("--bag-validation", type=Path, help="Optional private bag-validation10-v1 manifest for current202 CLIP/SigLIP2")
     parser.add_argument("--bag-validation-sha256", help="Pinned raw SHA256 of the supplementary manifest")
-    parser.add_argument("--test-supplement", type=Path, help="Optional private test-only event supplement; original202 inputs stay unchanged")
+    parser.add_argument(
+        "--test-supplement", type=Path,
+        help="Optional private test-only event supplement; original202 inputs stay unchanged",
+    )
     parser.add_argument("--media", type=Path, required=True, help="contains validation/ and test/ videos")
     parser.add_argument("--profiles", type=Path, default=PROFILES)
     parser.add_argument("--models", nargs="+", required=True, help="profile aliases to prepare")
