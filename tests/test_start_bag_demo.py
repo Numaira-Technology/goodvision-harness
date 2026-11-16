@@ -10,10 +10,14 @@ from unittest.mock import MagicMock, Mock
 import pytest
 
 from tools import start_bag_demo as launch
+from tools import vast_run_log as run_log
 
 
 @pytest.fixture
 def rig(tmp_path, monkeypatch):
+    real_attach, real_finish = run_log.attach, run_log.finish
+    monkeypatch.setattr(run_log, "attach", Mock())
+    monkeypatch.setattr(run_log, "finish", Mock())
     key = tmp_path / "synthetic-key"
     key.write_text("not a real key")
     monkeypatch.setenv("VAST_API_KEY", "synthetic-key")
@@ -42,7 +46,12 @@ def rig(tmp_path, monkeypatch):
     monkeypatch.setattr(launch, "_server_process", Mock(return_value=worker))
     status = tmp_path / "status.json"
     return SimpleNamespace(
-        vast=vast, worker=worker, status=status, args=["--status-file", str(status)]
+        vast=vast,
+        worker=worker,
+        status=status,
+        args=["--status-file", str(status)],
+        attach=real_attach,
+        finish=real_finish,
     )
 
 
@@ -204,3 +213,92 @@ def test_ready_rejects_wrong_scorer(monkeypatch):
     worker.poll.return_value = None
     with pytest.raises(RuntimeError, match="unexpected scorer"):
         launch._wait_ready(worker)
+
+
+@pytest.mark.parametrize(
+    "outcome", ["interrupt", "startup_failure", "release_failure", "no_offer"]
+)
+def test_recorder_tracks_bag_demo_lifecycle(rig, tmp_path, monkeypatch, outcome):
+    """Run the actual launcher and recorder with fake paid/SSH boundaries."""
+    monkeypatch.setattr(run_log, "attach", rig.attach)
+    monkeypatch.setattr(run_log, "finish", rig.finish)
+    monkeypatch.setattr(run_log, "_SESSION", None)
+    monkeypatch.setattr(run_log.atexit, "register", lambda fn: None)
+    monkeypatch.setattr(sys, "argv", ["start_bag_demo.py", *rig.args])
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    actions = []
+    rig.vast.create_instance.return_value = {"success": True, "new_contract": 42}
+    rig.vast.search_offers.return_value = [{"id": 1, "machine_id": 7, "dph_total": 0.1}]
+
+    def create(vast, offers, **kwargs):
+        return vast.create_instance(offers[0]["id"], **kwargs)["new_contract"]
+
+    def release(vast, instance_id):
+        actions.append("release")
+        if outcome == "release_failure":
+            raise RuntimeError("synthetic release failure")
+
+    def ready(worker):
+        actions.append("ready")
+
+    def run(command, **kwargs):
+        actions.append("ssh")
+
+    monkeypatch.setattr(launch.S, "create_from_offers", create)
+    monkeypatch.setattr(launch.S, "release_instance", release)
+    monkeypatch.setattr(launch.S, "run", run)
+    monkeypatch.setattr(launch, "_wait_ready", ready)
+    monkeypatch.setattr(run_log.RunLog, "arm_stage_hooks", lambda *args: None)
+    monkeypatch.setattr(run_log.RunLog, "maybe_probe", lambda *args: None)
+    monkeypatch.setattr(
+        run_log.RunLog, "start_sampler", lambda self: actions.append("sample_start")
+    )
+    monkeypatch.setattr(
+        run_log.RunLog, "stop_sampler", lambda self: actions.append("sample_stop")
+    )
+    temporary_directory = launch.tempfile.TemporaryDirectory
+
+    def temporary_keys(*args, **kwargs):
+        directory = temporary_directory(*args, **kwargs)
+        cleanup = directory.cleanup
+
+        def clean():
+            actions.append("keys_removed")
+            cleanup()
+
+        directory.cleanup = clean
+        return directory
+
+    monkeypatch.setattr(launch.tempfile, "TemporaryDirectory", temporary_keys)
+    if outcome == "startup_failure":
+        launch._upload_repo.side_effect = RuntimeError("synthetic startup failure")
+    elif outcome == "no_offer":
+        rig.vast.search_offers.return_value = []
+    assert launch.main(rig.args) == (130 if outcome == "interrupt" else 1)
+    session = run_log._SESSION
+    assert session is not None
+    assert session._finished
+    assert session.sample and session._expects_ready
+    entry = json.loads((session.run_dir / "entry.json").read_text())
+    manifest = json.loads((session.root / "manifest.json").read_text())
+    assert entry["launcher"] == "tools.start_bag_demo"
+    assert entry["model"] == "bag_demo_videojev"
+    assert entry["score"] == "unknown"
+    assert actions[-2:] == ["sample_stop", "keys_removed"]
+    if outcome == "no_offer":
+        rig.vast.create_instance.assert_not_called()
+        assert manifest[0]["status"] == "not_rented"
+        assert "release" not in actions
+    else:
+        assert manifest[0]["status"] == "rented"
+        assert entry["instance_id"] == 42
+        assert entry["hardware"]["offer"]["machine_id"] == 7
+        assert actions[actions.index("release") - 1] == "sample_stop"
+        assert entry["release_status"] == (
+            "failed" if outcome == "release_failure" else "released"
+        )
+    if outcome in {"interrupt", "release_failure"}:
+        assert actions.index("ready") < actions.index("sample_start")
+        assert actions.index("sample_start") < actions.index("release")
+    else:
+        assert "sample_start" not in actions

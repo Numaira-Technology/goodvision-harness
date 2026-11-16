@@ -76,6 +76,12 @@ optional; `HF_TOKEN` is optional for the fallback. It loads the local ignored `.
 Only tracked `src/` and `tools/` files are uploaded. Prefetch credentials go through
 SSH stdin, never command arguments. The tunnel binds only to loopback.
 
+The shared Vast recorder saves rental metadata and hardware samples under
+`outputs/run-logs/bag_demo_videojev/logs/`. Sampling starts after scorer readiness
+and stops before release; the recorder flushes before temporary SSH keys are removed.
+The interactive demo has no benchmark report, so its recorded score stays `unknown`.
+Logging failures do not change the launcher exit code or cleanup responsibility.
+
 Cleanup is attempted on interruption and startup failures. It is not guaranteed
 across kill -9, host loss or provider failures. `--status-file PATH` writes JSON
 states (`starting`, `ready`, `stopped`, `cleanup_required`) with the instance ID,

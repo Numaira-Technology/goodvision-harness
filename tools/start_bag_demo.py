@@ -216,6 +216,9 @@ def _wait_ready(process, timeout=20 * 60):
 
 
 def main(argv=None) -> int:
+    from tools.vast_run_log import attach, finish
+
+    attach()
     from dotenv import load_dotenv
 
     load_dotenv(ROOT / ".env", override=False)
@@ -409,6 +412,8 @@ def main(argv=None) -> int:
                 )
         elif not creation_attempted:
             cleanup_confirmed = True
+        # Flush the recorder while temporary SSH credentials still exist.
+        finish()
         try:
             if ssh_dir is not None:
                 ssh_dir.cleanup()
