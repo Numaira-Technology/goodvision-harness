@@ -29,11 +29,17 @@ request rate is infinite. The per-bucket table uses those `latencies` values.
 Open loop (AIPerf 0.13.0 `--fixed-schedule`):
 
 The exported file carries each recorded inter-arrival as `timestamp` in
-milliseconds. AIPerf releases requests on that schedule. Its `request_latency`
-is dispatch-to-last-content (`start_perf_ns`), not the scheduled timestamp.
-Schedule lag is a separate export (`replay_sched_lag_*`), anchored to the
-least-late request, and schedule zero is not stored. This table does **not**
-add that lag into P50/P95. The notes column says `clock=aiperf_dispatch`.
+milliseconds. AIPerf releases requests on that schedule. Its stored
+`request_latency` starts at dispatch (`request_start_ns`), not at the
+scheduled timestamp. The results table adds the least-late schedule lag back:
+
+`lag = (request_start_ns - scheduled_ns) - min(request_start_ns - scheduled_ns)`
+
+Primary P50/P95 use `request_latency + lag`, so client delay after the
+scheduled send counts. `p50_actual_send_seconds` and
+`p95_actual_send_seconds` keep the dispatch clock. The anchor is the
+least-late request because AIPerf does not record schedule zero. The notes
+column says `clock=scheduled_send`.
 
 Neither command passes `ignore_eos`. `max_tokens` is the recorded cap. vLLM
 bench serve sends that cap as `max_completion_tokens` and the model stops on
@@ -110,8 +116,11 @@ python -m tools.latency_investigation report \
 ```
 
 Columns: run date, location, GPU, CPU model, vLLM version, concurrency,
-input-size bucket, P50, P95, P95/P50, notes. P50/P95 use the same ceil-rank
-as the formal benchmark (`ceil(fraction * n) - 1`). There is no P99 column.
+input-size bucket, P50, P95, P95/P50, then P50/P95/P95/P50 from actual send,
+then notes. For a closed loop the two clocks match. For an open loop the
+first trio is scheduled send and the second trio is actual send. P50/P95 use
+the same ceil-rank as the formal benchmark (`ceil(fraction * n) - 1`). There
+is no P99 column.
 
 `python -m tools.latency_investigation summarize <eval-dir>` prints that table
 from a saved `attempts.jsonl` when the per-request log is on disk.

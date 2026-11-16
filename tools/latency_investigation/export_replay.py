@@ -43,9 +43,10 @@ CLOCK_NOTE = (
     "when the request rate is infinite. "
     "Secondary control is AIPerf "
     f"{AIPERF_VERSION} single_turn --fixed-schedule. "
-    "AIPerf request_latency starts at request dispatch (start_perf_ns), not at "
-    "the scheduled timestamp. Schedule lag is a separate export and is not "
-    "folded into this table, because the tool does not record schedule zero. "
+    "Its request_latency starts at dispatch. This report adds the least-late "
+    "schedule lag, (start - scheduled) minus the minimum of that offset, so "
+    "the primary P50/P95 start at the scheduled send. The from-actual-send "
+    "P50/P95 stay in the secondary columns. "
     "Neither command sets ignore_eos. max_tokens is the recorded cap "
     "(vLLM sends it as max_completion_tokens) and generation stops naturally. "
     "Weight download and env restore are not part of these latencies."
@@ -431,7 +432,8 @@ def command_plan(
             },
             {
                 "name": "open-loop",
-                "latency_starts": "aiperf_dispatch_not_scheduled_timestamp",
+                "latency_starts": "scheduled_send",
+                "actual_send_column": "p50_actual_send_seconds",
                 "argv": [
                     "aiperf",
                     "profile",
@@ -457,3 +459,62 @@ def command_plan(
             },
         ],
     }
+
+
+def records_from_phase(bundle, phase_dir, alias: str) -> list[dict]:
+    """Rebuild recorded chat bodies for one saved eval phase.
+
+    Arrival offsets are seconds after the first intent in that phase.
+    Prompt tokens and output text come from the saved receipt. The formal
+    elapsed time is not copied into the replay body.
+    """
+    from tools.unified_benchmark.adapters import request_body
+
+    bundle = Path(bundle)
+    phase_dir = Path(phase_dir)
+    config = json.loads((bundle / "configs" / f"{alias}.json").read_text(encoding="utf-8"))
+    plan = json.loads(
+        (bundle / "plans" / f"{alias}-{phase_dir.name}.json").read_text(encoding="utf-8")
+    )
+    units = {unit["id"]: unit for unit in plan["units"]}
+    intents = {}
+    results = {}
+    for line in (phase_dir / "attempts.jsonl").read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if row.get("type") == "intent":
+            intents.setdefault(row["unit"], row)
+        elif row.get("type") == "result" and row.get("complete") is True:
+            results[row["unit"]] = row
+    if not intents:
+        raise ValueError("phase has no request intents")
+    origin = min(row["at_unix"] for row in intents.values())
+    records = []
+    for unit_id in (unit["id"] for unit in plan["units"]):
+        result = results.get(unit_id)
+        intent = intents.get(unit_id)
+        if result is None or intent is None:
+            continue
+        receipt_name = Path(str(result.get("metadata", {}).get("receipt", ""))).name
+        receipt_path = phase_dir / "receipts" / receipt_name
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        response = receipt.get("response") if isinstance(receipt.get("response"), dict) else {}
+        usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+        prompt_tokens = usage.get("prompt_tokens")
+        output_tokens = usage.get("completion_tokens")
+        choices = response.get("choices") if isinstance(response.get("choices"), list) else []
+        message = choices[0].get("message") if choices and isinstance(choices[0], dict) else {}
+        output_text = message.get("content") if isinstance(message, dict) else None
+        _url, body = request_body(config, units[unit_id], bundle)
+        records.append(
+            {
+                "request_id": unit_id,
+                "prompt_tokens": prompt_tokens,
+                "arrival_offset_seconds": float(intent["at_unix"]) - origin,
+                "output_text": output_text if isinstance(output_text, str) else None,
+                "output_tokens": output_tokens if isinstance(output_tokens, int) else None,
+                "body": body,
+            }
+        )
+    return records

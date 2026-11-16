@@ -18,6 +18,7 @@ from tools.latency_investigation.percentiles import p50, p95, ratio
 from tools.latency_investigation.results_table import (
     COLUMNS,
     render_csv,
+    rows_from_aiperf_jsonl,
     rows_from_vllm_bench,
 )
 from tools.latency_investigation.summarize_attempts import summarize_phase
@@ -336,3 +337,43 @@ def test_default_clients_still_call_urlopen(monkeypatch):
     assert calls == ["http://127.0.0.1:9/v1/chat/completions"]
     assert "begin_open" in Path(native_run.__file__).read_text()
     assert os.environ.get("GOODVISION_SPLIT_TIMING", "") != "1"
+
+
+def test_open_loop_adds_schedule_lag_and_keeps_actual_send(tmp_path):
+    manifest = {
+        "vllm_version": "0.31.0",
+        "requests": [
+            {"request_id": "a", "bucket": "<500", "arrival_offset_seconds": 0.0},
+            {"request_id": "b", "bucket": "<500", "arrival_offset_seconds": 1.0},
+        ],
+    }
+    # B is sent 0.5s after its schedule. A is the least-late request, lag 0.
+    lines = [
+        {
+            "metadata": {
+                "conversation_id": "a",
+                "request_start_ns": 1_000_000_000,
+            },
+            "metrics": {"request_latency": {"value": 500, "unit": "ms"}},
+            "error": None,
+        },
+        {
+            "metadata": {
+                "conversation_id": "b",
+                "request_start_ns": 2_500_000_000,
+            },
+            "metrics": {"request_latency": {"value": 500, "unit": "ms"}},
+            "error": None,
+        },
+    ]
+    path = tmp_path / "profile_export.jsonl"
+    path.write_text("".join(json.dumps(row) + "\n" for row in lines))
+    rows = rows_from_aiperf_jsonl(path, manifest)
+    overall = rows[0]
+    assert overall["input_size_bucket"] == "overall"
+    assert "scheduled_send" in overall["notes"]
+    # Scheduled latencies are 0.5s and 1.0s. Ceil-rank P50 of two values is the first.
+    assert overall["p50_seconds"] == 0.5
+    assert overall["p95_seconds"] == 1.0
+    assert overall["p50_actual_send_seconds"] == 0.5
+    assert overall["p95_actual_send_seconds"] == 0.5

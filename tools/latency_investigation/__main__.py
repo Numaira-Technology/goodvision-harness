@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from tools.latency_investigation.export_replay import export_subset
+from tools.latency_investigation.export_replay import export_subset, records_from_phase
 from tools.latency_investigation.metrics_diff import diff_snapshots, snapshot_from_text
 from tools.latency_investigation.results_table import (
     render_csv,
@@ -28,6 +28,13 @@ def main(argv=None) -> int:
     export.add_argument("destination", type=Path)
     export.add_argument("--size", type=int, default=250)
     export.add_argument("--seed", type=int, default=20261112)
+    phase = sub.add_parser("export-phase", help="export one saved eval phase")
+    phase.add_argument("--bundle", type=Path, required=True)
+    phase.add_argument("--phase", type=Path, required=True)
+    phase.add_argument("--alias", required=True)
+    phase.add_argument("--destination", type=Path, required=True)
+    phase.add_argument("--size", type=int, default=250)
+    phase.add_argument("--seed", type=int, default=20261112)
     diff = sub.add_parser("metrics-diff", help="diff two saved /metrics scrapes")
     diff.add_argument("before", type=Path)
     diff.add_argument("after", type=Path)
@@ -58,6 +65,24 @@ def main(argv=None) -> int:
                     "manifest_sha256": (args.destination / "manifest.sha256")
                     .read_text()
                     .strip(),
+                },
+                indent=2,
+            )
+        )
+        return 0
+    if args.command == "export-phase":
+        records = records_from_phase(args.bundle, args.phase, args.alias)
+        manifest = export_subset(
+            records, args.destination, size=args.size, seed=args.seed
+        )
+        print(
+            json.dumps(
+                {
+                    "source_count": manifest["source_count"],
+                    "timed_count": manifest["timed_count"],
+                    "warmup_count": manifest["warmup_count"],
+                    "source_500_999": manifest["source_500_999"],
+                    "timed_500_999": manifest["timed_500_999"],
                 },
                 indent=2,
             )

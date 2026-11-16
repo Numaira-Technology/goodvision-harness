@@ -1,7 +1,13 @@
 """Results table for the latency investigation.
 
 Columns: run date, location, GPU, CPU model, vLLM version, concurrency,
-input-size bucket, P50, P95, P95/P50, notes. There is no P99 column.
+input-size bucket, P50, P95, P95/P50, then the same three numbers measured
+from actual send, then notes. There is no P99 column.
+
+Closed loop (fixed 12-way concurrency): both clocks are actual send.
+Open loop (recorded intervals): the primary P50/P95 add AIPerf's schedule lag
+back onto dispatch latency, so the clock starts at the scheduled send. The
+actual-send numbers stay in the secondary columns.
 """
 
 from __future__ import annotations
@@ -24,6 +30,9 @@ COLUMNS = (
     "p50_seconds",
     "p95_seconds",
     "p95_over_p50",
+    "p50_actual_send_seconds",
+    "p95_actual_send_seconds",
+    "p95_over_p50_actual_send",
     "notes",
 )
 
@@ -48,6 +57,7 @@ def rows_from_vllm_bench(
         samples.append(
             {
                 "latency": latencies[index],
+                "latency_actual": latencies[index],
                 "bucket": item.get("bucket") or token_bucket(item.get("prompt_tokens")),
                 "output_text": texts[index] if index < len(texts) else None,
                 "output_tokens": output_lens[index]
@@ -65,10 +75,11 @@ def rows_from_vllm_bench(
 def rows_from_aiperf_jsonl(
     path, manifest: dict, *, host: dict | None = None
 ) -> list[dict]:
-    """Read AIPerf ``profile_export.jsonl`` request_latency.
+    """Read AIPerf ``profile_export.jsonl``.
 
-    Values are converted from the record's unit (ms or s) to seconds. The
-    clock is dispatch time, as AIPerf defines request_latency.
+    ``request_latency`` is dispatch-to-last-content. The primary table adds
+    the least-late schedule lag so the clock starts at the scheduled send.
+    The actual-send numbers stay in the secondary columns.
     """
     path = Path(path)
     requests = manifest.get("requests") or []
@@ -87,6 +98,8 @@ def rows_from_aiperf_jsonl(
         metadata = record.get("metadata") or {}
         session = metadata.get("conversation_id") or metadata.get("session_id")
         item = by_session.get(session, {})
+        start_ns = metadata.get("request_start_ns")
+        scheduled = item.get("arrival_offset_seconds")
         samples.append(
             {
                 "latency": latency,
@@ -95,15 +108,49 @@ def rows_from_aiperf_jsonl(
                 "output_text": record.get("response_text"),
                 "baseline_output_text": item.get("baseline_output_text"),
                 "request_id": item.get("request_id") or session,
+                "start_ns": start_ns,
+                "scheduled_offset_s": scheduled,
             }
         )
+    anchored = _add_schedule_lag(samples)
     return _bucket_rows(
         samples,
         result={"date": None, "max_concurrency": 12},
         manifest=manifest,
         host=host or {},
-        clock="aiperf_dispatch",
+        clock="scheduled_send" if anchored else "actual_send_lag_unavailable",
     )
+
+
+def _add_schedule_lag(samples) -> bool:
+    """Add AIPerf's least-late schedule lag onto dispatch latency.
+
+    ``lag_i = (start_i - scheduled_i) - min_j(start_j - scheduled_j)``.
+    ``start`` is ``request_start_ns``. ``scheduled`` is the dataset offset.
+    The minimum is the same anchor AIPerf uses because it does not record
+    schedule zero. Returns False when a start time or offset is missing.
+    """
+    offsets = []
+    for sample in samples:
+        start = sample.get("start_ns")
+        scheduled = sample.get("scheduled_offset_s")
+        if (
+            isinstance(start, bool)
+            or isinstance(scheduled, bool)
+            or not isinstance(start, (int, float))
+            or not isinstance(scheduled, (int, float))
+        ):
+            for item in samples:
+                item["latency_actual"] = item["latency"]
+            return False
+        offsets.append(float(start) - float(scheduled) * 1e9)
+    anchor = min(offsets)
+    for sample, offset in zip(samples, offsets, strict=True):
+        lag = (offset - anchor) / 1e9
+        sample["latency_actual"] = sample["latency"]
+        sample["lag_seconds"] = lag
+        sample["latency"] = sample["latency"] + lag
+    return True
 
 
 def _metric_seconds(metric):
@@ -140,8 +187,11 @@ def _bucket_rows(samples, *, result, manifest, host, clock) -> list[dict]:
         if not group:
             continue
         latencies = [sample["latency"] for sample in group]
+        actual = [sample.get("latency_actual", sample["latency"]) for sample in group]
         p50_value = p50(latencies)
         p95_value = p95(latencies)
+        p50_actual = p50(actual)
+        p95_actual = p95(actual)
         rows.append(
             {
                 "run_date": host.get("run_date") or result.get("date") or "",
@@ -158,6 +208,9 @@ def _bucket_rows(samples, *, result, manifest, host, clock) -> list[dict]:
                 "p50_seconds": p50_value,
                 "p95_seconds": p95_value,
                 "p95_over_p50": ratio(p95_value, p50_value),
+                "p50_actual_send_seconds": p50_actual,
+                "p95_actual_send_seconds": p95_actual,
+                "p95_over_p50_actual_send": ratio(p95_actual, p50_actual),
                 "notes": notes,
             }
         )
