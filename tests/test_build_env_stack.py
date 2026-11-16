@@ -20,8 +20,8 @@ from tools import registry
 def cpu_facts():
     return {
         "python": "3.12",
-        "torch": "2.13.0+cu128",
-        "cuda": "12.8",
+        "torch": "2.13.0+cu130",
+        "cuda": "13.0",
         "compute_capabilities": [],
         "extensions": {"vllm": "0.31.0"},
     }
@@ -112,7 +112,7 @@ def test_cpu_upload_rejects_changed_evidence(cpu_build, fault):
     elif fault == "options":
         record["build_options"]["require_cuda"] = 0
     elif fault == "cuda":
-        record["runtime"]["cuda"] = "13.0"
+        record["runtime"]["cuda"] = "12.8"
     else:
         record["runtime"]["extensions"]["vllm"] = "0.33.0"
     path.write_text(json.dumps(record))
@@ -236,8 +236,8 @@ def test_generated_cpu_probe_runs_without_any_gpu_call():
 import sys, types, importlib.metadata
 torch = types.ModuleType('torch')
 torch.__file__ = sys.prefix + '/synthetic/torch.py'
-torch.__version__ = '2.13.0+cu128'
-torch.version = types.SimpleNamespace(cuda='12.8')
+torch.__version__ = '2.13.0+cu130'
+torch.version = types.SimpleNamespace(cuda='13.0')
 class NoCuda:
     def __getattr__(self, name):
         raise AssertionError('unexpected GPU call: ' + name)
@@ -409,3 +409,25 @@ def test_legacy_gpu_build_record_still_validates(tmp_path):
     record["schema_version"] = 1
     del record["build_options"], record["gpu_validation"]
     be._validate_record(record, env, "videojev", tarball, "a/b@old", recipe)
+
+
+def test_vllm_registry_keeps_active_and_historical_identities():
+    env = registry.env_of("qwen8b-vllm")
+    assert env["r2_key"] == "envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz"
+    assert (
+        env["sha256"]
+        == "59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b"
+    )
+    assert env["size"] == 4252375781
+    assert env["compat"]["cuda"] == "13.0"
+    assert (
+        env["superseded"]["sha256"]
+        == "2a3dcb1fc6a8d84439263512c65dae0bb576c50d4f559ae9f069407eb2e86db6"
+    )
+    assert (
+        env["incomplete_cu130"]["sha256"]
+        == "24f1eb0cc264a9794979eb6c2225eca47d67d68025407d51db86aa171ce7ba7e"
+    )
+    assert (
+        "vllm.entrypoints.openai.api_server" in be._build_options(env)["verify_modules"]
+    )

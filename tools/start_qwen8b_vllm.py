@@ -13,6 +13,7 @@ import base64
 import copy
 import io
 import json
+import math
 import os
 import shlex
 import signal
@@ -36,6 +37,49 @@ ENV_NAME = "qwen8b-vllm"
 HF_ENV_KEY = "envs/qwen8b/cu128-py312-torch280-ada.tar.gz"
 MAX_DPH = 1.85  # refuse silently upgrading past ~1.5x the prior $1.2296/hr
 STATUS_DEFAULT = Path("outputs/qwen8b-r2-vllm-STATUS.md")
+MIN_CUDA = 13.0
+MIN_DRIVER_BRANCH = 580
+
+
+def _vast_query(disk_gb: int) -> str:
+    """The cu130 pack has a different host requirement from the HF cu128 pack."""
+    gpu = os.environ.get("QWEN8B_GPU", "RTX_4090")
+    return (
+        f"gpu_name={gpu} num_gpus=1 cuda_max_good>={MIN_CUDA} gpu_ram>=23 "
+        f"disk_space>={disk_gb} inet_down>=200 reliability>0.95 rentable=true "
+        "verified=true datacenter=true"
+    )
+
+
+def _cuda_compatible(host: dict) -> bool:
+    """Require the advertised CUDA capability and driver; missing data fails closed."""
+    try:
+        cuda = float(host["cuda_max_good"])
+        driver = int(str(host["driver_version"]).split(".")[0])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    return math.isfinite(cuda) and cuda >= MIN_CUDA and driver >= MIN_DRIVER_BRANCH
+
+
+def _verify_host_driver(ssh) -> None:
+    """Check actual host compatibility before bootstrap or multi-GB downloads."""
+    out = subprocess.check_output(
+        [*ssh, "nvidia-smi --query-gpu=driver_version --format=csv,noheader"],
+        text=True,
+        timeout=30,
+        stderr=subprocess.STDOUT,
+    )
+    drivers = [line.strip() for line in out.splitlines() if line.strip()]
+    try:
+        compatible = (
+            len(drivers) == 1 and int(drivers[0].split(".")[0]) >= MIN_DRIVER_BRANCH
+        )
+    except ValueError:
+        compatible = False
+    if not compatible:
+        raise RuntimeError(
+            f"cu130 requires one GPU with NVIDIA driver >=580; observed {drivers}"
+        )
 
 
 def _status(path: Path | None, text: str) -> None:
@@ -55,14 +99,17 @@ def _eligible_offers(offers: list[dict]) -> list[dict]:
     usable = [
         o
         for o in offers
-        if int(o.get("num_gpus") or 1) == 1 and float(o["dph_total"]) <= MAX_DPH
+        if int(o.get("num_gpus") or 1) == 1
+        and float(o["dph_total"]) <= MAX_DPH
+        and _cuda_compatible(o)
     ]
     if not offers:
-        raise RuntimeError("No eligible RTX 4090 / CUDA 12.8 offer available.")
+        raise RuntimeError("No eligible RTX 4090 / CUDA 13.0 offer available.")
     if not usable:
         cheapest = min(float(o["dph_total"]) for o in offers)
         raise RuntimeError(
-            f"No single-GPU 4090 at <= ${MAX_DPH}/hr (cheapest ${cheapest:.4f}/hr); "
+            f"No CUDA 13.0 / driver >=580 single-GPU 4090 at <= ${MAX_DPH}/hr "
+            f"(cheapest ${cheapest:.4f}/hr); "
             "not silently renting a much more expensive or multi-GPU card."
         )
     return usable
@@ -376,7 +423,7 @@ def _require_r2_pack(env_spec: dict) -> str:
             "`PYTHONPATH=. python -m tools.build_env --model qwen8b-vllm "
             "--requirements tools/qwen8b_vllm/requirements.txt` "
             "and fill env.sha256/size. The 4090 only restores "
-            "envs/qwen8b-vllm/cu128-py312-vllm0310-ada.tar.gz; "
+            f"{env_spec.get('r2_key') or 'the versioned qwen8b-vllm R2 key'}; "
             "it does not pip-install vLLM."
         )
     return sha
@@ -522,19 +569,24 @@ def main() -> int:
             inst = vast.show_instance(id=args.resume_instance_id) or {}
             if not str(inst.get("label", "")).startswith("goodvision-qwen8b"):
                 raise RuntimeError("Resume requires an existing qwen8b instance.")
+            if not _cuda_compatible(inst):
+                raise RuntimeError(
+                    "Resume requires verified CUDA >=13.0 / driver >=580 metadata; "
+                    "the existing instance was not modified or released."
+                )
             instance_id = args.resume_instance_id
             print(f"Recovering instance {instance_id}; no new rental.", flush=True)
         else:
-            print(f"Searching Vast for {H._vast_query(args.disk_gb)} ...", flush=True)
+            print(f"Searching Vast for {_vast_query(args.disk_gb)} ...", flush=True)
             offers = vast.search_offers(
-                query=H._vast_query(args.disk_gb),
+                query=_vast_query(args.disk_gb),
                 type="on-demand",
                 order="dph_total",
                 storage=float(args.disk_gb),
                 limit=64,  # wide enough to see offers near the bucket
             )
             if not offers:
-                raise RuntimeError("No eligible RTX 4090 / CUDA 12.8 offer available.")
+                raise RuntimeError("No eligible RTX 4090 / CUDA 13.0 offer available.")
             chosen = H.prefer_near_bucket(
                 H.drop_costly_downloads(_eligible_offers(offers))
             )
@@ -558,6 +610,7 @@ def main() -> int:
         H.attach_key(vast, instance_id, ssh_key_path)
         host, port = H.wait_for_ssh(vast, instance_id, options, ssh_key_path)
         ssh = ["ssh", *options, "-p", str(port), f"root@{host}"]
+        _verify_host_driver(ssh)
         print("Bootstrapping python3/boto3/ffmpeg...", flush=True)
         S.run([*ssh, "bash -s"], input=H.BOOTSTRAP, timeout=15 * 60)
         print("Uploading repo...", flush=True)
