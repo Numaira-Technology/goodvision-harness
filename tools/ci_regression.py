@@ -215,6 +215,8 @@ def run_shard(directory: Path, index: int, count: int, seconds: float, tests=())
         "-vv",
         "-o",
         "faulthandler_timeout=0",
+        "-o",
+        "tmp_path_retention_policy=failed",
         "--durations=20",
         "-p",
         "tools.ci_pytest",
