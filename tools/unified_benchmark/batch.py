@@ -230,6 +230,19 @@ def verify_finished(root, item, row):
         p = base / name
         if p.is_symlink() or not p.resolve().is_relative_to(base.resolve()) or file_hash(p) != sha:
             raise ValueError("completed round evidence changed")
+    if item["route"] == "native":
+        # Native seals anchor receipts through the ledger rather than listing
+        # each raw file. Reuse the runner's read-only evidence checks before
+        # accepting a finished phase or allowing it to authorize test requests.
+        from .native_run import preflight_resume
+
+        bundle = Path(item["bundle"])
+        cfg = read(bundle / f"configs/{item['alias']}.json")
+        preflight_resume(
+            item["alias"], bundle, base, cfg, item["bundle_sha256"],
+            item["deployment_sha256"], row["split"],
+            identity.get("initial_threshold_sha256"),
+        )
     result = phase_report(root, item, row)
     expected = 44 if row["split"] == "validation" else 202
     if result is None or result.get("planned_questions") != expected:
@@ -364,6 +377,24 @@ def worker(root, task_id, authorization):
                 resume = False
             with (deployment / "evaluation.lock").open("a") as lock:
                 lock_exclusive(lock)
+                if resume:
+                    from .retry import Ledger, PausedRun
+                    from .workflow import context_for
+
+                    plan = read(bundle / f"plans/{alias}-{phase}.json")
+                    ledger = Ledger(
+                        base / phase / "attempts.jsonl",
+                        context_for(plan, cfg, item["bundle_sha256"]),
+                        read_only=True,
+                    )
+                    try:
+                        if any(record.get("fatal") for record in ledger.rows):
+                            raise PausedRun(
+                                "fatal native response retained; "
+                                "automatic retries are blocked"
+                            )
+                    finally:
+                        ledger.close()
                 # The batch row directory holds supervisor logs; native_run owns its run subdirectory.
                 execute(alias, bundle, deployment, base, item["deployment_sha256"], phase=phase,
                         threshold_path=threshold, threshold_hash=threshold_sha,
@@ -591,6 +622,12 @@ def main(argv=None):
             lock_exclusive(lock)
             config, state = read(a.output / "config.json"), read(a.output / "state.json")
             validate_state(state, validate_config(config), config)
+            for row in state["matrix"]:
+                if row["state"] in {"completed", "completed_incomplete"}:
+                    item = next(
+                        m for m in config["models"] if m["alias"] == row["alias"]
+                    )
+                    verify_finished(a.output, item, row)
             summarize(a.output, config, state)
         return 0
     if a.action == "worker":

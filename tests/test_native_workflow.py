@@ -1277,3 +1277,63 @@ def test_bad_bag_validation_blocks_thresholds_and_all_test_requests(
     assert FakeBackend.calls and all(
         c.startswith("validation/") for c in FakeBackend.calls
     )
+
+
+@pytest.mark.parametrize("corruption", ["missing", "changed"])
+def test_batch_rejects_native_completion_with_damaged_raw_receipt(
+        bag_frozen, tmp_path, corruption):
+    from tools.unified_benchmark import batch
+
+    bundle, deployment, sha = bag_frozen
+    item = {"alias": "videojev", "route": "native", "bundle": str(bundle),
+            "bundle_sha256": workflow.verify_bundle(bundle),
+            "deployment": str(deployment), "deployment_sha256": sha}
+    row = {"output": "videojev/validation", "split": "validation"}
+    output = batch.model_output(tmp_path, item, row)
+    run.execute("videojev", bundle, deployment, output, sha, phase="validation",
+                authorization="synthetic", backend_factory=FakeBackend,
+                queue_factory=immediate_queue)
+    assert batch.verify_finished(tmp_path, item, row)["complete_valid_questions"] == 44
+    receipt = next((output / "validation/receipts").glob("*.json"))
+    if corruption == "missing":
+        receipt.unlink()
+    else:
+        receipt.write_text("{}")
+    calls = list(FakeBackend.calls)
+    with pytest.raises(ValueError, match="receipt"):
+        batch.verify_finished(tmp_path, item, row)
+    assert FakeBackend.calls == calls
+
+
+def test_batch_native_restart_does_not_acknowledge_saved_fatal_response(
+        bag_frozen, tmp_path, monkeypatch):
+    from tools.unified_benchmark import batch
+    from tools.unified_benchmark.contract import atomic_json
+
+    bundle, deployment, sha = bag_frozen
+    root = tmp_path / "batch"
+    item = {"alias": "videojev", "route": "native", "bundle": str(bundle),
+            "bundle_sha256": workflow.verify_bundle(bundle),
+            "deployment": str(deployment), "deployment_sha256": sha}
+    row = {"id": "videojev/validation", "output": "videojev/validation",
+           "alias": "videojev", "split": "validation", "invocations": 2}
+    write_new(root / "config.json", {"models": [item]})
+    atomic_json(root / "state.json", {"matrix": [row]})
+    monkeypatch.setattr(batch, "hardware_check", lambda *_: None)
+    original = run.execute
+    def fake(*args, **kwargs):
+        return original(*args, **kwargs, backend_factory=FakeBackend,
+                        queue_factory=immediate_queue)
+    monkeypatch.setattr(run, "execute", fake)
+    FakeBackend.behavior = lambda *_: (401, {}, {})
+    with pytest.raises(PausedRun):
+        fake("videojev", bundle, deployment, batch.model_output(root, item, row),
+             sha, phase="validation", authorization="synthetic")
+    # The native runner retained the fatal result, but the first worker died
+    # before publishing worker-01.json. An automatic restart is not consent.
+    calls = list(FakeBackend.calls)
+    FakeBackend.behavior = None
+    assert batch.worker(root, row["id"], "synthetic") == 2
+    assert FakeBackend.calls == calls
+    result = batch.read(root / row["output"] / "worker-02.json")
+    assert result["state"] == "blocked"

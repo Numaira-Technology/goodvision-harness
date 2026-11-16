@@ -222,6 +222,14 @@ def test_ten_rounds_make_new_calls_and_completed_resume_makes_none(tmp_path, inp
     assert batch.run(config_path, root, "synthetic offline test", resume=True) == 0
     assert dict(calls) == before
     assert len(batch.read(root / "state.json")["matrix"]) == 11
+    assert batch.main(["report", "--output", str(root)]) == 0
+    previous_summary = (root / "summary.json").read_bytes()
+    receipt = next((root / "qwen8b/round-01/qwen8b/test/receipts").glob("*.json"))
+    receipt.unlink()
+    with pytest.raises(FileNotFoundError):
+        batch.main(["report", "--output", str(root)])
+    assert (root / "summary.json").read_bytes() == previous_summary
+    assert dict(calls) == before
 
 
 def test_budget_and_changed_validation_rejected_before_any_worker(tmp_path, inputs):
