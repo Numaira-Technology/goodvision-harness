@@ -155,6 +155,9 @@ def stage_options():
         ]
     )
     args.output_mode, args.deadline = "parallel", 3
+    # The shared queue wait is already allowed to be 3s. Windows CI needs that
+    # full wait to record every planned grant; the grant count stays 12.
+    args.queue_timeout = 3
     return args
 
 
