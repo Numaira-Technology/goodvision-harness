@@ -11,6 +11,7 @@ readings. ``host_*`` probe fields are the whole machine. ``container_*`` fields
 are the cgroup limit of this rental, which is smaller than the host when the
 offer's ``cpu_cores_effective`` and ``cpu_ram`` do not cover the machine.
 """
+
 from __future__ import annotations
 
 import atexit
@@ -21,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,11 +30,32 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 SCHEMA = "goodvision.vast_run_log.v1"
 OFFER_FIELDS = (
-    "id", "machine_id", "host_id", "geolocation", "dph_total", "gpu_name",
-    "num_gpus", "gpu_ram", "gpu_frac", "gpu_lanes", "pci_gen", "pcie_bw",
-    "gpu_max_power", "cpu_name", "cpu_cores_effective", "cpu_ram", "inet_up",
-    "inet_down", "disk_name", "disk_bw", "driver_version", "cuda_max_good",
-    "reliability", "verification", "datacenter", "dlperf",
+    "id",
+    "machine_id",
+    "host_id",
+    "geolocation",
+    "dph_total",
+    "gpu_name",
+    "num_gpus",
+    "gpu_ram",
+    "gpu_frac",
+    "gpu_lanes",
+    "pci_gen",
+    "pcie_bw",
+    "gpu_max_power",
+    "cpu_name",
+    "cpu_cores_effective",
+    "cpu_ram",
+    "inet_up",
+    "inet_down",
+    "disk_name",
+    "disk_bw",
+    "driver_version",
+    "cuda_max_good",
+    "reliability",
+    "verification",
+    "datacenter",
+    "dlperf",
 )
 LAUNCHERS = {
     "start_qwen8b_r2.py": ("tools.start_qwen8b_r2", "qwen8b_r2_host", "transformers"),
@@ -41,14 +64,25 @@ LAUNCHERS = {
 _SECRET_KEY = re.compile(
     r"(?i)(secret|password|passwd|token|api[_-]?key|access[_-]?key|"
     r"private[_-]?key|public[_-]?key|authorization|credential|ssh[_-]?key|"
-    r"authorized_keys|id_rsa)$"
+    r"authorized_keys|id_rsa)(?:s|_id)?$"
 )
 _ENV_KEY = re.compile(r"(?i)^(env|environment|environ|extra_env)$")
 _SECRET_VALUE = re.compile(
     r"(?i)(sk-[A-Za-z0-9_-]{8,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|"
-    r"xox[baprs]-[A-Za-z0-9-]{8,}|ghp_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9\-]{20,}|"
-    r"bearer\s+[A-Za-z0-9._\-]{8,})"
+    r"xox[baprs]-[A-Za-z0-9-]{8,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9\-]{20,}|"
+    r"(?:bearer|basic)\s+[A-Za-z0-9+/=._\-]{8,})"
 )
+_PRIVATE_KEY = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?"
+    r"(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)",
+    re.DOTALL,
+)
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(?:[\w-]*(?:secret|password|passwd|token|api[_-]?key|access[_-]?key|"
+    r"credential|authorization)[\w-]*[\"']?\s*[:=]\s*)"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s&,;]+)"
+)
+_URL_CREDENTIAL = re.compile(r"(?i)(https?://)[^/\s:@]+:[^/\s@]+@")
 # One POSIX sh command. The controller may be Windows; the shell runs on the
 # Linux instance over SSH. Host facts are a HOST-tab line so a CPU model that
 # contains commas still parses. getconf and MemTotal are the whole machine.
@@ -57,43 +91,66 @@ _SECRET_VALUE = re.compile(
 # Current PCIe gen and the SM clock fall while the GPU is idle. On the reviewed
 # 4090 that was gen 1, 210 MHz, and 0% utilization: power-saving, not throttling.
 _PROBE = (
-    "nvidia-smi --query-gpu=name,pci.bus_id,pcie.link.gen.current,pcie.link.gen.max,"
-    "pcie.link.width.current,pcie.link.width.max,power.limit,clocks.sm,clocks.max.sm,"
+    "nvidia-smi "
+    "--query-gpu=name,pci.bus_id,pcie.link.gen.current,pcie.link.gen.max,"
+    "pcie.link.width.current,pcie.link.width.max,power.limit,cloc"
+    "ks.sm,clocks.max.sm,"
     "clocks.mem,driver_version,memory.total,utilization.gpu --format=csv,noheader; "
     "smi_status=$?; "
-    "cpu=$(awk -F: '/^model name/ {sub(/^[ \\t]+/, \"\", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null); "
+    'cpu=$(awk -F: \'/^model name/ {sub(/^[ \\t]+/, "", $2); print '
+    "$2; exit}' /proc/cpuinfo 2>/dev/null); "
     "cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true); "
     "ram=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null); "
-    "cuda=$(nvidia-smi -q 2>/dev/null | awk -F: '/^CUDA Version/ {sub(/^[ \\t]+/, \"\", $2); print $2; exit}'); "
+    "cuda=$(nvidia-smi -q 2>/dev/null | awk -F: '/^CUDA Version/ "
+    '{sub(/^[ \\t]+/, "", $2); print $2; exit}\'); '
     "if [ -r /sys/fs/cgroup/cpu.max ]; then "
-    "container_cpu=\"v2 $(awk 'NR==1 { printf \"%s %s\", $1, $2; exit }' /sys/fs/cgroup/cpu.max)\"; "
-    "elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ] && [ -r /sys/fs/cgroup/cpu/cpu.cfs_period_us ]; then "
-    "container_cpu=\"v1 $(awk 'NR==1 { printf \"%s\", $1; exit }' /sys/fs/cgroup/cpu/cpu.cfs_quota_us) "
-    "$(awk 'NR==1 { printf \"%s\", $1; exit }' /sys/fs/cgroup/cpu/cpu.cfs_period_us)\"; "
+    'container_cpu="v2 $(awk \'NR==1 { printf "%s %s", $1, $2; '
+    "exit }' /sys/fs/cgroup/cpu.max)\"; "
+    "elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ] && [ -r "
+    "/sys/fs/cgroup/cpu/cpu.cfs_period_us ]; then "
+    'container_cpu="v1 $(awk \'NR==1 { printf "%s", $1; exit }\' '
+    "/sys/fs/cgroup/cpu/cpu.cfs_quota_us) "
+    "$(awk 'NR==1 { printf \"%s\", $1; exit }' "
+    '/sys/fs/cgroup/cpu/cpu.cfs_period_us)"; '
     "elif [ -r /sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us ] && "
     "[ -r /sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us ]; then "
-    "container_cpu=\"v1 $(awk 'NR==1 { printf \"%s\", $1; exit }' /sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us) "
-    "$(awk 'NR==1 { printf \"%s\", $1; exit }' /sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us)\"; "
+    'container_cpu="v1 $(awk \'NR==1 { printf "%s", $1; exit }\' '
+    "/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us) "
+    "$(awk 'NR==1 { printf \"%s\", $1; exit }' "
+    '/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us)"; '
     "else container_cpu=unknown; fi; "
     "if [ -r /sys/fs/cgroup/memory.max ]; then "
-    "container_mem=\"v2 $(awk 'NR==1 { printf \"%s\", $1; exit }' /sys/fs/cgroup/memory.max)\"; "
+    'container_mem="v2 $(awk \'NR==1 { printf "%s", $1; exit }\' '
+    '/sys/fs/cgroup/memory.max)"; '
     "elif [ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then "
-    "container_mem=\"v1 $(awk 'NR==1 { printf \"%s\", $1; exit }' /sys/fs/cgroup/memory/memory.limit_in_bytes)\"; "
+    'container_mem="v1 $(awk \'NR==1 { printf "%s", $1; exit }\' '
+    '/sys/fs/cgroup/memory/memory.limit_in_bytes)"; '
     "else container_mem=unknown; fi; "
-    "[ -n \"$cpu\" ] || cpu=unknown; "
-    "[ -n \"$cores\" ] || cores=unknown; "
-    "if [ -n \"$ram\" ]; then ram=\"$ram kB\"; else ram=unknown; fi; "
-    "[ -n \"$cuda\" ] || cuda=unknown; "
-    "[ -n \"$container_cpu\" ] || container_cpu=unknown; "
-    "[ -n \"$container_mem\" ] || container_mem=unknown; "
+    '[ -n "$cpu" ] || cpu=unknown; '
+    '[ -n "$cores" ] || cores=unknown; '
+    'if [ -n "$ram" ]; then ram="$ram kB"; else ram=unknown; fi; '
+    '[ -n "$cuda" ] || cuda=unknown; '
+    '[ -n "$container_cpu" ] || container_cpu=unknown; '
+    '[ -n "$container_mem" ] || container_mem=unknown; '
     "printf '\\nHOST\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "
-    "\"$cpu\" \"$cores\" \"$ram\" \"$cuda\" \"$container_cpu\" \"$container_mem\"; "
-    "exit \"$smi_status\""
+    '"$cpu" "$cores" "$ram" "$cuda" "$container_cpu" "$container_mem"; '
+    'exit "$smi_status"'
 )
+
 _PROBE_COLUMNS = (
-    "name", "pci_bus_id", "pcie_gen_current", "pcie_gen_max", "pcie_width_current",
-    "pcie_width_max", "power_limit", "clock_sm", "clock_max_sm", "clock_mem",
-    "driver_version", "memory_total", "utilization_gpu",
+    "name",
+    "pci_bus_id",
+    "pcie_gen_current",
+    "pcie_gen_max",
+    "pcie_width_current",
+    "pcie_width_max",
+    "power_limit",
+    "clock_sm",
+    "clock_max_sm",
+    "clock_mem",
+    "driver_version",
+    "memory_total",
+    "utilization_gpu",
 )
 # First four match the HOST line from probes that predate container limits.
 _HOST_LEGACY = ("cpu_model", "host_cpu_cores", "host_ram_total", "cuda_version")
@@ -107,8 +164,13 @@ _IDLE_NOTE = (
     "container_memory_limit are this rental's cgroup limit."
 )
 _SCORE_FIELDS = (
-    "accuracy", "correct", "planned_questions", "complete_valid_questions",
-    "incomplete_questions", "final_unknown_questions", "final_missing_unique_units",
+    "accuracy",
+    "correct",
+    "planned_questions",
+    "complete_valid_questions",
+    "incomplete_questions",
+    "final_unknown_questions",
+    "final_missing_unique_units",
 )
 
 _SESSION = None
@@ -139,7 +201,14 @@ def redact(value):
 
 
 def redact_text(text: str) -> str:
-    return _SECRET_VALUE.sub("redacted", str(text))[:300]
+    return _sanitize_text(str(text))[:300]
+
+
+def _sanitize_text(text: str) -> str:
+    text = _PRIVATE_KEY.sub("redacted", text)
+    text = _SECRET_VALUE.sub("redacted", text)
+    text = _SECRET_ASSIGNMENT.sub("redacted", text)
+    return _URL_CREDENTIAL.sub(r"\1redacted@", text)
 
 
 def offer_fields(offer) -> dict:
@@ -166,15 +235,23 @@ def parse_probe(text: str) -> dict:
         if not stripped:
             continue
         if stripped.startswith("HOST\t") or stripped == "HOST":
-            parsed = _parse_host_line(stripped)
+            parsed = _parse_host_line(line.lstrip(" ").rstrip("\r"))
             if parsed is not None:
                 host = parsed
             continue
         cells = next(csv.reader([line]))
         cells = [cell.strip().replace("\r", "") for cell in cells]
-        if len(cells) != len(_PROBE_COLUMNS):
+        if len(cells) != len(_PROBE_COLUMNS) or not re.fullmatch(
+            r"[0-9A-Fa-f]{4,8}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}\.[0-7]", cells[1]
+        ):
             continue
-        rows.append(dict(zip(_PROBE_COLUMNS, cells)))
+        cells = [
+            "unknown"
+            if cell.lower() in {"", "n/a", "[n/a]", "not supported", "[not supported]"}
+            else cell
+            for cell in cells
+        ]
+        rows.append(dict(zip(_PROBE_COLUMNS, cells, strict=True)))
     if not rows:
         return _unknown_probe(text)
     return {
@@ -190,7 +267,12 @@ def _unknown_host() -> dict:
 
 
 def _unknown_probe(text: str) -> dict:
-    return {"status": "unknown", "gpus": "unknown", "host": "unknown", "raw": redact_text(text)}
+    return {
+        "status": "unknown",
+        "gpus": "unknown",
+        "host": "unknown",
+        "raw": redact_text(text),
+    }
 
 
 def _parse_host_line(line: str):
@@ -205,7 +287,7 @@ def _parse_host_line(line: str):
     else:
         return None
     parsed = _unknown_host()
-    for name, value in zip(names, values):
+    for name, value in zip(names, values, strict=True):
         text = value.replace("\r", "").strip()
         if not text:
             continue
@@ -227,7 +309,7 @@ def _cores_from_quota(quota: str, period: str) -> str:
     if rem == 0:
         return str(whole)
     scaled = (q * 1000) // p
-    text = "%d.%03d" % divmod(scaled, 1000)
+    text = "{}.{:03d}".format(*divmod(scaled, 1000))
     return text.rstrip("0")
 
 
@@ -238,11 +320,11 @@ def _format_container_cpu(raw: str) -> str:
     kind, quota, period = parts
     source = "cgroup v2 cpu.max" if kind == "v2" else "cgroup v1 cpu.cfs_quota_us"
     if quota in {"max", "-1"}:
-        return "max (%s)" % source
+        return f"max ({source})"
     cores = _cores_from_quota(quota, period)
     if cores == "unknown":
         return "unknown"
-    return "%s cores (%s %s %s)" % (cores, source, quota, period)
+    return f"{cores} cores ({source} {quota} {period})"
 
 
 def _format_container_memory(raw: str) -> str:
@@ -250,15 +332,17 @@ def _format_container_memory(raw: str) -> str:
     if len(parts) != 2 or parts[0] not in {"v1", "v2"}:
         return "unknown"
     kind, value = parts
-    source = "cgroup v2 memory.max" if kind == "v2" else "cgroup v1 memory.limit_in_bytes"
+    source = (
+        "cgroup v2 memory.max" if kind == "v2" else "cgroup v1 memory.limit_in_bytes"
+    )
     if value == "max":
-        return "max (%s)" % source
+        return f"max ({source})"
     if not value.isdigit():
         return "unknown"
     number = int(value)
     if kind == "v1" and number >= 1 << 62:
-        return "max (%s)" % source
-    return "%d B (%s)" % (number, source)
+        return f"max ({source})"
+    return f"{number} B ({source})"
 
 
 def summarize_score(eval_output, alias) -> dict | str:
@@ -307,7 +391,11 @@ def short_score(score) -> dict | str:
             continue
         out[split] = {
             name: part.get(name, "unknown")
-            for name in ("accuracy", "final_unknown_questions", "final_missing_unique_units")
+            for name in (
+                "accuracy",
+                "final_unknown_questions",
+                "final_missing_unique_units",
+            )
         }
     return out
 
@@ -334,21 +422,37 @@ class RunLog:
         phase = _flag("--eval-phase")
         self.eval_phase = phase or "both"
         self.eval_phase_source = "argv" if phase else "launcher-default"
-        self.run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + os.urandom(4).hex()
+        self.run_id = (
+            datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            + "-"
+            + os.urandom(4).hex()
+        )
         self.root = logs_directory(self.model, self.eval_output)
         self.run_dir = self.root / self.run_id
         self.who = _who()
         self.git_commit = _git_commit()
         self.logging_errors = []
         self.offer = None
-        self.instance_id = None
+        resume = _flag("--resume-instance-id")
+        self.instance_id = (
+            int(resume) if resume and resume.isdigit() and int(resume) > 0 else None
+        )
+        self.release_status = "unknown"
+        self._owns_eval_output = False
         self.probe = "unknown"
         self.score = "unknown"
         self.eval_returncode = "unknown"
         self._mono = {}
-        self._timings = {name: "unknown" for name in (
-            "rent_start_utc", "ready_utc", "eval_start_utc", "eval_end_utc", "release_utc",
-        )}
+        self._timings = {
+            name: "unknown"
+            for name in (
+                "rent_start_utc",
+                "ready_utc",
+                "eval_start_utc",
+                "eval_end_utc",
+                "release_utc",
+            )
+        }
         self._probed = False
         self._hooks_ready = False
         self._finished = False
@@ -356,6 +460,7 @@ class RunLog:
 
     def install(self) -> None:
         import tools.start_sam as sam
+
         self._originals = {
             "create_from_offers": sam.create_from_offers,
             "run": sam.run,
@@ -376,7 +481,9 @@ class RunLog:
         self._write_offer()
         self._write_entry()
         self._update_manifest()
-        _stderr_line("run log: saved offer %s" % _display(self.run_dir / "vast-offer.json"))
+        _stderr_line(
+            "run log: saved offer {}".format(_display(self.run_dir / "vast-offer.json"))
+        )
 
     def mark_rent_start(self) -> None:
         if self._timings["rent_start_utc"] == "unknown":
@@ -397,6 +504,7 @@ class RunLog:
         self.eval_returncode = code if isinstance(code, int) else "unknown"
 
     def note_release(self) -> None:
+        self.release_status = "released"
         self._timings["release_utc"] = _utc()
         self._mono["release"] = time.monotonic()
 
@@ -427,8 +535,12 @@ class RunLog:
         prefix = list(command[:-1])
         try:
             result = subprocess.run(
-                [*prefix, _PROBE], capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=20,
+                [*prefix, _PROBE],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=20,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             self.probe = "unknown"
@@ -438,10 +550,12 @@ class RunLog:
         stderr = result.stderr or ""
         if result.returncode != 0:
             self.probe = {
-                "status": "unknown", "gpus": "unknown", "host": "unknown",
+                "status": "unknown",
+                "gpus": "unknown",
+                "host": "unknown",
                 "raw": redact_text(stdout + ("\n" + stderr if stderr else "")),
             }
-            self._error("probe", "nvidia-smi exited %s" % result.returncode)
+            self._error("probe", f"nvidia-smi exited {result.returncode}")
             return
         self.probe = parse_probe(stdout)
         if stderr:
@@ -449,6 +563,8 @@ class RunLog:
         self._write_entry()
 
     def capture_score(self) -> None:
+        if not self._owns_eval_output:
+            return
         try:
             self.score = summarize_score(self.eval_output, self.model)
         except Exception as exc:
@@ -461,13 +577,16 @@ class RunLog:
         self._finished = True
         self._mono["finish"] = time.monotonic()
         try:
-            self.capture_score()
             self._write_entry()
             self._update_manifest()
+            self._write_entry()
             self._mirror_report()
-            _stderr_line("run log: %s" % _display(self.run_dir / "entry.json"))
+            _stderr_line("run log: {}".format(_display(self.run_dir / "entry.json")))
             if self.logging_errors:
-                _stderr_line("run log: %s warning(s); eval was not changed" % len(self.logging_errors))
+                _stderr_line(
+                    f"run log: {len(self.logging_errors)} warning(s); "
+                    "eval was not changed"
+                )
         except Exception as exc:
             _stderr("finish", exc)
 
@@ -489,20 +608,25 @@ class RunLog:
             "eval_output": self.eval_output or "unknown",
             "eval_phase": self.eval_phase,
             "eval_phase_source": self.eval_phase_source,
-            "instance_id": _measurement(self.instance_id) if self.instance_id is not None else "unknown",
+            "instance_id": _measurement(self.instance_id)
+            if self.instance_id is not None
+            else "unknown",
             "who": self.who,
             "git_commit": self.git_commit,
             "timings": self._timing_block(),
             "hardware": {"offer": offer_fields(self.offer), "probe": self.probe},
             "score": self.score,
             "eval_returncode": self.eval_returncode,
+            "release_status": self.release_status,
             "logging_errors": list(self.logging_errors),
         }
 
     def _timing_block(self) -> dict:
         block = dict(self._timings)
         start = self._mono.get("rent_start")
-        end = self._mono.get("release", self._mono.get("eval_end", self._mono.get("finish")))
+        end = self._mono.get(
+            "release", self._mono.get("eval_end", self._mono.get("finish"))
+        )
         if start is None or end is None:
             block["wall_seconds"] = "unknown"
         else:
@@ -513,7 +637,9 @@ class RunLog:
         fields = offer_fields(self.offer)
         return {
             "run_id": self.run_id,
-            "time": self._timings["rent_start_utc"] if self._timings["rent_start_utc"] != "unknown" else _utc(),
+            "time": self._timings["rent_start_utc"]
+            if self._timings["rent_start_utc"] != "unknown"
+            else _utc(),
             "who": self.who,
             "gpu": {
                 "machine_id": fields["machine_id"],
@@ -532,7 +658,7 @@ class RunLog:
         _upsert_manifest(self.root / "manifest.json", self._row(), self)
 
     def _mirror_report(self) -> None:
-        if not self.eval_output:
+        if not self.eval_output or not self._owns_eval_output:
             return
         report = Path(self.eval_output) / self.model
         if not report.is_dir():
@@ -546,10 +672,12 @@ class RunLog:
         _upsert_manifest(report / "logs" / "manifest.json", self._row(), self)
 
     def _error(self, label, exc) -> None:
-        message = "%s failed (%s)" % (label, type(exc).__name__ if isinstance(exc, BaseException) else "error")
-        detail = redact_text(exc if isinstance(exc, str) else exc)
+        message = "{} failed ({})".format(
+            label, type(exc).__name__ if isinstance(exc, BaseException) else "error"
+        )
+        detail = redact_text(exc) if isinstance(exc, str) else ""
         if detail:
-            message = "%s: %s" % (message, detail)
+            message = f"{message}: {detail}"
         self.logging_errors.append(message)
         _stderr_line("run log: " + message)
 
@@ -612,13 +740,17 @@ def _wrap_run(original, session: RunLog):
 
 def _wrap_release(original, session: RunLog):
     def wrapper(vast, instance_id):
+        session.instance_id = instance_id
         try:
-            return original(vast, instance_id)
-        finally:
-            try:
-                session.note_release()
-            except Exception as exc:
-                session._error("release", exc)
+            result = original(vast, instance_id)
+        except BaseException:
+            session.release_status = "failed"
+            raise
+        try:
+            session.note_release()
+        except Exception as exc:
+            session._error("release", exc)
+        return result
 
     wrapper._gv_wrapped = True
     return wrapper
@@ -639,13 +771,17 @@ def _wrap_ready(fn, session: RunLog):
 
 def _wrap_eval(fn, session: RunLog):
     def wrapper(*args, **kwargs):
+        output_was_absent = False
         try:
+            output_was_absent = (
+                bool(session.eval_output) and not Path(session.eval_output).exists()
+            )
             session.note_eval_start()
         except Exception as exc:
             session._error("timer", exc)
         try:
             code = fn(*args, **kwargs)
-        except Exception:
+        except BaseException:
             try:
                 session.note_eval_end("unknown")
             except Exception as exc:
@@ -653,6 +789,7 @@ def _wrap_eval(fn, session: RunLog):
             raise
         try:
             session.note_eval_end(code)
+            session._owns_eval_output = output_was_absent
             session.capture_score()
             session._write_entry()
         except Exception as exc:
@@ -681,10 +818,24 @@ def _score_split(payload: dict) -> dict:
         out[name] = _measurement(payload.get(name)) if name in payload else "unknown"
     latency = payload.get("test_attempt_latency")
     if isinstance(latency, dict):
-        out["p50_seconds"] = _measurement(latency.get("p50_seconds")) if "p50_seconds" in latency else "unknown"
-        out["p95_seconds"] = _measurement(latency.get("p95_seconds")) if "p95_seconds" in latency else "unknown"
-        out["latency_n"] = _measurement(latency.get("n")) if "n" in latency else "unknown"
-        out["latency_source"] = latency.get("source") if isinstance(latency.get("source"), str) else "unknown"
+        out["p50_seconds"] = (
+            _measurement(latency.get("p50_seconds"))
+            if "p50_seconds" in latency
+            else "unknown"
+        )
+        out["p95_seconds"] = (
+            _measurement(latency.get("p95_seconds"))
+            if "p95_seconds" in latency
+            else "unknown"
+        )
+        out["latency_n"] = (
+            _measurement(latency.get("n")) if "n" in latency else "unknown"
+        )
+        out["latency_source"] = (
+            latency.get("source")
+            if isinstance(latency.get("source"), str)
+            else "unknown"
+        )
     else:
         out["p50_seconds"] = "unknown"
         out["p95_seconds"] = "unknown"
@@ -704,7 +855,11 @@ def _find_offer(offers, offer_id):
 
 def _same_id(left, right) -> bool:
     try:
-        return int(left) == int(right) and not isinstance(left, bool) and not isinstance(right, bool)
+        return (
+            int(left) == int(right)
+            and not isinstance(left, bool)
+            and not isinstance(right, bool)
+        )
     except (TypeError, ValueError):
         return False
 
@@ -751,7 +906,7 @@ def _redact(value):
     if isinstance(value, list):
         return [_redact(item) for item in value]
     if isinstance(value, str):
-        return "redacted" if _SECRET_VALUE.search(value) else value
+        return "redacted" if _sanitize_text(value) != value else value
     return value
 
 
@@ -765,7 +920,12 @@ def _who() -> dict:
         display = git_user
     else:
         display = user
-    return {"display": display, "operator_env": operator, "user": user, "git_user": git_user}
+    return {
+        "display": display,
+        "operator_env": operator,
+        "user": user,
+        "git_user": git_user,
+    }
 
 
 def _git_user() -> str:
@@ -779,8 +939,13 @@ def _git_commit() -> str:
 def _git_line(args) -> str:
     try:
         result = subprocess.run(
-            ["git", *args], cwd=REPO, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=3,
+            ["git", *args],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3,
         )
     except (OSError, subprocess.TimeoutExpired):
         return "unknown"
@@ -797,7 +962,7 @@ def _flag(name: str):
             return argv[index + 1]
         prefix = name + "="
         if item.startswith(prefix):
-            return item[len(prefix):]
+            return item[len(prefix) :]
     return None
 
 
@@ -806,15 +971,23 @@ def _utc() -> str:
 
 
 def _dumps(value) -> str:
-    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    return (
+        json.dumps(redact(value), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    )
 
 
 def _atomic_write(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with tmp.open("w", encoding="utf-8", newline="\n") as handle:
-        handle.write(_dumps(value))
-    os.replace(tmp, path)
+    fd, filename = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=path.parent
+    )
+    tmp = Path(filename)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(_dumps(value))
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _write_new(path: Path, value) -> None:
@@ -829,6 +1002,9 @@ def _upsert_manifest(path: Path, row: dict, session: RunLog) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = path.with_name(".manifest.lock")
     acquired = _acquire_lock(lock)
+    if not acquired:
+        session._error("manifest", "lock unavailable; index update skipped")
+        return
     try:
         rows = []
         if path.is_file():
@@ -840,7 +1016,11 @@ def _upsert_manifest(path: Path, row: dict, session: RunLog) -> None:
             if not isinstance(loaded, list):
                 session._error("manifest", "manifest is not a list")
                 return
-            rows = [item for item in loaded if not (isinstance(item, dict) and item.get("run_id") == row["run_id"])]
+            rows = [
+                item
+                for item in loaded
+                if not (isinstance(item, dict) and item.get("run_id") == row["run_id"])
+            ]
         rows.append(row)
         _atomic_write(path, rows)
     finally:
@@ -858,12 +1038,8 @@ def _acquire_lock(lock: Path) -> bool:
             os.close(fd)
             return True
         except FileExistsError:
-            try:
-                if time.time() - lock.stat().st_mtime > 30:
-                    lock.unlink()
-                    continue
-            except OSError:
-                pass
+            # Never steal a lock from a paused writer. A crashed writer's lock
+            # needs manual removal; the per-run entries remain intact.
             time.sleep(0.05)
     return False
 
@@ -887,9 +1063,12 @@ def _display(path: Path) -> str:
 
 
 def _stderr(label: str, exc: BaseException) -> None:
-    _stderr_line("run log: %s failed (%s); eval continues" % (label, type(exc).__name__))
+    _stderr_line(f"run log: {label} failed ({type(exc).__name__}); eval continues")
 
 
 def _stderr_line(text: str) -> None:
-    sys.stderr.write(redact_text(text) + "\n")
-    sys.stderr.flush()
+    try:
+        sys.stderr.write(redact_text(text) + "\n")
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
