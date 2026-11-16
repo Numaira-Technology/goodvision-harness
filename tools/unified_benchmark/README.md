@@ -376,10 +376,16 @@ create a new preflight bundle for a new run rather than editing old fingerprints
 
 ## Hardware run log
 
-`python -m tools.start_qwen8b_r2` and `python -m tools.start_qwen8b_vllm` record
-the rented machine while they run. Use the same command as before. Each eval
+Vast rentals record the machine through `tools/vast_run_log.py`. Colleagues keep
+the same launcher command. `python -m tools.start_qwen8b_r2` is armed by the
+`tools` package. `python -m tools.start_qwen8b_vllm`, `python tools/start_sam.py`,
+`python tools/start_detector.py`, and `python -m tools.diag_qwen8b_vllm_import`
+call `attach()` themselves. The call pattern, output layout, and checklist are
+in `.cursor/skills/vast-run-log/SKILL.md`. Each eval
 still needs its own new `--eval-output` (the evaluator refuses an existing
-directory). Consecutive runs on one model share one index:
+directory). This update changes the frozen SAM and vLLM launcher sources;
+create a new preflight bundle after updating. Existing bundles keep their source
+checks and are not rewritten. Consecutive runs on one model share one index:
 
 ```text
 outputs/run-logs/qwen8b_r2_host/logs/manifest.json
