@@ -260,7 +260,11 @@ def execute_model(alias, bundle, root, bundle_digest, transport_factory, *, phas
                         raise ValueError("completed phase evidence anchors missing")
                     for name, sha in seal["files"].items():
                         path = output / name
-                        if not path.resolve().is_relative_to(output.resolve()) or file_hash(path) != sha:
+                        if not path.resolve().is_relative_to(output.resolve()):
+                            raise ValueError("completed phase changed")
+                        # Windows byte locks forbid reopening the owned ledger.
+                        actual = ledger.file_hash() if path.resolve() == ledger.path.resolve() else file_hash(path)
+                        if actual != sha:
                             raise ValueError("completed phase changed")
                 reconcile(directory, ledger, plan, cfg, local=local, sealed=completion.exists())
                 if not completion.exists():

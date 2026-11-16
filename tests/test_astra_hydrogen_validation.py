@@ -1,6 +1,7 @@
 """Offline scope, routing and recovery checks for the effort comparison."""
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import sys
 import threading
@@ -113,6 +114,7 @@ def test_unprepared_test_rejected_before_any_request(validation_bundle, tmp_path
     assert not out.exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX batch controller")
 def test_four_validation_runs_are_independent_and_resume_does_not_resend(validation_bundle, tmp_path, monkeypatch):
     key = tmp_path / "synthetic.env"
     key.write_text("OPENROUTER_API_KEY=synthetic-not-a-key\n")

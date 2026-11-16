@@ -18,12 +18,19 @@ import time
 from pathlib import Path
 
 
+# Native recovery cases have independent function-scoped bundles/backends. This
+# module alone exceeded eleven minutes on Windows; keep its cases distributed
+# without changing the grouping of other modules or the exact-once gate.
+CASE_SHARDED_MODULES = frozenset({"tests/test_native_workflow.py"})
+
+
 def shard_for(nodeid: str, count: int) -> int:
-    """Keep every module's fixtures and test order together; never use hash()."""
+    """Stable module grouping, with explicit independent-case exceptions."""
     if count < 1:
         raise ValueError("shard count must be positive")
     module = nodeid.split("::", 1)[0]
-    return int.from_bytes(hashlib.sha256(module.encode()).digest()[:8], "big") % count
+    key = nodeid if module in CASE_SHARDED_MODULES else module
+    return int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], "big") % count
 
 
 def _verify_execution(directory, selected):

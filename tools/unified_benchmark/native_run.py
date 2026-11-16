@@ -303,7 +303,7 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, *, recover=True):
         result = results.get((row["unit"], row["attempt"]))
         if result:
             metadata = result.get("metadata", {})
-            if (metadata.get("receipt") != str(path.relative_to(output)) or not path.is_file()
+            if (metadata.get("receipt") != path.relative_to(output).as_posix() or not path.is_file()
                     or metadata.get("receipt_sha256") != file_hash(path)):
                 raise ValueError("saved receipt missing or differs")
         elif not path.exists():
@@ -329,7 +329,7 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, *, recover=True):
             "error": receipt["error"], "elapsed_seconds": receipt["transport_seconds"],
             "http_status": receipt["http_status"], "fatal": receipt.get("fatal", False),
             "retry_after": receipt.get("retry_after", 0),
-            "metadata": {"actual_provider": "self-hosted", "receipt": str(path.relative_to(output)),
+            "metadata": {"actual_provider": "self-hosted", "receipt": path.relative_to(output).as_posix(),
                          "receipt_sha256": file_hash(path), "recovered_receipt": True}}
         if (not recovered["complete"] and not recovered["fatal"]
                 and (row["attempt"] < 3 or recovered["http_status"] == 429)):
@@ -384,7 +384,7 @@ def validate_saved_path(path, output, *, directory=False):
     present = path.exists() or path.is_symlink()
     if (not path.resolve().is_relative_to(output.resolve())
             or present and not (path.is_dir() if directory else path.is_file())):
-        raise ValueError("resume evidence path has wrong type or escapes output: " + str(path.relative_to(output)))
+        raise ValueError("resume evidence path has wrong type or escapes output: " + path.relative_to(output).as_posix())
 
 
 def preflight_resume(alias, bundle, output, cfg, bundle_digest, deployment_hash, phase, threshold_hash):
@@ -520,7 +520,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     "at": stamp(), "http_status": code, "response": raw, "parsed": parsed, "error": error,
                     "fatal": fatal, "retry_after": 0, "completed_at_unix": time.time(),
                     "transport_seconds": time.monotonic() - started, "timings": timing})
-                metadata = {"actual_provider": "self-hosted", "receipt": str(path.relative_to(output)),
+                metadata = {"actual_provider": "self-hosted", "receipt": path.relative_to(output).as_posix(),
                             "receipt_sha256": file_hash(path), "http_status": code}
                 if error:
                     raise RequestFailure(error, status=code, fatal=fatal, metadata=metadata)
@@ -564,7 +564,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     write_new(completion_path, {"execution_finished": True,
                         "final_missing_unique_units": result["final_missing_unique_units"],
                         "incomplete_questions": result["incomplete_questions"],
-                        "files": {str(p.relative_to(output)): ledger.file_hash() if p == ledger.path else file_hash(p)
+                        "files": {p.relative_to(output).as_posix(): ledger.file_hash() if p == ledger.path else file_hash(p)
                                   for p in files}, "at": stamp()})
                 completed.append(split)
             except BaseException:
@@ -587,7 +587,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
             manifest = output / "result-files-sha256.json"
             if manifest.exists():
                 write_new(invocation / "previous-result-files-sha256.json", json.loads(manifest.read_text()))
-            save_status(manifest, {str(p.relative_to(output)): file_hash(p)
+            save_status(manifest, {p.relative_to(output).as_posix(): file_hash(p)
                 for p in sorted(output.rglob("*")) if p.is_file() and p != manifest})
 
 

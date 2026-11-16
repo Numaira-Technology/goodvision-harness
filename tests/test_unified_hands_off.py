@@ -76,7 +76,35 @@ def frozen44(root, inputs, aliases):
     return root
 
 
-def test_luna_validation44_selects_six_thresholds_and_binds_artifact(tmp_path, inputs, monkeypatch):
+@pytest.fixture
+def mandatory_ledger_locks(monkeypatch):
+    """Exercise Windows' second-handle restriction on every test platform."""
+    owners = set()
+    original_init, original_close, original_open = Ledger.__init__, Ledger.close, Path.open
+
+    def ledger_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        if self.file is not None:
+            owners.add(self.path.resolve())
+
+    def ledger_close(self):
+        original_close(self)
+        owners.discard(self.path.resolve())
+
+    def guarded_open(path, *args, **kwargs):
+        if path.resolve() in owners:
+            raise PermissionError("synthetic mandatory lock denies second handle")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Ledger, "__init__", ledger_init)
+    monkeypatch.setattr(Ledger, "close", ledger_close)
+    monkeypatch.setattr(Path, "open", guarded_open)
+    yield
+    assert not owners
+
+
+def test_luna_validation44_selects_six_thresholds_and_binds_artifact(
+        tmp_path, inputs, monkeypatch, mandatory_ledger_locks):
     bundle = frozen44(tmp_path / "bundle", inputs, ["luna"])
     called = []
     def fake(self, uri, body):
@@ -106,7 +134,8 @@ def test_luna_validation44_selects_six_thresholds_and_binds_artifact(tmp_path, i
 
 
 @pytest.mark.parametrize("cut", ["outcome", "result", "summary_seal"])
-def test_qwen_crash_resume_preserves_first_answer_without_resend(tmp_path, monkeypatch, cut):
+def test_qwen_crash_resume_preserves_first_answer_without_resend(
+        tmp_path, monkeypatch, cut, mandatory_ledger_locks):
     bundle = tmp_path / "bundle"
     cfg, unit = frozen_host_bundle(bundle)
     sha = workflow.verify_bundle(bundle)
@@ -157,6 +186,7 @@ def api_batch_config(bundle, key):
             "attempt_cost_upper_usd": .001, "cost_upper_bound_basis": "synthetic tests only"}]}
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX batch controller")
 def test_ten_rounds_make_new_calls_and_completed_resume_makes_none(tmp_path, inputs, monkeypatch):
     bundle = frozen44(tmp_path / "bundle", inputs, ["qwen8b"])
     key = tmp_path / "synthetic.env"
@@ -284,6 +314,16 @@ def test_report_keeps_failed_missing_and_not_started_rounds(tmp_path):
     assert result["rounds"][-1]["accuracy"] is None
 
 
+@pytest.mark.parametrize("entrypoint", ["run", "watch"])
+def test_non_posix_controller_rejected_before_creating_output(tmp_path, monkeypatch, entrypoint):
+    from types import SimpleNamespace
+    monkeypatch.setattr(batch, "os", SimpleNamespace(name="nt"))
+    output = tmp_path / "run"
+    with pytest.raises(ValueError, match="requires POSIX"):
+        getattr(batch, entrypoint)(tmp_path / "absent-config.json", output, "synthetic test")
+    assert not output.exists()
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX supervisor")
 def test_supervisor_stops_worker_when_controller_pipe_closes(tmp_path):
     read_fd, write_fd = os.pipe()
@@ -301,6 +341,7 @@ def test_supervisor_stops_worker_when_controller_pipe_closes(tmp_path):
     assert b"controller disconnected" in stdout
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX supervisor")
 @pytest.mark.parametrize("exit_codes, expected, launches", [
     ([-9, 0], 0, 2),
     ([1], 1, 1),
