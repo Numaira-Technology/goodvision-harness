@@ -210,7 +210,7 @@ def main(argv=None):
     parser.add_argument("--bag-validation-sha256", help="Pinned raw SHA256 of the supplementary manifest")
     parser.add_argument(
         "--test-supplement", type=Path,
-        help="Optional private test-only event supplement; original202 inputs stay unchanged",
+        help="Append private test-only questions; preserve original202 inputs",
     )
     parser.add_argument("--media", type=Path, required=True, help="contains validation/ and test/ videos")
     parser.add_argument("--profiles", type=Path, default=PROFILES)
