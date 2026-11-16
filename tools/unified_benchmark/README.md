@@ -395,7 +395,11 @@ outputs/run-logs/qwen8b_r2_host/logs/<run-id>/entry.json
 selected Vast offer with secret-looking fields removed, written when the
 instance is created. `entry.json` adds the offer's key fields, one nvidia-smi
 probe, rent/ready/eval/release times, and the score read from that run's
-`summary.json`. `manifest.json` has one row per run: time, who, machine id, GPU,
+`summary.json`. Scores are captured only when this invocation creates a fresh
+output and the evaluator returns; a rejected or interrupted invocation leaves
+its score unknown and does not modify an older report. `release_status` is
+`released` only after Vast confirms destruction; a failure leaves `release_utc`
+unknown. `manifest.json` has one row per run: time, who, machine id, GPU,
 price, location, and score. Who prefers `GOODVISION_OPERATOR`, then git
 `user.name`, then `$USER` (`%USERNAME%` on Windows). After the model report
 directory exists, the same run folder and an index row are copied to
@@ -404,7 +408,10 @@ directory exists, the same run folder and an index row are copied to
 Unknown measurements are the string `unknown`, not 0. A real accuracy of 0 stays
 0. If logging fails, the launcher prints `run log: ...` and still returns the
 eval's own exit code. Offer search, filters, sort, prompts, and scoring are
-unchanged. This log is not uploaded to R2 yet.
+unchanged. Concurrent index writes require the manifest lock. If a writer cannot
+acquire it, the index update is skipped with a warning while the per-run entry is
+retained. A lock left by a crashed process needs removal after confirming that
+no writer is active. This log is not uploaded to R2 yet.
 
 Example shape (not a measured run):
 

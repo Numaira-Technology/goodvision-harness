@@ -1,4 +1,5 @@
 """Offline tests for the Qwen Vast run log. No GPU and no Vast API."""
+
 from __future__ import annotations
 
 import json
@@ -10,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from tools import start_sam
+from tools import vast_run_log as run_log
 from tools.vast_run_log import (
     LAUNCHERS, SAMPLE_INTERVAL, _AUTO_ARM, _HOST_FIELDS, _PROBE, _SAMPLER_SH,
     RunLog, _wrap_create, _wrap_eval, _wrap_release, attach, logs_directory,
@@ -22,10 +24,19 @@ REPO = Path(__file__).resolve().parents[1]
 
 def _offer(**extra):
     body = {
-        "id": 7, "machine_id": 4242, "host_id": 9, "geolocation": "California, US",
-        "dph_total": 0.42, "gpu_name": "RTX_4090", "num_gpus": 1, "gpu_ram": 0,
-        "gpu_frac": 0.5, "ssh_host": "ssh.example", "ssh_port": 2222,
-        "api_key": "vast-secret-value", "ssh_key": "-----BEGIN PRIVATE KEY-----\nabc",
+        "id": 7,
+        "machine_id": 4242,
+        "host_id": 9,
+        "geolocation": "California, US",
+        "dph_total": 0.42,
+        "gpu_name": "RTX_4090",
+        "num_gpus": 1,
+        "gpu_ram": 0,
+        "gpu_frac": 0.5,
+        "ssh_host": "ssh.example",
+        "ssh_port": 2222,
+        "api_key": "vast-secret-value",
+        "ssh_key": "-----BEGIN PRIVATE KEY-----\nabc",
         "env": {"R2_SECRET_ACCESS_KEY": "r2-secret-value"},
         "description": "token sk-live-abcdefghij",
     }
@@ -169,7 +180,9 @@ def test_live_probe_banner_does_not_drop_the_gpu_row():
     assert "Welcome to vast.ai" in combined
     assert "power-saving" in parsed["note"]
     assert "Have fun!" not in json.dumps(parsed["gpus"])
-    offer = json.loads((REPO / "tests/fixtures/vast_offer.json").read_text(encoding="utf-8"))
+    offer = json.loads(
+        (REPO / "tests/fixtures/vast_offer.json").read_text(encoding="utf-8")
+    )
     fields = offer_fields(offer)
     assert fields["verification"] == "verified"
     assert "verified" not in fields
@@ -204,7 +217,9 @@ def test_container_limits_are_labeled_apart_from_the_host(tmp_path, monkeypatch)
         "v1 -1 100000\tv1 9223372036854771712\n"
     )
     assert v1["host"]["container_cpu_limit"] == "max (cgroup v1 cpu.cfs_quota_us)"
-    assert v1["host"]["container_memory_limit"] == "max (cgroup v1 memory.limit_in_bytes)"
+    assert (
+        v1["host"]["container_memory_limit"] == "max (cgroup v1 memory.limit_in_bytes)"
+    )
     partial = parse_probe(
         "RTX 4090, 0000:81:00.0, 4, 4, 8, 16, 450.00 W, 2520 MHz, 3105 MHz, "
         "10251 MHz, 550.90, 24564 MiB, 0 %\n"
@@ -240,7 +255,9 @@ def test_container_limits_are_labeled_apart_from_the_host(tmp_path, monkeypatch)
     assert "Have fun!" in session.probe["raw"]
     assert "3200000" not in session.probe["raw"]
     saved = json.loads((session.run_dir / "entry.json").read_text(encoding="utf-8"))
-    assert saved["hardware"]["probe"]["host"]["container_cpu_limit"].startswith("32 cores")
+    assert saved["hardware"]["probe"]["host"]["container_cpu_limit"].startswith(
+        "32 cores"
+    )
     assert "Welcome to vast.ai" in saved["hardware"]["probe"]["raw"]
 
 
@@ -248,13 +265,23 @@ def test_score_summary_preserves_zero_and_marks_missing_unknown(tmp_path):
     alias = "qwen8b_r2_host"
     split = tmp_path / alias / "validation"
     split.mkdir(parents=True)
-    (split / "summary.json").write_text(json.dumps({
-        "accuracy": 0, "correct": 0, "planned_questions": 24,
-        "final_unknown_questions": 2, "final_missing_unique_units": 0,
-        "test_attempt_latency": {"n": 3, "source": "transport"},
-    }), encoding="utf-8", newline="\n")
+    (split / "summary.json").write_text(
+        json.dumps(
+            {
+                "accuracy": 0,
+                "correct": 0,
+                "planned_questions": 24,
+                "final_unknown_questions": 2,
+                "final_missing_unique_units": 0,
+                "test_attempt_latency": {"n": 3, "source": "transport"},
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
     (tmp_path / "run-manifest.json").write_text(
-        json.dumps({"slots_per_model": 12}), encoding="utf-8", newline="\n")
+        json.dumps({"slots_per_model": 12}), encoding="utf-8", newline="\n"
+    )
     score = summarize_score(tmp_path, alias)
     assert score["validation"]["accuracy"] == 0
     assert score["validation"]["final_unknown_questions"] == 2
@@ -271,7 +298,9 @@ def test_selected_offer_is_saved_without_changing_creation(tmp_path, monkeypatch
     monkeypatch.delenv("USER", raising=False)
     monkeypatch.setenv("USERNAME", "win-user")
     cheap = _offer(id=1, machine_id=10, dph_total=0.2, geolocation="A")
-    chosen = _offer(id=2, machine_id=20, dph_total=0.4, geolocation="B", gpu_name="RTX_4090")
+    chosen = _offer(
+        id=2, machine_id=20, dph_total=0.4, geolocation="B", gpu_name="RTX_4090"
+    )
     calls = []
 
     class Vast:
@@ -288,7 +317,9 @@ def test_selected_offer_is_saved_without_changing_creation(tmp_path, monkeypatch
     created = wrapped(vast, [cheap, chosen], disk_gb=80, label="goodvision-qwen8b-test")
     assert created == 99
     assert calls == [1, 2]
-    saved = json.loads((session.run_dir / "vast-offer.json").read_text(encoding="utf-8"))
+    saved = json.loads(
+        (session.run_dir / "vast-offer.json").read_text(encoding="utf-8")
+    )
     raw = (session.run_dir / "vast-offer.json").read_bytes()
     assert b"\r" not in raw
     assert saved["machine_id"] == 20
@@ -305,16 +336,29 @@ def test_selected_offer_is_saved_without_changing_creation(tmp_path, monkeypatch
     rows = json.loads((session.root / "manifest.json").read_text(encoding="utf-8"))
     assert len(rows) == 1
     assert rows[0]["gpu"] == {
-        "machine_id": 20, "gpu_name": "RTX_4090", "dph_total": 0.4, "geolocation": "B",
+        "machine_id": 20,
+        "gpu_name": "RTX_4090",
+        "dph_total": 0.4,
+        "geolocation": "B",
     }
     assert rows[0]["who"]["operator_env"] == "colleague"
     assert rows[0]["score"] == "unknown"
     report = tmp_path / "report"
     (report / "qwen8b_r2_host" / "validation").mkdir(parents=True)
-    (report / "qwen8b_r2_host" / "validation" / "summary.json").write_text(json.dumps({
-        "accuracy": 0, "final_unknown_questions": 1, "final_missing_unique_units": 0,
-    }), encoding="utf-8", newline="\n")
+    (report / "qwen8b_r2_host" / "validation" / "summary.json").write_text(
+        json.dumps(
+            {
+                "accuracy": 0,
+                "final_unknown_questions": 1,
+                "final_missing_unique_units": 0,
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
     session.eval_output = str(report)
+    session._owns_eval_output = True
+    session.capture_score()
     session._finished = False
     session.finish_once()
     rows = json.loads((session.root / "manifest.json").read_text(encoding="utf-8"))
@@ -327,11 +371,26 @@ def test_second_run_appends_a_row_and_does_not_overwrite(tmp_path, monkeypatch):
     monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
     first = RunLog("tools.start_qwen8b_vllm", "qwen8b_r2_vllm", "vllm")
     second = RunLog("tools.start_qwen8b_vllm", "qwen8b_r2_vllm", "vllm")
-    first.note_create([_offer(id=5, machine_id=50)], (), {"id": 5}, {"success": True, "new_contract": 5})
-    second.note_create([_offer(id=6, machine_id=60, geolocation="EU")], (), {"id": 6}, {"success": True, "new_contract": 6})
+    first.note_create(
+        [_offer(id=5, machine_id=50)],
+        (),
+        {"id": 5},
+        {"success": True, "new_contract": 5},
+    )
+    second.note_create(
+        [_offer(id=6, machine_id=60, geolocation="EU")],
+        (),
+        {"id": 6},
+        {"success": True, "new_contract": 6},
+    )
     rows = json.loads((first.root / "manifest.json").read_text(encoding="utf-8"))
     assert [row["gpu"]["machine_id"] for row in rows] == [50, 60]
-    assert json.loads((first.run_dir / "vast-offer.json").read_text(encoding="utf-8"))["machine_id"] == 50
+    assert (
+        json.loads((first.run_dir / "vast-offer.json").read_text(encoding="utf-8"))[
+            "machine_id"
+        ]
+        == 50
+    )
     assert (second.run_dir / "vast-offer.json").is_file()
 
 
@@ -366,19 +425,38 @@ def test_eval_wrapper_returns_the_original_result_when_logging_breaks():
     assert session.logging_errors
 
 
-def test_score_lands_in_the_model_report_without_creating_a_missing_output(tmp_path, monkeypatch):
+def test_score_lands_in_the_model_report_without_creating_a_missing_output(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "series"))
     report_root = tmp_path / "eval-out"
     alias = "qwen8b_r2_host"
     (report_root / alias / "test").mkdir(parents=True)
-    (report_root / alias / "test" / "summary.json").write_text(json.dumps({
-        "accuracy": 0.25, "final_unknown_questions": 4, "final_missing_unique_units": 1,
-        "test_attempt_latency": {"p50_seconds": 1.5, "p95_seconds": 3.5, "n": 10, "source": "transport"},
-    }), encoding="utf-8", newline="\n")
+    (report_root / alias / "test" / "summary.json").write_text(
+        json.dumps(
+            {
+                "accuracy": 0.25,
+                "final_unknown_questions": 4,
+                "final_missing_unique_units": 1,
+                "test_attempt_latency": {
+                    "p50_seconds": 1.5,
+                    "p95_seconds": 3.5,
+                    "n": 10,
+                    "source": "transport",
+                },
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
     session = RunLog("tools.start_qwen8b_r2", alias, "transformers")
     session.eval_output = str(report_root)
+    session._owns_eval_output = True
+    session.capture_score()
     session.mark_rent_start()
-    session.note_create([_offer()], (), {"id": 7}, {"success": True, "new_contract": 11})
+    session.note_create(
+        [_offer()], (), {"id": 7}, {"success": True, "new_contract": 11}
+    )
     session.finish_once()
     copied = report_root / alias / "logs" / session.run_id / "entry.json"
     entry = json.loads(copied.read_text(encoding="utf-8"))
@@ -386,7 +464,9 @@ def test_score_lands_in_the_model_report_without_creating_a_missing_output(tmp_p
     assert entry["score"]["test"]["p50_seconds"] == 1.5
     assert entry["timings"]["rent_start_utc"] != "unknown"
     assert isinstance(entry["timings"]["wall_seconds"], float)
-    mirror = json.loads((report_root / alias / "logs" / "manifest.json").read_text(encoding="utf-8"))
+    mirror = json.loads(
+        (report_root / alias / "logs" / "manifest.json").read_text(encoding="utf-8")
+    )
     assert mirror[0]["score"]["test"]["final_missing_unique_units"] == 1
     absent = tmp_path / "brand-new-output"
     assert logs_directory(alias, absent) != absent
@@ -414,8 +494,20 @@ def test_launcher_module_writes_a_log_and_still_rejects_a_bad_bundle(tmp_path, m
     bundle.mkdir()
     output = tmp_path / "eval-out"
     result = subprocess.run(
-        [sys.executable, "-m", module, "--eval-bundle", str(bundle), "--eval-output", str(output)],
-        cwd=REPO, env=env, capture_output=True, text=True, timeout=60,
+        [
+            sys.executable,
+            "-m",
+            module,
+            "--eval-bundle",
+            str(bundle),
+            "--eval-output",
+            str(output),
+        ],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert result.returncode != 0
     assert not output.exists()
@@ -599,3 +691,207 @@ def test_attach_patches_detector_ready_hook(tmp_path, monkeypatch):
     assert ready == ["worker"]
     assert mod._SESSION.sample is True
     assert mod._SESSION._expects_ready is True
+
+
+@pytest.mark.parametrize("module", ["tools.start_qwen8b_r2", "tools.start_qwen8b_vllm"])
+def test_rejected_launch_does_not_adopt_an_existing_report(tmp_path, module):
+    alias = "qwen8b_r2_vllm" if module.endswith("vllm") else "qwen8b_r2_host"
+    output = tmp_path / "previous-run"
+    split = output / alias / "test"
+    split.mkdir(parents=True)
+    (split / "summary.json").write_text('{"accuracy": 1.0}')
+    env = dict(os.environ, GOODVISION_RUN_LOG_ROOT=str(tmp_path / "logs"))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            module,
+            "--eval-bundle",
+            str(tmp_path / "missing"),
+            "--eval-output",
+            str(output),
+        ],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode != 0
+    entry = json.loads(next((tmp_path / "logs").rglob("entry.json")).read_text())
+    assert entry["score"] == "unknown"
+    assert not (output / alias / "logs").exists()
+
+
+def test_eval_owns_only_its_fresh_output(tmp_path, monkeypatch):
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    session = RunLog("tools.start_qwen8b_r2", "qwen8b_r2_host", "transformers")
+    output = tmp_path / "eval"
+    session.eval_output = str(output)
+
+    def evaluate():
+        split = output / session.model / "test"
+        split.mkdir(parents=True)
+        (split / "summary.json").write_text('{"accuracy": 0}')
+        return 1
+
+    assert _wrap_eval(evaluate, session)() == 1
+    assert session.score["test"]["accuracy"] == 0
+    # The score is captured at this invocation's return, never re-read at exit.
+    (output / session.model / "test" / "summary.json").write_text('{"accuracy": 1}')
+    session.finish_once()
+    assert session.score["test"]["accuracy"] == 0
+    other = RunLog("tools.start_qwen8b_r2", session.model, "transformers")
+    other.eval_output = str(output)
+    assert _wrap_eval(lambda: 1, other)() == 1
+    other.finish_once()
+    assert other.score == "unknown"
+
+
+@pytest.mark.parametrize("error", [FileExistsError, KeyboardInterrupt])
+def test_failed_eval_cannot_claim_a_concurrent_report(tmp_path, monkeypatch, error):
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    session = RunLog("tools.start_qwen8b_r2", "qwen8b_r2_host", "transformers")
+    session.eval_output = str(tmp_path / "eval")
+
+    def race():
+        split = Path(session.eval_output) / session.model / "test"
+        split.mkdir(parents=True)
+        (split / "summary.json").write_text('{"accuracy": 1}')
+        raise error()
+
+    with pytest.raises(error):
+        _wrap_eval(race, session)()
+    session.finish_once()
+    assert session.score == "unknown"
+    assert not (Path(session.eval_output) / session.model / "logs").exists()
+
+
+def test_manifest_lock_timeout_preserves_the_previous_index(tmp_path, monkeypatch):
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path))
+    session = RunLog("tools.start_qwen8b_r2", "qwen8b_r2_host", "transformers")
+    session.root.mkdir(parents=True)
+    path = session.root / "manifest.json"
+    old = '[{"run_id":"existing"}]'
+    path.write_text(old)
+    lock = session.root / ".manifest.lock"
+    lock.write_text("")
+    os.utime(lock, (1, 1))
+    monkeypatch.setattr(run_log.time, "sleep", lambda _: None)
+    session._update_manifest()
+    assert path.read_text() == old
+    assert lock.exists()
+    assert session.logging_errors
+
+
+def test_concurrent_manifest_writers_preserve_every_run(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+
+    path = tmp_path / "manifest.json"
+    errors = []
+    session = SimpleNamespace(_error=lambda *args: errors.append(args))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(
+            pool.map(
+                lambda i: run_log._upsert_manifest(path, {"run_id": str(i)}, session),
+                range(24),
+            )
+        )
+    assert not errors
+    assert {row["run_id"] for row in json.loads(path.read_text())} == {
+        str(i) for i in range(24)
+    }
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_failed_release_is_not_recorded_as_released(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path))
+    session = RunLog("tools.start_qwen8b_r2", "qwen8b_r2_host", "transformers")
+    session.mark_rent_start()
+    vast = SimpleNamespace(
+        client=SimpleNamespace(timeout=10),
+        destroy_instance=lambda **kwargs: {"success": False},
+    )
+    release = run_log._wrap_release(start_sam.release_instance, session)
+    with pytest.raises(RuntimeError, match="did not confirm"):
+        release(vast, 19)
+    assert session.instance_id == 19
+    assert session.release_status == "failed"
+    assert session._timings["release_utc"] == "unknown"
+    vast.destroy_instance = lambda **kwargs: {"success": True}
+    release(vast, 19)
+    assert session.release_status == "released"
+    assert session._timings["release_utc"] != "unknown"
+
+
+def test_logging_and_stderr_failure_do_not_hide_the_created_contract(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path))
+    session = RunLog("tools.start_qwen8b_r2", "qwen8b_r2_host", "transformers")
+    blocked = tmp_path / "blocked"
+    blocked.write_text("x")
+    session.run_dir = blocked / "run"
+
+    def fail_write(_):
+        raise OSError("closed stderr")
+
+    monkeypatch.setattr(run_log.sys, "stderr", SimpleNamespace(write=fail_write))
+    vast = SimpleNamespace(
+        create_instance=lambda **kwargs: {"success": True, "new_contract": 99}
+    )
+    assert (
+        _wrap_create(start_sam.create_from_offers, session)(
+            vast, [_offer()], disk_gb=80, label="test"
+        )
+        == 99
+    )
+    assert session.logging_errors
+
+
+def test_all_log_sinks_remove_secret_assignments_and_untrusted_error_text(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path))
+    session = RunLog("tools.start_qwen8b_r2", "qwen8b_r2_host", "transformers")
+    secret = "synthetic-opaque-secret"
+    sample = {
+        "access_key_id": secret,
+        "ssh_keys": [secret],
+        "nested": {"description": "https://user:" + secret + "@example.test"},
+        "note": "?api_key=" + secret + "&other=ok",
+    }
+    assert secret not in json.dumps(redact(sample))
+    session.probe = {
+        "raw": "R2_SECRET_ACCESS_KEY=" + secret,
+        "gpus": [{"name": "token=" + secret}],
+    }
+    session._error("probe", RuntimeError(secret))
+    session._write_entry()
+    assert secret not in (session.run_dir / "entry.json").read_text()
+    assert secret not in run_log.redact_text("?password=" + secret)
+
+
+def test_probe_ignores_csv_banner_and_retains_partial_host_facts():
+    stdout, _ = _live_probe_streams()
+    gpu = stdout.splitlines()[0].replace("450.00 W", "[Not Supported]")
+    banner = ", ".join(["banner"] * 13)
+    parsed = parse_probe(banner + "\n" + gpu + "\nHOST\tCPU, model\t8\t\t\t\t\n")
+    assert len(parsed["gpus"]) == 1
+    assert parsed["gpus"][0]["power_limit"] == "unknown"
+    assert parsed["host"]["cpu_model"] == "CPU, model"
+    assert parsed["host"]["host_cpu_cores"] == "8"
+    assert parsed["host"]["host_ram_total"] == "unknown"
+
+
+def test_diagnostic_redaction_removes_private_key_body():
+    text = "error: -----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic-key-body\n"
+    for ending in ("", "-----END OPENSSH PRIVATE KEY-----\nnext line"):
+        cleaned = run_log.redact_text(text + ending)
+        assert "synthetic-key-body" not in cleaned
+        assert "PRIVATE KEY" not in cleaned
