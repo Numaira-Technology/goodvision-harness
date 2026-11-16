@@ -40,6 +40,22 @@ def test_vlm_health_distinguishes_stop_from_failure(state):
     assert not result["running"] and not result["ready"]
 
 
+def test_vlm_health_exposes_unavailable_source_window_and_recovers():
+    status = {
+        "state": "running", "last_source_age_seconds": 0,
+        "last_success_age_seconds": 0, "sampling_window_state": "unavailable",
+    }
+    runtime = SimpleNamespace(settings=SimpleNamespace(
+        ready_max_frame_age_seconds=10, ready_max_result_age_seconds=10,
+    ))
+    branch = SimpleNamespace(health=lambda: status)
+    health = service.HarnessRuntime._vlm_health(runtime, branch)
+    assert health["running"] and not health["ready"]
+    assert health["readiness_reason"] == "source_window_unavailable"
+    status["sampling_window_state"] = "ready"
+    assert service.HarnessRuntime._vlm_health(runtime, branch)["ready"]
+
+
 def test_failed_tracking_drain_preserves_inflight_vlm_results(monkeypatch):
     from test_vlm_independent import config
 

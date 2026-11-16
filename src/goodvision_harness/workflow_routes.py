@@ -106,6 +106,8 @@ class WorkflowCoordinator:
         for camera in cameras:
             camera["status"] = statuses.get(camera["index"])
         return {
+            "dynamic_sources": fleet.dynamic is not None,
+            "add_camera_url": "/v1/fleet/cameras" if fleet.dynamic is not None else None,
             "document": self.store.load(),
             "cameras": cameras,
             "event_catalog": event_catalog(self.vocabulary),
@@ -280,6 +282,7 @@ def install_workflow_routes(application):
         try:
             async with fleet.control_lock:
                 await control.require_stopped([payload["camera_id"]])
+                await fleet.synchronize_summary_service(index)
                 operation = asyncio.create_task(
                     fleet.request_json(
                         index,

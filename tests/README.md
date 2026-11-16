@@ -77,3 +77,43 @@ entrypoints in [tools/README.md](../tools/README.md). Run them explicitly with
 the required environment and authorized inputs. Store generated results in an
 ignored output directory and keep reviewed summaries in
 [docs/validation](../docs/README.md#validation-records).
+
+## CI partition and timeout evidence
+
+The two Linux regression shards deterministically assign entire test modules using
+SHA-256 of the collected module path. They retain each module's original test
+order and fixtures. Neither shard skips a slow test or excludes camera tests.
+Every shard records the full collection and its selected node IDs; the existing
+`Tests (ubuntu-latest, Python 3.11)` aggregate check fails unless both shards pass
+and the manifests plus completed setup/call/teardown records prove every collected
+test was executed exactly once. Legitimate recorded setup skips remain skips.
+Windows uses four shards with the same partition and evidence plugin. Its
+existing `Tests (windows-latest, Python 3.12)` check independently verifies all
+Windows tests were covered exactly once. Each Windows shard retains the 25-minute
+job limit and bounds the test step to 20 minutes. Its parent process stops the
+test process tree after 16 minutes; stdout/stderr go to files so console output
+cannot block pytest shutdown. This leaves time to upload collection, incremental
+stage records, logs and JUnit. A timed-out step or missing
+completion record fails the aggregate gate; it never becomes a successful skip.
+
+Linux shards use a 16-minute test-process deadline inside the unchanged 20-minute
+job limit, leaving time for `always()` artifact upload. The `regression-linux-*`
+artifacts contain raw output, incremental test/stage progress, collection coverage,
+process snapshots and JUnit when pytest completes. Test stdout/stderr go directly
+to artifact files rather than synchronously mirroring to the job console: a stalled
+console must not block capture, deadline cleanup or interpreter shutdown. Consult
+`stdout.log`, `stderr.log` and `progress.jsonl` for test-by-test details.
+On deadline, the runner requests
+an all-thread stack dump, terminates its owned test descendants (including detached
+services), and fails rather than
+turning the interrupted tests into skips. A hard runner loss or external cancellation
+can still prevent upload; absence of evidence is never treated as success.
+
+Periodic and deadline SIGUSR1 stack requests use a Python signal handler so
+all-thread dumps run with the GIL, avoiding the asynchronous handler crash in
+CPython issue 116008. The bootstrap disables pytest's separate asynchronous C
+watchdog; the existing 60-second requests provide periodic slow-test stacks instead
+of per-test timer dumps. A fully deadlocked interpreter or blocking native code may
+not service this handler. In that case, incremental progress and process snapshots
+remain available and the unchanged parent deadline still fails and cleans up the
+run; a missing stack is never evidence of success.

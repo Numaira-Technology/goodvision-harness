@@ -1,0 +1,66 @@
+{
+  "alias": "gemini38_low",
+  "backend": "language",
+  "current_access_verified": false,
+  "kind": "choice",
+  "max_tokens": 2048,
+  "model": "google/gemini-3.8-flash",
+  "precision": "provider unverified; catalog=unknown",
+  "provider_context": {
+    "config": {
+      "backend": "language",
+      "catalog_pricing": {
+        "audio": "0.000000375",
+        "completion": "0.000001875",
+        "discount": 0.5,
+        "image": "0.000000375",
+        "input_audio_cache": "0.0000000375",
+        "input_cache_read": "0.0000000375",
+        "input_cache_write": "0.0000000208333333333333",
+        "internal_reasoning": "0.000001875",
+        "prompt": "0.000000375",
+        "web_search": "0.014"
+      },
+      "catalog_quantization": "unknown",
+      "expected_provider_name": "Google AI Studio",
+      "limits": [
+        "Published latency is not this benchmark's measured end-to-end latency.",
+        "Actual provider/model must be checked from inference receipts.",
+        "Catalog precision is not independent proof of actual served weights or precision."
+      ],
+      "model": "google/gemini-3.8-flash",
+      "provider": {
+        "allow_fallbacks": false,
+        "only": [
+          "google-ai-studio/flex"
+        ],
+        "require_parameters": true
+      },
+      "schema_version": 1,
+      "selected_at": "2026-11-05T18:07:40.965836+00:00",
+      "selection": {
+        "catalog_sha256": "8e172fc31ebb1265b0549f80802521991eed2c44ceea915eaabd7b7819cf7bb2",
+        "eligible_endpoints": [
+          "google-ai-studio/flex",
+          "google-ai-studio",
+          "google-ai-studio/priority"
+        ],
+        "method": "preserved_previous_endpoint_not_fastest_claim",
+        "published_latency": null
+      }
+    },
+    "historical_source_file_sha256": "828f1e5707d1ed6d7492529a8826f5ee21d4db3f82b87a344177bb2ae42c5e99",
+    "sha256": "987a36da30958c6f452b106282ea6fdb3f80d459516b02a97d56ecbafc523577",
+    "sha256_encoding": "canonical JSON of config"
+  },
+  "reasoning": {
+    "effort": "low"
+  },
+  "selection": "preserve prior pinned endpoint; not remeasured fastest",
+  "temperature": 0,
+  "weight_revision": null,
+  "window_frames": 1,
+  "profile_origin": "Recorded November 2026 configuration; current provider availability and price must be rechecked.",
+  "prompt_policy": "current-image-v1",
+  "answer_parser": "boolean-string-v1"
+}

@@ -22,6 +22,7 @@ from starlette.routing import Match
 
 from .grounding import DETECTION_EVENT_LABELS
 from .privacy import public_safe_value
+from .result_websocket import RESULT_SOCKET_PATHS, install_fleet_result_socket_routes
 
 log = logging.getLogger(__name__)
 JSON_LIMIT = 2 * 1024 * 1024
@@ -112,7 +113,10 @@ _RESPONSE_HEADERS = {
 def output_urls(camera_id: str) -> dict[str, str]:
     """Publish literal URLs and templates, including paths added in future."""
     base = PREFIX.format(camera_id=camera_id)
-    return {path.lstrip("/"): base + path for path in OUTPUT_PATHS}
+    return {
+        path.lstrip("/"): base + path
+        for path in (*OUTPUT_PATHS, *RESULT_SOCKET_PATHS)
+    }
 
 
 def scoped_payload(payload, camera_id: str):
@@ -319,6 +323,8 @@ class CameraOutputResponse(Response):
         )
 
     async def _peer(self, scope, receive, send):
+        if self.controller.dynamic is not None:
+            await self.controller.dynamic.ensure(self.index)
         client = self.controller.output_client()
         headers = {
             k.decode(): v.decode()
@@ -356,6 +362,8 @@ class CameraOutputResponse(Response):
 
 
 def install_output_routes(application, controller):
+    install_fleet_result_socket_routes(application, controller)
+
     async def camera_output(request: Request):
         camera_id = request.path_params["camera_id"]
         index = controller.resolve_camera(camera_id)

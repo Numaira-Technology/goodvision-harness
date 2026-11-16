@@ -1,0 +1,57 @@
+{
+  "alias": "qwen8b",
+  "backend": "language",
+  "current_access_verified": false,
+  "kind": "choice",
+  "max_tokens": 30,
+  "model": "qwen/qwen3-vl-8b-instruct",
+  "precision": "provider unverified; catalog=bf16",
+  "provider_context": {
+    "config": {
+      "backend": "language",
+      "catalog_pricing": {
+        "completion": "0.00000075",
+        "discount": 0,
+        "input_cache_read": "0.00000012",
+        "prompt": "0.00000025"
+      },
+      "catalog_quantization": "bf16",
+      "expected_provider_name": "Parasail",
+      "limits": [
+        "Published latency is not this benchmark's measured end-to-end latency.",
+        "Actual provider/model must be checked from inference receipts.",
+        "Catalog precision is not independent proof of actual served weights or precision."
+      ],
+      "model": "qwen/qwen3-vl-8b-instruct",
+      "provider": {
+        "allow_fallbacks": false,
+        "only": [
+          "parasail/bf16"
+        ],
+        "require_parameters": true
+      },
+      "schema_version": 1,
+      "selected_at": "2026-11-04T00:07:30.885447+00:00",
+      "selection": {
+        "catalog_sha256": "ed21afa830aa5c99a3b32422fa6cddcd1383b11ba45e0618e1b781e67f2466f9",
+        "eligible_endpoints": [
+          "parasail/bf16"
+        ],
+        "limitation": "No complete latency pilot; no fastest or stable-concurrency claim. Original accuracy retry/coverage behavior remains unchanged.",
+        "method": "sole_available_endpoint_accuracy_attempt_despite_incomplete_latency_pilot",
+        "prior_original_key_http_429": 4,
+        "prior_successful_answers": 6
+      }
+    },
+    "historical_source_file_sha256": "e82515928749a08c3e9ec994917b137b1bece8108dff02417bd07f09da93629f",
+    "sha256": "53ae7fba9637f8644a584e57961cd60feeb611d75d0bae7d4e0c3d762cc5aa8d",
+    "sha256_encoding": "canonical JSON of config"
+  },
+  "selection": "preserve prior pinned endpoint; not remeasured fastest",
+  "temperature": 0,
+  "weight_revision": null,
+  "window_frames": 1,
+  "profile_origin": "Recorded November 2026 configuration; current provider availability and price must be rechecked.",
+  "prompt_policy": "current-image-v1",
+  "answer_parser": "boolean-string-v1"
+}

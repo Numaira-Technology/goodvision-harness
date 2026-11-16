@@ -6,6 +6,7 @@ from functools import partial
 import httpx
 import pytest
 from benchmark_runtime_fixtures import (
+    ContractSourceFeeder,
     assert_admission_drained,
     configure_ephemeral_admission,
 )
@@ -48,6 +49,11 @@ def offline_inspector(config, *, broker_url):
 @pytest.mark.parametrize("mode", ["events", "compact", "parallel"])
 @pytest.mark.parametrize("sequences", [None, 16, 24, 32])
 def test_twelve_sources_fp8_and_person_reports(tmp_path, monkeypatch, mode, sequences):
+    # Verify every adapter input despite shared-host scheduling gaps. Production
+    # freshness/drop behavior has controlled-clock source-feeder/sender-lag tests.
+    monkeypatch.setattr(
+        "tools.vlm_multistream_benchmark.TimedSourceFeeder", ContractSourceFeeder
+    )
     monkeypatch.setenv("OPENROUTER_API_KEY", "wrong-cloud-key")
     monkeypatch.setenv("LOCAL_INFERENCE_API_KEY", "must-not-forward")
     args = (
@@ -83,7 +89,11 @@ def test_twelve_sources_fp8_and_person_reports(tmp_path, monkeypatch, mode, sequ
             inspector_factory=partial(offline_inspector, broker_url=broker.endpoint),
             source_hook=broker.submit,
         )
-        broker.drain()
+        detector_counts = broker.drain()
+    assert result["sender_missed_samples"] == 0
+    assert result["sender_missed_samples_by_stream"] == [0] * 12
+    assert result["offer_rejected_by_stream"] == [0] * 12
+    assert detector_counts == {"submitted": 48, "ready": 48}
     assert result["all_drained"] and not result["result_records_missing"]
     assert result["result_retention"]["valid"]
     assert len(calls) == len(set(calls)) == 48

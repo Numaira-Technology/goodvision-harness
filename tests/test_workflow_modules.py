@@ -2,6 +2,7 @@
 
 import copy
 import io
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -353,8 +354,9 @@ def test_native_preview_waits_for_local_module_before_constructing_inspector(
 
 
 @pytest.mark.parametrize("engine", ["system1", "neural"])
+@pytest.mark.parametrize("cadence", [0.5, 1.25, 3.0])
 def test_live_start_routes_native_events_without_changing_shared_model(
-    rig, monkeypatch, engine
+    rig, monkeypatch, engine, cadence
 ):
     from test_vlm_independent_service import LocalBranch
 
@@ -365,11 +367,19 @@ def test_live_start_routes_native_events_without_changing_shared_model(
     monkeypatch.setattr(service, "IndependentVLMBranch", LocalBranch)
     monkeypatch.setattr(runtime, "_workflow_event_probe", lambda plan: None)
     configure(runtime, event_graph(engine))
+    runtime.config = replace(
+        runtime.config,
+        runtime=replace(runtime.config.runtime, scene_observation_fps=cadence),
+    )
     runtime.dry_run = False
     runtime._aiclub_api_key = None
     runtime.start_connected_analysis()
     assert runtime._vlm_branch.config.model == MODELS[engine]
     assert runtime._vlm_branch.config.model_settings.endpoint.endswith("/predict")
+    assert runtime._vlm_branch.config.candidate_fps == 4.0
+    assert runtime._vlm_branch.config.observation_window_frames == 2
+    assert runtime._vlm_branch.config.observation_frame_delta_seconds == 0.5
+    assert runtime._vlm_branch.config.observation_fps == cadence
     assert runtime.config.inference == shared
 
 

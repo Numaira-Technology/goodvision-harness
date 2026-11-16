@@ -20,6 +20,14 @@ class ResultRecord:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class ResultSnapshot:
+    epoch: str
+    cursor: int
+    oldest_cursor: int
+    records: tuple[ResultRecord, ...]
+
+
 class ResultBus:
     """Arrival-ordered delivery with source-ordered global and feature snapshots."""
 
@@ -112,6 +120,16 @@ class ResultBus:
                     return ()
                 self._condition.wait(remaining)
         return tuple(_copy_result(item) for item in records)
+
+    def snapshot_after(self, cursor: int) -> ResultSnapshot:
+        """Read replay bounds and records from the same session atomically."""
+        with self._condition:
+            epoch, latest = self.epoch, self._cursor
+            oldest = self._history[0].cursor if self._history else latest + 1
+            records = tuple(item for item in self._history if item.cursor > cursor)
+        return ResultSnapshot(
+            epoch, latest, oldest, tuple(_copy_result(item) for item in records),
+        )
 
 
 def _feature_label(label: str) -> str:

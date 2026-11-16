@@ -1,0 +1,27 @@
+# d3-nano -- vllm-sr/d3-nano inference env (src/goodvision_harness/decision3_runtime.py).
+#
+# A hybrid linear-attention VLM loaded with trust_remote_code. The DeltaNet path
+# needs causal-conv1d, and flash-linear-attention/fla-core drive the mixer. Pins
+# track the `decision3` extra in pyproject.toml (note: newer fla + transformers
+# than the videojev stack).
+#
+# env.build.flash_attn MUST be true for this model: build_env installs the
+# correctly-compiled causal-conv1d==1.7.0 inside the same --no-build-isolation /
+# TORCH_CUDA_ARCH_LIST step as flash-attn. (flash-attn itself is harmless here and
+# available as an attention backend; causal-conv1d is the hard requirement.)
+#
+# Install into a NEW Python 3.12 / CUDA 12.8 env AFTER torch==2.8.0 +
+# torchvision==0.23.0 (installed from the cu128 wheel index by tools/build_env.py).
+transformers==5.17.0
+tokenizers==0.23.3
+accelerate==1.10.1
+safetensors==0.8.0
+flash-linear-attention==0.5.2
+fla-core==0.5.2
+# causal-conv1d==1.7.0 is installed by build_env's flash-attn step (needs
+# --no-build-isolation + TORCH_CUDA_ARCH_LIST), not here.
+numpy==2.2.6
+pillow==11.3.0
+av==17.1.0
+# R2 prefetch (tools/model_source.py); optional, HF fallback works without it.
+boto3==1.43.123

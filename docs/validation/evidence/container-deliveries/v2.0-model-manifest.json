@@ -1,0 +1,184 @@
+{
+  "revision": "4c1072144a7dc1241bccf35cc2941efb23c48125",
+  "file": "goodvision-pr75-models.tar.gz",
+  "bytes": 11563679455,
+  "sha256": "5680ece4119a43a9ce95aeb72f739ca5dae4b7439a8484f285ee683ed3cc825a",
+  "regular_files_only": true,
+  "duplicate_hf_blob_store_excluded": true,
+  "credentials_included": false,
+  "model_inference_tested": false,
+  "files": [
+    {
+      "name": "models/bbox/model-manifest.json",
+      "bytes": 359
+    },
+    {
+      "name": "models/bbox/yolo26s.pt",
+      "bytes": 20422725
+    },
+    {
+      "name": "models/contour/model-manifest.json",
+      "bytes": 323
+    },
+    {
+      "name": "models/contour/contour.pt",
+      "bytes": 3502755717
+    },
+    {
+      "name": "models/contour/MODEL_LICENSE.txt",
+      "bytes": 7352
+    },
+    {
+      "name": "models/system1/model-manifest.json",
+      "bytes": 5367
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/.gitattributes",
+      "bytes": 1697
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/LICENSE",
+      "bytes": 11544
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/NOTICE",
+      "bytes": 323
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/README.md",
+      "bytes": 3693
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/USAGE.md",
+      "bytes": 1793
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/assets/benchmark-grounding.png",
+      "bytes": 184642
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/assets/benchmark-grounding.svg",
+      "bytes": 120090
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/assets/benchmark-qa.png",
+      "bytes": 216841
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/assets/benchmark-qa.svg",
+      "bytes": 127246
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/chat_template.jinja",
+      "bytes": 7756
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/config.json",
+      "bytes": 4433
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/configuration_videojev.py",
+      "bytes": 1862
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/conversion.json",
+      "bytes": 361
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/export_complete.json",
+      "bytes": 3549
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/model-00001-of-00002.safetensors",
+      "bytes": 4973336472
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/model-00002-of-00002.safetensors",
+      "bytes": 3968968058
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/model.safetensors.index.json",
+      "bytes": 68245
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/modeling_videojev.py",
+      "bytes": 10125
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/processing_videojev.py",
+      "bytes": 8543
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/processor_config.json",
+      "bytes": 1191
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/tokenizer.json",
+      "bytes": 19989703
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/tokenizer_config.json",
+      "bytes": 1236
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/validation.json",
+      "bytes": 2011
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/videojev_moe.py",
+      "bytes": 7094
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/videojev_temporal.py",
+      "bytes": 6220
+    },
+    {
+      "name": "models/system1/huggingface/models--ZhuYuhan--VideoJev-4B/snapshots/1c1a253bf90dfa66176124d25a48ffb791d517d5/videojev_video.py",
+      "bytes": 4162
+    },
+    {
+      "name": "models/neural/model-manifest.json",
+      "bytes": 2330
+    },
+    {
+      "name": "models/neural/huggingface/models--openai--clip-vit-large-patch14/snapshots/32bd64288804d66eefd0ccbe215aa642df71cc41/.gitattributes",
+      "bytes": 1229
+    },
+    {
+      "name": "models/neural/huggingface/models--openai--clip-vit-large-patch14/snapshots/32bd64288804d66eefd0ccbe215aa642df71cc41/README.md",
+      "bytes": 7947
+    },
+    {
+      "name": "models/neural/huggingface/models--openai--clip-vit-large-patch14/snapshots/32bd64288804d66eefd0ccbe215aa642df71cc41/config.json",
+      "bytes": 4519
+    },
+    {
+      "name": "models/neural/huggingface/models--openai--clip-vit-large-patch14/snapshots/32bd64288804d66eefd0ccbe215aa642df71cc41/merges.txt",
+      "bytes": 524619
+    },
+    {
+      "name": "models/neural/huggingface/models--openai--clip-vit-large-patch14/snapshots/32bd64288804d66eefd0ccbe215aa642df71cc41/model.safetensors",
+      "bytes": 1710540580
+    },
+    {
+      "name": "models/neural/huggingface/models--openai--clip-vit-large-patch14/snapshots/32bd64288804d66eefd0ccbe215aa642df71cc41/preprocessor_config.json",
+      "bytes": 316
+    },
+    {
+      "name": "models/neural/huggingface/models--openai--clip-vit-large-patch14/snapshots/32bd64288804d66eefd0ccbe215aa642df71cc41/special_tokens_map.json",
+      "bytes": 389
+    },
+    {
+      "name": "models/neural/huggingface/models--openai--clip-vit-large-patch14/snapshots/32bd64288804d66eefd0ccbe215aa642df71cc41/tokenizer.json",
+      "bytes": 2224003
+    },
+    {
+      "name": "models/neural/huggingface/models--openai--clip-vit-large-patch14/snapshots/32bd64288804d66eefd0ccbe215aa642df71cc41/tokenizer_config.json",
+      "bytes": 905
+    },
+    {
+      "name": "models/neural/huggingface/models--openai--clip-vit-large-patch14/snapshots/32bd64288804d66eefd0ccbe215aa642df71cc41/vocab.json",
+      "bytes": 961143
+    }
+  ]
+}
