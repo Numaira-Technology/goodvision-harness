@@ -564,8 +564,12 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     write_new(completion_path, {"execution_finished": True,
                         "final_missing_unique_units": result["final_missing_unique_units"],
                         "incomplete_questions": result["incomplete_questions"],
-                        "files": {p.relative_to(output).as_posix(): ledger.file_hash() if p == ledger.path else file_hash(p)
-                                  for p in files}, "at": stamp()})
+                        # validate_completion needs POSIX "<split>/<name>" keys.
+                        "files": {
+                            p.relative_to(output).as_posix(): (
+                                ledger.file_hash() if p == ledger.path else file_hash(p)
+                            ) for p in files
+                        }, "at": stamp()})
                 completed.append(split)
             except BaseException:
                 # Per-invocation partial report: never overwrite completed evidence.

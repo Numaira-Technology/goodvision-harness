@@ -6,6 +6,7 @@ from functools import partial
 import httpx
 import pytest
 from benchmark_runtime_fixtures import (
+    ContractSourceFeeder,
     assert_admission_drained,
     configure_ephemeral_admission,
 )
@@ -53,6 +54,12 @@ def offline_inspector(config, *, broker_url, audit_dir):
 def test_twelve_sources_native_decisions_and_person_reports(
     tmp_path, monkeypatch, mode
 ):
+    # This is an adapter/accounting contract, not a host throughput benchmark.
+    # Replay each planned source frame once; production timing/drop rules remain
+    # covered by test_vlm_source_feeder and test_vlm_sender_lag.
+    monkeypatch.setattr(
+        "tools.vlm_multistream_benchmark.TimedSourceFeeder", ContractSourceFeeder
+    )
     monkeypatch.setenv("OPENAI_API_KEY", "offline-native-key")
     monkeypatch.setenv("OPENROUTER_API_KEY", "wrong-provider-key")
     args = suite.arguments()
