@@ -30,18 +30,25 @@ def main() -> int:
         from tools.vast_run_log import attach
     except ImportError:
         from vast_run_log import attach
-    from tools.start_sam import create_from_offers, release_instance, run
+    from tools import start_sam
 
     attach()
-    instance_id = create_from_offers(
+    instance_id = start_sam.create_from_offers(
         vast, offers, disk_gb=disk_gb, label=label
     )
-    run([*ssh, "nvidia-smi"])
-    release_instance(vast, instance_id)
+    try:
+        start_sam.run([*ssh, "nvidia-smi"])
+    finally:
+        start_sam.release_instance(vast, instance_id)
 ```
 
-`attach()` takes no arguments. It reads the running filename. A notebook or
-other caller passes its globals: `attach(globals())`.
+`attach()` reads the running filename from the caller's globals. A notebook or
+other caller passes `attach(globals())` and must first set `__file__` to its
+registered script filename. Without `__file__`, no recorder is attached.
+
+Call helpers through the module as above, or import them at module scope. Do
+not bind helper functions to local variables before `attach()`: it patches
+module attributes and launcher globals, but cannot replace local references.
 
 Register that filename in `LAUNCHERS` inside `tools/vast_run_log.py` as
 `(module, alias, engine, sample)` before the run. `sample` is `True` except
@@ -90,7 +97,9 @@ Sampling is on for every launcher except `start_qwen8b_r2.py`. It starts when
 the worker is ready: at the return of `_wait_ready` or `wait_for_worker` when
 the launcher defines one of those. A launcher with neither starts sampling
 after the first SSH `run()`, which is also when the one-time probe runs.
-Samples stop inside `release_instance`, before the instance is destroyed.
+Samples stop when evaluation finishes, or inside `release_instance` before
+the instance is destroyed. A caller retaining an instance must call
+`tools.vast_run_log.finish()` before removing its temporary SSH credentials.
 The interval is 2 seconds.
 
 ## What is recorded
@@ -100,7 +109,7 @@ The interval is 2 seconds.
   SM clocks, utilization, driver, plus CPU model, cores, RAM, cgroup limits,
   and CUDA once. The stored probe is stdout. The Vast SSH welcome banner on
   stderr is not kept.
-- GPU samples every 2 seconds from ready until just before release:
+- GPU samples every 2 seconds from ready until eval completion or release:
   PCIe gen and width, power draw and limit, SM clock, utilization, memory
   used, temperature, and `t_unix`.
 - Timings: rent, ready, eval start, eval end, release.

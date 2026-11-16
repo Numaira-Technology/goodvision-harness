@@ -759,6 +759,62 @@ def test_hf_log_does_not_start_gpu_sampling(monkeypatch):
     assert calls == []
 
 
+def test_skill_example_records_helper_calls(tmp_path, monkeypatch):
+    """Execute the documented integration with fake rental/SSH helpers."""
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    monkeypatch.setattr(run_log, "_SESSION", None)
+    monkeypatch.setattr(run_log.atexit, "register", lambda fn: None)
+    monkeypatch.setattr(sys, "argv", ["example_vast_run.py"])
+    monkeypatch.setitem(
+        LAUNCHERS, "example_vast_run.py", ("example_vast_run", "example", "fake", True)
+    )
+    calls = []
+
+    class FakeVast:
+        def create_instance(self, offer_id, **kwargs):
+            calls.append(("create", offer_id))
+            return {"success": True, "new_contract": 101}
+
+    def create(vast, offers, **kwargs):
+        return vast.create_instance(offers[0]["id"], **kwargs)["new_contract"]
+
+    def run(command, **kwargs):
+        calls.append(("ssh", command))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def release(vast, instance_id):
+        calls.append(("release", instance_id))
+
+    monkeypatch.setattr(start_sam, "create_from_offers", create)
+    monkeypatch.setattr(start_sam, "run", run)
+    monkeypatch.setattr(start_sam, "release_instance", release)
+    monkeypatch.setattr(
+        RunLog, "maybe_probe", lambda self, command: calls.append(("probe", command))
+    )
+    monkeypatch.setattr(RunLog, "arm_stage_hooks", lambda self, namespace: None)
+    skill = (REPO / ".cursor/skills/vast-run-log/SKILL.md").read_text()
+    example = skill.split("```python\n", 1)[1].split("```", 1)[0]
+    namespace = {
+        "__file__": "example_vast_run.py",
+        "vast": FakeVast(),
+        "offers": [_offer()],
+        "disk_gb": 20,
+        "label": "offline-example",
+        "ssh": ["ssh", "root@example"],
+    }
+    exec(compile(example, namespace["__file__"], "exec"), namespace)
+    namespace["main"]()
+    session = run_log._SESSION
+    assert session.instance_id == 101
+    assert session.offer["machine_id"] == 4242
+    assert session.release_status == "released"
+    assert [name for name, _ in calls] == ["create", "ssh", "probe", "release"]
+    session.finish_once()
+    row = json.loads((session.root / "manifest.json").read_text())[0]
+    assert row["status"] == "rented"
+    assert row["gpu"]["machine_id"] == 4242
+
+
 def test_attach_patches_detector_ready_hook(tmp_path, monkeypatch):
     monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
     import tools.vast_run_log as mod
