@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import ctypes
 import io
 import json
+import os
 import subprocess
 import tarfile
 from pathlib import Path
@@ -12,6 +14,66 @@ from pathlib import Path
 import pytest
 
 from tools import neural_container as neural
+
+
+def reserve(path, size):
+    """Expose the real byte length without allocating it on the runner disk.
+
+    Later shard-3 tests create their own temp directories. Each case stands
+    in for a 1.7 GiB CLIP weight. Linux truncate is already a hole. On
+    Windows the CRT ``_chsize_s`` used by ``file.truncate`` writes that many
+    zero bytes, which fills the runner even after FSCTL_SET_SPARSE. Extend
+    with SetEndOfFile so the hole stays unallocated and ``st_size`` is exact.
+    """
+    if os.name != "nt":
+        with path.open("wb") as stream:
+            stream.truncate(size)
+        return
+    import msvcrt
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle_type = ctypes.c_void_p
+    kernel32.DeviceIoControl.argtypes = [
+        handle_type,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.c_void_p,
+    ]
+    kernel32.DeviceIoControl.restype = ctypes.c_int
+    kernel32.SetFilePointerEx.argtypes = [
+        handle_type,
+        ctypes.c_longlong,
+        ctypes.POINTER(ctypes.c_longlong),
+        ctypes.c_uint32,
+    ]
+    kernel32.SetFilePointerEx.restype = ctypes.c_int
+    kernel32.SetEndOfFile.argtypes = [handle_type]
+    kernel32.SetEndOfFile.restype = ctypes.c_int
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_BINARY)
+    try:
+        if not size:
+            return
+        handle = handle_type(msvcrt.get_osfhandle(fd))
+        returned = ctypes.c_uint32()
+        # FSCTL_SET_SPARSE, then move EOF without writing the gap.
+        if not kernel32.DeviceIoControl(
+            handle, 0x000900C4, None, 0, None, 0, ctypes.byref(returned), None
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        moved = ctypes.c_longlong()
+        if not kernel32.SetFilePointerEx(
+            handle, ctypes.c_longlong(size), ctypes.byref(moved), 0
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not kernel32.SetEndOfFile(handle):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        os.close(fd)
+
 
 IMAGE = {
     "name": "goodvision-neural:v2.0-test",
@@ -91,10 +153,8 @@ def kit(tmp_path):
     )
     snapshot.mkdir(parents=True)
     for name, size in neural.MODEL_FILES.items():
-        with (snapshot / name).open("wb") as stream:
-            stream.truncate(size)
-    with (state / "models/neural/yolo26s.pt").open("wb") as stream:
-        stream.truncate(20422725)
+        reserve(snapshot / name, size)
+    reserve(state / "models/neural/yolo26s.pt", 20422725)
     directory = tmp_path / "New Neural V2.0"
     directory.mkdir()
     payload = directory / "neural.tar"
@@ -118,7 +178,7 @@ def kit(tmp_path):
         target.write_bytes((root / "workers/neural" / name).read_bytes())
         info["source_files"].append(
             {
-                "file": str(target.relative_to(directory)),
+                "file": target.relative_to(directory).as_posix(),
                 "bytes": target.stat().st_size,
                 "sha256": neural.digest(target),
             }
