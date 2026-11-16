@@ -367,35 +367,41 @@ def test_body_response_limits_and_unknown_routes(settings):
 
 
 def test_deadlines_and_parallel_admission(settings):
+    # The parallel post has to run while the first call still holds the node.
+    # A 0.1s deadline expired on the Windows runner before that post was
+    # scheduled, so the second call was admitted and then timed out too.
+    # The engine call still outlives the deadline, and a concurrent call is
+    # still rejected while the lock is held.
     entered = threading.Event()
 
     async def engine(_request):
         entered.set()
-        await asyncio.sleep(2)
+        await asyncio.sleep(5)
         return httpx.Response(200, json=BASE | {"limits": LIMITS})
 
     app = create_app(
-        replace(settings, engine_url="http://engine", request_timeout=0.1),
+        replace(settings, engine_url="http://engine", request_timeout=2),
         transport=httpx.MockTransport(engine),
     )
     with TestClient(app) as client:
+        busy = []
+
+        def parallel_post():
+            assert entered.wait(2)
+            busy.append(client.post("/v1/contour/sessions", json={}, headers=AUTH))
+
+        follower = threading.Thread(target=parallel_post)
+        follower.start()
         result = []
         thread = threading.Thread(
             target=lambda: result.append(
-                client.post(
-                    "/v1/contour/sessions",
-                    json={},
-                    headers=AUTH,
-                )
+                client.post("/v1/contour/sessions", json={}, headers=AUTH)
             )
         )
         thread.start()
-        assert entered.wait(2)
-        assert (
-            client.post("/v1/contour/sessions", json={}, headers=AUTH).status_code
-            == 429
-        )
-        thread.join(3)
+        follower.join(4)
+        thread.join(4)
+        assert busy[0].status_code == 429
         assert result[0].status_code == 504
         assert (
             client.get("/api/status", headers=AUTH).json()["requests"]["in_flight"] == 0
