@@ -265,14 +265,52 @@ def test_container_limits_are_labeled_apart_from_the_host(tmp_path, monkeypatch)
     session.maybe_probe(["ssh", "-p", "22", "root@example", "true"])
     assert session.probe["status"] == "ok"
     assert session.probe["gpus"][0]["clock_sm"] == "210 MHz"
-    assert session.probe["raw"].startswith("Welcome to vast.ai")
-    assert "Have fun!" in session.probe["raw"]
-    assert "3200000" not in session.probe["raw"]
+    assert "raw" not in session.probe
     saved = json.loads((session.run_dir / "entry.json").read_text(encoding="utf-8"))
     assert saved["hardware"]["probe"]["host"]["container_cpu_limit"].startswith(
         "32 cores"
     )
-    assert "Welcome to vast.ai" in saved["hardware"]["probe"]["raw"]
+    assert "Welcome to vast.ai" not in json.dumps(saved["hardware"]["probe"])
+    assert "Have fun!" not in json.dumps(saved["hardware"]["probe"])
+
+
+def test_probe_raw_keeps_stdout_and_drops_the_ssh_banner(tmp_path, monkeypatch):
+    stdout = "nvidia-smi failed before the table\n"
+    banner = "Welcome to vast.ai. Have fun!\n"
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args, 1, stdout, banner)
+
+    monkeypatch.setattr("tools.vast_run_log.subprocess.run", fake_run)
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    session = RunLog("tools.start_qwen8b_vllm", "qwen8b_r2_vllm", "vllm", True)
+    session.maybe_probe(["ssh", "-p", "22", "root@example", "true"])
+    assert session.probe["status"] == "unknown"
+    assert session.probe["raw"] == stdout
+    assert "Welcome to vast.ai" not in session.probe["raw"]
+    assert "Have fun!" not in json.dumps(session.probe)
+    session.finish_once()
+    saved = json.loads((session.run_dir / "entry.json").read_text(encoding="utf-8"))
+    assert saved["hardware"]["probe"]["raw"] == stdout
+    assert "Welcome to vast.ai" not in saved["hardware"]["probe"]["raw"]
+
+
+def test_finish_without_a_rental_is_not_rented(tmp_path, monkeypatch):
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    missed = RunLog("tools.start_qwen8b_vllm", "qwen8b_r2_vllm", "vllm", True)
+    missed.finish_once()
+    rows = json.loads((missed.root / "manifest.json").read_text(encoding="utf-8"))
+    assert rows[0]["status"] == "not_rented"
+    assert rows[0]["gpu"]["machine_id"] == "unknown"
+    assert rows[0]["run_id"] == missed.run_id
+    resumed = RunLog("tools.start_qwen8b_vllm", "qwen8b_r2_vllm", "vllm", True)
+    resumed.instance_id = 60852547
+    resumed.finish_once()
+    rows = json.loads((missed.root / "manifest.json").read_text(encoding="utf-8"))
+    by_id = {row["run_id"]: row for row in rows}
+    assert by_id[missed.run_id]["status"] == "not_rented"
+    assert by_id[resumed.run_id]["status"] == "rented"
+    assert by_id[resumed.run_id]["gpu"]["machine_id"] == "unknown"
 
 
 def test_score_summary_preserves_zero_and_marks_missing_unknown(tmp_path):
@@ -356,6 +394,7 @@ def test_selected_offer_is_saved_without_changing_creation(tmp_path, monkeypatch
         "geolocation": "B",
     }
     assert rows[0]["who"]["operator_env"] == "colleague"
+    assert rows[0]["status"] == "rented"
     assert rows[0]["score"] == "unknown"
     report = tmp_path / "report"
     (report / "qwen8b_r2_host" / "validation").mkdir(parents=True)
@@ -536,6 +575,9 @@ def test_launcher_module_writes_a_log_and_still_rejects_a_bad_bundle(tmp_path, m
     text = logs[0].read_text(encoding="utf-8")
     assert "vast-secret-should-not-be-logged" not in text
     assert "run log:" in result.stderr
+    manifest = json.loads(next((tmp_path / "logs").rglob("manifest.json")).read_text())
+    assert manifest[0]["status"] == "not_rented"
+    assert entry["instance_id"] == "unknown"
 
 
 def test_every_vast_rental_calls_the_recorder():
@@ -552,6 +594,19 @@ def test_every_vast_rental_calls_the_recorder():
             continue
         assert "vast_run_log import attach" in text
         assert text.count("\n    attach()") >= 1 or "\n    attach()\n" in text
+        if path.name != "start_sam.py":
+            assert ".create_instance(" not in text
+    direct = [
+        path.relative_to(REPO).as_posix()
+        for path in (REPO / "tools").rglob("*.py")
+        if ".create_instance(" in path.read_text(encoding="utf-8")
+    ]
+    assert direct == ["tools/start_sam.py"]
+    helper = (REPO / "tools/start_sam.py").read_text(encoding="utf-8")
+    body = helper.split("def create_from_offers(", 1)[1].split("\ndef ", 1)[0]
+    assert "vast.create_instance(" in body
+    outside = helper.replace(body, "", 1)
+    assert ".create_instance(" not in outside
     assert set(found) == {
         "tools/diag_qwen8b_vllm_import.py",
         "tools/start_detector.py",
@@ -580,6 +635,11 @@ def test_every_vast_rental_calls_the_recorder():
     assert "<eval-output>/<alias>/logs/" in skill
     assert "git user.name" in skill
     assert "python -m tools.start_qwen8b_vllm" in skill
+    assert "create_from_offers" in skill
+    assert "release_instance" in skill
+    assert "GOODVISION_RUN_LOG_ROOT" in skill
+    assert "is not recorded" in skill
+    assert "did not exist" in skill
 
 
 def test_gpu_sample_summary_keeps_zero_and_low_pcie_fraction():

@@ -1,18 +1,19 @@
 ---
 name: vast-run-log
 description: >-
-  Any Vast GPU rental must call tools.vast_run_log.attach() before create.
-  Covers every launcher, ad-hoc script, notebook, agent, VideoJev or future
-  model, and the vastai SDK, CLI, or REST. Records the offer, probe, 2s GPU
-  samples, timings, and score.
+  Repo Vast GPU rentals must call tools.vast_run_log.attach() and then rent,
+  SSH, and release only through the tools.start_sam helpers. Direct
+  create_instance, the vastai CLI, and REST are not recorded.
 ---
 
 # Vast run log
 
-Any Vast GPU rental must call `tools.vast_run_log.attach()` before the instance
-is created. That includes every launcher, an ad-hoc or one-off script, a
-notebook, another agent, VideoJev, any future model, and a rental made with
-the vastai SDK, the `vastai` CLI, or the REST API. There is no opt-out.
+Every Vast GPU rental in this repo must call `tools.vast_run_log.attach()` at
+the start of `main`, then rent, SSH, and release only through the
+`tools.start_sam` helpers `create_from_offers`, `run`, and `release_instance`.
+`attach()` records those helper calls. A direct `vast.create_instance`, the
+`vastai` CLI, or the REST API is not recorded and is not allowed for repo
+work. There is no opt-out.
 
 `tools/vast_run_log.py` is the only recorder. Do not copy the probe, the
 sampler, offer redaction, or the manifest writer.
@@ -23,41 +24,50 @@ that file. Every other rental calls `attach()` itself.
 
 ## Call
 
-Put this at the start of `main`, before `create_instance`, `create_from_offers`,
-`search_offers`, `vastai` CLI, or REST create:
-
 ```python
 def main() -> int:
     try:
         from tools.vast_run_log import attach
     except ImportError:
         from vast_run_log import attach
+    from tools.start_sam import create_from_offers, release_instance, run
+
     attach()
+    instance_id = create_from_offers(
+        vast, offers, disk_gb=disk_gb, label=label
+    )
+    run([*ssh, "nvidia-smi"])
+    release_instance(vast, instance_id)
 ```
 
-`attach()` takes no arguments for a supported launcher. It reads the running
-filename and patches that launcher's shared rental/SSH/readiness helpers.
-It does not intercept arbitrary `VastAI.create_instance`, CLI, or REST calls.
-A new script or notebook needs an explicit `__file__` in the passed namespace,
-a `LAUNCHERS` registration, and the same helper integration, with an offline
-creation/readiness/release test before use. Merely calling `attach(globals())`
-does not provide coverage for an unregistered caller or another transport.
+`attach()` takes no arguments. It reads the running filename. A notebook or
+other caller passes its globals: `attach(globals())`.
 
 Register that filename in `LAUNCHERS` inside `tools/vast_run_log.py` as
-`(module, alias, engine, sample)` before the run. `sample` is `True`.
-Without that row, `attach()` does not record the rental.
+`(module, alias, engine, sample)` before the run. `sample` is `True` except
+for the HF launcher. Without that row, `attach()` does not record the rental.
+
+`attach()` patches `create_from_offers`, `run`, and `release_instance` in the
+launcher namespace and on `tools.start_sam`. The offer is saved when
+`create_from_offers` accepts a contract. The probe runs on the first `run()`
+SSH command. `release_instance` stops sampling and marks the rental released.
+Calling `vast.create_instance` yourself skips the offer, the probe, and the
+samples.
 
 ### Required inputs
 
 - **alias.** The `LAUNCHERS` alias for this filename. If the process has
   `--model`, that flag overrides the table. Example: `qwen8b_r2_vllm`.
 - **eval-output.** `--eval-output` on `sys.argv` when the run writes a report.
-  The stable copy is always `outputs/run-logs/<alias>/logs/`. When
-  `<eval-output>/<alias>/` exists, the same folder is copied to
-  `<eval-output>/<alias>/logs/`.
-- **authorization note.** `--authorization-note` on `sys.argv`: the same
-  approved-run sentence the launcher already requires. `attach()` does not
-  grant permission and does not read a new flag.
+  The stable copy is always `outputs/run-logs/<alias>/logs/`. The copy under
+  `<eval-output>/<alias>/logs/` and the score are written only when that
+  eval-output directory did not exist at eval start. A resume or a reused
+  directory is left alone, and its score stays `unknown`, so an older report
+  is not claimed. Use a fresh `--eval-output` directory for each run.
+
+`--authorization-note` is the launcher's own approved-run sentence when that
+launcher requires one. `attach()` does not read it and does not grant
+permission.
 
 ## Operator
 
@@ -65,19 +75,40 @@ Who is recorded in this order: `GOODVISION_OPERATOR` if set, otherwise
 `git user.name`, otherwise `$USER` (`%USERNAME%` on Windows). Leave
 `GOODVISION_OPERATOR` unset so the git name is the operator.
 
+## Where the files go
+
+`GOODVISION_RUN_LOG_ROOT` overrides the log root. Unset, the root is
+`outputs/run-logs/<alias>/logs` in the repo. Set, it is
+`<GOODVISION_RUN_LOG_ROOT>/<alias>/logs`. If that path would sit inside
+`--eval-output`, the recorder moves it beside the eval output so the eval
+mkdir is not the log directory. Leave the variable unset unless the logs
+should leave `outputs/run-logs`.
+
+## When sampling starts
+
+Sampling is on for every launcher except `start_qwen8b_r2.py`. It starts when
+the worker is ready: at the return of `_wait_ready` or `wait_for_worker` when
+the launcher defines one of those. A launcher with neither starts sampling
+after the first SSH `run()`, which is also when the one-time probe runs.
+Samples stop inside `release_instance`, before the instance is destroyed.
+The interval is 2 seconds.
+
 ## What is recorded
 
 - Offer fields from the accepted Vast offer, with secret-looking values removed.
 - One nvidia-smi probe: PCIe gen and width (current and max), power limit,
   SM clocks, utilization, driver, plus CPU model, cores, RAM, cgroup limits,
-  and CUDA once.
-- GPU samples every 2 seconds from server-ready until evaluation ends or the
-  instance is released (diagnostics start after the first successful SSH command):
-  GPU index, PCIe gen and width, power draw and limit, SM clock, utilization,
-  memory used, temperature, and `t_unix`. Multi-GPU rentals retain each GPU's
-  rows and separate per-GPU phase statistics.
+  and CUDA once. The stored probe is stdout. The Vast SSH welcome banner on
+  stderr is not kept.
+- GPU samples every 2 seconds from ready until just before release:
+  PCIe gen and width, power draw and limit, SM clock, utilization, memory
+  used, temperature, and `t_unix`.
 - Timings: rent, ready, eval start, eval end, release.
-- Score read from that run's `summary.json` (unknown when there is no exam).
+- Score read from that run's `summary.json` when this run created the
+  eval-output directory. Otherwise the score is `unknown`.
+- Manifest `status`: `rented` after a contract or a resumed instance id,
+  `not_rented` when `main` exits before any rental (bundle check, budget
+  precheck, or no offer). A `not_rented` row is an attempt, not a machine.
 
 Missing numbers are `unknown`, not 0. Idle PCIe gen 1, a low SM clock such as
 210 MHz, and 0% utilization are power-saving, not throttling. The sampler uses
@@ -96,23 +127,19 @@ outputs/run-logs/<alias>/logs/<run-id>/gpu-samples.jsonl
 <eval-output>/<alias>/logs/
 ```
 
-`manifest.json` has one row per run (time, who, machine, GPU, price, location,
-score) and `samples` (a path, or `unknown`). `entry.json` `hardware.samples`
-has the path, the one-time driver / CUDA / CPU record, and the per-phase
-min, median, and p95. A replacement rental after startup failure gets its own
-run ID and manifest row, so offers and SSH targets cannot mix between hosts.
-Phase labels use only a report created by this invocation and a known clock
-offset; otherwise statistics describe the sampled run without phase attribution.
-Unavailable PCIe generations are excluded from the busy-time fraction.
-A launcher that can retain an instance must call `finish()` before removing its
-temporary SSH credentials; `start_sam.py` does this even if analysis backup fails.
+`<eval-output>/<alias>/logs/` is written only when that eval-output directory
+did not exist before the eval. `manifest.json` has one row per attempt (time,
+who, status, machine, GPU, price, location, score) and `samples` (a path, or
+`unknown`). `entry.json` `hardware.samples` has the path, the one-time driver
+/ CUDA / CPU record, and the per-phase min, median, and p95.
 
 ## Verify
 
 After the run, stderr contains a `run log:` line with the `entry.json` path.
-That file exists, `vast-offer.json` has the machine and no secrets, and
-`outputs/run-logs/<alias>/logs/manifest.json` has a new row whose `who.display`
-is `GOODVISION_OPERATOR` or `git user.name`. When sampling ran,
+That file exists. On a rental, `vast-offer.json` has the machine and no
+secrets. `outputs/run-logs/<alias>/logs/manifest.json` has a new row whose
+`who.display` is `GOODVISION_OPERATOR` or `git user.name`. A run that exits
+before create has `status` `not_rented`. When sampling ran,
 `gpu-samples.jsonl` exists and `hardware.samples.path` points at it.
 
 Colleague command (same launcher as before; the recorder is already inside it):
@@ -125,12 +152,18 @@ PYTHONPATH=. python -m tools.start_qwen8b_vllm \
   --authorization-note 'Approved self-hosted qwen8b R2 vLLM 4090 run'
 ```
 
+Use a fresh `--eval-output` directory. The authorization note is the
+launcher's check, not an `attach()` argument.
+
 ## Checklist
 
-- The rental calls `attach()` before create, whatever the client (SDK, CLI, REST, notebook, agent).
-- The filename is in `LAUNCHERS` with an alias and `sample` True.
-- `--eval-output` and `--authorization-note` are set when that launcher has them.
+- `attach()` runs at the start of `main`, and the filename is in `LAUNCHERS`.
+- Rent, SSH, and release go through `create_from_offers`, `run`, and `release_instance`.
+- No direct `vast.create_instance`, `vastai` CLI, or REST create.
+- `--eval-output` is a fresh directory when the run writes a report.
+- `--authorization-note` is set when that launcher requires it. `attach()` does not read it.
 - `GOODVISION_OPERATOR` is unset unless it should override `git user.name`.
+- `GOODVISION_RUN_LOG_ROOT` is unset unless logs should leave `outputs/run-logs`.
 - `tools/start_qwen8b_r2.py` was not edited.
 - No copied probe, no opt-out flag, no R2 upload, no offer or scoring change.
 - `tests/test_vast_run_log.py::test_every_vast_rental_calls_the_recorder` passes.

@@ -899,20 +899,18 @@ class RunLog:
             self._sample_without_ready_hook()
             return
         stdout = result.stdout or ""
-        stderr = result.stderr or ""
         if result.returncode != 0:
             self.probe = {
                 "status": "unknown",
                 "gpus": "unknown",
                 "host": "unknown",
-                "raw": redact_text(stdout + ("\n" + stderr if stderr else "")),
+                "raw": redact_text(stdout),
             }
             self._error("probe", f"nvidia-smi exited {result.returncode}")
             self._sample_without_ready_hook()
             return
+        # Vast prints its SSH welcome banner on stderr. Keep stdout only.
         self.probe = parse_probe(stdout)
-        if stderr:
-            self.probe["raw"] = redact_text(stderr)
         self._write_entry()
         self._sample_without_ready_hook()
 
@@ -950,8 +948,6 @@ class RunLog:
                     parsed = parse_probe(probed.stdout or "")
                     if parsed.get("status") == "ok":
                         self.probe = parsed
-                        if probed.stderr:
-                            self.probe["raw"] = redact_text(probed.stderr)
             self._static = _static_from_probe(self.probe)
             before = time.time()
             clock = self._ssh("date -u +%s", timeout=15)
@@ -1108,8 +1104,10 @@ class RunLog:
 
     def _row(self) -> dict:
         fields = offer_fields(self.offer)
+        rented = self.instance_id is not None or self.offer is not None
         return {
             "run_id": self.run_id,
+            "status": "rented" if rented else "not_rented",
             "time": self._timings["rent_start_utc"]
             if self._timings["rent_start_utc"] != "unknown"
             else _utc(),
