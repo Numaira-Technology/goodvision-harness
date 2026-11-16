@@ -96,7 +96,11 @@ def test_twelve_sources_native_decisions_and_person_reports(
             ),
             source_hook=broker.submit,
         )
-        broker.drain()
+        detector_counts = broker.drain()
+    assert result["sender_missed_samples"] == 0
+    assert result["sender_missed_samples_by_stream"] == [0] * 12
+    assert result["offer_rejected_by_stream"] == [0] * 12
+    assert detector_counts == {"submitted": 48, "ready": 48}
     assert result["all_drained"] and not result["result_records_missing"]
     assert result["result_retention"]["valid"]
     assert len(calls) == len(set(calls)) == 48
