@@ -272,12 +272,12 @@ def test_workflow_preserves_required_names_limits_and_optional_jobs():
     assert windows["runs-on"] == "windows-latest"
     assert windows["timeout-minutes"] == 25
     assert windows["strategy"]["fail-fast"] is False
-    assert windows["strategy"]["matrix"]["shard"] == [0, 1, 2, 3, 4]
-    assert "--shards 5" in jobs["windows-tests"]["steps"][-1]["run"]
+    assert windows["strategy"]["matrix"]["shard"] == [0, 1, 2, 3, 4, 5]
+    assert "--shards 6" in jobs["windows-tests"]["steps"][-1]["run"]
     execution = next(step for step in windows["steps"]
                      if "--ci-evidence" in step.get("run", ""))
     assert execution["timeout-minutes"] == 20
-    assert "'--ci-shards', '5'" in execution["run"]
+    assert "'--ci-shards', '6'" in execution["run"]
     assert "exit $testExitCode" in execution["run"]
     assert "WaitForExit(960000)" in execution["run"]
     assert "taskkill /F /T /PID $process.Id" in execution["run"]
