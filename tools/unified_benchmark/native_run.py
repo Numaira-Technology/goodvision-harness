@@ -389,8 +389,12 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, sealed_receipts=Non
         unit = units[row["unit"]]
         path = phase_dir / "receipts" / f"{digest(unit['id'])}-{row['attempt']}.json"
         validate_saved_path(path, output)
+        # str(relative_to) is backslash-separated on Windows.
+        receipt_key = path.relative_to(output).as_posix()
         result = results.get((row["unit"], row["attempt"]))
-        name = path.relative_to(output).as_posix()
+        # Stored receipt keys are POSIX. str(relative_to) is backslash-separated
+        # on Windows and fails validate_completion / the retained seal.
+        name = receipt_key
         if result:
             metadata = result.get("metadata", {})
             saved_name = metadata.get("receipt") if isinstance(metadata, dict) else None
@@ -403,7 +407,7 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, sealed_receipts=Non
             # A partially stripped modern anchor is evidence corruption.
             expected_hash = metadata.get("receipt_sha256")
             if "metadata" not in result:
-                expected_hash = (sealed_receipts or {}).get(name)
+                expected_hash = (sealed_receipts or {}).get(receipt_key)
             if (
                 not expected_hash
                 or not path.is_file()
@@ -489,7 +493,7 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, sealed_receipts=Non
             **outcome,
             "metadata": {
                 "actual_provider": "self-hosted",
-                "receipt": name,
+                "receipt": receipt_key,
                 "receipt_sha256": file_hash(path),
                 "recovered_receipt": True,
             },
@@ -741,9 +745,10 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     "fatal": fatal, "retry_after": 0, "completed_at_unix": time.time(),
                     "transport_seconds": time.monotonic() - started,
                     **raw_fields(response=raw, timings=timing)})
+                receipt_key = path.relative_to(output).as_posix()
                 metadata = {
                     "actual_provider": "self-hosted",
-                    "receipt": path.relative_to(output).as_posix(),
+                    "receipt": receipt_key,
                     "receipt_sha256": file_hash(path), "http_status": code,
                 }
                 if error:
@@ -797,7 +802,13 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     write_new(completion_path, {"execution_finished": True,
                         "final_missing_unique_units": result["final_missing_unique_units"],
                         "incomplete_questions": result["incomplete_questions"],
-                        "files": {p.relative_to(output).as_posix(): _output_file_hash(p, ledger) for p in files}, "at": stamp()})
+                        # POSIX keys: validate_completion requires "<split>/<name>"
+                        # on every OS. Hash the open ledger through its owner so
+                        # Windows does not open the locked file a second time.
+                        "files": {
+                            p.relative_to(output).as_posix(): _output_file_hash(p, ledger)
+                            for p in files
+                        }, "at": stamp()})
                 completed.append(split)
             except BaseException:
                 # Per-invocation partial report: never overwrite completed evidence.
@@ -819,7 +830,8 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
             manifest = output / "result-files-sha256.json"
             if manifest.exists():
                 write_new(invocation / "previous-result-files-sha256.json", json.loads(manifest.read_text()))
-            save_status(manifest, {p.relative_to(output).as_posix(): file_hash(p)
+            save_status(manifest, {
+                p.relative_to(output).as_posix(): file_hash(p)
                 for p in sorted(output.rglob("*")) if p.is_file() and p != manifest})
 
 
