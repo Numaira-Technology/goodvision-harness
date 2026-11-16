@@ -11,8 +11,10 @@ import pytest
 
 from tools import start_sam
 from tools.vast_run_log import (
-    RunLog, _HOST_FIELDS, _PROBE, _wrap_create, _wrap_eval, logs_directory,
-    offer_fields, parse_probe, redact, summarize_score,
+    LAUNCHERS, SAMPLE_INTERVAL, _AUTO_ARM, _HOST_FIELDS, _PROBE, _SAMPLER_SH,
+    RunLog, _wrap_create, _wrap_eval, _wrap_release, attach, logs_directory,
+    offer_fields, parse_probe, parse_sample_line, redact, summarize_gpu_samples,
+    summarize_score,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -428,3 +430,172 @@ def test_launcher_module_writes_a_log_and_still_rejects_a_bad_bundle(tmp_path, m
     text = logs[0].read_text(encoding="utf-8")
     assert "vast-secret-should-not-be-logged" not in text
     assert "run log:" in result.stderr
+
+
+def test_every_vast_rental_calls_the_recorder():
+    needle = "from vastai import VastAI"
+    found = []
+    for path in (REPO / "tools").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if needle not in text:
+            continue
+        rel = path.relative_to(REPO).as_posix()
+        found.append(rel)
+        if path.name in _AUTO_ARM:
+            assert "vast_run_log import attach" not in text
+            continue
+        assert "vast_run_log import attach" in text
+        assert text.count("\n    attach()") >= 1 or "\n    attach()\n" in text
+    assert set(found) == {
+        "tools/diag_qwen8b_vllm_import.py",
+        "tools/start_detector.py",
+        "tools/start_qwen8b_r2.py",
+        "tools/start_qwen8b_vllm.py",
+        "tools/start_sam.py",
+    }
+    init = (REPO / "tools/__init__.py").read_text(encoding="utf-8")
+    assert "arm_if_launcher" in init
+    assert _AUTO_ARM == {"start_qwen8b_r2.py"}
+    assert LAUNCHERS["start_qwen8b_r2.py"][3] is False
+    for name in (
+        "start_qwen8b_vllm.py", "start_sam.py", "start_detector.py", "diag_qwen8b_vllm_import.py",
+    ):
+        assert LAUNCHERS[name][3] is True
+    assert "pip " not in _SAMPLER_SH
+    assert "nvidia-smi --query-gpu=" in _SAMPLER_SH
+    assert 'sleep "$interval"' in _SAMPLER_SH
+    assert SAMPLE_INTERVAL == 2
+    skill = (REPO / ".cursor/skills/vast-run-log/SKILL.md").read_text(encoding="utf-8")
+    assert "attach()" in skill
+    assert "outputs/run-logs/<alias>/logs/manifest.json" in skill
+    assert "<eval-output>/<alias>/logs/" in skill
+    assert "git user.name" in skill
+    assert "python -m tools.start_qwen8b_vllm" in skill
+
+
+def test_gpu_sample_summary_keeps_zero_and_low_pcie_fraction():
+    rows = []
+    samples = (
+        (100, "1, 16, 4, 16, 20.00 W, 450.00 W, 210 MHz, 0 %, 10 MiB, 35"),
+        (102, "1, 16, 4, 16, 100.00 W, 450.00 W, 1000 MHz, 10 %, 1000 MiB, 40"),
+        (104, "4, 16, 4, 16, 200.00 W, 450.00 W, 2500 MHz, 80 %, 8000 MiB, 55"),
+        (106, "4, 16, 4, 16, 300.00 W, 450.00 W, 2700 MHz, 90 %, 9000 MiB, 60"),
+        (108, "1, 16, 4, 16, 400.00 W, 450.00 W, 3000 MHz, 100 %, 12000 MiB, 70"),
+    )
+    for stamp, csv in samples:
+        rows.append(parse_sample_line("%s\t%s\r\n" % (stamp, csv), 0))
+    assert rows[0]["utilization_gpu"] == "0 %"
+    assert parse_sample_line("Welcome to vast.ai. Have fun!\n", 0) is None
+    assert parse_sample_line("100\tN/A, 16, 4, 16, [N/A], 450.00 W, 210 MHz, N/A, 10 MiB, 35\n", 0)[
+        "power_draw"
+    ] == "[N/A]"
+    summary = summarize_gpu_samples(rows, {"validation": (100, 109)}, SAMPLE_INTERVAL)
+    stats = summary["validation"]
+    assert stats["utilization_gpu"] == {"min": 0, "median": 80, "p95": 98}
+    assert stats["clock_sm_mhz"]["min"] == 210
+    assert stats["clock_sm_mhz"]["median"] == 2500
+    assert stats["power_draw_w"]["median"] == 200
+    assert stats["low_pcie_gen_while_busy"] == 0.4286
+    assert summarize_gpu_samples([], {}, SAMPLE_INTERVAL) == "unknown"
+
+
+def test_sampler_stops_before_release_and_records_the_phase(tmp_path, monkeypatch):
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    monkeypatch.setattr("tools.vast_run_log.time.time", lambda: 100.0)
+    tsv = (
+        "100\t1, 16, 4, 16, 20.00 W, 450.00 W, 210 MHz, 0 %, 10 MiB, 35\n"
+        "102\t1, 16, 4, 16, 100.00 W, 450.00 W, 1000 MHz, 10 %, 1000 MiB, 40\n"
+        "104\t4, 16, 4, 16, 200.00 W, 450.00 W, 2500 MHz, 80 %, 8000 MiB, 55\n"
+        "106\t4, 16, 4, 16, 300.00 W, 450.00 W, 2700 MHz, 90 %, 9000 MiB, 60\n"
+        "108\t1, 16, 4, 16, 400.00 W, 450.00 W, 3000 MHz, 100 %, 12000 MiB, 70\n"
+        "Welcome to vast.ai. Have fun!\n"
+    )
+
+    def fake_run(command, **kwargs):
+        remote = command[-1]
+        if remote == "date -u +%s":
+            return subprocess.CompletedProcess(command, 0, "100\n", "")
+        if remote.startswith("cat >"):
+            return subprocess.CompletedProcess(command, 0, "4242\n", "Welcome to vast.ai. Have fun!\n")
+        if remote.startswith("kill "):
+            return subprocess.CompletedProcess(command, 0, tsv, "")
+        return subprocess.CompletedProcess(command, 1, "", "missing")
+
+    monkeypatch.setattr("tools.vast_run_log.subprocess.run", fake_run)
+    session = RunLog("tools.start_qwen8b_vllm", "qwen8b_r2_vllm", "vllm", True)
+    session._ssh_prefix = ["ssh", "-p", "22", "root@example"]
+    session._expects_ready = True
+    session.probe = parse_probe(
+        "NVIDIA GeForce RTX 4090, 00000000:C1:00.0, 1, 4, 16, 16, 450.00 W, "
+        "210 MHz, 3150 MHz, 405 MHz, 595.99.02, 24564 MiB, 0 %\n"
+        "HOST\tAMD EPYC 7702P 64-Core Processor\t128\t527980792 kB\t13.2\n"
+    )
+    phase = tmp_path / "eval" / "qwen8b_r2_vllm" / "validation"
+    phase.mkdir(parents=True)
+    (phase / "summary.json").write_text(json.dumps({
+        "accuracy": 0, "started_at_unix": 100, "finished_at_unix": 109,
+    }), encoding="utf-8")
+    session.eval_output = str(tmp_path / "eval")
+    order = []
+
+    def release(vast, instance_id):
+        order.append(instance_id)
+
+    session.note_ready()
+    assert session._sampler_alive
+    _wrap_release(release, session)(None, 7)
+    assert order == [7]
+    assert session._sampler_alive is False
+    session.finish_once()
+    entry = json.loads((session.run_dir / "entry.json").read_text(encoding="utf-8"))
+    block = entry["hardware"]["samples"]
+    assert block["interval_seconds"] == 2
+    assert block["static"]["driver_version"] == "595.99.02"
+    assert block["static"]["cuda_version"] == "13.2"
+    assert block["static"]["host_cpu_cores"] == "128"
+    assert block["phases"]["validation"]["utilization_gpu"]["min"] == 0
+    assert block["phases"]["validation"]["low_pcie_gen_while_busy"] == 0.4286
+    body = (session.run_dir / "gpu-samples.jsonl").read_text(encoding="utf-8")
+    assert "Welcome to vast.ai" not in body
+    assert "\r" not in body
+    manifest = json.loads((session.root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest[0]["samples"].endswith("/gpu-samples.jsonl")
+
+
+def test_hf_log_does_not_start_gpu_sampling(monkeypatch):
+    session = RunLog(*LAUNCHERS["start_qwen8b_r2.py"])
+    session._ssh_prefix = ["ssh", "root@example"]
+    calls = []
+    monkeypatch.setattr(
+        "tools.vast_run_log.subprocess.run",
+        lambda *args, **kwargs: calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    session.note_ready()
+    assert session.sample is False
+    assert calls == []
+
+
+def test_attach_patches_detector_ready_hook(tmp_path, monkeypatch):
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    import tools.vast_run_log as mod
+    monkeypatch.setattr(mod, "_SESSION", None)
+    ready = []
+
+    def wait_for_worker(*args, **kwargs):
+        ready.append("worker")
+
+    namespace = {
+        "__file__": str(REPO / "tools" / "start_detector.py"),
+        "wait_for_worker": wait_for_worker,
+        "run": lambda *args, **kwargs: None,
+        "release_instance": lambda *args, **kwargs: None,
+        "create_from_offers": lambda *args, **kwargs: 1,
+    }
+    attach(namespace)
+    assert namespace["wait_for_worker"].__dict__.get("_gv_wrapped") or getattr(
+        namespace["wait_for_worker"], "_gv_wrapped", False
+    )
+    namespace["wait_for_worker"]()
+    assert ready == ["worker"]
+    assert mod._SESSION.sample is True
+    assert mod._SESSION._expects_ready is True

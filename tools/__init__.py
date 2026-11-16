@@ -1,8 +1,8 @@
-"""Package marker. Arms Vast run logging for the Qwen launchers only.
+"""Package marker. Arms the HF Qwen rental log without editing that launcher.
 
-``python -m tools.start_qwen8b_r2`` and ``python -m tools.start_qwen8b_vllm``
-import this package before the launcher runs. The hook records the rented
-offer and the eval summary. It does not change offer selection or scoring.
+``python -m tools.start_qwen8b_r2`` is the one renter that must not call
+``vast_run_log.attach`` itself. Every other Vast rental calls ``attach``
+at the start of ``main``. The hook does not change offer selection or scoring.
 """
 from __future__ import annotations
 
