@@ -356,14 +356,22 @@ change JPEG size, prompts, max_tokens, or client concurrency to fit VRAM.
 The active declared vLLM artifact is
 `envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz`, SHA-256
 `59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b`,
-4,252,375,781 bytes. The profile records this identity and the launcher checks
-it against the registry before rental. The cu130 pack requires host CUDA >=13.0
-and NVIDIA driver >=580; the HF CUDA 12.8 image label is not a driver guarantee.
-The old cu130 `ada` pack is incomplete and refused. All published Qwen pack keys,
-including ada2, are frozen; CPU rebuilds require a new reviewed key. The 4090 only
-restores the pinned object and existing weights. A CPU import is not a GPU serve.
-See [pack evidence limitations](../qwen8b_vllm/BUILD.md); the declared identity
-does not independently verify the claimed historical exam.
+4,252,375,781 bytes (torch `+cu130`). The profile records this identity and the
+launcher checks it against the registry before rental. The cu130 pack requires
+host CUDA >=13.0 and NVIDIA driver >=580; the HF CUDA 12.8 image label is not a
+driver guarantee. The launcher rejects incompatible or unknown offer/resume
+metadata and checks the actual driver after SSH, before bootstrap or downloads.
+These checks do not establish artifact or GPU acceptance. The superseded
+`cu128-py312-vllm0310-ada` object is kept frozen for provenance only: it is
+missing `typing_extensions` in the prefix and is never restored. The incomplete
+cu130 `ada` pack is also frozen and refused. All published Qwen pack keys,
+including ada2, are frozen. The declared ada2 identity is not producer
+provenance, a full-archive readback, a restore/import log, or an independent
+verification of the claimed historical exam. Rebuilds require a reviewed
+successor entry, a fresh prefix, and a new immutable identity; follow the
+[local build and provenance procedure](../qwen8b_vllm/BUILD.md). The 4090 only
+restores the pinned object and existing weights. A CPU import is not a GPU
+serve, and CPU import evidence is not GPU acceptance.
 
 Bundle/profile/request hashes are checked before rental and rechecked before
 inference. A separate synthetic 720px JPEG is used for smoke, with its request

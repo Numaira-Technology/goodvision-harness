@@ -55,10 +55,10 @@ def offline_inspector(config, *, broker_url, audit_dir):
 def test_twelve_sources_native_decisions_and_person_reports(
     tmp_path, monkeypatch, mode, request
 ):
-    # This adapter contract must exercise every planned input exactly once.
-    # Keep real HTTP/process/admission behavior, but do not replace a failed
-    # stage with a retry. Production lag/drop gates are exercised unchanged in
-    # test_vlm_source_feeder and test_vlm_sender_lag using the real feeder.
+    # This is an adapter/accounting contract, not a host throughput benchmark.
+    # Replay each planned source frame once and do not replace a failed stage
+    # with a retry. Production lag/drop gates stay in test_vlm_source_feeder
+    # and test_vlm_sender_lag, which use the real feeder.
     monkeypatch.setattr(
         "tools.vlm_multistream_benchmark.TimedSourceFeeder", ContractSourceFeeder
     )
