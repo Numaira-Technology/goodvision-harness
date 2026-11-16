@@ -75,6 +75,12 @@ LAUNCHERS = {
         "vllm-diag",
         True,
     ),
+    "r2_pull_bench.py": (
+        "tools.r2_pull_bench",
+        "r2_pull_bench",
+        "download",
+        True,
+    ),
 }
 # Armed by tools/__init__.py because that launcher file must not be edited.
 _AUTO_ARM = {"start_qwen8b_r2.py"}

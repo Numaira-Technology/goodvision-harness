@@ -614,7 +614,16 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] not in {"box", "rent"}:
         raise SystemExit("usage: r2_pull_bench.py {rent,box} ...")
-    (box if argv[0] == "box" else rent)(argv[1:])
+    if argv[0] == "box":
+        # The GPU-side command has no Vast client. Do not import the recorder there.
+        box(argv[1:])
+        return
+    try:
+        from tools.vast_run_log import attach
+    except ImportError:
+        from vast_run_log import attach
+    attach()
+    rent(argv[1:])
 
 
 if __name__ == "__main__":
