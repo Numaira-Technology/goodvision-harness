@@ -486,6 +486,11 @@ def _verify_restored_env(ssh, activate: str) -> None:
 
 
 def main() -> int:
+    try:
+        from tools.vast_run_log import attach
+    except ImportError:
+        from vast_run_log import attach
+    attach()
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--disk-gb", type=int, default=int(os.environ.get("QWEN8B_DISK_GB", "80"))
