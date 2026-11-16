@@ -19,35 +19,60 @@ from tools import neural_container as neural
 def reserve(path, size):
     """Expose the real byte length without allocating it on the runner disk.
 
-    Later shard-3 tests create their own temp directories. A non-sparse
-    Windows truncate of the CLIP safetensors stand-in (about 1.7 GiB) is
-    repeated for every case and fills the system drive; setup then fails
-    with "could not create numbered dir". Linux truncate is already sparse.
+    Later shard-3 tests create their own temp directories. Each case stands
+    in for a 1.7 GiB CLIP weight. Linux truncate is already a hole. On
+    Windows the CRT ``_chsize_s`` used by ``file.truncate`` writes that many
+    zero bytes, which fills the runner even after FSCTL_SET_SPARSE. Extend
+    with SetEndOfFile so the hole stays unallocated and ``st_size`` is exact.
     """
-    with path.open("wb") as stream:
-        if os.name == "nt" and size:
-            import msvcrt
+    if os.name != "nt":
+        with path.open("wb") as stream:
+            stream.truncate(size)
+        return
+    import msvcrt
 
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            kernel32.DeviceIoControl.argtypes = [
-                ctypes.c_void_p,
-                ctypes.c_uint32,
-                ctypes.c_void_p,
-                ctypes.c_uint32,
-                ctypes.c_void_p,
-                ctypes.c_uint32,
-                ctypes.POINTER(ctypes.c_uint32),
-                ctypes.c_void_p,
-            ]
-            kernel32.DeviceIoControl.restype = ctypes.c_int
-            returned = ctypes.c_uint32()
-            handle = ctypes.c_void_p(msvcrt.get_osfhandle(stream.fileno()))
-            # FSCTL_SET_SPARSE: SetEndOfFile then keeps a hole instead of zeros.
-            if not kernel32.DeviceIoControl(
-                handle, 0x000900C4, None, 0, None, 0, ctypes.byref(returned), None
-            ):
-                raise ctypes.WinError(ctypes.get_last_error())
-        stream.truncate(size)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle_type = ctypes.c_void_p
+    kernel32.DeviceIoControl.argtypes = [
+        handle_type,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.c_void_p,
+    ]
+    kernel32.DeviceIoControl.restype = ctypes.c_int
+    kernel32.SetFilePointerEx.argtypes = [
+        handle_type,
+        ctypes.c_longlong,
+        ctypes.POINTER(ctypes.c_longlong),
+        ctypes.c_uint32,
+    ]
+    kernel32.SetFilePointerEx.restype = ctypes.c_int
+    kernel32.SetEndOfFile.argtypes = [handle_type]
+    kernel32.SetEndOfFile.restype = ctypes.c_int
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_BINARY)
+    try:
+        if not size:
+            return
+        handle = handle_type(msvcrt.get_osfhandle(fd))
+        returned = ctypes.c_uint32()
+        # FSCTL_SET_SPARSE, then move EOF without writing the gap.
+        if not kernel32.DeviceIoControl(
+            handle, 0x000900C4, None, 0, None, 0, ctypes.byref(returned), None
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        moved = ctypes.c_longlong()
+        if not kernel32.SetFilePointerEx(
+            handle, ctypes.c_longlong(size), ctypes.byref(moved), 0
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not kernel32.SetEndOfFile(handle):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        os.close(fd)
 
 
 IMAGE = {
