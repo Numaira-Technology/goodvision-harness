@@ -380,7 +380,9 @@ Vast rentals record the machine through `tools/vast_run_log.py`. Colleagues keep
 the same launcher command. `python -m tools.start_qwen8b_r2` is armed by the
 `tools` package. `python -m tools.start_qwen8b_vllm`, `python tools/start_sam.py`,
 `python tools/start_detector.py`, and `python -m tools.diag_qwen8b_vllm_import`
-call `attach()` themselves. The call pattern, output layout, and checklist are
+call `attach()` themselves. `python -m tools.unified_benchmark.native_run --execute`
+also writes this log for `--model clip`, `siglip2`, `videojev`, and `decision3`
+only. The call pattern, output layout, and checklist are
 in `.cursor/skills/vast-run-log/SKILL.md`. Each eval
 still needs its own new `--eval-output` (the evaluator refuses an existing
 directory). This update changes the frozen SAM and vLLM launcher sources;

@@ -78,6 +78,14 @@ LAUNCHERS = {
 }
 # Armed by tools/__init__.py because that launcher file must not be edited.
 _AUTO_ARM = {"start_qwen8b_r2.py"}
+# GPU benchmarks that share native_run.py. SigLIP2 is the repo name for the
+# contrastive model sometimes called SeekCLIP. decision3 loads d3-nano.
+NATIVE_MODELS = {
+    "clip": ("tools.unified_benchmark.native_run", "clip", "contrastive", False),
+    "siglip2": ("tools.unified_benchmark.native_run", "siglip2", "contrastive", False),
+    "videojev": ("tools.unified_benchmark.native_run", "videojev", "videojev", False),
+    "decision3": ("tools.unified_benchmark.native_run", "decision3", "d3-nano", False),
+}
 SAMPLE_INTERVAL = 2
 _SAMPLE_COLUMNS = (
     "pcie_gen_current",
@@ -233,6 +241,9 @@ _SESSION = None
 def arm_if_launcher(filename: str, *, late: bool = False) -> None:
     """Start a session for the HF launcher. Other renters call ``attach``."""
     base = Path(str(filename).replace("\\", "/")).name
+    if base == "native_run.py":
+        _arm_native()
+        return
     spec = LAUNCHERS.get(base)
     if spec is None:
         return
@@ -245,6 +256,34 @@ def arm_if_launcher(filename: str, *, late: bool = False) -> None:
         session = RunLog(*spec)
         if base in _AUTO_ARM:
             session.install()
+    except Exception as exc:
+        _stderr("arm", exc)
+        return
+    _SESSION = session
+    atexit.register(session.finish_once)
+
+
+def _arm_native() -> None:
+    """Log a native GPU eval. Only the four model aliases, and only --execute."""
+    global _SESSION
+    if _SESSION is not None or "--execute" not in sys.argv:
+        return
+    spec = NATIVE_MODELS.get(_flag("--model") or "")
+    if spec is None:
+        return
+    try:
+        session = RunLog(*spec)
+        session.local_probe = True
+        session.eval_output = _flag("--output")
+        phase = _flag("--phase")
+        session.eval_phase = phase or "validation"
+        session.eval_phase_source = "argv" if phase else "launcher-default"
+        session.root = logs_directory(session.model, session.eval_output)
+        session.run_dir = session.root / session.run_id
+        session._output_absent_at_start = bool(session.eval_output) and not Path(
+            session.eval_output
+        ).exists()
+        session.mark_rent_start()
     except Exception as exc:
         _stderr("arm", exc)
         return
@@ -661,26 +700,38 @@ def _format_container_memory(raw: str) -> str:
     return f"{number} B ({source})"
 
 
+def _read_score_payload(path: Path):
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def summarize_score(eval_output, alias) -> dict | str:
     if not eval_output:
         return "unknown"
-    base = Path(eval_output) / alias
-    if not base.is_dir():
-        return "unknown"
+    root = Path(eval_output)
+    base = root / alias
     found = False
     summary = {}
     for split in ("validation", "test"):
-        path = base / split / "summary.json"
-        if not path.is_file():
-            summary[split] = "unknown"
-            continue
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        paths = []
+        if base.is_dir():
+            paths.append(base / split / "summary.json")
+        paths.extend((root / split / "report.json", root / split / "summary.json"))
+        payload = None
+        for path in paths:
+            payload = _read_score_payload(path)
+            if payload is not None:
+                break
+        if payload is None:
             summary[split] = "unknown"
             continue
         found = True
-        summary[split] = _score_split(payload if isinstance(payload, dict) else {})
+        summary[split] = _score_split(payload)
     manifest = Path(eval_output) / "run-manifest.json"
     slots = "unknown"
     if manifest.is_file():
@@ -914,6 +965,31 @@ class RunLog:
         self._write_entry()
         self._sample_without_ready_hook()
 
+    def probe_local(self) -> None:
+        """Read this machine. Used by native GPU evals, which do not SSH."""
+        if self._probed:
+            return
+        self._probed = True
+        try:
+            result = subprocess.run(
+                ["bash", "-lc", _PROBE],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.probe = "unknown"
+            self._error("probe", exc)
+            return
+        stdout = result.stdout or ""
+        self.probe = parse_probe(stdout)
+        if result.returncode != 0 and (
+            not isinstance(self.probe, dict) or self.probe.get("status") != "ok"
+        ):
+            self._error("probe", f"nvidia-smi exited {result.returncode}")
+
     def _sample_without_ready_hook(self) -> None:
         if self.sample and not self._expects_ready:
             self.start_sampler()
@@ -1041,6 +1117,21 @@ class RunLog:
             self.stop_sampler()
         except Exception as exc:
             self._error("sample", exc)
+        if getattr(self, "local_probe", False):
+            try:
+                self.probe_local()
+            except Exception as exc:
+                self._error("probe", exc)
+            try:
+                if (
+                    getattr(self, "_output_absent_at_start", False)
+                    and self.eval_output
+                    and Path(self.eval_output).is_dir()
+                ):
+                    self._owns_eval_output = True
+                self.capture_score()
+            except Exception as exc:
+                self._error("score", exc)
         try:
             self._write_entry()
             self._update_manifest()

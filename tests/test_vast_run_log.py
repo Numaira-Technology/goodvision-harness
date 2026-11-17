@@ -18,8 +18,10 @@ from tools.vast_run_log import (
     _PROBE,
     _SAMPLER_SH,
     LAUNCHERS,
+    NATIVE_MODELS,
     SAMPLE_INTERVAL,
     RunLog,
+    arm_if_launcher,
     _wrap_create,
     _wrap_eval,
     _wrap_release,
@@ -1251,3 +1253,101 @@ def test_sample_phase_requires_owned_report_and_known_clock(
     )
     session._ingest("100\t1, 16, 4, 16, 20 W, 450 W, 210 MHz, 50 %, 10 MiB, 35")
     assert set(session._sample_summary) == {phase}
+
+
+_PROBE_STDOUT = (
+    "RTX 4090, 0000:81:00.0, 1, 4, 8, 16, 450.00 W, 210 MHz, 3105 MHz, "
+    "10251 MHz, 550.90, 24564 MiB, 0 %\n"
+    "HOST\tAMD EPYC\t16\t32000000 kB\t12.8\tunknown\tunknown\n"
+)
+
+
+@pytest.mark.parametrize("model", ["clip", "siglip2", "videojev", "decision3"])
+def test_native_execute_logs_hardware_duration_score_and_person(
+    tmp_path, monkeypatch, model
+):
+    run_log._SESSION = None
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    monkeypatch.setenv("GOODVISION_OPERATOR", "colleague")
+    out = tmp_path / "eval" / model
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "native_run.py",
+            "--model",
+            model,
+            "--execute",
+            "--output",
+            str(out),
+            "--phase",
+            "test",
+        ],
+    )
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=_PROBE_STDOUT, stderr="")
+
+    monkeypatch.setattr(run_log.subprocess, "run", fake_run)
+    arm_if_launcher("/repo/tools/unified_benchmark/native_run.py")
+    session = run_log._SESSION
+    assert session is not None and session.model == model
+    assert session.local_probe is True
+    assert not out.exists()
+    (out / "test").mkdir(parents=True)
+    (out / "test" / "report.json").write_text(
+        json.dumps(
+            {
+                "accuracy": 0.5,
+                "final_unknown_questions": 1,
+                "final_missing_unique_units": 0,
+                "test_attempt_latency": {
+                    "p50_seconds": 1.2,
+                    "p95_seconds": 2.2,
+                    "n": 4,
+                    "source": "native",
+                },
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    session.finish_once()
+    entry = json.loads((session.run_dir / "entry.json").read_text(encoding="utf-8"))
+    assert entry["who"]["display"] == "colleague"
+    assert entry["model"] == model
+    assert entry["engine"] == NATIVE_MODELS[model][2]
+    assert isinstance(entry["timings"]["wall_seconds"], float)
+    assert entry["hardware"]["probe"]["status"] == "ok"
+    assert entry["hardware"]["probe"]["gpus"][0]["pcie_gen_current"] == "1"
+    assert entry["hardware"]["probe"]["host"]["cpu_model"] == "AMD EPYC"
+    assert entry["score"]["test"]["accuracy"] == 0.5
+    assert entry["score"]["test"]["p50_seconds"] == 1.2
+    rows = json.loads((session.root / "manifest.json").read_text(encoding="utf-8"))
+    assert rows[-1]["who"]["operator_env"] == "colleague"
+    assert rows[-1]["score"]["test"]["final_missing_unique_units"] == 0
+    run_log._SESSION = None
+
+
+def test_native_log_stays_off_without_execute_or_for_other_models(tmp_path, monkeypatch):
+    run_log._SESSION = None
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    monkeypatch.setattr(
+        sys, "argv", ["native_run.py", "--model", "clip", "--output", str(tmp_path / "out")]
+    )
+    arm_if_launcher("tools/unified_benchmark/native_run.py")
+    assert run_log._SESSION is None
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["native_run.py", "--model", "luna", "--execute", "--output", str(tmp_path / "out")],
+    )
+    arm_if_launcher("tools/unified_benchmark/native_run.py")
+    assert run_log._SESSION is None
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["native_run.py", "--model", "qwen8b", "--execute", "--output", str(tmp_path / "out")],
+    )
+    arm_if_launcher("tools/unified_benchmark/native_run.py")
+    assert run_log._SESSION is None

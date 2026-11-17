@@ -68,7 +68,10 @@ stereo sources again. Do not tune on the new test questions.
 
 The four-model native CLI without `--execute` checks files only. Qwen R2 launchers
 can rent a GPU and run the selected phases; they are not offline preflight commands.
-Those launchers also write a hardware run log with no extra flag. Optional
+Those launchers also write a hardware run log with no extra flag. The same log
+is written for `python -m tools.unified_benchmark.native_run --execute` when
+`--model` is `clip`, `siglip2`, `videojev`, or `decision3` (the d3-nano
+weights). Other models are not armed. Optional
 `GOODVISION_OPERATOR` sets the name on the index; otherwise the log uses git
 `user.name` and `$USER` (Windows: `%USERNAME%`). The series index is
 `outputs/run-logs/<alias>/logs/manifest.json`. Each run folder there holds
