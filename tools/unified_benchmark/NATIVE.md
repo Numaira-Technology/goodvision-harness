@@ -237,7 +237,8 @@ copying results locally, before releasing a GPU with unbacked-up files. The inve
 excludes itself; earlier inventory snapshots remain in continuation records.
 
 The test report includes combined202, original120/robot82 cohorts and per-event results, missing units,
-incomplete questions and successful-attempt P50/P95. Latency excludes worker queue
+incomplete questions and P50/P95 under the README's latency definition, with failed
+and timeout attempts beside them. Latency excludes receipt writes, worker queue
 and retry backoff; CLIP's preprocessing/GPU-lock wait/readback are retained separately
 inside each receipt. Restarts can change cache warmth and are recorded. These are
 test timings, not an independent 12-camera throughput measurement. Actual GPU cost

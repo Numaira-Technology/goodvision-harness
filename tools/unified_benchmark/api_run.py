@@ -18,6 +18,7 @@ import urllib.request
 import certifi
 from tools.event_benchmark.evidence import response_metadata
 from .adapters import parse_response, request_body
+from .latency import REQUEST_TIMEOUT_SECONDS, raised_timeout
 from .contract import EVENTS, plan_rules, canonical, digest, file_hash, score, select_thresholds, write_new, write_receipt
 from .retry import Ledger, PausedRun, Queue, RequestFailure
 from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
@@ -93,7 +94,8 @@ class Transport:
             headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json"})
         status = None
         try:
-            with urllib.request.urlopen(req, context=self.ssl, timeout=90) as response:
+            with urllib.request.urlopen(
+                    req, context=self.ssl, timeout=REQUEST_TIMEOUT_SECONDS) as response:
                 status = response.status
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
         except http.client.HTTPException as error:
@@ -117,35 +119,48 @@ class Transport:
         uri, body = request_body(self.config, unit, self.bundle)
         if digest(body) != unit["request_sha256"]:
             raise RequestFailure("request fingerprint mismatch", fatal=True)
+        sent = time.monotonic()
+
+        def failed():
+            return {"transport_seconds": time.monotonic() - sent}
+
         try:
             payload = self.call(uri, body)
         except InvalidResponse as error:
+            elapsed = failed()
             raw = error.body.replace(self.key.encode(), b"[REDACTED]")
             write_new(self.output / "receipts" / (prefix + ".json"), {
                 "http_status": error.status, "transport_error": type(error).__name__, "detail": str(error),
                 "body_base64": base64.b64encode(raw).decode(), "body_truncated": error.truncated,
                 "body_redacted": raw != error.body, "captured_body_bytes": len(error.body),
                 "unit": unit["id"], "request_sha256": unit["request_sha256"]})
-            raise RequestFailure(str(error), status=error.status) from error
+            raise RequestFailure(
+                str(error), status=error.status, metadata=elapsed) from error
         except urllib.error.HTTPError as error:
+            elapsed = failed()
             if error.code == 402:
                 self.billing_stop.set()
             write_receipt(self.output / "receipts" / (prefix + ".json"), {
                 **http_error_body(error, secret=self.key),
                 "http_status": error.code, "retry_after": error.headers.get("Retry-After"),
                 "unit": unit["id"], "request_sha256": unit["request_sha256"]})
-            raise RequestFailure("HTTP " + str(error.code), status=error.code,
+            raise RequestFailure(
+                "HTTP " + str(error.code), status=error.code, metadata=elapsed,
                 retry_after=retry_after(error.headers.get("Retry-After")), fatal=error.code in (400, 401, 402, 403, 404)) from error
         except (OSError, TimeoutError, ValueError) as error:
+            elapsed = failed()
             write_receipt(self.output / "receipts" / (prefix + ".json"), {
                 "transport_error": type(error).__name__, "detail": str(error).replace(self.key, "[REDACTED]"),
                 "unit": unit["id"], "request_sha256": unit["request_sha256"]})
-            raise RequestFailure(type(error).__name__) from error
+            reason = "timeout" if raised_timeout(error) else type(error).__name__
+            raise RequestFailure(reason, metadata=elapsed) from error
+        transport_seconds = time.monotonic() - sent
         metadata = response_metadata(payload)
         # Provider metadata GET is read-only and never replaces a model answer.
         generation = metadata.get("generation_id")
         generation_data = None
         if generation and (not metadata.get("actual_provider") or not metadata.get("actual_model")):
+            lookup_started = time.monotonic()
             try:
                 generation_data = self.call("https://openrouter.ai/api/v1/generation?id=" + urllib.parse.quote(generation, safe=""))["data"]
                 if not isinstance(generation_data, dict):
@@ -156,6 +171,8 @@ class Transport:
                     metadata.setdefault(k, v)
             except (OSError, ValueError, KeyError, TypeError):
                 metadata["metadata_lookup_error"] = "unavailable"
+            # Recorded separately; outside transport_seconds.
+            metadata["metadata_lookup_seconds"] = time.monotonic() - lookup_started
         write_receipt(self.output / "receipts" / (prefix + ".json"), {
             "response": payload, "generation_metadata": generation_data,
             "unit": unit["id"], "request_sha256": unit["request_sha256"]})
@@ -170,11 +187,15 @@ class Transport:
         if actual_model and actual_model != self.config["model"] and not (
                 self.config["backend"] == "decision" and actual_model.startswith(self.config["model"] + "-")):
             raise RequestFailure("actual model mismatch: " + actual_model, fatal=True, metadata=metadata)
+        parse_started = time.monotonic()
         try:
             answers = parse_response(self.config, unit, payload)
         except (ValueError, KeyError, TypeError, IndexError) as error:
             answers = {}
             metadata["answer_error"] = str(error)[:500]
+        # Request sent to response parsed; excludes metadata lookup and receipt writes.
+        parse_seconds = time.monotonic() - parse_started
+        metadata["transport_seconds"] = transport_seconds + parse_seconds
         return answers, metadata
 
 

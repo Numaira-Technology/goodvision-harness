@@ -9,6 +9,7 @@ import json
 import math
 from pathlib import Path
 
+from . import latency
 from .contract import (BAG_VALIDATION_SCHEMA, CURRENT_VERSION, EVENTS, plan_rules, rules_for, digest, file_hash,
                        has_bag_validation, score, select_thresholds, source_files, validate_threshold_values, write_new)
 
@@ -147,12 +148,26 @@ def collect(plan, config, ledger):
 
 
 def timings(rows):
-    # Attempt latency is separate from queue/backoff and does not measure camera latency.
-    good = sorted(r["elapsed_seconds"] for r in rows if r["type"] == "result" and r.get("complete")
-                  and type(r.get("elapsed_seconds")) in (int, float) and math.isfinite(r["elapsed_seconds"]))
-    return {"source": "this run; successful complete transport attempts including parsing/metadata lookup; excludes queue/backoff",
-            "n": len(good), "p50_seconds": good[math.ceil(.5 * len(good)) - 1] if good else None,
-            "p95_seconds": good[math.ceil(.95 * len(good)) - 1] if good else None,
+    """Test request latency; see tools/unified_benchmark/latency.py for the definition."""
+    results = [r for r in rows if r["type"] == "result"]
+    good, failed, timeouts, fallback = [], 0, 0, 0
+    for row in results:
+        if not row.get("complete"):
+            failed += 1
+            timeouts += latency.is_timeout(row.get("error"))
+            continue
+        measured = (row.get("metadata") or {}).get("transport_seconds")
+        if not latency.finite(measured):
+            # Ledgers written before transport_seconds existed time the whole attempt.
+            measured, fallback = row.get("elapsed_seconds"), fallback + 1
+        if latency.finite(measured):
+            good.append(measured)
+    return {"source": "this run; test split; one sample per request attempt at 12 slots; "
+                      "request sent to response parsed, excluding request building, receipt writes, "
+                      "metadata lookup, queue and retry backoff; failed attempts are counted, "
+                      "not dropped, and p95_with_failures counts each at the request timeout",
+            **latency.summary(good, failed, timeouts),
+            "attempt_elapsed_fallback": fallback,
             "not_12_camera_throughput": True}
 
 

@@ -109,7 +109,8 @@ def test_valid_answers_are_timed(monkeypatch, backend, body):
             "http_429",
         ),
         (urllib.error.URLError("secret body"), "transport_error"),
-        (TimeoutError("secret body"), "transport_error"),
+        (TimeoutError("secret body"), "timeout"),
+        (urllib.error.URLError(TimeoutError("secret body")), "timeout"),
     ],
 )
 def test_transport_errors_are_counted_and_sanitized(monkeypatch, exception, error):
@@ -201,7 +202,10 @@ def test_failures_remain_in_attempt_counts_but_not_conditional_percentiles():
     )
     assert (result["conc_n"], result["conc_n_ok"], result["conc_n_failed"]) == (3, 2, 1)
     assert result["single_inference_s"] == 2
-    assert result["p50_s"] == 2 and result["p95_s"] == pytest.approx(2.9)
+    # Nearest-rank, shared with the unified runners: [1, 3] gives P50 1 and P95 3.
+    assert result["p50_s"] == 1 and result["p95_s"] == 3
+    assert result["conc_n_timeout"] == 0
+    assert result["p95_with_failures_s"] == latency.TIMEOUT
     assert len(result["concurrent_attempts"]) == 3
 
 

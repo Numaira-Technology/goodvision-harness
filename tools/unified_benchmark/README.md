@@ -454,9 +454,26 @@ python -m tools.unified_benchmark.workflow report --bundle /bundle --model luna 
 
 Keep known receipt USD spend and unknown-cost attempts separate. Specify whether
 cost includes validation/test/retries. GPU actual cost needs a bill or verified
-rate and duration. Test P50/P95 are successful complete transport attempt times,
-including parsing/metadata lookup, excluding queue/backoff; report n and missing.
-They are not independent-probe latency or end-to-end twelve-camera throughput.
+rate and duration. Test latency follows the definition below; report n, failed
+and timeout attempts beside P50/P95. They are not independent-probe latency or
+end-to-end twelve-camera throughput.
+
+### Latency definition (P50/P95)
+
+Code: `tools/unified_benchmark/latency.py`, used by `workflow.py` and
+`.claude/skills/event-benchmark/scripts/latency_bench.py`.
+
+- One sample is one request attempt on the test split at 12 slots.
+- Its time (`transport_seconds`) runs from sending the request to having the parsed
+  response. Building the request, writing and hashing receipts, the OpenRouter
+  generation lookup (recorded separately as `metadata_lookup_seconds`), queue wait
+  and retry backoff are outside it.
+- Percentiles are nearest-rank: sort ascending and take index `ceil(p * n) - 1`.
+- `p50_seconds` / `p95_seconds` use successful attempts only. Failed attempts are
+  never dropped silently: `failed_attempts` and `timeout_attempts` are reported, and
+  `p95_with_failures_seconds` counts each failed attempt at the 90 s request timeout.
+- Ledgers written before `transport_seconds` existed fall back to whole-attempt
+  elapsed time; `attempt_elapsed_fallback` says how many samples did.
 `run_date_utc` comes from the first timestamped request intent in the saved ledger,
 including resumed runs; it is null if no such evidence exists. Offline re-scoring
 records its own `report_generated_at_utc` and does not change the inference date.

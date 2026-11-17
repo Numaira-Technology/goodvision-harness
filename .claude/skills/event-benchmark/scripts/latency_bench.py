@@ -30,6 +30,11 @@ RUNNER_PATH = REPO / "tools/event_benchmark/run_eval.py"
 _spec = importlib.util.spec_from_file_location("event_benchmark_runner", RUNNER_PATH)
 runner = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(runner)
+# One latency definition (nearest-rank percentiles, failures counted) for every tool.
+_latency_spec = importlib.util.spec_from_file_location(
+    "benchmark_latency", REPO / "tools/unified_benchmark/latency.py")
+latency = importlib.util.module_from_spec(_latency_spec)
+_latency_spec.loader.exec_module(latency)
 
 # Reuse the current runner's registry and request settings, rather than keeping
 # a separate roster of model IDs that may not belong to the accuracy exam.
@@ -221,8 +226,9 @@ def one_call(url, body, key, backend):
                         result["http_error_detail"]["provider_name"] = metadata["provider_name"].replace(key, "[REDACTED]")[:256]
         except (OSError, ValueError, TypeError, AttributeError) as detail_error:
             result["http_error_detail_unavailable"] = type(detail_error).__name__
-    except (urllib.error.URLError, OSError):
-        result["error"] = "transport_error"
+    except (urllib.error.URLError, OSError) as error:
+        timed_out = latency.raised_timeout(error)
+        result["error"] = "timeout" if timed_out else "transport_error"
     except (ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError):
         result["error"] = "invalid_response"
     result["elapsed_s"] = time.perf_counter() - started
@@ -236,12 +242,7 @@ def one_call(url, body, key, backend):
 
 
 def pct(values, percentile):
-    values = sorted(values)
-    if not values:
-        return None
-    position = (len(values) - 1) * percentile / 100
-    low, high = int(position), min(int(position) + 1, len(values) - 1)
-    return values[low] + (values[high] - values[low]) * (position - low)
+    return latency.nearest_rank(values, percentile / 100)
 
 
 def sha256_bytes(value):
@@ -255,7 +256,8 @@ def summarize(single, concurrent):
         "complete": bool(single and concurrent)
         and all(a["ok"] for a in single + concurrent),
         "statistics_basis": (
-            "successful validated responses only; inspect attempted and failed counts"
+            "p50_s/p95_s: successful validated responses only (nearest-rank); "
+            "p95_with_failures_s counts each failed attempt at the request timeout"
         ),
         "single_inference_s": statistics.median(single_ok) if single_ok else None,
         "single_mean_s": statistics.mean(single_ok) if single_ok else None,
@@ -267,6 +269,12 @@ def summarize(single, concurrent):
         "conc_n_failed": len(concurrent) - len(concurrent_ok),
         "p50_s": pct(concurrent_ok, 50),
         "p95_s": pct(concurrent_ok, 95),
+        "conc_n_timeout": sum(
+            latency.is_timeout(a.get("error")) for a in concurrent if not a["ok"]),
+        "p95_with_failures_s": latency.summary(
+            concurrent_ok, len(concurrent) - len(concurrent_ok), 0,
+            penalty_seconds=TIMEOUT)["p95_with_failures_seconds"],
+        "percentile_method": latency.PERCENTILE_METHOD,
         "single_raw": single_ok,
         "conc_raw": concurrent_ok,
         "single_attempts": single,
@@ -387,7 +395,9 @@ def main(argv=None):
     )
     print(
         f"@{args.concurrency}: {result['conc_n_ok']}/{result['conc_n']} valid; "
-        f"P50 {result['p50_s']}s; P95 {result['p95_s']}s (valid responses only)"
+        f"P50 {result['p50_s']}s; P95 {result['p95_s']}s (valid responses only); "
+        f"{result['conc_n_failed']} failed ({result['conc_n_timeout']} timeout); "
+        f"P95 with failures at {TIMEOUT}s: {result['p95_with_failures_s']}s"
     )
     if args.out:
         runner.evidence.write_new(args.out, result)
