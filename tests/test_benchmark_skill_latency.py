@@ -321,6 +321,9 @@ def test_cli_writes_provenance_and_returns_failure_for_incomplete_run(
         latency.RUNNER_PATH.read_bytes()
     )
     assert result["script_sha256"] == latency.sha256_bytes(SCRIPT.read_bytes())
+    assert result["latency_sha256"] == latency.sha256_bytes(
+        Path(latency.latency.__file__).read_bytes()
+    )
     assert all(len(result[key]) == 64 for key in ["request_sha256", "spec_sha256"])
     assert result["config"]["request_retries"] == 0
     assert result["spec_version"] == latency.runner.SPEC_VERSION
@@ -365,3 +368,14 @@ def test_real_ffmpeg_normalizes_synthetic_image_and_video(tmp_path):
             assert image.format == "JPEG"
             assert image.width == 720
             assert image.height > 0 and image.height % 2 == 0
+
+
+def test_all_failed_concurrent_attempts_keep_timeout_count_and_penalized_p95():
+    result = latency.summarize([], [
+        {"ok": False, "error": "timeout", "elapsed_s": 90},
+        {"ok": False, "error": "http_503", "elapsed_s": .1},
+    ])
+    assert result["p50_s"] is result["p95_s"] is None
+    assert result["conc_n"] == result["conc_n_failed"] == 2
+    assert result["conc_n_timeout"] == 1
+    assert result["p95_with_failures_s"] == latency.TIMEOUT

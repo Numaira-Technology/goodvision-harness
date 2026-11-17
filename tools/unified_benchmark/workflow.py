@@ -147,28 +147,51 @@ def collect(plan, config, ledger):
     return {unit["id"]: ledger.state(unit, config["kind"])[1] for unit in plan["units"]}
 
 
-def timings(rows):
-    """Test request latency; see tools/unified_benchmark/latency.py for the definition."""
+def timings(rows, *, split=None):
+    """Request latency for one phase; unavailable outcomes are not successes."""
+    rows = list(rows)
     results = [r for r in rows if r["type"] == "result"]
-    good, failed, timeouts, fallback = [], 0, 0, 0
+    completed = {(r.get("unit"), r.get("attempt")) for r in results}
+    unresolved = sum(
+        r["type"] == "intent" and (r.get("unit"), r.get("attempt")) not in completed
+        for r in rows
+    )
+    good, failed, timeouts, fallback, missing = [], 0, 0, 0, 0
     for row in results:
         if not row.get("complete"):
             failed += 1
             timeouts += latency.is_timeout(row.get("error"))
             continue
-        measured = (row.get("metadata") or {}).get("transport_seconds")
-        if not latency.finite(measured):
-            # Ledgers written before transport_seconds existed time the whole attempt.
-            measured, fallback = row.get("elapsed_seconds"), fallback + 1
-        if latency.finite(measured):
+        metadata = row.get("metadata") or {}
+        legacy = "transport_seconds" not in metadata
+        measured = row.get("elapsed_seconds") if legacy else metadata["transport_seconds"]
+        if latency.finite(measured) and measured >= 0:
             good.append(measured)
-    return {"source": "this run; test split; one sample per request attempt at 12 slots; "
-                      "request sent to response parsed, excluding request building, receipt writes, "
-                      "metadata lookup, queue and retry backoff; failed attempts are counted, "
-                      "not dropped, and p95_with_failures counts each at the request timeout",
-            **latency.summary(good, failed, timeouts),
-            "attempt_elapsed_fallback": fallback,
-            "not_12_camera_throughput": True}
+            fallback += legacy
+        else:
+            missing += 1
+    stats = latency.summary(good, failed, timeouts)
+    # Unknown outcomes are not proven failures. Do not silently remove them (or
+    # successful attempts without valid timing) from an all-outcome percentile.
+    if unresolved or missing:
+        stats["p95_with_failures_seconds"] = None
+    return {
+        "source": (
+            "this run; one sample per recorded request attempt; transport and answer "
+            "parsing, excluding request-body preparation, receipt writes, metadata "
+            "lookup, worker queue and retry backoff; legacy fallback uses whole-attempt "
+            "time; p95_with_failures counts recorded failures at the request timeout "
+            "penalty and is unavailable if outcomes or successful timings are missing"
+        ),
+        **stats,
+        "split": split,
+        "attempts": len(results) + unresolved,
+        "attempts_without_result": unresolved,
+        "successful_attempts_without_timing": missing,
+        "p95_with_failures_n": len(good) + failed,
+        "attempt_elapsed_fallback": fallback,
+        "not_12_camera_throughput": True,
+    }
 
 
 def report(plan, config, ledger, thresholds):
@@ -184,7 +207,7 @@ def report(plan, config, ledger, thresholds):
     result.update(sent_unique_units=len(sent), send_coverage=len(sent) / len(plan["units"]),
                   send_semantics="durable transport handoff intent; server receipt not proven after interrupted call",
                   unattempted_unique_units=len(plan["units"]) - len(sent),
-                  test_attempt_latency=timings(ledger.rows),
+                  test_attempt_latency=timings(ledger.rows, split=plan.get("split")),
                   thresholds=thresholds, model=config["model"], requested_conditions=config,
                   observed_providers=sorted({r.get("metadata", {}).get("actual_provider") for r in ledger.rows
                       if r.get("metadata", {}).get("actual_provider")}),

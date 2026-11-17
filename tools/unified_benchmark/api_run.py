@@ -156,6 +156,7 @@ class Transport:
             raise RequestFailure(reason, metadata=elapsed) from error
         transport_seconds = time.monotonic() - sent
         metadata = response_metadata(payload)
+        metadata["transport_seconds"] = transport_seconds
         # Provider metadata GET is read-only and never replaces a model answer.
         generation = metadata.get("generation_id")
         generation_data = None

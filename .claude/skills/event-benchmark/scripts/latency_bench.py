@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Measure one request's latency with the canonical event benchmark envelopes.
 
-Only valid model answers contribute to latency percentiles. Every attempted call
-is retained, and an incomplete run exits unsuccessfully. No calls are retried.
+Only valid model answers contribute to P50/P95; a separate P95 assigns failed
+attempts the request-timeout penalty. Every attempted call is retained, and an
+incomplete run exits unsuccessfully. No calls are retried.
 The timer includes HTTP transport, response reading and answer validation, but
 excludes image preparation, model loading and the product pipeline.
 """
@@ -345,6 +346,7 @@ def main(argv=None):
         ),
         "script_sha256": sha256_bytes(Path(__file__).read_bytes()),
         "runner_sha256": sha256_bytes(RUNNER_PATH.read_bytes()),
+        "latency_sha256": sha256_bytes(Path(latency.__file__).read_bytes()),
         "spec_sha256": sha256_bytes(RUNNER_PATH.with_name("SPEC.md").read_bytes()),
         "timing_boundary": (
             "client HTTP through response validation; excludes image preparation"
