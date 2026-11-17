@@ -1689,12 +1689,13 @@ def _upsert_manifest(path: Path, row: dict, session: RunLog) -> None:
 
 
 def _acquire_lock(lock: Path) -> bool:
-    for _ in range(40):
+    for _ in range(120):
         try:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.close(fd)
             return True
-        except FileExistsError:
+        except (FileExistsError, PermissionError):
+            # Windows reports a held lock as PermissionError, not FileExistsError.
             # Never steal a lock from a paused writer. A crashed writer's lock
             # needs manual removal; the per-run entries remain intact.
             time.sleep(0.05)
