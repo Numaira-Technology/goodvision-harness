@@ -318,7 +318,9 @@ def _arm_native() -> RunLog | None:
         session.root = logs_directory(session.model, session.eval_output)
         session.run_dir = session.root / session.run_id
         session._output_absent_at_start = (
-            bool(session.eval_output) and not Path(session.eval_output).exists()
+            not args.resume
+            and bool(session.eval_output)
+            and not Path(session.eval_output).exists()
         )
         session.mark_rent_start()
     except Exception as exc:

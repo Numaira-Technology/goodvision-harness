@@ -1616,3 +1616,15 @@ def test_native_log_leaves_invalid_cli_diagnostics_to_runner(native_log_env, cap
     sys.argv += ["--p", "test"]  # ambiguous between --port and --phase
     assert arm_if_launcher("tools/unified_benchmark/native_run.py") is None
     assert capsys.readouterr().err == ""
+
+
+def test_native_resume_waiting_for_new_output_never_claims_score(native_log_env):
+    output = native_log_env
+    sys.argv += ["--resume"]
+    session = arm_if_launcher("tools/unified_benchmark/native_run.py")
+    assert not output.exists()
+    # A concurrent invocation can create this while resume waits for its lock.
+    (output / "test").mkdir(parents=True)
+    (output / "test/report.json").write_text('{"accuracy": 1}')
+    run_log.finish_native(session, 0)
+    assert session.score == "unknown"
