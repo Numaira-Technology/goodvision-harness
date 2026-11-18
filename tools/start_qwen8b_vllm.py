@@ -15,6 +15,7 @@ import io
 import json
 import math
 import os
+import queue
 import shlex
 import signal
 import subprocess
@@ -35,6 +36,83 @@ from tools.qwen8b.serve_vllm import DEFAULTS, MODEL_ID, REVISION
 
 ENV_NAME = "qwen8b-vllm"
 HF_ENV_KEY = "envs/qwen8b/cu128-py312-torch280-ada.tar.gz"
+
+
+def _record_setup(name: str, seconds: float) -> None:
+    """Best-effort. A logging failure must not change the rental or the eval."""
+    try:
+        from tools.vast_run_log import record_setup
+        record_setup(name, seconds)
+    except Exception as error:
+        print(f"run log: setup timing skipped ({type(error).__name__})", file=sys.stderr)
+
+
+def _run_setup_steps(*, weights, env):
+    """Time parallel steps, recording completed work only on the caller thread.
+
+    On the first failure, preserve immediate cleanup. An unfinished sibling
+    may finish later, but cannot write timing logs after cleanup has begun.
+    """
+    timings = queue.SimpleQueue()
+
+    def timed(name, step):
+        started = time.monotonic()
+        try:
+            return step()
+        finally:
+            timings.put((name, time.monotonic() - started))
+
+    try:
+        return H.run_side_by_side(
+            weights=lambda: timed("weight_download_seconds", weights),
+            env=lambda: timed("env_restore_seconds", env),
+        )
+    finally:
+        while True:
+            try:
+                name, seconds = timings.get_nowait()
+            except queue.Empty:
+                break
+            _record_setup(name, seconds)
+
+
+def _record_client_access(ssh_host: str, ssh_port: int) -> None:
+    try:
+        from tools.latency_investigation.host_facts import client_access
+        from tools.vast_run_log import record_client_access
+        record_client_access(client_access(
+            endpoint_host="127.0.0.1",
+            endpoint_port=H.LOCAL_PORT,
+            ssh_host=ssh_host,
+            ssh_port=int(ssh_port),
+            mode="ssh-local-forward",
+        ))
+    except Exception as error:
+        print(f"run log: client access skipped ({type(error).__name__})", file=sys.stderr)
+
+
+def _metrics_snapshot():
+    try:
+        from tools.latency_investigation.metrics_diff import fetch_metrics, snapshot_from_text
+        text = fetch_metrics(f"http://127.0.0.1:{H.LOCAL_PORT}/metrics", timeout=5)
+        return snapshot_from_text(text)
+    except Exception:
+        return "unknown"
+
+
+def _metrics_finish(before) -> None:
+    try:
+        from tools.latency_investigation.metrics_diff import diff_snapshots
+        from tools.vast_run_log import record_metrics_diff
+        after = _metrics_snapshot()
+        if before == "unknown" or after == "unknown":
+            record_metrics_diff({"available": False, "reason": "missing_snapshot"})
+        else:
+            record_metrics_diff(diff_snapshots(before, after))
+    except Exception as error:
+        print(f"run log: metrics diff skipped ({type(error).__name__})", file=sys.stderr)
+
+
 MAX_DPH = 1.85  # refuse silently upgrading past ~1.5x the prior $1.2296/hr
 STATUS_DEFAULT = Path("outputs/qwen8b-r2-vllm-STATUS.md")
 MIN_CUDA = 13.0
@@ -625,7 +703,7 @@ def main() -> int:
             "the versioned vLLM packed env from R2, side by side...",
             flush=True,
         )
-        activate = H.run_side_by_side(
+        activate = _run_setup_steps(
             weights=lambda: prefetch_models(
                 ssh_options=options,
                 host=host,
@@ -669,29 +747,22 @@ def main() -> int:
             "Not lowering slots on OOM.\n",
         )
         from tools.qwen8b.eval_local import main as eval_main
-
-        print(
-            f"Official eval_local phase={args.eval_phase} "
-            "model=qwen8b_r2_vllm slots=12 ...",
-            flush=True,
-        )
-        eval_code = eval_main(
-            [
-                "--bundle",
-                str(args.eval_bundle),
-                "--output",
-                str(args.eval_output),
-                "--endpoint",
-                f"http://127.0.0.1:{H.LOCAL_PORT}",
-                "--model",
-                "qwen8b_r2_vllm",
-                "--phase",
-                args.eval_phase,
-                "--authorization-note",
-                args.authorization_note,
+        print("Official eval_local phase=%s model=qwen8b_r2_vllm slots=12 ..." % args.eval_phase,
+              flush=True)
+        _record_client_access(host, port)
+        metrics_before = _metrics_snapshot()
+        try:
+            eval_code = eval_main([
+                "--bundle", str(args.eval_bundle),
+                "--output", str(args.eval_output),
+                "--endpoint", f"http://127.0.0.1:{H.LOCAL_PORT}",
+                "--model", "qwen8b_r2_vllm",
+                "--phase", args.eval_phase,
+                "--authorization-note", args.authorization_note,
                 "--execute",
-            ]
-        )
+            ])
+        finally:
+            _metrics_finish(metrics_before)
         if eval_code:
             raise RuntimeError(
                 f"official @12 eval_local exited {eval_code}; "
