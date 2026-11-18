@@ -206,6 +206,47 @@ _PROBE = (
     '[ -n "$container_mem" ] || container_mem=unknown; '
     "printf '\\nHOST\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "
     '"$cpu" "$cores" "$ram" "$cuda" "$container_cpu" "$container_mem"; '
+    "gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor "
+    "2>/dev/null || true); "
+    '[ -n "$gov" ] || gov=unknown; '
+    "turbo=unknown; "
+    "if [ -r /sys/devices/system/cpu/intel_pstate/no_turbo ]; then "
+    "nt=$(cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || true); "
+    'if [ "$nt" = 0 ]; then turbo=enabled; '
+    'elif [ "$nt" = 1 ]; then turbo=disabled; fi; '
+    "elif [ -r /sys/devices/system/cpu/cpufreq/boost ]; then "
+    "b=$(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null || true); "
+    'if [ "$b" = 1 ]; then turbo=enabled; '
+    'elif [ "$b" = 0 ]; then turbo=disabled; fi; '
+    "fi; "
+    "numa_nodes=$(find /sys/devices/system/node -maxdepth 1 -type d "
+    "-name 'node[0-9]*' 2>/dev/null | wc -l | awk '{print $1}'); "
+    '[ -n "$numa_nodes" ] || numa_nodes=unknown; '
+    "gpu_numa=$(nvidia-smi --query-gpu=index,pci.bus_id --format=csv,noheader "
+    "2>/dev/null | awk -F, '{"
+    'gsub(/^[ \\t]+|[ \\t]+$/, "", $1); '
+    'gsub(/^[ \\t]+|[ \\t]+$/, "", $2); '
+    "bus=tolower($2); sub(/^00000000:/, \"0000:\", bus); "
+    'node="unknown"; path="/sys/bus/pci/devices/" bus "/numa_node"; '
+    "if ((getline n < path) > 0) { node=n; close(path) } "
+    'if (out != "") out=out ";"; '
+    'out=out $1 "@" bus "=" node '
+    '} END { if (out == "") print "unknown"; else print out }\'); '
+    '[ -n "$gpu_numa" ] || gpu_numa=unknown; '
+    "apps=$(nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,"
+    "used_gpu_memory --format=csv,noheader 2>/dev/null | awk -F, '{"
+    'gsub(/^[ \\t]+|[ \\t]+$/, "", $1); '
+    'gsub(/^[ \\t]+|[ \\t]+$/, "", $2); '
+    'gsub(/^[ \\t]+|[ \\t]+$/, "", $3); '
+    'gsub(/^[ \\t]+|[ \\t]+$/, "", $4); '
+    'name=$3; gsub(/[^A-Za-z0-9._+-]/, "", name); '
+    'if (name == "") name="unknown"; '
+    'if (out != "") out=out ";"; '
+    'out=out "pid=" $2 ",name=" name ",mem=" $4 '
+    '} END { if (out == "") print "none"; else print out }\'); '
+    '[ -n "$apps" ] || apps=none; '
+    "printf 'EXTRA\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "
+    '"$gov" "$turbo" "$numa_nodes" "$gpu_numa" "$apps"; '
     'exit "$smi_status"'
 )
 
@@ -381,6 +422,40 @@ def attach(globals_dict=None) -> None:
         session._error("arm", exc)
 
 
+def record_setup(name: str, seconds) -> None:
+    """Store a setup duration on the open session. Never raises."""
+    if _SESSION is None:
+        return
+    try:
+        _SESSION.note_setup(name, seconds)
+    except Exception as exc:
+        _SESSION._error("setup", exc)
+
+
+def record_client_access(facts) -> None:
+    """Store client RTT and SSH-tunnel versus direct access. Never raises."""
+    if _SESSION is None:
+        return
+    try:
+        _SESSION.client_access = facts if isinstance(facts, dict) else "unknown"
+        _SESSION._write_entry()
+    except Exception as exc:
+        _SESSION._error("client-access", exc)
+
+
+def record_metrics_diff(diff) -> None:
+    """Store a vLLM /metrics before/after diff. Never raises."""
+    if _SESSION is None:
+        return
+    try:
+        _SESSION.metrics_diff = diff if isinstance(diff, dict) else "unknown"
+        if isinstance(diff, dict):
+            _atomic_write(_SESSION.run_dir / "metrics-diff.json", diff)
+        _SESSION._write_entry()
+    except Exception as exc:
+        _SESSION._error("metrics", exc)
+
+
 def finish() -> None:
     """Flush while SSH credentials still exist, including a retained rental."""
     if _SESSION is not None:
@@ -439,16 +514,24 @@ def offer_fields(offer) -> dict:
 def parse_probe(text: str) -> dict:
     """Parse nvidia-smi CSV rows plus optional HOST lines.
 
-    Lines that are not a GPU row or a HOST record are ignored. One banner
-    line must not drop a good reading. A probe with no GPU row is unknown,
-    not 0. A usable GPU table with no host line keeps the GPUs and marks
-    each host fact unknown.
+    Lines that are not a GPU row, a HOST record, or an EXTRA record are
+    ignored. One banner line must not drop a good reading. A probe with no
+    GPU row is unknown, not 0. A usable GPU table with no host line keeps
+    the GPUs and marks each host fact unknown. EXTRA is the investigation
+    facts (governor, turbo, NUMA, GPU NUMA node, compute apps) and is
+    omitted when the probe predates that line.
     """
     rows = []
     host = None
+    investigation = None
     for line in (text or "").splitlines():
         stripped = line.strip()
         if not stripped:
+            continue
+        if stripped.startswith("EXTRA\t") or stripped == "EXTRA":
+            parsed = _parse_extra_line(line.lstrip(" ").rstrip("\r"))
+            if parsed is not None:
+                investigation = parsed
             continue
         if stripped.startswith("HOST\t") or stripped == "HOST":
             parsed = _parse_host_line(line.lstrip(" ").rstrip("\r"))
@@ -470,12 +553,35 @@ def parse_probe(text: str) -> dict:
         rows.append(dict(zip(_PROBE_COLUMNS, cells, strict=True)))
     if not rows:
         return _unknown_probe(text)
-    return {
+    parsed = {
         "status": "ok",
         "gpus": rows,
         "host": host if host is not None else _unknown_host(),
         "note": _IDLE_NOTE,
     }
+    if investigation is not None:
+        parsed["investigation"] = investigation
+    return parsed
+
+
+_EXTRA_FIELDS = (
+    "cpu_governor",
+    "cpu_turbo",
+    "numa_node_count",
+    "gpu_numa_nodes",
+    "gpu_compute_apps",
+)
+
+
+def _parse_extra_line(line: str):
+    parts = line.split("\t")
+    if not parts or parts[0].strip() != "EXTRA" or len(parts) != 1 + len(_EXTRA_FIELDS):
+        return None
+    parsed = {}
+    for name, value in zip(_EXTRA_FIELDS, parts[1:], strict=True):
+        text = value.replace("\r", "").strip()
+        parsed[name] = text or "unknown"
+    return parsed
 
 
 def _unknown_host() -> dict:
@@ -890,6 +996,8 @@ class RunLog:
         self._static = None
         self._clock_offset = None
         self._sample_summary = "unknown"
+        self.client_access = "unknown"
+        self.metrics_diff = "unknown"
 
     def install(self) -> None:
         if self._sam_bound:
@@ -956,6 +1064,25 @@ class RunLog:
         self._timings["eval_end_utc"] = _utc()
         self._mono["eval_end"] = time.monotonic()
         self.eval_returncode = code if isinstance(code, int) else "unknown"
+
+    def note_setup(self, name: str, seconds) -> None:
+        """Record weight download or env restore time, outside request latency."""
+        if name not in {"weight_download_seconds", "env_restore_seconds"}:
+            return
+        setup = self._timings.get("setup")
+        if not isinstance(setup, dict):
+            setup = {}
+            self._timings["setup"] = setup
+        if (
+            isinstance(seconds, bool)
+            or not isinstance(seconds, (int, float))
+            or not math.isfinite(seconds)
+            or seconds < 0
+        ):
+            setup[name] = "unknown"
+        else:
+            setup[name] = round(float(seconds), 3)
+        self._write_entry()
 
     def note_release(self) -> None:
         self.release_status = "released"
@@ -1229,7 +1356,9 @@ class RunLog:
                 "offer": offer_fields(self.offer),
                 "probe": self.probe,
                 "samples": self._samples_block(),
+                "client_access": self.client_access,
             },
+            "metrics_diff": self.metrics_diff,
             "score": self.score,
             "eval_returncode": self.eval_returncode,
             "release_status": self.release_status,
@@ -1726,6 +1855,10 @@ def _acquire_lock(lock: Path) -> bool:
             # Windows reports a held lock as PermissionError, not FileExistsError.
             # Never steal a lock from a paused writer. A crashed writer's lock
             # needs manual removal; the per-run entries remain intact.
+            time.sleep(0.05)
+        except PermissionError:
+            # Windows can return access-denied when two exclusive creates race,
+            # instead of file-exists. Wait and try again; do not delete the lock.
             time.sleep(0.05)
     return False
 
