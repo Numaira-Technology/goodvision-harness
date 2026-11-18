@@ -114,7 +114,10 @@ jobs:
         run: |
           $evidence = "outputs/ci/windows-${{ matrix.shard }}"
           New-Item -ItemType Directory -Force -Path $evidence | Out-Null
-          $arguments = @('-u', '-m', 'pytest', '-vv', '-o', 'faulthandler_timeout=60', '--durations=20', '-p', 'tools.ci_pytest', '--ci-shard', '${{ matrix.shard }}', '--ci-shards', '6', '--ci-evidence', $evidence, "--junitxml=$evidence/junit.xml")
+          # Large successful fixtures need not accumulate on the system disk.
+          # Keep failed-case files and the separate CI evidence directory.
+          $pytestTempRoot = Join-Path $env:RUNNER_TEMP "goodvision-pytest-${{ matrix.shard }}"
+          $arguments = @('-u', '-m', 'pytest', '-vv', '-o', 'faulthandler_timeout=60', '-o', 'tmp_path_retention_policy=failed', "--basetemp=$pytestTempRoot", '--durations=20', '-p', 'tools.ci_pytest', '--ci-shard', '${{ matrix.shard }}', '--ci-shards', '6', '--ci-evidence', $evidence, "--junitxml=$evidence/junit.xml")
           # Direct file sinks avoid runner-console backpressure. The parent
           # deadline leaves time to stop descendants and upload partial evidence.
           $process = Start-Process -FilePath (Get-Command python).Source -ArgumentList $arguments -NoNewWindow -PassThru -RedirectStandardOutput "$evidence/stdout.log" -RedirectStandardError "$evidence/stderr.log"

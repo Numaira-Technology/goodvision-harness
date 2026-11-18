@@ -1,9 +1,15 @@
 # Current-frame 202-question evaluation handoff
 
+For the current ten-round task, use **validation44 / 34 videos for every selected
+model**, followed by ten test202 / 192-video rounds. Follow [BATCH.md](BATCH.md)
+for the supervised batch, configuration, budgets, resume and offline verification.
+The existing private bag supplement is required; do not fall back to validation24.
+Single-run/legacy examples below remain available for explicitly selected older
+workflows. API and local Qwen now support `--resume` for this version's outputs.
+
 Default protocol: **unified-frame-202-v1**; explicit **unified-frame-120-v2** remains
-available for historical replay. Read [dataset membership and limits](DATASET202.md).
-This packages the previously local workflow for
-another checkout. It does not modify the original videos, questions or references,
+available for historical replay. See [dataset202 acquisition and limits](DATASET202.md).
+This packages the previously local workflow for another checkout. It does not modify the original videos, questions or references,
 re-run models, or reinterpret old bundles. Keep historical source snapshots with
 historical artifacts. The original `tools/event_benchmark/run_eval.py` remains the
 separate legacy v2.1 runner; it is not the current-frame entrypoint.
@@ -17,8 +23,12 @@ separate legacy v2.1 runner; it is not the current-frame entrypoint.
   and pending individual-view review; combined202 is provisional reference agreement.
 - Thirteen recorded profiles: qwen8b, qwen235b, maverick, luna, gemini25_off,
   gemini25_low, gemini38_low, clip, siglip2, videojev, decision3, plus
-  `qwen8b_r2_host` and `qwen8b_r2_vllm` (independent self-hosted R2 engines;
-  not OpenRouter).
+  `qwen8b_r2_host` and `qwen8b_r2_vllm` (separate self-hosted R2 engines on one
+  4090; not OpenRouter).
+- Four additional effort-comparison profiles: `astra_low`, `astra_medium`,
+  `hydrogen_low`, `hydrogen_medium`. The Astra requests omit unsupported
+  temperature; Hydrogen fixes temperature at 1. Each pair differs only in effort.
+  See [validation-only execution](BATCH.md#validation-only-effort-comparison).
 - Offline input/media/frame/request preflight; lossless receipt/score retention;
   cumulative three-attempt queue; validation threshold selection and test reporting.
 - API execution with an explicit selected credential file or per-model file mapping.
@@ -33,14 +43,57 @@ bounded continuation. Its offline tests do not establish a new GPU result.
 CLIP/SigLIP2's separate paced runner at `tools/clip_benchmark/run.py` retains its
 own protocol; do not substitute it for the shared-JPEG unified run.
 
+## Exclusive local evidence locks
+
+The ledger and native execution CLI require real nonblocking process exclusion.
+POSIX uses `flock`; Windows uses the standard-library CRT exclusive byte lock at
+fixed offset zero, even on an empty file. The owning descriptor stays open for
+the entire protected operation and releases its lock on close or process exit.
+Lock contention or an unavailable backend aborts before execution; there is no
+unlocked fallback. Windows byte locks are mandatory, so inspect a ledger through
+its owning handle or after closing it. These are local-filesystem locks, not a
+claim of distributed/network-filesystem coordination or Windows GPU support.
+Offline imports do not acquire locks or require a platform locking backend.
+
+## Handoff checklist
+
+These instructions include the corrected vLLM `ada2` launcher and the main
+branch integrity checks. Pass the complete checkout and its matching instructions to
+the agent, not an isolated SKILL.md copied onto main. Record the actual
+`git rev-parse HEAD`, working-tree changes and preflight source fingerprints for
+the run. Preserve existing changes; do not reset a checkout to match this note.
+
+| Required material | Ready when |
+|---|---|
+| Code and instructions | Selected profiles and execution entrypoints exist in the same checkout; revision/local changes are recorded. The agent reads `.claude/skills/event-benchmark/SKILL.md` and the selected route's guide explicitly. |
+| Eight private JSON files | `manifest_validation_24.json`, `validation-samples.json`, `manifest_120.json`, `test-samples.json`, `validation_split.json` plus `manifest_202.json`, `samples.json`, `videos.json` are together under `--inputs`; all eight pass the [pinned-hash check](#get-the-frozen-inputs). |
+| Bag validation supplement | The existing private `bag-validation10-v1` manifest, its independently recorded SHA-256 and ten original clips are required for this batch. A sample schema is not the frozen manifest. |
+| Original videos | 34 validation videos (44 questions) and 192 test videos (202 questions), obtained from the private samples' team links and bag supplement, pass media fingerprints and full decoding. Do not substitute re-encoded copies. |
+| Offline environment | Python 3.12, Pillow, certifi, FFmpeg/ffprobe; run the [offline preflight](#run-the-offline-preflight) for the selected aliases and retain the new bundle. |
+| API route | Private key file or per-model key-file mapping, account access/balance and selected provider support are checked; model/provider identity must match actual receipts. No keys in Git or command arguments. |
+| Four-model native route | Linux x86_64 RTX 4090 24GB, SSH access, enough disk, fixed model revisions and the Python/CUDA environments in [NATIVE.md](NATIVE.md#2-prepare-the-gpu-deployment-no-evaluation-inference). Deployment verification must pass. R2 is optional for this route. |
+| Qwen R2 route | Complete the [control-machine check](#prepare-the-control-machine), then provide R2 read-only credentials, pinned weights/environment and private launcher credentials. Transformers uses its cu128 pack; vLLM declares the cu130 `ada2` pack and requires a compatible driver. Artifact and runtime acceptance remain separate from the pin. A CUDA image label alone is not driver verification. |
+| Authorization and costs | Record chosen models, validation/test scope, hardware use or rental, the cost estimate and applicable user approval. Offline preflight is not permission to rent or make paid requests. |
+| Output and recovery locations | New local output/bundle paths and retained logs/receipts; retain old results. Resume only through the selected route's supported procedure with its original identities and remaining attempt budget. |
+
+Passing offline preflight means the inputs and request plan are ready. Execution
+readiness additionally requires the route's runtime identity checks and authorized
+warmup/smoke. The native guide's synthetic tests do not establish a fresh GPU run.
+Historical Qwen vLLM artifacts do not establish readiness on a new machine; it
+still needs its own runtime checks. Stop at a failed prerequisite and report the missing item.
+
 ## Fixed method
 
+The counts below describe the retained baseline. With an optional test supplement,
+use the expanded frozen plan counts and report its cohort separately as described
+in [the supplement contract](DATASET202.md#optional-test-supplement).
+
 Test: 202 questions / 192 videos, fight32, smoking22, fall62, weapon66, bag knife10,
-bag alcohol bottle10. Validation: 24 videos/questions, six per base event with
-three yes and three no. There is no fabricated train split. An optional
-[CLIP/SigLIP2 bag supplement](NATIVE.md#optional-clipsiglip2-bag-validation)
-adds ten validation videos/twenty questions, requiring complete validation44
-before six-event calibration. Test202 remains separate and unchanged.
+bag alcohol bottle10. For the current repeated batch, validation is 44 questions
+on 34 videos: 24 base videos/questions (six per base event, three yes and three no),
+plus 20 existing bag questions on ten supplementary videos, for every model.
+The original validation24-only workflow is retained solely for explicit historical
+single runs. There is no fabricated train split.
 Source-group/hash separation is checked; unknown training/actor/scene overlap and
 prior test reuse remain limitations. Original120 and robot82 stay separately
 reported. The original41 stereo sources are not counted again, and the added82
@@ -101,19 +154,18 @@ Default202 requires the five original files below plus `manifest_202.json`,
 all under the same `--inputs` directory. For an explicitly selected legacy120 run,
 only the five original files are required.
 
-The original `unified-frame-120-v2` inputs are in the
-[team Drive folder: unified-frame-120-v2-private-inputs-20261107](https://drive.google.com/drive/folders/1bCcadb0FDLxcmnnQI_tZ1ReR0x3avsoD).
-Access is restricted to the existing benchmark team members; the link does not
-grant public access. Sign in with your authorized team account. If access is
-denied, ask Haotian Bi for access instead of changing the folder's link sharing.
+Obtain the original `unified-frame-120-v2` inputs from the benchmark maintainer
+through the team's existing private data channel. Dataset access remains limited
+to authorized team members. Keep folder and file links out of public handoffs;
+ask the maintainer for access rather than changing link-sharing settings.
 
-| Original file | Download from Drive |
+| Original file | Role |
 |---|---|
-| `manifest_validation_24.json` | [File](https://drive.google.com/file/d/1OZrISz2JXSaUyvGI-wV8bN3B3oQhbsUR/view?usp=drivesdk) |
-| `validation-samples.json` | [File](https://drive.google.com/file/d/1SxJYywf0HO7-aQegGCOt3gP4x6eO2Y1q/view?usp=drivesdk) |
-| `manifest_120.json` | [File](https://drive.google.com/file/d/1uvCpUGnOB9PjcPGUsD2FfhjZSf6P5JGD/view?usp=drivesdk) |
-| `test-samples.json` | [File](https://drive.google.com/file/d/1fK0kBHmqbbW59awOIAD17iyXq_72BbbD/view?usp=drivesdk) |
-| `validation_split.json` | [File](https://drive.google.com/file/d/1ULNTVNbSzWH9wdynkSt-4DcPg6xMuf2q/view?usp=drivesdk) |
+| `manifest_validation_24.json` | Original validation manifest |
+| `validation-samples.json` | Original validation samples |
+| `manifest_120.json` | Original test manifest |
+| `test-samples.json` | Original test samples |
+| `validation_split.json` | Frozen split mapping |
 
 Use Drive's **Download** action for the folder or the five files. Extract any ZIP
 and place all five JSON files directly in one private directory outside Git, for
@@ -150,7 +202,6 @@ PY
 The published legacy `tools/event_benchmark/datasets/manifest_120.json` is not a
 substitute for the Drive snapshot. Historical annotation paths inside the inputs
 are provenance only. Do not edit labels or pinned hashes to bypass a mismatch.
-Upload readback on 2026-11-07 verified all five original SHA-256 values.
 
 ### Run the offline preflight
 
@@ -158,13 +209,22 @@ Upload readback on 2026-11-07 verified all five original SHA-256 values.
 python -m tools.unified_benchmark.preflight \
   --inputs /private/goodvision-inputs \
   --media /data/goodvision --models qwen8b luna gemini25_off \
+  --bag-validation /private/goodvision-inputs/bag-validation.json \
+  --bag-validation-sha256 FROZEN_MANIFEST_SHA256 \
   --output outputs/new-current-frame-bundle
 ```
 
-The command defaults to `--protocol unified-frame-202-v1`. For a deliberately
-selected historical120 run, pass `--protocol unified-frame-120-v2` with its five
-original inputs. Neither option changes the review status of its references.
+To append the requested test questions, add
+`--test-supplement /private/path/test-supplement.json`. The current supplement adds
+questions203–222 on ten videos: **222 test questions / 202 test videos**. Keep all
+eight frozen inputs intact; the supplement is a separate retained input. See the
+[supplement contract](DATASET202.md#optional-test-supplement) for validation and
+reporting. The validation plan, prompts, routes and preprocessing stay unchanged.
 
+Default `--protocol unified-frame-202-v1` uses202; for a deliberately selected
+legacy120 run pass `--protocol unified-frame-120-v2` with the five original inputs.
+The protocols retain model settings but have different sampling boundaries and
+dataset identities; they never reuse or overwrite old bundles.
 Required `--inputs` locates the private frozen snapshots; optional `--profiles`
 selects a reviewed configuration directory. The published hashes are mandatory;
 changed datasets require a separately reviewed protocol, not relabelled hashes.
@@ -223,10 +283,10 @@ Models on the same provider execute sequentially; different provider groups may
 run concurrently, each with twelve queue slots. The process stops on balance failure.
 It never writes a Sheet or creates a PR.
 
-Luna selects thresholds on complete validation24 and writes a frozen artifact.
+Luna selects thresholds on the complete frozen validation cohort (44 for the current batch) and writes a frozen artifact.
 Incomplete validation stops calibration; no implicit fixed-0.5 fallback. Failed
-selection files and artifacts lacking successful calibration, full validation24
-counts, matching plan/evidence identity or six finite thresholds are rejected before
+selection files and artifacts lacking successful calibration, the full frozen
+validation counts, matching plan/evidence identity or six finite thresholds are rejected before
 any selected test model starts. Offline reporting applies the same check. Older
 artifacts remain untouched; replay them with their retained code, or select a new
 artifact offline from compatible complete validation evidence. For test:
@@ -348,10 +408,11 @@ PYTHONPATH=. python -m tools.start_qwen8b_vllm \
   --authorization-note 'Approved self-hosted qwen8b R2 vLLM 4090 run'
 ```
 
-The Qwen evaluator currently requires a new output path and has no supported
-`--resume` CLI. `--resume-instance-id` only reconnects to a rental; it does not
-resume evaluation. Preserve interrupted ledgers and receipts. Do not restart the
-same units with a fresh output to reset the three-attempt budget.
+The local Qwen evaluator supports explicit `--resume` for a compatible output,
+preserving saved responses and the cumulative three-attempt budget. The launcher's
+`--resume-instance-id` reconnects to a rental; it does not replace the evaluator's
+resume flag. For repeated runs use [BATCH.md](BATCH.md) with a prepared service;
+do not rent a fresh instance for every round.
 
 `eval_local` still uses 12 slots. vLLM may batch those 12 internally. Do not
 change JPEG size, prompts, max_tokens, or client concurrency to fit VRAM.
@@ -372,10 +433,10 @@ and request identities before rental and again before inference, and retains a
 separate synthetic 720px smoke receipt outside the scored ledger. Changed active
 profiles require new bundles; preserve historical bundles byte-for-byte.
 
-Hard-answer profiles omit the threshold flags. Use a fresh output path per phase;
-the public CLI refuses an existing run. The ledger supports bounded continuation,
-but there is no automatic restart/recovery command here: inspect stopped records,
-then use a reviewed wrapper retaining their contexts and remaining attempt budget.
+Hard-answer profiles omit the threshold flags. Use a fresh output path for a new
+run; an existing compatible evaluator output requires explicit `--resume`, which
+validates retained identities and preserves the remaining attempt budget. This
+does not add launcher rental/restart authorization.
 
 ## Hardware run log
 
@@ -383,8 +444,16 @@ Vast rentals record the machine through `tools/vast_run_log.py`. Colleagues keep
 the same launcher command. `python -m tools.start_qwen8b_r2` is armed by the
 `tools` package. `python -m tools.start_qwen8b_vllm`, `python tools/start_sam.py`,
 `python tools/start_detector.py`, and `python -m tools.diag_qwen8b_vllm_import`
-call `attach()` themselves. The call pattern, output layout, and checklist are
-in `.cursor/skills/vast-run-log/SKILL.md`. Each eval
+call `attach()` themselves. `python -m tools.unified_benchmark.native_run --execute`
+also writes this log for `--model clip`, `siglip2`, `videojev`, and `decision3`
+only. Native logs use a bounded local probe without login shell startup scripts;
+probe failure is `unknown`. They record the CLI outcome and elapsed wall time
+before probing. Scores come from `<output>/<split>/report.json` only after a
+successful invocation with a fresh output; failed and resumed invocations keep
+scores `unknown`. Native logs stay in the stable series directory, outside the
+sealed native result inventory. No frozen runner source changes for this hook.
+The rental call pattern, output layout, and checklist are
+in `.cursor/skills/vast-run-log/SKILL.md`. Each rental eval
 still needs its own new `--eval-output` (the evaluator refuses an existing
 directory). This update changes the frozen SAM and vLLM launcher sources;
 create a new preflight bundle after updating. Existing bundles keep their source
@@ -440,14 +509,11 @@ Luna: 0.01 grid, longest optimal contiguous run midpoint, `>=`; recheck midpoint
 optimality and stop if it is worse. CLIP/SigLIP2: widest finite optimal margin
 interval midpoint, strict `>`, with FP/FN tie rules. Selection requires complete
 validation and cannot read test predictions. Freeze model/config/rules/bundle hashes.
-Without the optional bag supplement, bag remains Luna0.5 or margin0, explicitly
-uncalibrated. CLIP/SigLIP2 with the separately frozen validation44 supplement
-select all six event margins; Luna still uses validation24 and bag0.5.
-Boolean/argmax models have no scalar threshold. Past calibrated values are
-comparisons, not new-run defaults.
-Successful native CLIP/SigLIP2 validation reports use the selected thresholds and
-cite their artifact hash, as does the subsequent test. Provisional202 test labels
-remain outside validation selection.
+Only historical validation24 runs leave bag thresholds at Luna0.5 or margin0,
+explicitly uncalibrated. Validation44 selects all six thresholds. Boolean/argmax
+models have no scalar threshold. Past calibrated values are comparisons, not new-run defaults.
+After successful native CLIP/SigLIP2 calibration, the validation report uses the
+selected thresholds and cites their artifact hash, as does the subsequent test.
 
 For normalized ledgers, offline commands are:
 
@@ -461,11 +527,71 @@ python -m tools.unified_benchmark.workflow report --bundle /bundle --model luna 
 
 Keep known receipt USD spend and unknown-cost attempts separate. Specify whether
 cost includes validation/test/retries. GPU actual cost needs a bill or verified
-rate and duration. Test P50/P95 are successful complete transport attempt times,
-including parsing/metadata lookup, excluding queue/backoff; report n and missing.
-They are not independent-probe latency or end-to-end twelve-camera throughput.
+rate and duration. Test latency follows the definition below; report n, failed
+and timeout attempts beside P50/P95. They are not independent-probe latency or
+end-to-end twelve-camera throughput.
+
+### Latency definition (P50/P95)
+
+Code: `tools/unified_benchmark/latency.py`, used by `workflow.py` and
+`.claude/skills/event-benchmark/scripts/latency_bench.py`.
+
+- One sample is one recorded request attempt in the reported split, including retries.
+  Formal test runs use 12 client slots; validation timings are labelled separately.
+  The independent latency bench records its own workload and concurrency.
+- Its time (`transport_seconds`) runs from sending the request to having the parsed
+  response. Building the request, writing and hashing receipts, the OpenRouter
+  generation lookup (recorded separately as `metadata_lookup_seconds`), queue wait
+  and retry backoff are outside it.
+- Percentiles are nearest-rank: sort ascending and take index `ceil(p * n) - 1`.
+- `p50_seconds` / `p95_seconds` use successful attempts only. Failed attempts are
+  never dropped silently: `failed_attempts` and `timeout_attempts` are reported, and
+  `p95_with_failures_seconds` counts each recorded failed attempt at a fixed 90 s
+  request-timeout penalty. This is a penalized statistic, not observed failure latency
+  or a hard wall-clock deadline (urllib uses a socket timeout; local encoders have
+  no HTTP timeout). `p95_with_failures_n` gives its known sample count.
+- `attempts` also includes durable intents without a result (`attempts_without_result`).
+  These are unresolved handoffs, not proven failures or timeouts. Successful results
+  without a finite, nonnegative duration are counted as
+  `successful_attempts_without_timing`. Either gap makes `p95_with_failures_seconds`
+  unavailable (`null`), so missing evidence cannot silently improve the statistic.
+- Ledgers written before `transport_seconds` existed fall back to whole-attempt
+  elapsed time; `attempt_elapsed_fallback` counts valid samples using that fallback.
+  Invalid explicit transport timings are reported as missing, not replaced by a
+  different timing boundary. CLIP/SigLIP2 backend preprocessing, GPU-lock wait and
+  readback remain inside native transport time and are also recorded separately.
+- Hardware run logs retain these qualifications in `latency_details` beside their
+  success-only P50/P95. Missing historical fields and unavailable penalized P95
+  remain `unknown` in log summaries; they are never inferred as zero failures.
+
+`run_date_utc` comes from the first timestamped request intent in the saved ledger,
+including resumed runs; it is null if no such evidence exists. Offline re-scoring
+records its own `report_generated_at_utc` and does not change the inference date.
+For invalid JSON or oversized HTTP responses, receipts retain up to 2 MiB of raw
+body bytes as `body_base64`, the HTTP status, and truncation/redaction flags. Such
+attempts remain invalid and consume the existing three-attempt budget; missing
+cost evidence stays unknown. API key bytes are redacted if echoed in that body.
 
 Publish only when requested via bench-sheet-contribute, reading live headers and
 preserving previous local artifacts. Model names include chosen effort, Hardware
 may combine VRAM, Price is actual spend; thresholds and sources go in notes. Do not
 add tabs/columns by default or replace old timing with a mismatched variant.
+
+## Offline regression checks
+
+In the prepared lightweight environment with pytest, run:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python -m pytest \
+  tests/test_unified_benchmark.py tests/test_unified_dataset202.py tests/test_unified_luna_adapter.py \
+  tests/test_unified_test_supplement.py \
+  tests/test_native_workflow.py tests/test_start_qwen8b_r2.py tests/test_qwen8b_vllm.py \
+  -o addopts='' -q -p no:cacheprovider
+```
+
+The Luna checks use synthetic receipts through the real parser, transport and
+queue into validation threshold selection, including invalid-answer retries and
+missing counts. No model calls are made. Native source-export tests require the
+public pinned commits described in [NATIVE.md](NATIVE.md#offline-regression-checks)
+to be present locally. Test success does not verify credentials, live R2 access
+or a new GPU deployment.

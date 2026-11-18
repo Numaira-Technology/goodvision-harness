@@ -2,6 +2,8 @@
 import hashlib
 import json
 import math
+import os
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -92,8 +94,41 @@ def write_new(path, value):
     data = canonical(value) + b"\n"
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("xb") as f:
-        f.write(data)
+    fd, temporary = tempfile.mkstemp(prefix="." + path.name + "-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.link(temporary, path)  # Atomic create-only publication.
+        sync_directory(path.parent)
+    finally:
+        os.unlink(temporary)
+
+
+def sync_directory(path):
+    if os.name == "posix":
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def atomic_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix="." + path.name + "-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(canonical(value) + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        sync_directory(path.parent)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def write_receipt(path, record):
@@ -206,6 +241,10 @@ def score(plan, evidence, kind, thresholds=None):
     if plan.get("split") == "test" and plan.get("protocol") == CURRENT_VERSION:
         result["cohorts"] = {label: metrics([r for r in rows if start <= r["number"] <= end])
                              for label, start, end in (("original120", 1, 120), ("robot82", 121, 202))}
+        supplement = (plan.get("dataset_context") or {}).get("test_supplement")
+        if supplement:
+            result["cohorts"]["test_supplement"] = metrics(
+                [r for r in rows if r["number"] in supplement["question_numbers"]])
     return result
 
 
@@ -226,8 +265,8 @@ def select_thresholds(plan, evidence, kind, model):
     from tools.clip_benchmark.scoring import _optimal_midpoint
     include_bags = has_bag_validation(plan)
     count = 44 if include_bags else 24
-    if include_bags and (kind != "margin" or model not in REVISIONS):
-        raise ValueError("supplementary bag calibration requires CLIP/SigLIP2 margin scores")
+    if include_bags and kind == "margin" and model not in REVISIONS:
+        raise ValueError("supplementary margin calibration requires a recorded CLIP/SigLIP2 model")
     if plan["split"] != "validation" or len(plan["questions"]) != count or kind not in ("margin", "probability"):
         raise ValueError(f"threshold selection requires frozen validation{count} and continuous scores")
     baseline = score(plan, evidence, kind)

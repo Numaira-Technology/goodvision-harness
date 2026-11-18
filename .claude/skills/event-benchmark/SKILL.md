@@ -10,6 +10,8 @@ description: >-
 # Event-recognition benchmark
 
 Default for this team's current evaluation: **unified-frame-202-v1**.
+The current dataset is **222 test questions on 202 videos** when the requested
+test supplement below is included; the retained 202-question baseline stays available.
 Follow **preflight → environment checks → validation → threshold selection when
 applicable → test → local report**. Publishing is a separately scoped action.
 Use [the unified run guide](../../../tools/unified_benchmark/README.md), not the
@@ -30,23 +32,35 @@ Another agent must read this file and its selected execution guide; discovering
 ## Current202 workflow
 
 1. **Preflight:** run `tools.unified_benchmark.preflight` for the selected profiles.
+   For the current222 test, add `--test-supplement /private/path/test-supplement.json`
+   from [the unified dataset folder](https://drive.google.com/drive/folders/1kOyH59vxBp3uppyEoeyMjTMUa_CalTdh):
+   [supplement](https://drive.google.com/file/d/1SgKsoMVYQm9w5a1fE84bR7dcxPuscEbV/view),
+   [all222 questions](https://drive.google.com/file/d/1qvcl8vEWNcfxlrw_DhU79Tfxe1q2VBQg/view),
+   [all202 videos](https://drive.google.com/file/d/1uYN1PdiF13Aa1L6yj88zDACaO-0i5kqd/view).
+   Use the existing downloader with the latter list. Keep the original eight
+   frozen inputs unchanged; do not replace their `samples.json` with `samples_222.json`.
+   Haotian's ten bag recordings add questions203-222 in the existing bag categories.
+   Their labels are assistant annotations, not human-confirmed. Ashley's ten bag
+   validation recordings remain separate; do not tune thresholds on the new test.
    Verify all eight frozen inputs and video hashes, decode frames and save the new
    request/code snapshot. Keep pending hardware/provider/authorization checks
    separate from input validity. This step performs no model calls.
 2. **Environment:** follow the execution route below. Verify pinned versions,
    credentials/access and hardware; do the authorized original warmup/smoke before
    evaluation. Offline checks do not prove a new GPU deployment can run.
-3. **Validation:** use validation24 by default. For a requested CLIP/SigLIP2
-   [bag validation supplement](../../../tools/unified_benchmark/NATIVE.md#optional-clipsiglip2-bag-validation),
-   use the frozen 44-question plan on 34 videos. Preserve
+3. **Validation:** for the current repeated-evaluation task, use validation44 on
+   34 videos for every selected model. Include the existing private
+   [bag validation supplement](../../../tools/unified_benchmark/NATIVE.md#bag-validation-for-every-model)
+   in preflight; missing inputs block execution, with no fallback to validation24. Preserve
    receipts, complete scores, missing units and run identity.
 4. **Thresholds, when applicable:** use `bench-threshold-tune` and the route's own
    selector for Luna/CLIP/SigLIP2; require complete validation, then freeze the
    artifact before test. Boolean/argmax models do not gain a scalar threshold.
-5. **Test:** run the frozen configuration on all 202 questions. Preserve successful
+5. **Test:** run the frozen configuration on all planned questions (222 with the
+   supplement, otherwise202). Preserve successful
    answers and the cumulative three-attempt budget across interruptions. For the
-   four-model native CLI, use explicit `--resume`; other routes follow their own
-   documented continuation support, never a fresh ledger to reset the budget.
+   native, API and local Qwen CLIs, use explicit `--resume` for compatible
+   outputs; never use a fresh ledger to reset the budget.
 6. **Local report:** verify counts, coverage, unknowns, source identities, matching
    speed and actual costs using [report fields](references/report-format.md).
    Retain raw receipts, frozen inputs/configs and historical results.
@@ -54,8 +68,27 @@ Another agent must read this file and its selected execution guide; discovering
 The [202 dataset guide](../../../tools/unified_benchmark/DATASET202.md) defines
 questions1–120 unchanged plus82 single views in test, with 24 base validation questions.
 Keep inherited/unreviewed labels explicit; preflight is not human review. Report
-original120 and robot82 separately alongside correct/202, and never count the old41
+original120, robot82 and any test supplement separately alongside correct/all planned,
+and never count the old41
 stereo sources again. Do not tune on the new test questions.
+
+## Repeated runs
+
+For the current ten-round task, follow [BATCH.md](../../../tools/unified_benchmark/BATCH.md).
+Run `batch check` first, then the authorized `batch run`. Use `--detach` only when
+the host's network and credentials remain available after the attached command
+ends; otherwise keep an attached command session. Detached mode supervises bounded
+controller restarts, but cannot preserve a session-scoped network proxy.
+Validate once, freeze applicable thresholds,
+and execute ten independent test rounds. Resume the original matrix and deadlines.
+Read `state.json`, logs and final coverage; a PID or exit zero is not proof of complete
+evidence. Preserve incomplete/failed rounds; do not add a replacement eleventh run.
+
+The batch supports pre-existing GPU deployments/services. It does not rent or
+release instances, restore R2 packs, or prove a live deployment from offline tests.
+Verify ownership or independent lease cleanup, actual hardware identity, pinned
+runtime, current provider access and bounded costs before paid execution. Missing
+materials or an unverified cleanup arrangement remain concrete blockers.
 
 ## Execution routes
 
@@ -68,13 +101,19 @@ stereo sources again. Do not tune on the new test questions.
 
 The four-model native CLI without `--execute` checks files only. Qwen R2 launchers
 can rent a GPU and run the selected phases; they are not offline preflight commands.
-Those launchers also write a hardware run log with no extra flag. Optional
+Those launchers also write a hardware run log with no extra flag. The same log
+is written for `python -m tools.unified_benchmark.native_run --execute` when
+`--model` is `clip`, `siglip2`, `videojev`, or `decision3` (the d3-nano
+weights). Other models are not armed. Optional
 `GOODVISION_OPERATOR` sets the name on the index; otherwise the log uses git
 `user.name` and `$USER` (Windows: `%USERNAME%`). The series index is
 `outputs/run-logs/<alias>/logs/manifest.json`. Each run folder there holds
 `vast-offer.json` (redacted offer, written when the instance is created) and
-`entry.json` (offer fields, nvidia-smi probe, timings, score). After the eval
-directory exists, the same files are copied under `<eval-output>/<alias>/logs/`.
+`entry.json` (offer fields, nvidia-smi probe, timings, score). Rental logs are
+also copied under a fresh `<eval-output>/<alias>/logs/`. Native logs stay outside
+the sealed result directory and read `<output>/<split>/report.json` only after
+a successful invocation with a fresh output. Failed or resumed native runs keep
+the score `unknown`; the log records the CLI outcome without changing it.
 A logging failure is printed and does not change the rental, the exam, or the
 exit code. Details: [Hardware run log](../../../tools/unified_benchmark/README.md#hardware-run-log).
 Keep the HF, vLLM and OpenRouter Qwen variants separate. The active vLLM environment
@@ -118,8 +157,9 @@ of twelve-camera real-time throughput. Each unit has at most three total attempt
 
 Every planned response must be valid before a question can contribute a correct
 answer. For complete evidence: any yes → yes; otherwise any no → no; otherwise
-unknown. Headline accuracy is correct / all planned questions (202 for the full
-test). Missing questions stay in the denominator and are reported separately.
+unknown. Headline accuracy is correct / all planned questions (222 with the current
+supplement; 202 for the retained baseline). Missing questions stay in the denominator
+and are reported separately.
 Native/bag unknown is a valid response; a final unknown is wrong against the binary
 references. Refusal or malformed output is missing, not unknown.
 

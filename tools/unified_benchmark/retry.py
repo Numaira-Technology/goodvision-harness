@@ -170,12 +170,26 @@ class Queue:
         raise PausedRun("queue paused; existing valid responses retained")
 
     def one(self, unit):
+        try:
+            return self._one(unit)
+        except BaseException:
+            self.stopped.set()
+            raise
+
+    def _one(self, unit):
         used, answers = self.ledger.state(unit, self.kind)
         for number in range(used + 1, 4):
             if set(answers) == set(unit["targets"]):
                 break
             self.wait()
             base = {"unit": unit["id"], "request_sha256": unit["request_sha256"], "attempt": number}
+            guard = getattr(self.ledger, "before_intent", None)
+            if guard is not None:
+                if hasattr(guard, "set_cancel_event"):
+                    guard.set_cancel_event(self.stopped)
+                guard(base)
+                if self.stopped.is_set():
+                    raise PausedRun("queue cancelled before request intent")
             self.ledger.append({**base, "type": "intent"})
             started = self.clock()
             try:

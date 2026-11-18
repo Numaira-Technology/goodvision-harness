@@ -18,10 +18,11 @@ import urllib.request
 import certifi
 from tools.event_benchmark.evidence import response_metadata
 from .adapters import parse_response, request_body
-from .contract import EVENTS, plan_rules, canonical, digest, file_hash, score, select_thresholds, write_new, write_receipt
+from .contract import canonical, digest, file_hash, write_new, write_receipt, atomic_json
+from .latency import REQUEST_TIMEOUT_SECONDS, raised_timeout
+from .retry import RequestFailure
+from .workflow import load_threshold_artifact, verify_bundle
 from .receipts import raw_fields
-from .retry import Ledger, PausedRun, Queue, RequestFailure
-from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
 
 ALIASES = ("qwen8b", "gemini25", "gemini38", "qwen235b", "luna", "maverick")
 
@@ -86,9 +87,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def atomic(path, data):
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_bytes(canonical(data) + b"\n")
-    temp.replace(path)
+    atomic_json(path, data)
 
 
 class Transport:
@@ -126,7 +125,7 @@ class Transport:
             headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json"})
         status = None
         try:
-            with self.opener.open(req, timeout=90) as response:
+            with self.opener.open(req, timeout=REQUEST_TIMEOUT_SECONDS) as response:
                 status = getattr(response, "status", None)
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
         except http.client.HTTPException as error:
@@ -147,38 +146,55 @@ class Transport:
             raise RequestFailure("account billing pause", fatal=True)
         attempt = self.ledger.state(unit, self.config["kind"])[0]
         prefix = digest(unit["id"]) + f"-attempt-{attempt}"
+        def save(record):
+            path = self.output / "receipts" / (prefix + ".json")
+            write_receipt(path, record | {"recorded_at_unix": time.time()})
         uri, body = request_body(self.config, unit, self.bundle)
         if digest(body) != unit["request_sha256"]:
             raise RequestFailure("request fingerprint mismatch", fatal=True)
+        sent = time.monotonic()
+
+        def failed():
+            return {"transport_seconds": time.monotonic() - sent}
+
         try:
             payload = self.call(uri, body)
         except InvalidResponse as error:
+            elapsed = failed()
             raw = error.body.replace(self.key.encode(), b"[REDACTED]")
-            write_new(self.output / "receipts" / (prefix + ".json"), {
+            save({
                 "http_status": error.status, "transport_error": type(error).__name__, "detail": str(error),
                 "body_base64": base64.b64encode(raw).decode(), "body_truncated": error.truncated,
                 "body_redacted": raw != error.body, "captured_body_bytes": len(error.body),
                 "unit": unit["id"], "request_sha256": unit["request_sha256"]})
-            raise RequestFailure(str(error), status=error.status) from error
+            raise RequestFailure(
+                str(error), status=error.status, metadata=elapsed) from error
         except urllib.error.HTTPError as error:
+            elapsed = failed()
             if error.code == 402:
                 self.billing_stop.set()
-            write_receipt(self.output / "receipts" / (prefix + ".json"), {
+            save({
                 **http_error_body(error, secret=self.key),
                 "http_status": error.code, "retry_after": error.headers.get("Retry-After"),
                 "unit": unit["id"], "request_sha256": unit["request_sha256"]})
-            raise RequestFailure("HTTP " + str(error.code), status=error.code,
+            raise RequestFailure(
+                "HTTP " + str(error.code), status=error.code, metadata=elapsed,
                 retry_after=retry_after(error.headers.get("Retry-After")), fatal=error.code in (400, 401, 402, 403, 404)) from error
         except (OSError, TimeoutError, ValueError) as error:
-            write_receipt(self.output / "receipts" / (prefix + ".json"), {
+            elapsed = failed()
+            save({
                 "transport_error": type(error).__name__, "detail": str(error).replace(self.key, "[REDACTED]"),
                 "unit": unit["id"], "request_sha256": unit["request_sha256"]})
-            raise RequestFailure(type(error).__name__) from error
+            reason = "timeout" if raised_timeout(error) else type(error).__name__
+            raise RequestFailure(reason, metadata=elapsed) from error
+        transport_seconds = time.monotonic() - sent
         metadata = response_metadata(payload)
+        metadata["transport_seconds"] = transport_seconds
         # Provider metadata GET is read-only and never replaces a model answer.
         generation = metadata.get("generation_id")
         generation_data = None
         if generation and (not metadata.get("actual_provider") or not metadata.get("actual_model")):
+            lookup_started = time.monotonic()
             try:
                 generation_data = self.call("https://openrouter.ai/api/v1/generation?id=" + urllib.parse.quote(generation, safe=""))["data"]
                 if not isinstance(generation_data, dict):
@@ -189,7 +205,9 @@ class Transport:
                     metadata.setdefault(k, v)
             except (OSError, ValueError, KeyError, TypeError):
                 metadata["metadata_lookup_error"] = "unavailable"
-        write_receipt(self.output / "receipts" / (prefix + ".json"), {
+            # Recorded separately; outside transport_seconds.
+            metadata["metadata_lookup_seconds"] = time.monotonic() - lookup_started
+        save({
             **raw_fields(response=payload, generation_metadata=generation_data),
             "unit": unit["id"], "request_sha256": unit["request_sha256"]})
         metadata["receipt"] = "receipts/" + prefix + ".json"
@@ -203,16 +221,22 @@ class Transport:
         if actual_model and actual_model != self.config["model"] and not (
                 self.config["backend"] == "decision" and actual_model.startswith(self.config["model"] + "-")):
             raise RequestFailure("actual model mismatch: " + actual_model, fatal=True, metadata=metadata)
+        parse_started = time.monotonic()
         try:
             answers = parse_response(self.config, unit, payload)
         except (ValueError, KeyError, TypeError, IndexError) as error:
             answers = {}
             metadata["answer_error"] = str(error)[:500]
+        # Request sent to response parsed; excludes metadata lookup and receipt writes.
+        parse_seconds = time.monotonic() - parse_started
+        metadata["transport_seconds"] = transport_seconds + parse_seconds
         return answers, metadata
 
 
 def accounting(ledger):
     results = [r for r in ledger.rows if r["type"] == "result"]
+    completed = {(r["unit"], r["attempt"]) for r in results}
+    unresolved = sum(r["type"] == "intent" and (r["unit"], r["attempt"]) not in completed for r in ledger.rows)
     costs, unknown = [], 0
     for row in results:
         meta = row.get("metadata", {})
@@ -222,67 +246,21 @@ def accounting(ledger):
         else:
             unknown += 1
     return {"known_receipt_cost_usd": sum(costs), "cost_known_attempts": len(costs),
-            "attempts_without_cost_evidence": unknown, "unknown_cost_is_not_zero": True,
+            "attempts_without_cost_evidence": unknown + unresolved, "unresolved_intents": unresolved,
+            "unknown_cost_is_not_zero": True,
             "actual_providers": sorted({r.get("metadata", {}).get("actual_provider") for r in results if r.get("metadata", {}).get("actual_provider")}),
             "actual_models": sorted({r.get("metadata", {}).get("actual_model") for r in results if r.get("metadata", {}).get("actual_model")}),
             "valid_results_missing_provider_metadata": sum(bool(r.get("answers")) and not r.get("metadata", {}).get("actual_provider") for r in results)}
 
 
-def execute_model(alias, bundle, root, key, billing_stop, bundle_digest, *, phase="both", threshold_path=None, threshold_sha256=None):
-    output = root / alias
-    config = json.loads((bundle / "configs" / f"{alias}.json").read_text())
-    stage_results, thresholds, calibration = {}, {e: .5 for e in EVENTS}, "not_applicable_hard_boolean"
-    if phase == "test" and config["kind"] == "probability":
-        artifact = load_threshold_artifact(threshold_path, threshold_sha256,
-            bundle=bundle, alias=alias, config=config, bundle_digest=bundle_digest)
-        thresholds, calibration = artifact["thresholds"], artifact["calibration"]
-    output.mkdir(exist_ok=False)
-    for split in (("validation", "test") if phase == "both" else (phase,)):
-        plan = json.loads((bundle / "plans" / f"{alias}-{split}.json").read_text())
-        directory = output / split
-        directory.mkdir()
-        ledger = Ledger(directory / "attempts.jsonl", context_for(plan, config, bundle_digest))
-        started = time.time()
-        atomic(output / "status.json", {"state": "running", "split": split, "started_at": started,
-                                       "planned_units": len(plan["units"]), "slots": 12})
-        failed = None
-        try:
-            q = Queue(ledger, config["kind"], Transport(bundle, config, key, directory, ledger, billing_stop))
-            q.run(plan["units"])
-        except Exception as error:
-            failed = type(error).__name__ + ": " + str(error)
-        observed = collect(plan, config, ledger)
-        if split == "validation" and config["kind"] == "probability":
-            try:
-                chosen = select_thresholds(plan, observed, "probability", config["model"])
-                thresholds, calibration = chosen["thresholds"], "selected_on_complete_validation24"
-            except ValueError as error:
-                failed = "threshold selection: " + str(error)
-                chosen = {"thresholds": None, "reason": str(error)}
-                calibration = "not_calibrated; test blocked"
-            if chosen.get("thresholds") is not None:
-                chosen["validation_only"] = True
-            write_new(output / "thresholds.json", chosen | {"calibration": calibration,
-                "config_sha256": digest(config), "bundle_sha256": bundle_digest,
-                "rules_sha256": digest(plan_rules(plan)), "model": config["model"], "selected_before_test_at": time.time()})
-        result = report(plan, config, ledger, thresholds)
-        result.update(split=split, calibration=calibration, started_at_unix=started, finished_at_unix=time.time(),
-                      elapsed_seconds=time.time() - started, failure=failed, accounting=accounting(ledger))
-        if split == "test":
-            for label, events in (("base100", EVENTS[:4]), ("bag20", EVENTS[4:])):
-                subset_q = [q for q in plan["questions"] if q["event"] in events and q["number"] <= 120]
-                wanted = {uid for q in subset_q for uid in q["unit_ids"]}
-                subset = plan | {"questions": subset_q, "units": [u for u in plan["units"] if u["id"] in wanted]}
-                result[label] = score(subset, {uid: v for uid, v in observed.items() if uid in wanted}, config["kind"], thresholds)
-                sent = {r["unit"] for r in ledger.rows if r["type"] == "intent" and r["unit"] in wanted}
-                result[label].update(sent_unique_units=len(sent), send_coverage=len(sent) / len(wanted))
-        write_new(directory / "summary.json", result)
-        stage_results[split] = {k: result[k] for k in ("correct", "complete_valid_questions", "accuracy", "incomplete_questions", "final_missing_unique_units", "accounting")}
-        ledger.close()
-        if failed:
-            atomic(output / "status.json", {"state": "stopped", "split": split, "error": failed, "results": stage_results})
-            return
-    atomic(output / "status.json", {"state": "completed", "results": stage_results})
+def execute_model(alias, bundle, root, key, billing_stop, bundle_digest, *, phase="both",
+                  threshold_path=None, threshold_sha256=None, resume=False, before_intent=None):
+    from .http_execution import execute_model as execute_http
+    return execute_http(alias, bundle, root, bundle_digest,
+        lambda config, directory, ledger: Transport(bundle, config, key, directory, ledger, billing_stop),
+        phase=phase, connection={"route": "openrouter", "credential_sha256": digest(key)},
+        threshold_path=threshold_path, threshold_sha256=threshold_sha256, resume=resume,
+        before_intent=before_intent)
 
 
 def main(argv=None):
@@ -298,6 +276,7 @@ def main(argv=None):
     parser.add_argument("--thresholds-sha256")
     parser.add_argument("--authorization-note", required=True, help="record the approved scope/cost decision")
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args(argv)
     if not args.execute:
         parser.error("no network inference without explicit --execute")
@@ -309,7 +288,7 @@ def main(argv=None):
         if Path(alias).name != alias:
             parser.error("model alias cannot contain directories")
         config = json.loads((args.bundle / "configs" / (alias + ".json")).read_text())
-        if config["backend"] not in ("language", "decision"):
+        if config["backend"] not in ("language", "decision") or config.get("execution") == "self_hosted_r2":
             parser.error("this command executes API profiles only")
         # Validate every selected calibrated model before any model can spend money.
         if args.phase == "test" and config["kind"] == "probability":
@@ -322,13 +301,21 @@ def main(argv=None):
     if not set(args.models) <= set(credentials):
         parser.error("credential map must cover each selected model")
     keys_by_alias = {alias: load_explicit_key(credentials[alias]) for alias in args.models}
-    args.output.mkdir(parents=True, exist_ok=False)
-    write_new(args.output / "run-manifest.json", {
+    args.output.mkdir(parents=True, exist_ok=args.resume)
+    manifest = {
         "bundle_sha256": bundle_digest, "runner_sha256": file_hash(__file__), "aliases": args.models,
         "started_at": datetime.now(timezone.utc).isoformat(), "phase": args.phase,
         "authorization": args.authorization_note, "provider_groups": groups,
         "same_provider_models_do_not_overlap": True, "slots_per_model": 12,
-        "no_extra_recovery_after_three_attempts": True})
+        "no_extra_recovery_after_three_attempts": True}
+    manifest_path = args.output / "run-manifest.json"
+    if manifest_path.exists():
+        previous = json.loads(manifest_path.read_text())
+        if not args.resume or any(previous.get(k) != manifest[k] for k in
+                ("bundle_sha256", "runner_sha256", "aliases", "phase", "provider_groups")):
+            raise ValueError("resume API run identity differs")
+    else:
+        write_new(manifest_path, manifest)
     billing_stop = threading.Event()
     def group(aliases):
         for alias in aliases:
@@ -336,7 +323,7 @@ def main(argv=None):
                 break
             execute_model(alias, args.bundle, args.output, keys_by_alias[alias], billing_stop,
                           bundle_digest, phase=args.phase, threshold_path=args.thresholds,
-                          threshold_sha256=args.thresholds_sha256)
+                          threshold_sha256=args.thresholds_sha256, resume=args.resume)
     failures = []
     with ThreadPoolExecutor(max_workers=len(groups)) as pool:
         futures = [pool.submit(group, aliases) for aliases in groups.values()]
@@ -351,7 +338,7 @@ def main(argv=None):
     statuses = {alias: json.loads((args.output / alias / "status.json").read_text())
                 if (args.output / alias / "status.json").exists() else {"state": "not_started"}
                 for alias in args.models}
-    write_new(args.output / "completion.json", {"finished_at": datetime.now(timezone.utc).isoformat(),
+    atomic(args.output / "completion.json", {"finished_at": datetime.now(timezone.utc).isoformat(),
         "billing_paused": billing_stop.is_set(), "orchestrator_errors": failures, "model_status": statuses})
     return int(bool(failures) or any(s["state"] != "completed" for s in statuses.values()))
 

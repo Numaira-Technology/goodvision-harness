@@ -32,7 +32,10 @@ from .contract import (
     plan_rules,
     select_thresholds,
     write_new,
+    write_receipt,
+    atomic_json,
 )
+from .latency import REQUEST_TIMEOUT_SECONDS
 from .native_deploy import ALIASES, environment_for, profile, verify_deployment
 from .receipts import raw_fields, read_receipt
 from .locking import lock_exclusive
@@ -51,9 +54,7 @@ def stamp():
 
 
 def save_status(path, value):
-    temporary = path.with_suffix(".tmp")
-    temporary.write_bytes(canonical(value) + b"\n")
-    temporary.replace(path)
+    atomic_json(path, value)
 
 
 def video_groups(units, queue, after=lambda: None):
@@ -140,7 +141,7 @@ class NativeBackend:
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/predict", data=canonical(body),
                                      headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=90) as r:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as r:
                 return r.status, json.load(r)
         except urllib.error.HTTPError as e:
             return e.code, {"error": e.read().decode(errors="replace")}
@@ -197,7 +198,8 @@ class NativeBackend:
                 sock.bind(("127.0.0.1", self.port))
             args, env = service_command(self.alias, self.deployment, self.output, self.port)
             self.log = (self.output / "service.log").open("xb")
-            self.service = subprocess.Popen(args, env=env, stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True)
+            self.service = subprocess.Popen(args, env=env, stdout=self.log, stderr=subprocess.STDOUT,
+                start_new_session=os.environ.get("GOODVISION_SUPERVISED_WORKER") != "1")
             deadline = time.monotonic() + 1200
             while True:
                 if self.service.poll() is not None:
@@ -256,15 +258,15 @@ class NativeBackend:
                     write_new(self.output / "final-health.json", self.health())
                 except Exception:
                     pass
-                os.killpg(self.service.pid, signal.SIGINT)
+                self._signal_service(signal.SIGINT)
                 try:
                     self.service.wait(timeout=40)
                 except subprocess.TimeoutExpired:
-                    os.killpg(self.service.pid, signal.SIGTERM)
+                    self._signal_service(signal.SIGTERM)
                     try:
                         self.service.wait(timeout=20)
                     except subprocess.TimeoutExpired:
-                        os.killpg(self.service.pid, signal.SIGKILL)
+                        self._signal_service(signal.SIGKILL)
                         self.service.wait()
         finally:
             if self.log:
@@ -273,6 +275,12 @@ class NativeBackend:
             if self.monitor:
                 self.monitor.join(5)
             write_new(self.output / "gpu-peak.json", {"max_gpu_used_mib": self.peak_mib, "sampling_seconds": 2})
+
+    def _signal_service(self, sig):
+        if os.environ.get("GOODVISION_SUPERVISED_WORKER") == "1":
+            self.service.send_signal(sig)
+        else:
+            os.killpg(self.service.pid, sig)
 
 
 def validate_inputs(bundle, alias, phase, deployment_hash, threshold_path=None, threshold_hash=None):
@@ -496,6 +504,7 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, sealed_receipts=Non
                 "receipt": receipt_key,
                 "receipt_sha256": file_hash(path),
                 "recovered_receipt": True,
+                "transport_seconds": receipt["transport_seconds"],
             },
         }
         if (
@@ -565,6 +574,13 @@ def _evidence_hash(artifact, ledger):
     if ledger is not None and artifact.resolve() == ledger.path.resolve():
         return ledger.file_hash()
     return file_hash(artifact)
+
+
+def validate_saved_path(path, output, *, directory=False):
+    present = path.exists() or path.is_symlink()
+    if (not path.resolve().is_relative_to(output.resolve())
+            or present and not (path.is_dir() if directory else path.is_file())):
+        raise ValueError("resume evidence path has wrong type or escapes output: " + path.relative_to(output).as_posix())
 
 
 def _verify_existing_phase_records(
@@ -676,7 +692,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
     backend = None
     def ensure_backend():
         nonlocal backend
-        # Called from worker threads. Start/warm up exactly once per invocation.
+        # Called on the main thread before the queue starts; starts the backend once.
         with startup_lock:
             if backend is None:
                 backend = backend_factory(alias, cfg, bundle, deployment, invocation, port)
@@ -738,18 +754,21 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     fatal = "identity differs" in error
                 except Exception as e:
                     error, fatal = type(e).__name__ + ": " + str(e), True
-                write_new(path, {"unit": unit["id"], "attempt": attempt, "request_sha256": unit["request_sha256"],
+                # Request sent to response parsed; receipt writes stay outside.
+                transport_seconds = time.monotonic() - started
+                write_receipt(path, {"unit": unit["id"], "attempt": attempt, "request_sha256": unit["request_sha256"],
                     "config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]],
                     "at": stamp(), "http_status": code,
                     "parsed": parsed, "error": error,
                     "fatal": fatal, "retry_after": 0, "completed_at_unix": time.time(),
-                    "transport_seconds": time.monotonic() - started,
+                    "transport_seconds": transport_seconds,
                     **raw_fields(response=raw, timings=timing)})
                 receipt_key = path.relative_to(output).as_posix()
                 metadata = {
                     "actual_provider": "self-hosted",
                     "receipt": receipt_key,
                     "receipt_sha256": file_hash(path), "http_status": code,
+                    "transport_seconds": transport_seconds,
                 }
                 if error:
                     raise RequestFailure(
@@ -884,13 +903,6 @@ def selected_calibration(plan, cfg, ledger, bundle_digest, deployment_hash):
         rules_sha256=digest(plan_rules(plan)), bundle_sha256=bundle_digest, model=cfg["model"],
         native_deployment_sha256=deployment_hash)
     return selected
-
-
-def validate_saved_path(path, output, *, directory=False):
-    present = path.exists() or path.is_symlink()
-    if (not path.resolve().is_relative_to(output.resolve())
-            or present and not (path.is_dir() if directory else path.is_file())):
-        raise ValueError("resume evidence path has wrong type or escapes output: " + str(path.relative_to(output)))
 
 
 def preflight_resume(alias, bundle, output, cfg, bundle_digest, deployment_hash, phase, threshold_hash, sealed_receipts=None):
