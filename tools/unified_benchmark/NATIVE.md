@@ -26,7 +26,8 @@ first valid target answers. Retry invalid/missing responses after the original
 
 A question needs every planned target response. For complete evidence: any yes
 means yes, otherwise any no means no, otherwise unknown. Headline accuracy is
-correct / **202**, with incomplete questions still in the denominator. Report
+correct / **all planned test questions** (202 baseline, 222 with the current test
+supplement), with incomplete questions still in the denominator. Report
 missing units, incomplete questions and unknowns separately. A native window is
 two frames, so missing windows and missing single-frame calls are different units.
 This does not establish twelve-camera real-time throughput.
@@ -236,8 +237,10 @@ peak allocation records and `result-files-sha256.json`. Verify that inventory af
 copying results locally, before releasing a GPU with unbacked-up files. The inventory
 excludes itself; earlier inventory snapshots remain in continuation records.
 
-The test report includes combined202, original120/robot82 cohorts and per-event results, missing units,
-incomplete questions and successful-attempt P50/P95. Latency excludes worker queue
+The test report includes the combined planned test cohort, original120/robot82 and
+any appended test_supplement cohort and per-event results, missing units,
+incomplete questions and P50/P95 under the README's latency definition, with failed
+and timeout attempts beside them. Latency excludes receipt writes, worker queue
 and retry backoff; CLIP's preprocessing/GPU-lock wait/readback are retained separately
 inside each receipt. Restarts can change cache warmth and are recorded. These are
 test timings, not an independent 12-camera throughput measurement. Actual GPU cost

@@ -540,6 +540,10 @@ def main(argv=None):
     if env_spec is None:
         ap.error("model has no env block")
     compat = env_spec["compat"]
+    try:
+        flash_attn = _flash_attn(env_spec)
+    except ValueError as error:
+        ap.error(str(error))
     if any(
         compat[k] != v
         for k, v in {"python": "3.12", "torch": "2.8.0", "cuda": "12.8"}.items()
@@ -552,7 +556,6 @@ def main(argv=None):
     prefix = Path(env_spec["unpack_to"])
     out = args.out.absolute()
     arch = ";".join(registry.GPU_ARCHES[compat["gpu_family"]])
-    flash_attn = _flash_attn(env_spec)
     if args.upload_only:
         if not out.is_file():
             ap.error(

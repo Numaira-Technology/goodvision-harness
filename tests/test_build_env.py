@@ -1,6 +1,8 @@
 """Builder safety tests with subprocess and R2 mocks; no package builds/uploads."""
 
+import ast
 import copy
+import json
 import os
 
 import pytest
@@ -111,6 +113,61 @@ def test_installer_requires_trusted_pin_and_never_downloads(tmp_path, monkeypatc
     installer.write_text("# synthetic")
     with pytest.raises(ValueError, match="sha256 mismatch"):
         be._ensure_miniconda(tmp_path / "conda", installer, "0" * 64)
+
+
+@pytest.mark.parametrize("name", ["clip", "siglip2", "videojev", "d3-nano", "qwen8b"])
+def test_main_honors_model_attention_recipe(tmp_path, monkeypatch, name):
+    env = copy.deepcopy(registry.env_of(name))
+    env["unpack_to"] = str(tmp_path / "prefix")
+    out = tmp_path / "new.tar.gz"
+    calls = []
+    needs_attention = name not in {"clip", "siglip2"}
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return completed_probe(needs_attention)
+
+    monkeypatch.setattr(be.registry, "env_of", lambda _: env)
+    monkeypatch.setattr(be.env_source, "check_compatibility", lambda _: None)
+    monkeypatch.setattr(be, "_ensure_miniconda", lambda *a: tmp_path / "bin/conda")
+    monkeypatch.setattr(be, "_run", run)
+    monkeypatch.setattr(be, "_pack", lambda *a: synthetic_pack(out))
+    be.main(["--model", name, "--out", str(out), "--skip-upload"])
+    compiled = [argv for argv, _ in calls if "flash-attn==2.8.3.post2" in argv]
+    assert bool(compiled) is needs_attention
+    if needs_attention:
+        assert "causal-conv1d==1.7.0" in compiled[0]
+    probe = calls[-1][0][-1]
+    imports = {
+        alias.name
+        for node in ast.walk(ast.parse(probe))
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    assert ("flash_attn" in imports) is needs_attention
+    assert ("causal_conv1d" in imports) is needs_attention
+    assert "torch.cuda.is_available()" in probe
+    assert "torch.__version__ == '2.8.0+cu128'" in probe
+    record = json.loads(be._record_path(out).read_text())
+    assert record["flash_attn"] is needs_attention
+    assert record["runtime"] == runtime_facts(needs_attention)
+    assert record["sha256"] == be._sha256(out)
+
+
+@pytest.mark.parametrize(
+    "build", [None, [], {"flash_attn": "false"}, {"flash_attn": 0}]
+)
+def test_malformed_attention_recipe_fails_before_host_checks(
+    tmp_path, monkeypatch, build
+):
+    env = copy.deepcopy(registry.env_of("clip"))
+    env["build"] = build
+    monkeypatch.setattr(be.registry, "env_of", lambda _: env)
+    monkeypatch.setattr(
+        be.env_source, "check_compatibility", lambda _: pytest.fail("host probed")
+    )
+    with pytest.raises(SystemExit):
+        be.main(["--model", "clip", "--out", str(tmp_path / "new.tar.gz")])
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Linux builder prefix locking")
