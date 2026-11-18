@@ -95,13 +95,16 @@ def main(argv=None) -> int:
         return 0
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     host = json.loads(args.host.read_text(encoding="utf-8")) if args.host else {}
-    if args.vllm_result:
-        result = json.loads(args.vllm_result.read_text(encoding="utf-8"))
-        rows = rows_from_vllm_bench(result, manifest, host=host)
-    elif args.aiperf_jsonl:
-        rows = rows_from_aiperf_jsonl(args.aiperf_jsonl, manifest, host=host)
-    else:
-        parser.error("report needs --vllm-result or --aiperf-jsonl")
+    try:
+        if args.vllm_result:
+            result = json.loads(args.vllm_result.read_text(encoding="utf-8"))
+            rows = rows_from_vllm_bench(result, manifest, host=host)
+        elif args.aiperf_jsonl:
+            rows = rows_from_aiperf_jsonl(args.aiperf_jsonl, manifest, host=host)
+        else:
+            parser.error("report needs --vllm-result or --aiperf-jsonl")
+    except ValueError as error:
+        parser.error(str(error))
     text = render_markdown(rows)
     sys.stdout.write(text)
     if args.csv:

@@ -121,6 +121,9 @@ def test_vllm_table_uses_actual_send_latencies_and_skips_p99(tmp_path):
         "date": "20261112",
         "max_concurrency": 12,
         "latencies": latencies,
+        "errors": [""] * len(latencies),
+        "failed": 0,
+        "completed": len(latencies),
         "generated_texts": ['{"answer": true}'] * len(latencies),
         "output_lens": [4] * len(latencies),
         "p99_e2el_ms": 999,
@@ -377,3 +380,265 @@ def test_open_loop_adds_schedule_lag_and_keeps_actual_send(tmp_path):
     assert overall["p95_seconds"] == 1.0
     assert overall["p50_actual_send_seconds"] == 0.5
     assert overall["p95_actual_send_seconds"] == 0.5
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {
+            "latencies": [0, 0, 2],
+            "errors": ["HTTP 500", "timeout", ""],
+            "failed": 2,
+            "completed": 1,
+        },
+        {"latencies": [0, 0, 0], "errors": ["error"] * 3, "failed": 3, "completed": 0},
+        {"latencies": [1, 2, 3], "errors": [""], "failed": 0, "completed": 3},
+        {"latencies": [1, 2, 3], "errors": [""] * 3, "failed": 0, "completed": 2},
+        {"latencies": [1, 2, 3]},
+        {
+            "latencies": [1, float("nan"), 3],
+            "errors": [""] * 3,
+            "failed": 0,
+            "completed": 3,
+        },
+    ],
+)
+def test_vllm_incomplete_or_inconsistent_runs_cannot_publish_percentiles(result):
+    manifest = {"requests": [{"request_id": str(i)} for i in range(3)]}
+    with pytest.raises(ValueError, match="bench"):
+        rows_from_vllm_bench(result, manifest)
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        [],
+        [{"error": "HTTP 500"}],
+        [{"metrics": {}}],
+        [{"metrics": {"request_latency": {"value": float("nan"), "unit": "s"}}}],
+    ],
+)
+def test_aiperf_unavailable_run_has_clear_error(tmp_path, records):
+    path = tmp_path / "profile_export.jsonl"
+    path.write_text("".join(json.dumps(row) + "\n" for row in records))
+    with pytest.raises(ValueError, match="no successful requests with valid latency"):
+        rows_from_aiperf_jsonl(path, {"requests": []})
+
+
+def test_relative_export_paths_and_no_zero_request_warmup(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manifest = export_subset([_record(0, 100)], Path("replay"))
+    assert manifest["warmup_count"] == 0
+    plan = json.loads(Path("replay/commands.json").read_text())
+    assert Path(plan["cwd"]) == tmp_path / "replay"
+    assert "warmup" not in [step["name"] for step in plan["steps"]]
+    for step in plan["steps"]:
+        argv = step.get("argv", [])
+        for flag, directory in [
+            ("--result-dir", "results"),
+            ("--output-artifact-dir", "aiperf"),
+        ]:
+            if flag in argv:
+                assert Path(plan["cwd"]) / argv[argv.index(flag) + 1] == (
+                    tmp_path / "replay" / directory
+                )
+
+
+def test_metric_boundaries_exclude_warmup_and_scope_each_replay(tmp_path):
+    plan = command_plan(
+        tmp_path, max_tokens=30, temperature=0, timed_count=250, warmup_count=12
+    )
+    assert [step["name"] for step in plan["steps"]] == [
+        "restart-vllm",
+        "warmup",
+        "closed-loop-metrics-before",
+        "closed-loop",
+        "closed-loop-metrics-after",
+        "open-loop-restart-vllm",
+        "open-loop-warmup",
+        "open-loop-metrics-before",
+        "open-loop",
+        "open-loop-metrics-after",
+    ]
+    outputs = [
+        step["argv"][-1] for step in plan["steps"] if "-metrics-" in step["name"]
+    ]
+    assert len(set(outputs)) == 4
+
+
+def test_created_timestamp_is_not_preemption_count():
+    before = snapshot_from_text("vllm:num_preemptions_created 1000")
+    after = snapshot_from_text("vllm:num_preemptions_created 1100")
+    assert diff_snapshots(before, after)["preemptions"] == {
+        "available": False,
+        "reason": "not_exposed",
+    }
+
+
+@pytest.mark.parametrize(
+    "changed,reason",
+    [
+        ({"a": 1, "b": 100}, "counter_reset"),
+        ({"b": 100}, "metric_series_changed"),
+    ],
+)
+def test_metric_series_reset_or_loss_cannot_hide_in_aggregate(changed, reason):
+    def scrape(values):
+        return "\n".join(
+            f'{metric}{{worker="{worker}"}} {value}'
+            for worker, value in values.items()
+            for metric in [
+                "vllm:request_queue_time_seconds_sum",
+                "vllm:request_queue_time_seconds_count",
+                "vllm:num_preemptions_total",
+            ]
+        )
+
+    diff = diff_snapshots(
+        snapshot_from_text(scrape({"a": 10, "b": 10})),
+        snapshot_from_text(scrape(changed)),
+    )
+    for metric in ("queue_time_seconds", "preemptions"):
+        assert diff[metric] == {"available": False, "reason": reason}
+
+
+@pytest.mark.parametrize("status", [200, 429, 401])
+@pytest.mark.parametrize("client_kind", ["qwen", "native"])
+def test_sidecar_write_failure_preserves_transport_result(
+    tmp_path,
+    monkeypatch,
+    status,
+    client_kind,
+):
+    import io
+    import urllib.error
+
+    from tools.latency_investigation import http_split
+    from tools.unified_benchmark.contract import digest
+    from tools.unified_benchmark.retry import RequestFailure
+
+    monkeypatch.setenv("GOODVISION_SPLIT_TIMING", "1")
+    # Only the optional sidecar is unwritable. Receipts remain writable.
+    (tmp_path / http_split.SIDECAR).mkdir()
+    calls = []
+    payload = {"model": "test-model", "ok": True}
+
+    class Opener:
+        def open(self, request, timeout):
+            calls.append(request)
+            if status != 200:
+                raise urllib.error.HTTPError(
+                    request.full_url,
+                    status,
+                    "failure",
+                    {"Retry-After": "17"},
+                    io.BytesIO(b"error"),
+                )
+            response = io.BytesIO(json.dumps(payload).encode())
+            response.status = status
+            return response
+
+    monkeypatch.setattr(http_split.urllib.request, "build_opener", lambda *a: Opener())
+    if client_kind == "native":
+        client = native_run.NativeBackend("test", {}, tmp_path, tmp_path, tmp_path, 9)
+        code, body = client.http({})
+        assert code == status
+        assert body == (payload if status == 200 else {"error": "error"})
+    else:
+
+        class Ledger:
+            def state(self, *args):
+                return (1,)
+
+        client = eval_local.LocalTransport(
+            tmp_path,
+            {"model": "test-model", "kind": "choice"},
+            "http://127.0.0.1:9",
+            tmp_path,
+            Ledger(),
+        )
+        monkeypatch.setattr(eval_local, "request_body", lambda *a: (None, {}))
+        monkeypatch.setattr(eval_local, "parse_response", lambda *a: {"ok": True})
+        unit = {"id": "a", "request_sha256": digest({})}
+        if status == 200:
+            answers, metadata = client(unit)
+            assert answers == {"ok": True}
+            assert metadata["actual_model"] == "test-model"
+        else:
+            with pytest.raises(RequestFailure) as caught:
+                client(unit)
+            assert caught.value.status == status
+            assert caught.value.retry_after == 17
+            assert caught.value.fatal == (status == 401)
+    assert len(calls) == 1
+    assert http_split._UNIT.get() is None
+
+
+def test_sidecar_mkdir_failure_is_best_effort(tmp_path):
+    path = tmp_path / "not-a-directory"
+    path.write_text("file")
+    record_split(path, {"upload_done_seconds": 1}, http_status=200)
+
+
+def test_summary_reuses_formal_transport_and_failure_accounting(tmp_path):
+    from tools.unified_benchmark.workflow import timings
+
+    rows = [
+        {
+            "type": "result",
+            "unit": "a",
+            "attempt": 1,
+            "complete": True,
+            "elapsed_seconds": 20,
+            "metadata": {"transport_seconds": 2},
+        },
+        {
+            "type": "result",
+            "unit": "b",
+            "attempt": 1,
+            "complete": False,
+            "error": "TimeoutError",
+            "elapsed_seconds": 90,
+        },
+        {
+            "type": "result",
+            "unit": "c",
+            "attempt": 1,
+            "complete": True,
+            "elapsed_seconds": 3,
+        },
+        {"type": "intent", "unit": "d", "attempt": 1},
+    ]
+    (tmp_path / "attempts.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows)
+    )
+    table = summarize_phase(tmp_path)["table"][0]
+    expected = timings(rows, split=tmp_path.name)
+    assert all(table[key] == value for key, value in expected.items())
+    assert table["p50_seconds"] == 2
+    assert table["failed_attempts"] == 1
+    assert table["timeout_attempts"] == 1
+    assert table["attempt_elapsed_fallback"] == 1
+    assert table["attempts_without_result"] == 1
+    assert table["p95_with_failures_seconds"] is None
+
+
+@pytest.mark.parametrize(
+    "sessions", [["a"], ["a", "a"], ["a", "unknown"], ["a", "failed"]]
+)
+def test_aiperf_rejects_partial_failed_duplicate_and_unknown_sessions(
+    tmp_path, sessions
+):
+    manifest = {"requests": [{"request_id": "a"}, {"request_id": "b"}]}
+    records = [
+        {
+            "metadata": {"conversation_id": session},
+            "metrics": {"request_latency": {"value": 1, "unit": "s"}},
+            "error": "HTTP 500" if session == "failed" else None,
+        }
+        for session in sessions
+    ]
+    path = tmp_path / "aiperf.jsonl"
+    path.write_text("".join(json.dumps(row) + "\n" for row in records))
+    with pytest.raises(ValueError, match="every manifest request"):
+        rows_from_aiperf_jsonl(path, manifest)

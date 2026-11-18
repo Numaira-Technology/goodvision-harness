@@ -19,8 +19,17 @@ work. There is no opt-out.
 sampler, offer redaction, or the manifest writer.
 
 `tools/start_qwen8b_r2.py` (HF Qwen) is already covered: `tools/__init__.py`
-calls `arm_if_launcher` for that file only, with sampling off. Do not edit
+calls `arm_if_launcher` for that rental file, with sampling off. Do not edit
 that file. Every other rental calls `attach()` itself.
+
+The package hook also logs `tools.unified_benchmark.native_run --execute` for
+`clip`, `siglip2`, `videojev`, and `decision3`, without editing the frozen runner.
+Native runs use a bounded local probe without login shell startup scripts and
+no sampler. The hook records the CLI outcome and wall time before probing.
+Only successful invocations with a fresh `--output` can claim their
+`<output>/<split>/report.json` score; failed or resumed invocations keep the score
+`unknown`. Native logs remain in the stable series directory and are never
+mirrored into the sealed native result inventory. No Vast offer is fabricated.
 
 ## Call
 

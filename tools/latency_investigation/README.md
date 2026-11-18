@@ -48,7 +48,9 @@ they can be compared with the baseline text stored in the manifest.
 
 Warmup requests are taken from the complement of the timed set. Restart vLLM
 with the existing `tools.qwen8b.serve_vllm` command, run the warmup file, then
-start the timed round. Warmup latencies are not included in P50/P95. Weight
+start each timed round. The open-loop replay restarts and repeats the same
+disjoint warmup so it does not inherit the closed-loop timed-set caches. Warmup latencies are not included in P50/P95. If the timed set uses the whole
+population, there is no disjoint warmup and the plan omits that step. Weight
 download and env restore are recorded on the hardware run log as
 `timings.setup` and are not included either.
 
@@ -69,7 +71,10 @@ as `hardware.client_access` on the vLLM launcher.
 Before and after the official eval, and in the replay command plan, scrape
 `/metrics` and diff queue time, time to first token, prefill, decode, and
 preemptions. The diff is a counter delta and a mean. It is not a P95. A reset
-or a missing series is `unknown`, not 0.
+or a missing or changed series is `unknown`, not 0. Each replay has its own
+before/after files (`closed-loop-metrics-*.prom`, `open-loop-metrics-*.prom`).
+Warmup completes before the first timed snapshot; server-wide metrics can
+include unrelated traffic, so run replays on an otherwise idle server.
 
 ## Per-request split timing
 
@@ -79,10 +84,12 @@ The phases match `scene_model`'s HTTP trace. The client does not stream, so
 one `read` of a short body can stamp first byte and read done together.
 Leave the variable unset for an official run: the request bytes, the receipt,
 and `elapsed_seconds` / `transport_seconds` stay on the existing path. The
-formal P50/P95 definition is unchanged.
+formal P50/P95 definition is unchanged. Sidecar I/O is best effort and cannot
+turn a successful request into a failure or replace its original HTTP error.
 
 Changing `native_run.py`, `eval_local.py`, or `start_qwen8b_vllm.py` changes
-the source hash a frozen bundle checks. Create a new preflight bundle before
+the source hash a frozen bundle checks. The latency package, including the HTTP split dependency, is also frozen.
+Create a new preflight bundle before
 the next authorized GPU run. Do not edit an old bundle in place.
 
 ## Export
@@ -120,7 +127,13 @@ input-size bucket, P50, P95, P95/P50, then P50/P95/P95/P50 from actual send,
 then notes. For a closed loop the two clocks match. For an open loop the
 first trio is scheduled send and the second trio is actual send. P50/P95 use
 the same ceil-rank as the formal benchmark (`ceil(fraction * n) - 1`). There
-is no P99 column.
+is no P99 column. vLLM reports require complete success metadata for every
+manifest request and reject failed or inconsistent runs rather than counting
+failed zero-latency requests. AIPerf reports reject runs with no usable successful
+latency samples, and require exact successful coverage of the manifest.
 
 `python -m tools.latency_investigation summarize <eval-dir>` prints that table
-from a saved `attempts.jsonl` when the per-request log is on disk.
+from a saved `attempts.jsonl` when the per-request log is on disk. It reuses the
+formal request-latency summary: `metadata.transport_seconds` takes precedence,
+legacy whole-attempt fallback is counted, and failures, timeouts and missing
+outcomes are reported rather than silently dropped.

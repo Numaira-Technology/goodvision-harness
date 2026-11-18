@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 from pathlib import Path
 
 from tools.latency_investigation.percentiles import p50, p95, ratio, token_bucket
@@ -51,6 +52,19 @@ def rows_from_vllm_bench(
     requests = manifest.get("requests") or []
     if not isinstance(latencies, list) or len(latencies) != len(requests):
         raise ValueError("bench latencies do not match the manifest order")
+    errors = result.get("errors")
+    if not requests or not isinstance(errors, list) or len(errors) != len(requests):
+        raise ValueError("bench success metadata does not match the manifest")
+    if (
+        type(result.get("completed")) is not int
+        or type(result.get("failed")) is not int
+        or result["completed"] != len(requests)
+        or result["failed"] != 0
+        or any(error != "" for error in errors)
+    ):
+        raise ValueError("bench report requires all manifest requests to succeed")
+    if any(not _valid_seconds(value) for value in latencies):
+        raise ValueError("bench latencies must be finite non-negative seconds")
     host = host or {}
     samples = []
     for index, item in enumerate(requests):
@@ -85,10 +99,12 @@ def rows_from_aiperf_jsonl(
     requests = manifest.get("requests") or []
     by_session = {item.get("request_id"): item for item in requests}
     samples = []
+    record_count = 0
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         record = json.loads(line)
+        record_count += 1
         if record.get("error"):
             continue
         metrics = record.get("metrics") or {}
@@ -112,6 +128,17 @@ def rows_from_aiperf_jsonl(
                 "scheduled_offset_s": scheduled,
             }
         )
+    if not samples:
+        raise ValueError("AIPerf run has no successful requests with valid latency")
+    if (
+        record_count != len(requests)
+        or len(samples) != len(requests)
+        or len(by_session) != len(requests)
+        or {sample["request_id"] for sample in samples} != set(by_session)
+    ):
+        raise ValueError(
+            "AIPerf report requires every manifest request exactly once and successful"
+        )
     anchored = _add_schedule_lag(samples)
     return _bucket_rows(
         samples,
@@ -130,6 +157,8 @@ def _add_schedule_lag(samples) -> bool:
     The minimum is the same anchor AIPerf uses because it does not record
     schedule zero. Returns False when a start time or offset is missing.
     """
+    if not samples:
+        return False
     offsets = []
     for sample in samples:
         start = sample.get("start_ns")
@@ -139,6 +168,8 @@ def _add_schedule_lag(samples) -> bool:
             or isinstance(scheduled, bool)
             or not isinstance(start, (int, float))
             or not isinstance(scheduled, (int, float))
+            or not math.isfinite(start)
+            or not math.isfinite(scheduled)
         ):
             for item in samples:
                 item["latency_actual"] = item["latency"]
@@ -153,11 +184,20 @@ def _add_schedule_lag(samples) -> bool:
     return True
 
 
+def _valid_seconds(value):
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+        and value >= 0
+    )
+
+
 def _metric_seconds(metric):
     if not isinstance(metric, dict):
         return None
     value = metric.get("value")
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if not _valid_seconds(value):
         return None
     unit = metric.get("unit")
     if unit == "ms":

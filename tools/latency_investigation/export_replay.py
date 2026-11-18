@@ -230,7 +230,7 @@ def _shared_generation(rows):
 def export_subset(
     records, destination, *, size=DEFAULT_SIZE, seed=DEFAULT_SEED
 ) -> dict:
-    destination = Path(destination)
+    destination = Path(destination).resolve()
     if destination.exists():
         raise FileExistsError(f"{destination} already exists")
     normalized = [normalize_record(record) for record in records]
@@ -331,7 +331,7 @@ def export_subset(
 def command_plan(
     destination, *, max_tokens, temperature, timed_count, warmup_count
 ) -> dict:
-    destination = Path(destination)
+    destination = Path(destination).resolve()
     common = [
         "vllm",
         "bench",
@@ -364,7 +364,7 @@ def command_plan(
         "--percentile-metrics",
         "ttft,e2el",
     ]
-    return {
+    plan = {
         "tool_versions": {"vllm": VLLM_VERSION, "aiperf": AIPERF_VERSION},
         "do_not_run_until_authorized": True,
         "rents_gpu": False,
@@ -378,16 +378,6 @@ def command_plan(
                     "existing tools.qwen8b.serve_vllm command so prefix and "
                     "multimodal caches are empty. This plan does not rent a GPU."
                 ),
-            },
-            {
-                "name": "metrics-before",
-                "argv": [
-                    "curl",
-                    "-fsS",
-                    "http://127.0.0.1:8000/metrics",
-                    "-o",
-                    "metrics-before.prom",
-                ],
             },
             {
                 "name": "warmup",
@@ -421,16 +411,6 @@ def command_plan(
                 ],
             },
             {
-                "name": "metrics-after",
-                "argv": [
-                    "curl",
-                    "-fsS",
-                    "http://127.0.0.1:8000/metrics",
-                    "-o",
-                    "metrics-after.prom",
-                ],
-            },
-            {
                 "name": "open-loop",
                 "latency_starts": "scheduled_send",
                 "actual_send_column": "p50_actual_send_seconds",
@@ -460,6 +440,40 @@ def command_plan(
         ],
     }
 
+    steps = {step["name"]: step for step in plan["steps"]}
+
+    def metrics_step(run, when):
+        return {
+            "name": f"{run}-metrics-{when}",
+            "argv": [
+                "curl",
+                "-fsS",
+                "http://127.0.0.1:8000/metrics",
+                "-o",
+                f"{run}-metrics-{when}.prom",
+            ],
+        }
+
+    plan["steps"] = [steps["restart-vllm"]]
+    if warmup_count:
+        plan["steps"].append(steps["warmup"])
+    for run in ("closed-loop", "open-loop"):
+        if run == "open-loop":
+            plan["steps"].append(
+                {**steps["restart-vllm"], "name": "open-loop-restart-vllm"}
+            )
+            if warmup_count:
+                warmup = {**steps["warmup"], "name": "open-loop-warmup"}
+                warmup["argv"] = [
+                    "open-loop-warmup.json" if arg == "warmup.json" else arg
+                    for arg in warmup["argv"]
+                ]
+                plan["steps"].append(warmup)
+        plan["steps"].extend(
+            [metrics_step(run, "before"), steps[run], metrics_step(run, "after")]
+        )
+    return plan
+
 
 def records_from_phase(bundle, phase_dir, alias: str) -> list[dict]:
     """Rebuild recorded chat bodies for one saved eval phase.
@@ -472,9 +486,13 @@ def records_from_phase(bundle, phase_dir, alias: str) -> list[dict]:
 
     bundle = Path(bundle)
     phase_dir = Path(phase_dir)
-    config = json.loads((bundle / "configs" / f"{alias}.json").read_text(encoding="utf-8"))
+    config = json.loads(
+        (bundle / "configs" / f"{alias}.json").read_text(encoding="utf-8")
+    )
     plan = json.loads(
-        (bundle / "plans" / f"{alias}-{phase_dir.name}.json").read_text(encoding="utf-8")
+        (bundle / "plans" / f"{alias}-{phase_dir.name}.json").read_text(
+            encoding="utf-8"
+        )
     )
     units = {unit["id"]: unit for unit in plan["units"]}
     intents = {}
@@ -499,12 +517,20 @@ def records_from_phase(bundle, phase_dir, alias: str) -> list[dict]:
         receipt_name = Path(str(result.get("metadata", {}).get("receipt", ""))).name
         receipt_path = phase_dir / "receipts" / receipt_name
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        response = receipt.get("response") if isinstance(receipt.get("response"), dict) else {}
+        response = (
+            receipt.get("response") if isinstance(receipt.get("response"), dict) else {}
+        )
         usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
         prompt_tokens = usage.get("prompt_tokens")
         output_tokens = usage.get("completion_tokens")
-        choices = response.get("choices") if isinstance(response.get("choices"), list) else []
-        message = choices[0].get("message") if choices and isinstance(choices[0], dict) else {}
+        choices = (
+            response.get("choices") if isinstance(response.get("choices"), list) else []
+        )
+        message = (
+            choices[0].get("message")
+            if choices and isinstance(choices[0], dict)
+            else {}
+        )
         output_text = message.get("content") if isinstance(message, dict) else None
         _url, body = request_body(config, units[unit_id], bundle)
         records.append(
@@ -513,7 +539,9 @@ def records_from_phase(bundle, phase_dir, alias: str) -> list[dict]:
                 "prompt_tokens": prompt_tokens,
                 "arrival_offset_seconds": float(intent["at_unix"]) - origin,
                 "output_text": output_text if isinstance(output_text, str) else None,
-                "output_tokens": output_tokens if isinstance(output_tokens, int) else None,
+                "output_tokens": output_tokens
+                if isinstance(output_tokens, int)
+                else None,
                 "body": body,
             }
         )

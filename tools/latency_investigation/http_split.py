@@ -121,6 +121,14 @@ def _lock_for(path: Path) -> threading.Lock:
 def record_split(directory, timings, *, http_status=None) -> None:
     if not isinstance(timings, dict):
         return
+    try:
+        _write_split(directory, timings, http_status=http_status)
+    except Exception:
+        # Auxiliary diagnostics must never replace a response or transport error.
+        return
+
+
+def _write_split(directory, timings, *, http_status=None):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     bound = _UNIT.get() or {}

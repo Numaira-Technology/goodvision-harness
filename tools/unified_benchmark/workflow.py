@@ -9,8 +9,10 @@ import json
 import math
 from pathlib import Path
 
+from . import latency
 from .contract import (BAG_VALIDATION_SCHEMA, CURRENT_VERSION, EVENTS, plan_rules, rules_for, digest, file_hash,
                        has_bag_validation, score, select_thresholds, source_files, validate_threshold_values, write_new)
+from .supplement import bundle_test_supplement, verify_supplement_plan
 
 
 def verify_bundle(bundle):
@@ -35,8 +37,9 @@ def verify_bundle(bundle):
     overlay = (report.get("dataset_context") or {}).get("bag_validation")
     if overlay is not None:
         if (not hashes.get("inputs/bag-validation.json") or hashes["inputs/bag-validation.json"] != overlay.get("sha256")
-                or set(report["models"]) - {"clip", "siglip2"} or frozen_rules["version"] != CURRENT_VERSION):
+                or frozen_rules["version"] != CURRENT_VERSION):
             raise ValueError("bag validation manifest or model scope differs")
+    test_rows = bundle_test_supplement(bundle, hashes, report, frozen_rules["version"])
     for name in hashes:
         if not name.startswith("plans/") or not name.endswith(".json"):
             continue
@@ -45,8 +48,12 @@ def verify_bundle(bundle):
             raise ValueError("plan protocol differs from bundle")
         if (plan.get("dataset_context") or {}).get("bag_validation") != overlay:
             raise ValueError("plan bag validation fingerprint differs from preflight")
+        verify_supplement_plan(plan, test_rows, report)
         if frozen_rules["version"] == CURRENT_VERSION:
-            count = (44 if has_bag_validation(plan) else 24) if plan["split"] == "validation" else 202
+            count = (
+                (44 if has_bag_validation(plan) else 24)
+                if plan["split"] == "validation" else 202 + len(test_rows)
+            )
             if {q["number"] for q in plan["questions"]} != set(range(1, count + 1)) or len(plan["questions"]) != count:
                 raise ValueError("plan does not cover the frozen question cohort")
     sources = json.loads((bundle / "source-hashes.json").read_text())
@@ -63,9 +70,12 @@ def verify_bundle(bundle):
     models = report.get("models")
     if not isinstance(models, dict) or not models:
         raise ValueError("bundle is missing preflight model/plan records")
+    splits = report.get("prepared_splits", ["validation", "test"])
+    if splits not in (["validation"], ["validation", "test"]):
+        raise ValueError("invalid prepared split scope")
     expected_configs, expected_plans = set(), set()
     for alias, phases in models.items():
-        if Path(alias).name != alias or set(phases) != {"validation", "test"}:
+        if Path(alias).name != alias or set(phases) != set(splits):
             raise ValueError("invalid preflight model/plan records")
         config_name = f"configs/{alias}.json"
         expected_configs.add(config_name)
@@ -123,9 +133,9 @@ def load_threshold_artifact(path, expected_hash, *, bundle, alias, config, bundl
     if artifact.get("comparator") != (">" if kind == "margin" else ">="):
         raise ValueError("threshold decision rule differs")
     if include_bags:
-        if (kind != "margin" or alias not in {"clip", "siglip2"}
+        if (kind not in {"margin", "probability"}
                 or artifact.get("bag_calibration") != BAG_VALIDATION_SCHEMA or set(artifact.get("details", {})) != set(EVENTS)):
-            raise ValueError("complete six-event margin selection required")
+            raise ValueError("complete six-event threshold selection required")
     elif (artifact.get("bag_calibration") != "uncalibrated_no_bag_validation"
             or any(artifact["thresholds"][e] != (0 if kind == "margin" else .5) for e in EVENTS[4:])):
         raise ValueError("threshold decision rule or uncalibrated bag baseline differs")
@@ -146,22 +156,60 @@ def collect(plan, config, ledger):
     return {unit["id"]: ledger.state(unit, config["kind"])[1] for unit in plan["units"]}
 
 
-def timings(rows):
-    # Attempt latency is separate from queue/backoff and does not measure camera latency.
-    good = sorted(r["elapsed_seconds"] for r in rows if r["type"] == "result" and r.get("complete")
-                  and type(r.get("elapsed_seconds")) in (int, float) and math.isfinite(r["elapsed_seconds"]))
-    return {"source": "this run; successful complete transport attempts including parsing/metadata lookup; excludes queue/backoff",
-            "n": len(good), "p50_seconds": good[math.ceil(.5 * len(good)) - 1] if good else None,
-            "p95_seconds": good[math.ceil(.95 * len(good)) - 1] if good else None,
-            "not_12_camera_throughput": True}
+def timings(rows, *, split=None):
+    """Request latency for one phase; unavailable outcomes are not successes."""
+    rows = list(rows)
+    results = [r for r in rows if r["type"] == "result"]
+    completed = {(r.get("unit"), r.get("attempt")) for r in results}
+    unresolved = sum(
+        r["type"] == "intent" and (r.get("unit"), r.get("attempt")) not in completed
+        for r in rows
+    )
+    good, failed, timeouts, fallback, missing = [], 0, 0, 0, 0
+    for row in results:
+        if not row.get("complete"):
+            failed += 1
+            timeouts += latency.is_timeout(row.get("error"))
+            continue
+        metadata = row.get("metadata") or {}
+        legacy = "transport_seconds" not in metadata
+        measured = row.get("elapsed_seconds") if legacy else metadata["transport_seconds"]
+        if latency.finite(measured) and measured >= 0:
+            good.append(measured)
+            fallback += legacy
+        else:
+            missing += 1
+    stats = latency.summary(good, failed, timeouts)
+    # Unknown outcomes are not proven failures. Do not silently remove them (or
+    # successful attempts without valid timing) from an all-outcome percentile.
+    if unresolved or missing:
+        stats["p95_with_failures_seconds"] = None
+    return {
+        "source": (
+            "this run; one sample per recorded request attempt; transport and answer "
+            "parsing, excluding request-body preparation, receipt writes, metadata "
+            "lookup, worker queue and retry backoff; legacy fallback uses whole-attempt "
+            "time; p95_with_failures counts recorded failures at the request timeout "
+            "penalty and is unavailable if outcomes or successful timings are missing"
+        ),
+        **stats,
+        "split": split,
+        "attempts": len(results) + unresolved,
+        "attempts_without_result": unresolved,
+        "successful_attempts_without_timing": missing,
+        "p95_with_failures_n": len(good) + failed,
+        "attempt_elapsed_fallback": fallback,
+        "not_12_camera_throughput": True,
+    }
 
 
 def report(plan, config, ledger, thresholds):
     observed = collect(plan, config, ledger)
     result = score(plan, observed, config["kind"], thresholds)
-    if has_bag_validation(plan):
-        zeros = dict.fromkeys(EVENTS, 0.0)
-        result["zero_margin_baseline"] = score(plan, observed, config["kind"], zeros) | {"thresholds": zeros}
+    if has_bag_validation(plan) and config["kind"] in ("margin", "probability"):
+        baseline = dict.fromkeys(EVENTS, 0.0 if config["kind"] == "margin" else .5)
+        label = "zero_margin_baseline" if config["kind"] == "margin" else "fixed_probability_baseline"
+        result[label] = score(plan, observed, config["kind"], baseline) | {"thresholds": baseline}
     sent = {r["unit"] for r in ledger.rows if r["type"] == "intent"}
     # Offline re-scoring must retain the inference date, including across resumes.
     attempt_times = [r["at_unix"] for r in ledger.rows if r["type"] == "intent"
@@ -169,7 +217,7 @@ def report(plan, config, ledger, thresholds):
     result.update(sent_unique_units=len(sent), send_coverage=len(sent) / len(plan["units"]),
                   send_semantics="durable transport handoff intent; server receipt not proven after interrupted call",
                   unattempted_unique_units=len(plan["units"]) - len(sent),
-                  test_attempt_latency=timings(ledger.rows),
+                  test_attempt_latency=timings(ledger.rows, split=plan.get("split")),
                   thresholds=thresholds, model=config["model"], requested_conditions=config,
                   observed_providers=sorted({r.get("metadata", {}).get("actual_provider") for r in ledger.rows
                       if r.get("metadata", {}).get("actual_provider")}),

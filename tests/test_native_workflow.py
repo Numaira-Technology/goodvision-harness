@@ -228,6 +228,11 @@ def test_orphan_valid_receipt_recovered_without_another_request(frozen, tmp_path
     try:
         run.reconcile_receipts(phase, ledger, plan, cfg, phase.parent)
         assert ledger.state(unit, cfg["kind"]) == (1, parsed)
+        assert ledger.rows[-1]["metadata"]["transport_seconds"] == .1
+        latency = workflow.timings(ledger.rows)
+        assert latency["p50_seconds"] == .1
+        assert latency["attempt_elapsed_fallback"] == 0
+        assert latency["attempts_without_result"] == 0
         immediate_queue(ledger, cfg["kind"], lambda u: pytest.fail("valid receipt resent")).one(unit)
     finally: ledger.close()
 
@@ -907,6 +912,11 @@ def test_completed_phase_keeps_exhausted_intents_without_receipts(frozen, tmp_pa
     result = json.loads((output / "test/report.json").read_text())
     assert result["correct"] == 119 and result["accuracy_denominator"] == 120
     assert result["incomplete_questions"] == result["final_missing_unique_units"] == 1
+    latency = result["test_attempt_latency"]
+    assert latency["attempts"] == 122 and latency["attempts_without_result"] == 3
+    assert latency["n"] == latency["p95_with_failures_n"] == 119
+    assert latency["failed_attempts"] == 0
+    assert latency["p95_with_failures_seconds"] is None
     before = output_snapshot(output / "test")
     execute(frozen, output, "decision3", "test", resume=True)
     assert output_snapshot(output / "test") == before and len(FakeBackend.calls) == 119
@@ -1074,10 +1084,6 @@ def bag_frozen(frozen):
     from tools.unified_benchmark.contract import BAG_VALIDATION_SCHEMA
 
     bundle, _, _ = frozen
-    for alias in ("videojev", "decision3"):
-        (bundle / f"configs/{alias}.json").unlink()
-        for phase in ("validation", "test"):
-            (bundle / f"plans/{alias}-{phase}.json").unlink()
     manifest = bundle / "inputs/bag-validation.json"
     manifest.parent.mkdir()
     manifest.write_text(json.dumps(bag_manifest()), encoding="utf-8")
@@ -1137,7 +1143,7 @@ def bag_frozen(frozen):
     )
     audit = json.loads((bundle / "preflight.json").read_text())
     audit["dataset_context"] = context
-    audit["models"] = {alias: {} for alias in ("clip", "siglip2")}
+    audit["models"] = {alias: {} for alias in deploy.ALIASES}
     for path in (bundle / "plans").glob("*.json"):
         alias, split = path.stem.rsplit("-", 1)
         audit["models"][alias][split] = {
@@ -1146,6 +1152,45 @@ def bag_frozen(frozen):
     (bundle / "preflight.json").write_text(json.dumps(audit), encoding="utf-8")
     seal(bundle)
     return frozen
+
+
+@pytest.mark.parametrize("alias", ["videojev", "decision3"])
+def test_argmax_models_validate_all44_without_threshold_artifact(bag_frozen, tmp_path, alias):
+    out = tmp_path / alias
+    execute(bag_frozen, out, alias)
+    assert not (out / "thresholds.json").exists()
+    for split, count in (("validation", 44), ("test", 202)):
+        result = json.loads((out / split / "report.json").read_text())
+        assert result["complete_valid_questions"] == result["correct"] == count
+        assert "zero_margin_baseline" not in result
+    calls = list(FakeBackend.calls)
+    execute(bag_frozen, out, alias, resume=True)
+    assert FakeBackend.calls == calls
+
+
+@pytest.mark.parametrize("alias", deploy.ALIASES)
+def test_batch_native_worker_uses_validation_then_separate_test(bag_frozen, tmp_path, monkeypatch, alias):
+    from tools.unified_benchmark import batch
+    from tools.unified_benchmark.contract import atomic_json
+    bundle, deployment, sha = bag_frozen
+    root = tmp_path / "batch"
+    root.mkdir()
+    item = {"alias": alias, "route": "native", "bundle": str(bundle),
+            "bundle_sha256": workflow.verify_bundle(bundle),
+            "deployment": str(deployment), "deployment_sha256": sha}
+    write_new(root / "config.json", {"models": [item]})
+    rows = [{"id": alias + "/" + label, "output": alias + "/" + label, "alias": alias,
+             "split": split, "state": "running", "invocations": 1}
+            for label, split in (("validation", "validation"), ("round-01", "test"))]
+    atomic_json(root / "state.json", {"matrix": rows})
+    monkeypatch.setattr(batch, "hardware_check", lambda *_: None)
+    original = run.execute
+    def fake(*args, **kwargs):
+        return original(*args, **kwargs, backend_factory=FakeBackend, queue_factory=immediate_queue)
+    monkeypatch.setattr(run, "execute", fake)
+    assert batch.worker(root, rows[0]["id"], "synthetic") == 0
+    assert batch.worker(root, rows[1]["id"], "synthetic") == 0
+    assert batch.verify_finished(root, item, rows[1])["complete_valid_questions"] == 202
 
 
 @pytest.mark.parametrize("alias", ["clip", "siglip2"])
@@ -1242,3 +1287,173 @@ def test_bad_bag_validation_blocks_thresholds_and_all_test_requests(
     assert FakeBackend.calls and all(
         c.startswith("validation/") for c in FakeBackend.calls
     )
+
+
+@pytest.mark.parametrize("corruption", ["missing", "changed"])
+def test_batch_rejects_native_completion_with_damaged_raw_receipt(
+        bag_frozen, tmp_path, corruption):
+    from tools.unified_benchmark import batch
+
+    bundle, deployment, sha = bag_frozen
+    item = {"alias": "videojev", "route": "native", "bundle": str(bundle),
+            "bundle_sha256": workflow.verify_bundle(bundle),
+            "deployment": str(deployment), "deployment_sha256": sha}
+    row = {"output": "videojev/validation", "split": "validation"}
+    output = batch.model_output(tmp_path, item, row)
+    run.execute("videojev", bundle, deployment, output, sha, phase="validation",
+                authorization="synthetic", backend_factory=FakeBackend,
+                queue_factory=immediate_queue)
+    assert batch.verify_finished(tmp_path, item, row)["complete_valid_questions"] == 44
+    receipt = next((output / "validation/receipts").glob("*.json"))
+    if corruption == "missing":
+        receipt.unlink()
+    else:
+        receipt.write_text("{}")
+    calls = list(FakeBackend.calls)
+    with pytest.raises(ValueError, match="receipt"):
+        batch.verify_finished(tmp_path, item, row)
+    assert FakeBackend.calls == calls
+
+
+def test_batch_native_restart_does_not_acknowledge_saved_fatal_response(
+        bag_frozen, tmp_path, monkeypatch):
+    from tools.unified_benchmark import batch
+    from tools.unified_benchmark.contract import atomic_json
+
+    bundle, deployment, sha = bag_frozen
+    root = tmp_path / "batch"
+    item = {"alias": "videojev", "route": "native", "bundle": str(bundle),
+            "bundle_sha256": workflow.verify_bundle(bundle),
+            "deployment": str(deployment), "deployment_sha256": sha}
+    row = {"id": "videojev/validation", "output": "videojev/validation",
+           "alias": "videojev", "split": "validation", "invocations": 2}
+    write_new(root / "config.json", {"models": [item]})
+    atomic_json(root / "state.json", {"matrix": [row]})
+    monkeypatch.setattr(batch, "hardware_check", lambda *_: None)
+    original = run.execute
+    def fake(*args, **kwargs):
+        return original(*args, **kwargs, backend_factory=FakeBackend,
+                        queue_factory=immediate_queue)
+    monkeypatch.setattr(run, "execute", fake)
+    FakeBackend.behavior = lambda *_: (401, {}, {})
+    with pytest.raises(PausedRun):
+        fake("videojev", bundle, deployment, batch.model_output(root, item, row),
+             sha, phase="validation", authorization="synthetic")
+    # The native runner retained the fatal result, but the first worker died
+    # before publishing worker-01.json. An automatic restart is not consent.
+    calls = list(FakeBackend.calls)
+    FakeBackend.behavior = None
+    assert batch.worker(root, row["id"], "synthetic") == 2
+    assert FakeBackend.calls == calls
+    result = batch.read(root / row["output"] / "worker-02.json")
+    assert result["state"] == "blocked"
+
+
+@pytest.mark.parametrize("status", [200, 503])
+def test_native_transport_timing_excludes_receipt_write_and_hash(
+    frozen, tmp_path, monkeypatch, status,
+):
+    from types import SimpleNamespace
+
+    clock = [0.0]
+    monkeypatch.setattr(run, "time", SimpleNamespace(
+        monotonic=lambda: clock[0], time=time.time,
+    ))
+
+    def delayed(original, seconds):
+        def wrapped(*args, **kwargs):
+            clock[0] += seconds
+            return original(*args, **kwargs)
+        return wrapped
+
+    monkeypatch.setattr(run, "write_receipt", delayed(run.write_receipt, 5))
+    monkeypatch.setattr(run, "file_hash", delayed(run.file_hash, 7))
+    monkeypatch.setattr(run, "parse_response", delayed(run.parse_response, 1))
+
+    def infer(self, unit, body):
+        clock[0] += 2
+        return status, self.raw(unit, "yes"), {}
+
+    monkeypatch.setattr(FakeBackend, "infer", infer)
+
+    class SerialQueue(Queue):
+        def run(self, units):
+            return dict(self.one(unit) for unit in units)
+
+    def queue_factory(*args, **kwargs):
+        return SerialQueue(
+            *args, **kwargs, clock=lambda: clock[0],
+            sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+
+    output = tmp_path / "timed"
+    bundle, deployment, sha = frozen
+    run.execute("decision3", bundle, deployment, output, sha, phase="validation",
+                authorization="synthetic offline test", backend_factory=FakeBackend,
+                queue_factory=queue_factory)
+    rows = [json.loads(line) for line in
+            (output / "validation/attempts.jsonl").read_text().splitlines()]
+    expected = 3 if status == 200 else 2
+    for row in rows:
+        if row["type"] != "result":
+            continue
+        assert row["metadata"]["transport_seconds"] == expected
+        # Whole-attempt time also includes request fingerprint/frame hashing.
+        assert row["elapsed_seconds"] >= expected + 12
+        receipt = json.loads((output / row["metadata"]["receipt"]).read_text())
+        assert receipt["transport_seconds"] == expected
+    report = json.loads((output / "validation/report.json").read_text())
+    latency = report["test_attempt_latency"]
+    assert latency["split"] == "validation"
+    assert latency["attempt_elapsed_fallback"] == 0
+    assert latency["p50_seconds"] == (3 if status == 200 else None)
+    assert latency["failed_attempts"] == (0 if status == 200 else 72)
+
+
+@pytest.mark.parametrize("name", [
+    "tools/unified_benchmark/latency.py",
+    "tools/latency_investigation/http_split.py",
+])
+@pytest.mark.parametrize("mutation", ["snapshot", "active", "inventory"])
+def test_latency_definition_is_part_of_frozen_source_integrity(
+    frozen, tmp_path, monkeypatch, mutation, name,
+):
+    bundle = frozen[0]
+    sources = json.loads((bundle / "source-hashes.json").read_text())
+    assert sources[name] == file_hash(workflow.source_files()[name])
+    if mutation == "snapshot":
+        (bundle / "source-snapshot" / name).write_text("changed")
+    elif mutation == "active":
+        changed = tmp_path / "changed-latency.py"
+        changed.write_text("changed")
+        active = workflow.source_files() | {name: changed}
+        monkeypatch.setattr(workflow, "source_files", lambda: active)
+    else:
+        del sources[name]
+        (bundle / "source-hashes.json").write_text(json.dumps(sources))
+        preflight_path = bundle / "preflight.json"
+        manifest = json.loads(preflight_path.read_text())
+        manifest["sources_sha256"] = digest(sources)
+        preflight_path.write_text(json.dumps(manifest))
+    seal(bundle)
+    with pytest.raises(ValueError, match="source"):
+        workflow.verify_bundle(bundle)
+
+
+def test_frozen_snapshot_imports_in_isolated_interpreter(frozen):
+    import subprocess
+    import sys
+
+    snapshot = frozen[0] / "source-snapshot"
+    code = (
+        "import sys; sys.path.insert(0, sys.argv[1]); "
+        "from tools.qwen8b import eval_local; "
+        "from tools.unified_benchmark import native_run; "
+        "from tools.latency_investigation import http_split; "
+        "from pathlib import Path; "
+        "assert Path(http_split.__file__).is_relative_to(sys.argv[1]); "
+        "assert eval_local.begin_open is http_split.begin_open; "
+        "assert native_run.begin_open is http_split.begin_open"
+    )
+    subprocess.run([sys.executable, "-I", "-c", code, str(snapshot)],
+                   cwd=snapshot, check=True, capture_output=True, text=True)

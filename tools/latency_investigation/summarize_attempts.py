@@ -1,8 +1,8 @@
 """Summarize saved eval ledgers by input-token bucket.
 
 Reads ``attempts.jsonl`` plus sibling ``receipts/`` when those files exist.
-Does not invent rows. P50 and P95 use the formal ceil-rank on complete
-attempts' ``elapsed_seconds``, which is the benchmark's own latency field.
+Does not invent rows. Uses the shared formal request-latency definition,
+including transport timing, explicit legacy fallback and failure accounting.
 """
 
 from __future__ import annotations
@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tools.latency_investigation.percentiles import p50, p95, ratio, token_bucket
+from tools.latency_investigation.percentiles import ratio, token_bucket
+from tools.unified_benchmark.workflow import timings
 
 
 def _prompt_tokens(receipt: dict):
@@ -37,14 +38,7 @@ def summarize_phase(phase_dir) -> dict:
     for line in ledger_path.read_text(encoding="utf-8").splitlines():
         if line.strip():
             rows.append(json.loads(line))
-    results = [
-        row
-        for row in rows
-        if row.get("type") == "result"
-        and row.get("complete") is True
-        and isinstance(row.get("elapsed_seconds"), (int, float))
-        and not isinstance(row.get("elapsed_seconds"), bool)
-    ]
+    results = [row for row in rows if row.get("type") == "result"]
     receipts = {}
     receipt_dir = phase_dir / "receipts"
     if receipt_dir.is_dir():
@@ -53,43 +47,44 @@ def summarize_phase(phase_dir) -> dict:
                 receipts[path.name] = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-    paired = []
+    buckets = {}
     missing_tokens = 0
     for row in results:
         metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         receipt_name = metadata.get("receipt")
         name = Path(str(receipt_name)).name if receipt_name else ""
         tokens = _prompt_tokens(receipts.get(name, {}))
-        if tokens is None:
+        if tokens is None and row.get("complete") is True:
             missing_tokens += 1
-        paired.append(
-            {"elapsed_seconds": row["elapsed_seconds"], "prompt_tokens": tokens}
+        buckets[id(row)] = token_bucket(tokens)
+    by_attempt = {
+        (row.get("unit"), row.get("attempt")): buckets[id(row)] for row in results
+    }
+    groups = {"overall": rows}
+    for row in rows:
+        if row.get("type") not in {"intent", "result"}:
+            continue
+        bucket = buckets.get(
+            id(row), by_attempt.get((row.get("unit"), row.get("attempt")), "unknown")
         )
-    groups = {"overall": [item["elapsed_seconds"] for item in paired]}
-    for item in paired:
-        groups.setdefault(token_bucket(item["prompt_tokens"]), []).append(
-            item["elapsed_seconds"]
-        )
+        groups.setdefault(bucket, []).append(row)
     table = []
     for name in ("overall", "<500", "500-999", ">=1000", "unknown"):
-        values = groups.get(name) or []
-        if not values and name != "overall":
+        group = groups.get(name)
+        if group is None:
             continue
-        p50_value = p50(values)
-        p95_value = p95(values)
+        stats = timings(group, split=phase_dir.name)
         table.append(
             {
                 "input_size_bucket": name,
-                "n": len(values),
-                "p50_seconds": p50_value,
-                "p95_seconds": p95_value,
-                "p95_over_p50": ratio(p95_value, p50_value),
+                **stats,
+                "p95_over_p50": ratio(stats["p95_seconds"], stats["p50_seconds"]),
             }
         )
     return {
         "available": True,
         "path": str(phase_dir),
-        "complete_attempts": len(results),
+        "complete_attempts": sum(row.get("complete") is True for row in results),
         "missing_prompt_tokens": missing_tokens,
         "table": table,
     }

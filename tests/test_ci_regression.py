@@ -18,13 +18,13 @@ from tools.ci_regression import shard_for, verify_coverage
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def manifests(tmp_path):
-    nodes = [
+def manifests(tmp_path, nodes=None, count=2):
+    nodes = nodes if nodes is not None else [
         f"tests/test_example_{n}.py::test_case[{p}]"
         for n in range(20)
         for p in range(3)
     ]
-    for index in range(2):
+    for index in range(count):
         path = tmp_path / str(index)
         path.mkdir()
         (path / "collection.json").write_text(
@@ -32,9 +32,9 @@ def manifests(tmp_path):
                 {
                     "schema": 1,
                     "shard": index,
-                    "shards": 2,
+                    "shards": count,
                     "collected": nodes,
-                    "selected": [node for node in nodes if shard_for(node, 2) == index],
+                    "selected": [node for node in nodes if shard_for(node, count) == index],
                 }
             )
         )
@@ -42,7 +42,7 @@ def manifests(tmp_path):
         rows = [
             {"event": "result", "nodeid": node, "stage": stage, "outcome": "passed"}
             for node in nodes
-            if shard_for(node, 2) == index
+            if shard_for(node, count) == index
             for stage in ("setup", "call", "teardown")
         ] + [{"event": "finished", "exit_code": 0}]
         (path / "progress.jsonl").write_text(
@@ -59,6 +59,14 @@ def test_partition_preserves_modules_and_exact_once(tmp_path):
     )
     with pytest.raises(ValueError):
         shard_for("tests/a.py::test_one", 0)
+
+
+@pytest.mark.parametrize("count", [2, 4])
+def test_independent_native_cases_spread_across_shards_with_exact_once_gate(tmp_path, count):
+    nodes = [f"tests/test_native_workflow.py::test_recovery[{n}]" for n in range(64)]
+    manifests(tmp_path, nodes, count)
+    assert {shard_for(node, count) for node in nodes} == set(range(count))
+    assert verify_coverage(tmp_path, count, "success") == len(nodes)
 
 
 @pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", "", "pending"])

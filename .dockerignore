@@ -84,6 +84,7 @@ data
 **/tmp
 artifacts
 media
+**/demo-media
 **/*.log
 **/*.tar
 **/*.tar.gz

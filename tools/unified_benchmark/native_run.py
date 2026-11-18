@@ -23,7 +23,8 @@ import urllib.request
 import uuid
 
 from .adapters import frame_bytes, parse_response, request_body
-from .contract import EVENTS, plan_rules, canonical, digest, file_hash, finite_number, read_receipt, select_thresholds, write_new, write_receipt
+from .contract import EVENTS, plan_rules, canonical, digest, file_hash, finite_number, read_receipt, select_thresholds, write_new, write_receipt, atomic_json
+from .latency import REQUEST_TIMEOUT_SECONDS
 from .native_deploy import ALIASES, environment_for, profile, verify_deployment
 from .locking import lock_exclusive
 from .retry import Ledger, PausedRun, Queue, RequestFailure
@@ -37,9 +38,7 @@ def stamp():
 
 
 def save_status(path, value):
-    temporary = path.with_suffix(".tmp")
-    temporary.write_bytes(canonical(value) + b"\n")
-    temporary.replace(path)
+    atomic_json(path, value)
 
 
 def video_groups(units, queue, after=lambda: None):
@@ -127,7 +126,7 @@ class NativeBackend:
                                      headers={"Content-Type": "application/json"})
         timings = None
         try:
-            response, timings = begin_open(req, 90)
+            response, timings = begin_open(req, REQUEST_TIMEOUT_SECONDS)
             with response:
                 status = response.status
                 payload = json.load(response)
@@ -189,7 +188,8 @@ class NativeBackend:
                 sock.bind(("127.0.0.1", self.port))
             args, env = service_command(self.alias, self.deployment, self.output, self.port)
             self.log = (self.output / "service.log").open("xb")
-            self.service = subprocess.Popen(args, env=env, stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True)
+            self.service = subprocess.Popen(args, env=env, stdout=self.log, stderr=subprocess.STDOUT,
+                start_new_session=os.environ.get("GOODVISION_SUPERVISED_WORKER") != "1")
             deadline = time.monotonic() + 1200
             while True:
                 if self.service.poll() is not None:
@@ -248,15 +248,15 @@ class NativeBackend:
                     write_new(self.output / "final-health.json", self.health())
                 except Exception:
                     pass
-                os.killpg(self.service.pid, signal.SIGINT)
+                self._signal_service(signal.SIGINT)
                 try:
                     self.service.wait(timeout=40)
                 except subprocess.TimeoutExpired:
-                    os.killpg(self.service.pid, signal.SIGTERM)
+                    self._signal_service(signal.SIGTERM)
                     try:
                         self.service.wait(timeout=20)
                     except subprocess.TimeoutExpired:
-                        os.killpg(self.service.pid, signal.SIGKILL)
+                        self._signal_service(signal.SIGKILL)
                         self.service.wait()
         finally:
             if self.log:
@@ -265,6 +265,12 @@ class NativeBackend:
             if self.monitor:
                 self.monitor.join(5)
             write_new(self.output / "gpu-peak.json", {"max_gpu_used_mib": self.peak_mib, "sampling_seconds": 2})
+
+    def _signal_service(self, sig):
+        if os.environ.get("GOODVISION_SUPERVISED_WORKER") == "1":
+            self.service.send_signal(sig)
+        else:
+            os.killpg(self.service.pid, sig)
 
 
 def validate_inputs(bundle, alias, phase, deployment_hash, threshold_path=None, threshold_hash=None):
@@ -314,7 +320,10 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, *, recover=True):
                 raise ValueError("saved receipt missing or differs")
         elif not path.exists():
             continue  # interrupted send still consumes one attempt
-        receipt = read_receipt(path)
+        try:
+            receipt = read_receipt(path)
+        except ValueError as error:
+            raise ValueError("saved incomplete receipt requires finite completed_at_unix and strict raw evidence: " + str(error)) from error
         expected = {"unit": unit["id"], "attempt": row["attempt"], "request_sha256": unit["request_sha256"],
                     "config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]]}
         if any(receipt.get(k) != v for k, v in expected.items()):
@@ -333,7 +342,8 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, *, recover=True):
             "http_status": receipt["http_status"], "fatal": receipt.get("fatal", False),
             "retry_after": receipt.get("retry_after", 0),
             "metadata": {"actual_provider": "self-hosted", "receipt": receipt_key,
-                         "receipt_sha256": file_hash(path), "recovered_receipt": True}}
+                         "receipt_sha256": file_hash(path), "recovered_receipt": True,
+                         "transport_seconds": receipt["transport_seconds"]}}
         if (not recovered["complete"] and not recovered["fatal"]
                 and (row["attempt"] < 3 or recovered["http_status"] == 429)):
             if not finite_number(receipt.get("completed_at_unix")):
@@ -387,7 +397,7 @@ def validate_saved_path(path, output, *, directory=False):
     present = path.exists() or path.is_symlink()
     if (not path.resolve().is_relative_to(output.resolve())
             or present and not (path.is_dir() if directory else path.is_file())):
-        raise ValueError("resume evidence path has wrong type or escapes output: " + str(path.relative_to(output)))
+        raise ValueError("resume evidence path has wrong type or escapes output: " + path.relative_to(output).as_posix())
 
 
 def preflight_resume(alias, bundle, output, cfg, bundle_digest, deployment_hash, phase, threshold_hash):
@@ -460,7 +470,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
     backend = None
     def ensure_backend():
         nonlocal backend
-        # Called from worker threads. Start/warm up exactly once per invocation.
+        # Called on the main thread before the queue starts; starts the backend once.
         with startup_lock:
             if backend is None:
                 backend = backend_factory(alias, cfg, bundle, deployment, invocation, port)
@@ -522,14 +532,17 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                         error, fatal = type(e).__name__ + ": " + str(e), True
                 finally:
                     reset_request(token)
+                # Request sent to response parsed; receipt writes stay outside.
+                transport_seconds = time.monotonic() - started
                 write_receipt(path, {"unit": unit["id"], "attempt": attempt, "request_sha256": unit["request_sha256"],
                     "config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]],
                     "at": stamp(), "http_status": code, "response": raw, "parsed": parsed, "error": error,
                     "fatal": fatal, "retry_after": 0, "completed_at_unix": time.time(),
-                    "transport_seconds": time.monotonic() - started, "timings": timing})
+                    "transport_seconds": transport_seconds, "timings": timing})
                 receipt_key = path.relative_to(output).as_posix()
                 metadata = {"actual_provider": "self-hosted", "receipt": receipt_key,
-                            "receipt_sha256": file_hash(path), "http_status": code}
+                            "receipt_sha256": file_hash(path), "http_status": code,
+                            "transport_seconds": transport_seconds}
                 if error:
                     raise RequestFailure(error, status=code, fatal=fatal, metadata=metadata)
                 return parsed, metadata
@@ -572,7 +585,8 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     write_new(completion_path, {"execution_finished": True,
                         "final_missing_unique_units": result["final_missing_unique_units"],
                         "incomplete_questions": result["incomplete_questions"],
-                        # validate_completion needs POSIX "<split>/<name>" keys.
+                        # POSIX keys: validate_completion requires "<split>/<name>"
+                        # on every OS, including Windows.
                         "files": {
                             p.relative_to(output).as_posix(): (
                                 ledger.file_hash() if p == ledger.path else file_hash(p)

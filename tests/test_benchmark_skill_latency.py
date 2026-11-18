@@ -109,7 +109,8 @@ def test_valid_answers_are_timed(monkeypatch, backend, body):
             "http_429",
         ),
         (urllib.error.URLError("secret body"), "transport_error"),
-        (TimeoutError("secret body"), "transport_error"),
+        (TimeoutError("secret body"), "timeout"),
+        (urllib.error.URLError(TimeoutError("secret body")), "timeout"),
     ],
 )
 def test_transport_errors_are_counted_and_sanitized(monkeypatch, exception, error):
@@ -201,7 +202,10 @@ def test_failures_remain_in_attempt_counts_but_not_conditional_percentiles():
     )
     assert (result["conc_n"], result["conc_n_ok"], result["conc_n_failed"]) == (3, 2, 1)
     assert result["single_inference_s"] == 2
-    assert result["p50_s"] == 2 and result["p95_s"] == pytest.approx(2.9)
+    # Nearest-rank, shared with the unified runners: [1, 3] gives P50 1 and P95 3.
+    assert result["p50_s"] == 1 and result["p95_s"] == 3
+    assert result["conc_n_timeout"] == 0
+    assert result["p95_with_failures_s"] == latency.TIMEOUT
     assert len(result["concurrent_attempts"]) == 3
 
 
@@ -317,6 +321,9 @@ def test_cli_writes_provenance_and_returns_failure_for_incomplete_run(
         latency.RUNNER_PATH.read_bytes()
     )
     assert result["script_sha256"] == latency.sha256_bytes(SCRIPT.read_bytes())
+    assert result["latency_sha256"] == latency.sha256_bytes(
+        Path(latency.latency.__file__).read_bytes()
+    )
     assert all(len(result[key]) == 64 for key in ["request_sha256", "spec_sha256"])
     assert result["config"]["request_retries"] == 0
     assert result["spec_version"] == latency.runner.SPEC_VERSION
@@ -361,3 +368,14 @@ def test_real_ffmpeg_normalizes_synthetic_image_and_video(tmp_path):
             assert image.format == "JPEG"
             assert image.width == 720
             assert image.height > 0 and image.height % 2 == 0
+
+
+def test_all_failed_concurrent_attempts_keep_timeout_count_and_penalized_p95():
+    result = latency.summarize([], [
+        {"ok": False, "error": "timeout", "elapsed_s": 90},
+        {"ok": False, "error": "http_503", "elapsed_s": .1},
+    ])
+    assert result["p50_s"] is result["p95_s"] is None
+    assert result["conc_n"] == result["conc_n_failed"] == 2
+    assert result["conc_n_timeout"] == 1
+    assert result["p95_with_failures_s"] == latency.TIMEOUT
