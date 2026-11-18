@@ -16,6 +16,12 @@ import time
 import urllib.error
 import urllib.request
 
+from tools.latency_investigation.http_split import (
+    begin_open,
+    bind_request,
+    record_split,
+    reset_request,
+)
 from tools.unified_benchmark.adapters import parse_response, request_body
 from tools.unified_benchmark.api_run import InvalidResponse, MAX_RESPONSE_BYTES, atomic, http_error_body, retry_after
 from tools.unified_benchmark.contract import canonical, digest, file_hash, write_new, write_receipt
@@ -37,11 +43,18 @@ class LocalTransport:
             headers={"Content-Type": "application/json", "Authorization": "Bearer local"},
         )
         status = None
+        timings = None
         try:
-            with urllib.request.urlopen(req, timeout=90) as response:
+            response, timings = begin_open(req, 90)
+            with response:
                 status = getattr(response, "status", None)
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
+            record_split(self.output, timings, http_status=status)
+        except urllib.error.HTTPError as error:
+            record_split(self.output, getattr(error, "_gv_timings", timings), http_status=error.code)
+            raise
         except http.client.HTTPException as error:
+            record_split(self.output, timings, http_status=status)
             partial = getattr(error, "partial", b"")
             if not isinstance(partial, bytes):
                 partial = b""
@@ -81,39 +94,43 @@ class LocalTransport:
         _url, body = request_body(self.config, unit, self.bundle)
         if digest(body) != unit["request_sha256"]:
             raise RequestFailure("request fingerprint mismatch", fatal=True)
+        token = bind_request(unit["id"], attempt)
         try:
-            payload = self.call(body)
-        except InvalidResponse as error:
-            metadata = save({
-                "http_status": error.status,
-                "transport_error": type(error).__name__,
-                "detail": str(error),
-                "body_base64": base64.b64encode(error.body).decode(),
-                "body_truncated": error.truncated,
-                "body_incomplete": True,
-                "captured_body_bytes": len(error.body),
-            })
-            raise RequestFailure(str(error), status=error.status, metadata=metadata) from error
-        except urllib.error.HTTPError as error:
-            metadata = save({
-                **http_error_body(error),
-                "http_status": error.code,
-                "retry_after": error.headers.get("Retry-After"),
-            })
-            raise RequestFailure(
-                "HTTP " + str(error.code),
-                status=error.code,
-                retry_after=retry_after(error.headers.get("Retry-After")),
-                fatal=error.code in (400, 401, 403, 404),
-                metadata=metadata,
-            ) from error
-        except (OSError, TimeoutError, ValueError) as error:
-            metadata = save({
-                "transport_error": type(error).__name__,
-                "detail": str(error)[:500],
-                "body_incomplete": isinstance(error, TimeoutError),
-            })
-            raise RequestFailure(type(error).__name__, metadata=metadata) from error
+            try:
+                payload = self.call(body)
+            except InvalidResponse as error:
+                metadata = save({
+                    "http_status": error.status,
+                    "transport_error": type(error).__name__,
+                    "detail": str(error),
+                    "body_base64": base64.b64encode(error.body).decode(),
+                    "body_truncated": error.truncated,
+                    "body_incomplete": True,
+                    "captured_body_bytes": len(error.body),
+                })
+                raise RequestFailure(str(error), status=error.status, metadata=metadata) from error
+            except urllib.error.HTTPError as error:
+                metadata = save({
+                    **http_error_body(error),
+                    "http_status": error.code,
+                    "retry_after": error.headers.get("Retry-After"),
+                })
+                raise RequestFailure(
+                    "HTTP " + str(error.code),
+                    status=error.code,
+                    retry_after=retry_after(error.headers.get("Retry-After")),
+                    fatal=error.code in (400, 401, 403, 404),
+                    metadata=metadata,
+                ) from error
+            except (OSError, TimeoutError, ValueError) as error:
+                metadata = save({
+                    "transport_error": type(error).__name__,
+                    "detail": str(error)[:500],
+                    "body_incomplete": isinstance(error, TimeoutError),
+                })
+                raise RequestFailure(type(error).__name__, metadata=metadata) from error
+        finally:
+            reset_request(token)
         metadata = save({"http_status": 200, **raw_fields(response=payload)})
         if not isinstance(payload, dict):
             raise RequestFailure(

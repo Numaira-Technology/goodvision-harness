@@ -344,6 +344,10 @@ def test_actual_driver_is_checked_before_downloads(monkeypatch, output, valid):
 
 def fake_main_runtime(monkeypatch, tmp_path, frozen, *, resume=None, mutate_after_boot=False):
     """Run real main control flow with every external service replaced by local fakes."""
+    from tools.latency_investigation import host_facts, metrics_diff
+
+    monkeypatch.setattr(host_facts, "client_access", lambda **kwargs: {})
+    monkeypatch.setattr(metrics_diff, "fetch_metrics", lambda *args, **kwargs: "")
     events = []
     key = tmp_path / "synthetic-ssh-key"
     key.write_text("synthetic test bytes; never used by SSH")
