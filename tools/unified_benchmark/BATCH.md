@@ -193,6 +193,11 @@ chosen persistent location; remote file replication is an operator responsibilit
 
 `summary.json` contains per-model, per-round status, accuracy, valid coverage,
 missing units, latency sample count, P50/P95, restarts and cost evidence.
+JSON and CSV also retain the latency source, failed and timeout attempts,
+unresolved outcomes, missing successful timings, legacy timing fallback count,
+and failure-penalized P95 with its sample count. Missing historical qualifications
+remain null in JSON and empty in CSV; they are not inferred as zero failures.
+See the [shared latency definition](README.md#latency-definition-p50p95).
 `rounds.csv` is the compact comparison table. Each run also retains its raw
 receipts, attempt ledger, immutable outcome records, calibration and full report.
 Hardware probe records and worker logs live beside each run.

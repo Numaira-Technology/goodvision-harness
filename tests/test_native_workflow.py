@@ -228,6 +228,11 @@ def test_orphan_valid_receipt_recovered_without_another_request(frozen, tmp_path
     try:
         run.reconcile_receipts(phase, ledger, plan, cfg, phase.parent)
         assert ledger.state(unit, cfg["kind"]) == (1, parsed)
+        assert ledger.rows[-1]["metadata"]["transport_seconds"] == .1
+        latency = workflow.timings(ledger.rows)
+        assert latency["p50_seconds"] == .1
+        assert latency["attempt_elapsed_fallback"] == 0
+        assert latency["attempts_without_result"] == 0
         immediate_queue(ledger, cfg["kind"], lambda u: pytest.fail("valid receipt resent")).one(unit)
     finally: ledger.close()
 
@@ -907,6 +912,11 @@ def test_completed_phase_keeps_exhausted_intents_without_receipts(frozen, tmp_pa
     result = json.loads((output / "test/report.json").read_text())
     assert result["correct"] == 119 and result["accuracy_denominator"] == 120
     assert result["incomplete_questions"] == result["final_missing_unique_units"] == 1
+    latency = result["test_attempt_latency"]
+    assert latency["attempts"] == 122 and latency["attempts_without_result"] == 3
+    assert latency["n"] == latency["p95_with_failures_n"] == 119
+    assert latency["failed_attempts"] == 0
+    assert latency["p95_with_failures_seconds"] is None
     before = output_snapshot(output / "test")
     execute(frozen, output, "decision3", "test", resume=True)
     assert output_snapshot(output / "test") == before and len(FakeBackend.calls) == 119
@@ -1337,3 +1347,91 @@ def test_batch_native_restart_does_not_acknowledge_saved_fatal_response(
     assert FakeBackend.calls == calls
     result = batch.read(root / row["output"] / "worker-02.json")
     assert result["state"] == "blocked"
+
+
+@pytest.mark.parametrize("status", [200, 503])
+def test_native_transport_timing_excludes_receipt_write_and_hash(
+    frozen, tmp_path, monkeypatch, status,
+):
+    from types import SimpleNamespace
+
+    clock = [0.0]
+    monkeypatch.setattr(run, "time", SimpleNamespace(
+        monotonic=lambda: clock[0], time=time.time,
+    ))
+
+    def delayed(original, seconds):
+        def wrapped(*args, **kwargs):
+            clock[0] += seconds
+            return original(*args, **kwargs)
+        return wrapped
+
+    monkeypatch.setattr(run, "write_receipt", delayed(run.write_receipt, 5))
+    monkeypatch.setattr(run, "file_hash", delayed(run.file_hash, 7))
+    monkeypatch.setattr(run, "parse_response", delayed(run.parse_response, 1))
+
+    def infer(self, unit, body):
+        clock[0] += 2
+        return status, self.raw(unit, "yes"), {}
+
+    monkeypatch.setattr(FakeBackend, "infer", infer)
+
+    class SerialQueue(Queue):
+        def run(self, units):
+            return dict(self.one(unit) for unit in units)
+
+    def queue_factory(*args, **kwargs):
+        return SerialQueue(
+            *args, **kwargs, clock=lambda: clock[0],
+            sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+
+    output = tmp_path / "timed"
+    bundle, deployment, sha = frozen
+    run.execute("decision3", bundle, deployment, output, sha, phase="validation",
+                authorization="synthetic offline test", backend_factory=FakeBackend,
+                queue_factory=queue_factory)
+    rows = [json.loads(line) for line in
+            (output / "validation/attempts.jsonl").read_text().splitlines()]
+    expected = 3 if status == 200 else 2
+    for row in rows:
+        if row["type"] != "result":
+            continue
+        assert row["metadata"]["transport_seconds"] == expected
+        # Whole-attempt time also includes request fingerprint/frame hashing.
+        assert row["elapsed_seconds"] >= expected + 12
+        receipt = json.loads((output / row["metadata"]["receipt"]).read_text())
+        assert receipt["transport_seconds"] == expected
+    report = json.loads((output / "validation/report.json").read_text())
+    latency = report["test_attempt_latency"]
+    assert latency["split"] == "validation"
+    assert latency["attempt_elapsed_fallback"] == 0
+    assert latency["p50_seconds"] == (3 if status == 200 else None)
+    assert latency["failed_attempts"] == (0 if status == 200 else 72)
+
+
+@pytest.mark.parametrize("mutation", ["snapshot", "active", "inventory"])
+def test_latency_definition_is_part_of_frozen_source_integrity(
+    frozen, tmp_path, monkeypatch, mutation,
+):
+    bundle = frozen[0]
+    name = "tools/unified_benchmark/latency.py"
+    sources = json.loads((bundle / "source-hashes.json").read_text())
+    assert sources[name] == file_hash(workflow.source_files()[name])
+    if mutation == "snapshot":
+        (bundle / "source-snapshot" / name).write_text("changed")
+    elif mutation == "active":
+        changed = tmp_path / "changed-latency.py"
+        changed.write_text("changed")
+        active = workflow.source_files() | {name: changed}
+        monkeypatch.setattr(workflow, "source_files", lambda: active)
+    else:
+        del sources[name]
+        (bundle / "source-hashes.json").write_text(json.dumps(sources))
+        preflight_path = bundle / "preflight.json"
+        manifest = json.loads(preflight_path.read_text())
+        manifest["sources_sha256"] = digest(sources)
+        preflight_path.write_text(json.dumps(manifest))
+    seal(bundle)
+    with pytest.raises(ValueError, match="source"):
+        workflow.verify_bundle(bundle)

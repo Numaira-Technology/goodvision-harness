@@ -286,7 +286,9 @@ def summarize(root, config, state):
                  "complete_valid_questions": result.get("complete_valid_questions") if result else None,
                  "missing_units": result.get("final_missing_unique_units") if result else None,
                  "p50_seconds": latency.get("p50_seconds"), "p95_seconds": latency.get("p95_seconds"),
-                 "latency_n": latency.get("n", 0), "error": row.get("error"),
+                 "latency_n": latency.get("n"),
+                 "latency_source": latency.get("source"),
+                 "error": row.get("error"),
                  "wall_seconds_including_recovery": (
                      row["finished_at_unix"] - row["started_at_unix"]
                      if row.get("finished_at_unix") is not None and row.get("started_at_unix") is not None else None),
@@ -294,6 +296,12 @@ def summarize(root, config, state):
                                             if result and item["route"] == "api" else None),
                  "attempts_without_cost_evidence": (result.get("accounting", {}).get("attempts_without_cost_evidence")
                                                     if result and item["route"] == "api" else None)}
+            r.update({name: latency.get(name) for name in (
+                "failed_attempts", "timeout_attempts", "p95_with_failures_seconds",
+                "failure_penalty_seconds", "percentile_method", "attempts",
+                "attempts_without_result", "successful_attempts_without_timing",
+                "p95_with_failures_n", "attempt_elapsed_fallback",
+            )})
             rounds.append(r)
             rows.append(r)
         metrics = {}

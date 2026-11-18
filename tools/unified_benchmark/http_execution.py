@@ -7,6 +7,7 @@ from tools.event_benchmark.evidence import response_metadata
 from .adapters import parse_response, request_body
 from .contract import (EVENTS, atomic_json, digest, file_hash, plan_rules,
                        read_receipt, select_thresholds, valid_value, write_new)
+from .latency import is_timeout
 from .locking import lock_exclusive
 from .retry import Ledger, PausedRun, Queue, RequestFailure
 from .workflow import collect, context_for, load_threshold_artifact, report
@@ -25,7 +26,11 @@ def decode(config, unit, record, *, local=False):
     status = record.get("http_status")
     if record.get("transport_error") or (status is not None and status != 200):
         from .api_run import retry_after
-        raise RequestFailure(record.get("transport_error") or f"HTTP {status}",
+        reason = record.get("transport_error") or f"HTTP {status}"
+        if record.get("transport_error") and (
+                is_timeout(reason) or is_timeout(record.get("detail"))):
+            reason = "timeout"
+        raise RequestFailure(reason,
             status=status, retry_after=retry_after(record.get("retry_after")),
             fatal=status in (400, 401, 402, 403, 404))
     payload = record.get("response")

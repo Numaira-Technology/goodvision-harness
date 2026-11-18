@@ -24,6 +24,7 @@ import uuid
 
 from .adapters import frame_bytes, parse_response, request_body
 from .contract import EVENTS, plan_rules, canonical, digest, file_hash, finite_number, read_receipt, select_thresholds, write_new, write_receipt, atomic_json
+from .latency import REQUEST_TIMEOUT_SECONDS
 from .native_deploy import ALIASES, environment_for, profile, verify_deployment
 from .locking import lock_exclusive
 from .retry import Ledger, PausedRun, Queue, RequestFailure
@@ -122,7 +123,7 @@ class NativeBackend:
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/predict", data=canonical(body),
                                      headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=90) as r:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as r:
                 return r.status, json.load(r)
         except urllib.error.HTTPError as e:
             return e.code, {"error": e.read().decode(errors="replace")}
@@ -332,7 +333,8 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, *, recover=True):
             "http_status": receipt["http_status"], "fatal": receipt.get("fatal", False),
             "retry_after": receipt.get("retry_after", 0),
             "metadata": {"actual_provider": "self-hosted", "receipt": receipt_key,
-                         "receipt_sha256": file_hash(path), "recovered_receipt": True}}
+                         "receipt_sha256": file_hash(path), "recovered_receipt": True,
+                         "transport_seconds": receipt["transport_seconds"]}}
         if (not recovered["complete"] and not recovered["fatal"]
                 and (row["attempt"] < 3 or recovered["http_status"] == 429)):
             if not finite_number(receipt.get("completed_at_unix")):
@@ -459,7 +461,7 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
     backend = None
     def ensure_backend():
         nonlocal backend
-        # Called from worker threads. Start/warm up exactly once per invocation.
+        # Called on the main thread before the queue starts; starts the backend once.
         with startup_lock:
             if backend is None:
                 backend = backend_factory(alias, cfg, bundle, deployment, invocation, port)
@@ -517,14 +519,17 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                     fatal = "identity differs" in error
                 except Exception as e:
                     error, fatal = type(e).__name__ + ": " + str(e), True
+                # Request sent to response parsed; receipt writes stay outside.
+                transport_seconds = time.monotonic() - started
                 write_receipt(path, {"unit": unit["id"], "attempt": attempt, "request_sha256": unit["request_sha256"],
                     "config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]],
                     "at": stamp(), "http_status": code, "response": raw, "parsed": parsed, "error": error,
                     "fatal": fatal, "retry_after": 0, "completed_at_unix": time.time(),
-                    "transport_seconds": time.monotonic() - started, "timings": timing})
+                    "transport_seconds": transport_seconds, "timings": timing})
                 receipt_key = path.relative_to(output).as_posix()
                 metadata = {"actual_provider": "self-hosted", "receipt": receipt_key,
-                            "receipt_sha256": file_hash(path), "http_status": code}
+                            "receipt_sha256": file_hash(path), "http_status": code,
+                            "transport_seconds": transport_seconds}
                 if error:
                     raise RequestFailure(error, status=code, fatal=fatal, metadata=metadata)
                 return parsed, metadata

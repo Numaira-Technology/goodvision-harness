@@ -14,9 +14,13 @@ hashes, source commit, run date, sampling, hardware/capacity/peak usage, actual
 precision and unresolved provider-side version limits. Historical v2 outputs keep
 their original interpretation; no comparison is established merely by a table format.
 
-P50/P95 must identify their source and timing boundary. Current API reports measure
-successful complete transport attempts including parsing and any metadata lookup,
-excluding queue/retry wait; report successful sample count and missing separately.
+P50/P95 must identify their source and timing boundary. Current reports follow the
+latency definition in `tools/unified_benchmark/README.md`: request sent to response
+parsed, nearest-rank, metadata lookup and receipt writes excluded. Report successful
+n, failed and timeout attempts, unresolved attempts and missing successful timings,
+and `p95_with_failures_seconds` with its sample count beside P50/P95. The penalized
+P95 is unavailable when outcomes or successful timings are missing; old-ledger
+fallback counts must accompany timings that include whole-attempt overhead.
 An independent latency bench is a different workload and must be labelled. Keep
 old speed only when explicitly requested, preserving its date/variant. Twelve slots
 or workers do not prove twelve-camera end-to-end throughput.
