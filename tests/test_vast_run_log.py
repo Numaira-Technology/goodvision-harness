@@ -616,6 +616,7 @@ def test_every_vast_rental_calls_the_recorder():
         "tools/start_qwen8b_r2.py",
         "tools/start_qwen8b_vllm.py",
         "tools/start_sam.py",
+        "tools/start_bag_demo.py",
     }
     init = (REPO / "tools/__init__.py").read_text(encoding="utf-8")
     assert "arm_if_launcher" in init
@@ -624,6 +625,7 @@ def test_every_vast_rental_calls_the_recorder():
     for name in (
         "start_qwen8b_vllm.py",
         "start_sam.py",
+        "start_bag_demo.py",
         "start_detector.py",
         "diag_qwen8b_vllm_import.py",
     ):
