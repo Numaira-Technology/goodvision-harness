@@ -59,6 +59,9 @@ correctness, a fresh held-out test, or new GPU/API runtime readiness.
 
 ## Reporting and calibration
 
+The following counts describe the baseline; the optional supplement below expands
+only test membership and its reported denominators.
+
 Headline is **correct / 202**, including questions with missing evidence in the
 denominator. A question contributes correct only when all planned responses are
 valid. Complete evidence aggregates any yes → yes, otherwise any no → no, otherwise
@@ -80,3 +83,37 @@ Report protocol, dataset hashes and the review limitation with any future sheet
 update. A `Dataset all120` header cannot receive a202 headline: use the same-run
 original120 subset there, or agree on changing the target block to202 before
 publishing. Do not create columns or change shared tables merely by running preflight.
+
+
+## Optional test supplement
+
+`preflight --test-supplement /private/path/test-supplement.json` appends questions
+after original202. The current bag supplement adds questions203–222 on ten videos,
+for **222 questions / 202 test videos**, with event counts **32/22/62/66/20/20**.
+Its labels are assistant annotations, not human-confirmed. Sources and acquisition
+links are in the [benchmark skill](../../.claude/skills/event-benchmark/SKILL.md).
+The combined questions/video lists aid acquisition; they do not replace any of the
+eight frozen inputs. No private labels or media belong in this repository.
+
+The separate JSON document requires `schema: "event-test-supplement-v1"`,
+`split: "test"`, a nonempty `dataset` identity and a nonempty `samples` list.
+Each row has a consecutive integer `number` starting at203, a basename `filename`,
+lowercase media `sha256`, an existing `event`, binary `proposed_answer`, nonblank
+`human_review` provenance text and `source_video_group` (or `source_group`). Both
+group keys, when supplied, must agree. Review text records the supplied provenance;
+validation does not establish human approval or label correctness.
+
+One video may have different event questions, but repeated video/event pairs,
+conflicting media identities and identical bytes under different names are rejected.
+Names and hashes cannot overlap original test or validation; source groups cannot
+overlap validation, including the optional bag validation manifest. Related cuts
+may share a group within test. Validation membership and threshold selection remain
+unchanged. Never tune on these appended test questions.
+
+Preflight retains the raw supplement and its SHA-256, question membership and review
+provenance. Bundle verification ties the test count, cohort and appended references
+to that retained input. Reports use correct / **all planned questions**, including
+missing evidence, with separate **original120**, **robot82** and **test_supplement**
+cohorts (120/82/20 for this supplement). Original API `base100` and `bag20` keep their
+100/20 denominators. For other supplements, use the recorded counts; never hardcode
+222. Historical baseline bundles keep their original source snapshots and counts.

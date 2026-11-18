@@ -10,6 +10,8 @@ description: >-
 # Event-recognition benchmark
 
 Default for this team's current evaluation: **unified-frame-202-v1**.
+The current dataset is **222 test questions on 202 videos** when the requested
+test supplement below is included; the retained 202-question baseline stays available.
 Follow **preflight → environment checks → validation → threshold selection when
 applicable → test → local report**. Publishing is a separately scoped action.
 Use [the unified run guide](../../../tools/unified_benchmark/README.md), not the
@@ -30,6 +32,16 @@ Another agent must read this file and its selected execution guide; discovering
 ## Current202 workflow
 
 1. **Preflight:** run `tools.unified_benchmark.preflight` for the selected profiles.
+   For the current222 test, add `--test-supplement /private/path/test-supplement.json`
+   from [the unified dataset folder](https://drive.google.com/drive/folders/1kOyH59vxBp3uppyEoeyMjTMUa_CalTdh):
+   [supplement](https://drive.google.com/file/d/1SgKsoMVYQm9w5a1fE84bR7dcxPuscEbV/view),
+   [all222 questions](https://drive.google.com/file/d/1qvcl8vEWNcfxlrw_DhU79Tfxe1q2VBQg/view),
+   [all202 videos](https://drive.google.com/file/d/1uYN1PdiF13Aa1L6yj88zDACaO-0i5kqd/view).
+   Use the existing downloader with the latter list. Keep the original eight
+   frozen inputs unchanged; do not replace their `samples.json` with `samples_222.json`.
+   Haotian's ten bag recordings add questions203-222 in the existing bag categories.
+   Their labels are assistant annotations, not human-confirmed. Ashley's ten bag
+   validation recordings remain separate; do not tune thresholds on the new test.
    Verify all eight frozen inputs and video hashes, decode frames and save the new
    request/code snapshot. Keep pending hardware/provider/authorization checks
    separate from input validity. This step performs no model calls.
@@ -43,7 +55,8 @@ Another agent must read this file and its selected execution guide; discovering
 4. **Thresholds, when applicable:** use `bench-threshold-tune` and the route's own
    selector for Luna/CLIP/SigLIP2; require complete validation, then freeze the
    artifact before test. Boolean/argmax models do not gain a scalar threshold.
-5. **Test:** run the frozen configuration on all 202 questions. Preserve successful
+5. **Test:** run the frozen configuration on all planned questions (222 with the
+   supplement, otherwise202). Preserve successful
    answers and the cumulative three-attempt budget across interruptions. For the
    four-model native CLI, use explicit `--resume`; other routes follow their own
    documented continuation support, never a fresh ledger to reset the budget.
@@ -54,7 +67,8 @@ Another agent must read this file and its selected execution guide; discovering
 The [202 dataset guide](../../../tools/unified_benchmark/DATASET202.md) defines
 questions1–120 unchanged plus82 single views in test, with 24 base validation questions.
 Keep inherited/unreviewed labels explicit; preflight is not human review. Report
-original120 and robot82 separately alongside correct/202, and never count the old41
+original120, robot82 and any test supplement separately alongside correct/all planned,
+and never count the old41
 stereo sources again. Do not tune on the new test questions.
 
 ## Execution routes
@@ -103,8 +117,9 @@ of twelve-camera real-time throughput. Each unit has at most three total attempt
 
 Every planned response must be valid before a question can contribute a correct
 answer. For complete evidence: any yes → yes; otherwise any no → no; otherwise
-unknown. Headline accuracy is correct / all planned questions (202 for the full
-test). Missing questions stay in the denominator and are reported separately.
+unknown. Headline accuracy is correct / all planned questions (222 with the current
+supplement; 202 for the retained baseline). Missing questions stay in the denominator
+and are reported separately.
 Native/bag unknown is a valid response; a final unknown is wrong against the binary
 references. Refusal or malformed output is missing, not unknown.
 
