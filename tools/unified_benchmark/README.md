@@ -462,9 +462,43 @@ python -m tools.unified_benchmark.workflow report --bundle /bundle --model luna 
 
 Keep known receipt USD spend and unknown-cost attempts separate. Specify whether
 cost includes validation/test/retries. GPU actual cost needs a bill or verified
-rate and duration. Test P50/P95 are successful complete transport attempt times,
-including parsing/metadata lookup, excluding queue/backoff; report n and missing.
-They are not independent-probe latency or end-to-end twelve-camera throughput.
+rate and duration. Test latency follows the definition below; report n, failed
+and timeout attempts beside P50/P95. They are not independent-probe latency or
+end-to-end twelve-camera throughput.
+
+### Latency definition (P50/P95)
+
+Code: `tools/unified_benchmark/latency.py`, used by `workflow.py` and
+`.claude/skills/event-benchmark/scripts/latency_bench.py`.
+
+- One sample is one recorded request attempt in the reported split, including retries.
+  Formal test runs use 12 client slots; validation timings are labelled separately.
+  The independent latency bench records its own workload and concurrency.
+- Its time (`transport_seconds`) runs from sending the request to having the parsed
+  response. Building the request, writing and hashing receipts, the OpenRouter
+  generation lookup (recorded separately as `metadata_lookup_seconds`), queue wait
+  and retry backoff are outside it.
+- Percentiles are nearest-rank: sort ascending and take index `ceil(p * n) - 1`.
+- `p50_seconds` / `p95_seconds` use successful attempts only. Failed attempts are
+  never dropped silently: `failed_attempts` and `timeout_attempts` are reported, and
+  `p95_with_failures_seconds` counts each recorded failed attempt at a fixed 90 s
+  request-timeout penalty. This is a penalized statistic, not observed failure latency
+  or a hard wall-clock deadline (urllib uses a socket timeout; local encoders have
+  no HTTP timeout). `p95_with_failures_n` gives its known sample count.
+- `attempts` also includes durable intents without a result (`attempts_without_result`).
+  These are unresolved handoffs, not proven failures or timeouts. Successful results
+  without a finite, nonnegative duration are counted as
+  `successful_attempts_without_timing`. Either gap makes `p95_with_failures_seconds`
+  unavailable (`null`), so missing evidence cannot silently improve the statistic.
+- Ledgers written before `transport_seconds` existed fall back to whole-attempt
+  elapsed time; `attempt_elapsed_fallback` counts valid samples using that fallback.
+  Invalid explicit transport timings are reported as missing, not replaced by a
+  different timing boundary. CLIP/SigLIP2 backend preprocessing, GPU-lock wait and
+  readback remain inside native transport time and are also recorded separately.
+- Hardware run logs retain these qualifications in `latency_details` beside their
+  success-only P50/P95. Missing historical fields and unavailable penalized P95
+  remain `unknown` in log summaries; they are never inferred as zero failures.
+
 `run_date_utc` comes from the first timestamped request intent in the saved ledger,
 including resumed runs; it is null if no such evidence exists. Offline re-scoring
 records its own `report_generated_at_utc` and does not change the inference date.
