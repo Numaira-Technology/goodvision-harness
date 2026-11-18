@@ -7,11 +7,15 @@ verified SHA256, is required. Nothing is fetched from a floating installer URL.
 """
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 from pathlib import Path
 
@@ -88,6 +92,161 @@ def _ensure_miniconda(home, installer=None, installer_sha256=None):
     return conda
 
 
+# conda owns these; pip must never upgrade them. conda-pack copies a noarch
+# package's files from the conda package cache, not from the prefix, so a pip
+# upgrade of conda's pip packed old pip source under new pip metadata/launchers
+# (PR #94 audit of envs/videojev/cu128-py312-torch280-ada.tar.gz).
+CONDA_BASE_PACKAGES = ("pip", "setuptools", "wheel")
+# Declared, same-version distributions that intentionally share files.
+ALLOWED_SHARED_OWNERS = frozenset({"opencv-python", "opencv-python-headless"})
+SITE_PACKAGES = re.compile(r"lib/python3\.\d+/site-packages/")
+_CONDA_PLACEHOLDER = b"/opt/anaconda1anaconda2" + b"anaconda3"
+_CONDA_INSTALLER = None  # set below, after _record_digest
+
+
+def _canonical(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _conda_records(prefix):
+    meta = Path(prefix) / "conda-meta"
+    if not meta.is_dir():
+        raise RuntimeError(f"{prefix} is not a conda environment")
+    return [json.loads(p.read_text()) for p in sorted(meta.glob("*.json"))]
+
+
+def _conda_python_dists(prefix):
+    """Map canonical distribution name -> version for conda-installed dist-info."""
+    owned = {}
+    for rec in _conda_records(prefix):
+        for f in rec.get("files", []):
+            m = re.match(
+                r"lib/python3\.\d+/site-packages/([^/]+)-([^/-]+)\.dist-info/METADATA$",
+                f,
+            )
+            if m:
+                owned[_canonical(m.group(1))] = m.group(2)
+    return owned
+
+
+def _write_constraints(prefix, path):
+    owned = _conda_python_dists(prefix)
+    path.write_text("".join(f"{n}=={v}\n" for n, v in sorted(owned.items())))
+    return owned
+
+
+def check_conda_ownership(prefix):
+    """Fail if pip removed or replaced any file of a conda-installed package."""
+    prefix = Path(prefix)
+    missing = {}
+    for rec in _conda_records(prefix):
+        gone = [
+            f
+            for f in rec.get("files", [])
+            if not (prefix / f).exists()
+            and not (prefix / f).is_symlink()
+            and not f.endswith(".pyc")
+        ]
+        if gone:
+            missing[f"{rec.get('name')}=={rec.get('version')}"] = gone[:3]
+    if missing:
+        raise RuntimeError(f"pip clobbered conda-owned packages: {missing}")
+    seen = {}
+    site = next(iter(sorted(prefix.glob("lib/python3.*/site-packages"))), None)
+    for info in sorted(site.glob("*.dist-info")) if site else ():
+        name = _canonical(info.name[: -len(".dist-info")].rsplit("-", 1)[0])
+        if name in seen:
+            raise RuntimeError(
+                f"two installed versions of {name}: {seen[name]}, {info.name}"
+            )
+        seen[name] = info.name
+
+
+def _record_digest(data: bytes) -> str:
+    return base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+
+
+_CONDA_INSTALLER = _record_digest(b"conda\n")
+
+
+def verify_pack(tarball):
+    """Static check of the packed bytes: every dist-info RECORD hash must match.
+
+    Reads the archive only; executes nothing. Files outside site-packages (bin
+    launchers get shebang rewrites) and conda placeholder files are reported,
+    not compared. Several distributions may claim one file when they all
+    declare the same bytes (namespace files such as nvidia/__init__.py); with
+    differing bytes only ALLOWED_SHARED_OWNERS may share it, and the packed file
+    must match one of them. conda rewrites dist-info/INSTALLER to "conda".
+    """
+    files, records = {}, {}
+    with tarfile.open(tarball, "r|gz") as tar:
+        for m in tar:
+            if not m.isfile():
+                continue
+            hit = SITE_PACKAGES.match(m.name)
+            if not hit:
+                continue
+            data = tar.extractfile(m).read()
+            rel = m.name[hit.end() :]
+            files[rel] = (_record_digest(data), _CONDA_PLACEHOLDER in data)
+            if re.fullmatch(r"[^/]+\.dist-info/RECORD", rel):
+                records[rel] = data.decode("utf-8")
+    claims, problems, outside, placeholder, conda_installer = {}, [], 0, 0, 0
+    dists = {}
+    for rec, text in sorted(records.items()):
+        dist = rec.split("/", 1)[0][: -len(".dist-info")]
+        name, version = dist.rsplit("-", 1)
+        name = _canonical(name)
+        if name in dists:
+            problems.append(f"{name}: two dist-info directories")
+        dists[name] = version
+        for row in text.splitlines():
+            path, _, rest = row.partition(",")
+            digest = rest.split(",", 1)[0]
+            if not path or not digest.startswith("sha256="):
+                continue
+            if path.startswith("../") or path.startswith("/"):
+                outside += 1
+                continue
+            claims.setdefault(path, []).append((name, digest[len("sha256=") :]))
+    shared = {}
+    for path, owners in sorted(claims.items()):
+        names = {n for n, _ in owners}
+        if len(names) > 1 and len({d for _, d in owners}) > 1:
+            if not names <= ALLOWED_SHARED_OWNERS:
+                problems.append(f"{path}: claimed by {sorted(names)}")
+                continue
+            key = ",".join(sorted(names))
+            shared[key] = shared.get(key, 0) + 1
+        if path not in files:
+            problems.append(f"{path}: listed by {sorted(names)} but not packed")
+            continue
+        got, has_placeholder = files[path]
+        if any(got == d for _, d in owners):
+            continue
+        if has_placeholder:
+            placeholder += 1
+            continue
+        if path.endswith(".dist-info/INSTALLER") and got == _CONDA_INSTALLER:
+            conda_installer += 1
+            continue
+        problems.append(f"{path}: bytes differ from {sorted(names)} RECORD")
+    if problems:
+        raise RuntimeError(
+            f"pack RECORD check failed ({len(problems)}): " + "; ".join(problems[:10])
+        )
+    return {
+        "dists": len(dists),
+        "pip": dists.get("pip"),
+        "files_checked": len(claims),
+        "outside_site_packages_skipped": outside,
+        "conda_placeholder_files": placeholder,
+        "conda_installer_rewrites": conda_installer,
+        "declared_shared_files": shared,
+    }
+
+
 def _build_prefix(conda, prefix, requirements, python_ver, arch, *, flash_attn=True):
     """Use argv throughout: paths containing shell syntax remain literal paths."""
     _run(
@@ -101,11 +260,31 @@ def _build_prefix(conda, prefix, requirements, python_ver, arch, *, flash_attn=T
             "conda-forge",
             "--override-channels",
             f"python={python_ver}",
+            *CONDA_BASE_PACKAGES,
         ]
     )
+    with tempfile.TemporaryDirectory() as tmp:
+        constraints = Path(tmp) / "conda-owned.txt"
+        if (Path(prefix) / "conda-meta").is_dir():
+            _write_constraints(prefix, constraints)
+        else:  # only reachable with a mocked conda
+            constraints.write_text("")
+        _install_python_packages(prefix, requirements, arch, constraints, flash_attn)
+
+
+def _install_python_packages(prefix, requirements, arch, constraints, flash_attn):
     python = str(Path(prefix) / "bin/python")
-    pip = [python, "-I", "-m", "pip", "install", "--no-cache-dir"]
-    _run([*pip, "--upgrade", "pip", "setuptools", "wheel", "packaging", "ninja"])
+    pip = [
+        python,
+        "-I",
+        "-m",
+        "pip",
+        "install",
+        "--no-cache-dir",
+        "--constraint",
+        str(constraints),
+    ]
+    _run([*pip, "packaging", "ninja"])
     _run(
         [
             *pip,
@@ -277,10 +456,16 @@ def main(argv=None):
             args.conda_home, args.miniforge_installer, args.miniforge_sha256
         )
         _build_prefix(
-            conda, prefix, args.requirements.resolve(), compat["python"], arch,
+            conda,
+            prefix,
+            args.requirements.resolve(),
+            compat["python"],
+            arch,
             flash_attn=build.get("flash_attn", True),
         )
+        check_conda_ownership(prefix)
         _pack(conda, prefix, out)
+    pack_check = verify_pack(out)
     sha = _sha256(out)
     result = {
         "model": args.model,
@@ -288,6 +473,7 @@ def main(argv=None):
         "sha256": sha,
         "size": out.stat().st_size,
         "arch": arch,
+        "pack_check": pack_check,
         "uploaded": False,
     }
     if not args.skip_upload:

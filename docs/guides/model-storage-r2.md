@@ -254,6 +254,15 @@ python -m tools.build_env --model videojev \
 构建/解包子进程不继承 R2/HF/cloud 凭据或 `PYTHONPATH`。路径通过 argv 传递；
 `conda-pack` 不使用 `--ignore-missing-files` 或 `--force`。
 
+pip、setuptools、wheel 由 conda 在建环境时安装，之后 pip 不再升级它们。
+conda-pack 对 noarch 包是从 conda 包缓存取文件，不是从环境前缀取；所以 pip 一旦
+覆盖 conda 的包，打出来的包里就会混进旧源码和新 metadata。旧 VideoJev 包
+（`44ac889e…`）就是这样：pip 26.3 的 dist-info 和 launcher，配上 26.2.2 的源码。
+现在每次 pip 安装都带一份约束文件，把 conda 已有的 Python 包钉在原版本。打包前
+检查 conda 管理的文件都还在、没有同名包装了两个版本；打包后逐个核对包内每个
+dist-info RECORD 的哈希，只允许声明过的 OpenCV full/headless 共用文件。核对结果
+写进构建输出的 `pack_check`。
+
 ### 每次使用：在远端恢复，再用包内解释器启动
 
 远端需有 Python（带 `tarfile.data_filter` 的受维护版本）、`boto3`、`PyYAML`、
