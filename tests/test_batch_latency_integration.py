@@ -28,7 +28,10 @@ def test_batch_json_and_csv_keep_latency_qualifications(tmp_path, gap):
     write_new(tmp_path / "r1/synthetic/test/summary.json", {
         "accuracy": 1, "test_attempt_latency": latency,
     })
-    config = {"models": [{"alias": "synthetic", "route": "api"}]}
+    write_new(tmp_path / "plans/synthetic-test.json", {"questions": [None] * 202})
+    config = {"models": [{
+        "alias": "synthetic", "route": "api", "bundle": str(tmp_path),
+    }]}
     matrix = [{
         "alias": "synthetic", "split": "test", "round": i, "output": f"r{i}",
         "state": "completed" if i == 1 else "not_started",

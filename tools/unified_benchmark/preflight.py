@@ -16,7 +16,7 @@ from tools.event_benchmark import evidence, run_eval
 from tools.clip_benchmark.protocol import PROMPTS, REVISIONS
 from .adapters import CURRENT_IMAGE_PROMPTS, question_core, request_body
 from .contract import CURRENT_VERSION, EVENTS, VERSION, canonical, digest, file_hash, rules_for, sample_times, source_files, write_new
-from .dataset202 import add_bag_validation, load_extension
+from .dataset202 import add_bag_validation, add_test_supplement, load_extension
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILES = Path(__file__).parent / "profiles"
@@ -212,6 +212,10 @@ def main(argv=None):
                         help="fail before media processing if the frozen bag supplement is missing")
     parser.add_argument("--bag-validation", type=Path, help="Private bag-validation10-v1 manifest for current202, supported by every recorded profile")
     parser.add_argument("--bag-validation-sha256", help="Pinned raw SHA256 of the supplementary manifest")
+    parser.add_argument(
+        "--test-supplement", type=Path,
+        help="Append private test-only questions; preserve original202 inputs",
+    )
     parser.add_argument("--media", type=Path, required=True, help="contains validation/ and test/ videos")
     parser.add_argument("--profiles", type=Path, default=PROFILES)
     parser.add_argument("--models", nargs="+", required=True, help="profile aliases to prepare")
@@ -220,6 +224,8 @@ def main(argv=None):
         parser.error("--bag-validation and --bag-validation-sha256 must be supplied together")
     if args.bag_validation and args.protocol != CURRENT_VERSION:
         parser.error("--bag-validation requires current202")
+    if args.test_supplement and args.protocol != CURRENT_VERSION:
+        parser.error("--test-supplement requires the current protocol")
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     report = {"protocol": args.protocol, "started_at": datetime.now(timezone.utc).isoformat(),
@@ -233,6 +239,8 @@ def main(argv=None):
             if configs != model_configs(args.models):
                 raise ValueError("bag validation requires the recorded model profiles")
             add_bag_validation(out, parts, args.bag_validation, args.bag_validation_sha256)
+        if args.test_supplement:
+            add_test_supplement(out, parts, args.test_supplement)
         report["dataset_context"] = parts["test"].get("dataset_context")
         if args.phase == "validation":
             # Retain all frozen input hashes for leakage checks, but do not
@@ -247,6 +255,8 @@ def main(argv=None):
         for split, part in parts.items():
             unique = {r["filename"]: r for r in part["rows"]}
             expected_videos = 192 if args.protocol == CURRENT_VERSION else 110
+            if split == "test" and args.test_supplement:
+                expected_videos = part["dataset_context"]["test_videos"]
             if split == "validation":
                 expected_videos = 34 if args.bag_validation else 24
             if len(unique) != expected_videos:

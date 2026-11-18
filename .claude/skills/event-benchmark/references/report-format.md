@@ -1,12 +1,15 @@
 # Benchmark report fields
 
 Use the named protocol's saved, verified results. For current202, the headline is
-correct / all 202 planned questions; separately show complete-valid questions,
+correct / all planned questions (202 baseline, 222 with the current supplement); separately show complete-valid questions,
 missing unique frames/windows, incomplete questions, unknowns and send/valid coverage.
-Per-event denominators are 32/22/62/66/10/10; bag classes are not Weapon.
+Baseline per-event denominators are 32/22/62/66/10/10; the current test supplement
+changes them to 32/22/62/66/20/20. Use the frozen plan counts; bag classes are not Weapon.
 
 Also report same-run original120 and robot82 cohorts, retaining the inherited,
-pending single-view review status for robot82. Historical120 results keep their
+pending single-view review status for robot82. Include the separate test_supplement
+cohort (20 for the current supplement), retaining its assistant-annotation provenance.
+Original API base100/bag20 remain 100/20. Historical120 results keep their
 120 denominator and 32/22/26/20/10/10 event counts.
 
 Report model/effort, protocol/parser, provider, threshold artifact, prompt and data

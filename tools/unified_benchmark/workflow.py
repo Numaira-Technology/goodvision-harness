@@ -12,6 +12,7 @@ from pathlib import Path
 from . import latency
 from .contract import (BAG_VALIDATION_SCHEMA, CURRENT_VERSION, EVENTS, plan_rules, rules_for, digest, file_hash,
                        has_bag_validation, score, select_thresholds, source_files, validate_threshold_values, write_new)
+from .supplement import bundle_test_supplement, verify_supplement_plan
 
 
 def verify_bundle(bundle):
@@ -38,6 +39,7 @@ def verify_bundle(bundle):
         if (not hashes.get("inputs/bag-validation.json") or hashes["inputs/bag-validation.json"] != overlay.get("sha256")
                 or frozen_rules["version"] != CURRENT_VERSION):
             raise ValueError("bag validation manifest or model scope differs")
+    test_rows = bundle_test_supplement(bundle, hashes, report, frozen_rules["version"])
     for name in hashes:
         if not name.startswith("plans/") or not name.endswith(".json"):
             continue
@@ -46,8 +48,12 @@ def verify_bundle(bundle):
             raise ValueError("plan protocol differs from bundle")
         if (plan.get("dataset_context") or {}).get("bag_validation") != overlay:
             raise ValueError("plan bag validation fingerprint differs from preflight")
+        verify_supplement_plan(plan, test_rows, report)
         if frozen_rules["version"] == CURRENT_VERSION:
-            count = (44 if has_bag_validation(plan) else 24) if plan["split"] == "validation" else 202
+            count = (
+                (44 if has_bag_validation(plan) else 24)
+                if plan["split"] == "validation" else 202 + len(test_rows)
+            )
             if {q["number"] for q in plan["questions"]} != set(range(1, count + 1)) or len(plan["questions"]) != count:
                 raise ValueError("plan does not cover the frozen question cohort")
     sources = json.loads((bundle / "source-hashes.json").read_text())

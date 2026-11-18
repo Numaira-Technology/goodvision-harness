@@ -40,7 +40,11 @@ launch a formal test configuration.
 ## Ten-round evaluation
 
 This batch runs **validation44 / 34 videos once per selected model**, then
-**ten test202 / 192-video rounds**. The existing twenty bag validation questions
+**ten rounds of the frozen test cohort**: 202 questions / 192 videos for the
+baseline, or the expanded counts when `preflight --test-supplement` is used
+(222 questions / 202 videos for the current supplement). Admission, cost
+reservation, completion checks and reports use the frozen plan. Every selected
+model must share the same cohort. The existing twenty bag validation questions
 are required for every selected profile. Test questions, labels, media, prompts,
 precision, frame sampling, queue slots and three-attempt rules are unchanged.
 
@@ -61,8 +65,9 @@ selection does not remove reusable profiles or historical results.
 1. Use the eight original private snapshots from [README.md](README.md) and the
    existing private `bag-validation10-v1` manifest. Do not manufacture labels or
    reconstruct the manifest from old predictions.
-2. Put all 34 validation videos under `media/validation` and all 192 test videos
-   under `media/test`. Verify the manifest's externally recorded SHA-256.
+2. Put all 34 validation videos under `media/validation` and all planned test videos
+   under `media/test` (192 baseline, plus any supplement). Verify the bag validation
+   manifest's externally recorded SHA-256.
 3. Finish code changes, record the commit, then create a **new** bundle:
 
 ```sh
@@ -72,6 +77,9 @@ python -m tools.unified_benchmark.preflight \
   --bag-validation /private/inputs/bag-validation.json \
   --bag-validation-sha256 FROZEN_MANIFEST_SHA256
 ```
+
+For a supplemented test, also pass `--test-supplement /private/inputs/test-supplement.json`.
+This adds only the retained test cohort; validation44 and threshold selection are unchanged.
 
 The example model list is illustrative; use the already selected experiment
 scope. All thirteen recorded profiles accept the supplement. Requests remain

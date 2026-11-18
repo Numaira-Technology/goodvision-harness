@@ -303,7 +303,8 @@ def test_resume_rejects_changed_matrix_and_outcome(tmp_path, inputs, monkeypatch
 
 
 def test_report_keeps_failed_missing_and_not_started_rounds(tmp_path):
-    item = {"alias": "synthetic", "route": "api"}
+    write_new(tmp_path / "plans/synthetic-test.json", {"questions": [None] * 202})
+    item = {"alias": "synthetic", "route": "api", "bundle": str(tmp_path)}
     config = {"models": [item]}
     rows = [{"alias": "synthetic", "split": "test", "round": i, "output": f"r{i}",
              "state": "not_started" if i == 10 else "completed_incomplete" if i == 1 else "completed",

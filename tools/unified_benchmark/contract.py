@@ -240,6 +240,10 @@ def score(plan, evidence, kind, thresholds=None):
     if plan.get("split") == "test" and plan.get("protocol") == CURRENT_VERSION:
         result["cohorts"] = {label: metrics([r for r in rows if start <= r["number"] <= end])
                              for label, start, end in (("original120", 1, 120), ("robot82", 121, 202))}
+        supplement = (plan.get("dataset_context") or {}).get("test_supplement")
+        if supplement:
+            result["cohorts"]["test_supplement"] = metrics(
+                [r for r in rows if r["number"] in supplement["question_numbers"]])
     return result
 
 

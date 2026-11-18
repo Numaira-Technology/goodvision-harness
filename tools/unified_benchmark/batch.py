@@ -1,4 +1,4 @@
-"""Validation44 only, or validation44 then ten independent test202 rounds.
+"""Validation44 only, or validation44 then ten rounds of the frozen test cohort.
 
 No renting, environment rebuilding, provider changes or publication. GPU routes
 require an already prepared, independently managed host and an identity probe.
@@ -128,13 +128,22 @@ def validate_config(config):
                 verify_deployment(Path(item["deployment"]), item["deployment_sha256"], alias)
             elif not isinstance(item.get("endpoint"), str):
                 raise ValueError("Qwen endpoint required")
-        phases = (("validation", 44, 34),) if validation_only else (("validation", 44, 34), ("test", 202, 192))
-        for split, count, videos in phases:
+        phases = ("validation",) if validation_only else ("validation", "test")
+        for split in phases:
             data = read(bundle / f"plans/{alias}-{split}.json")
+            supplement = (data.get("dataset_context") or {}).get("test_supplement") or {}
+            count, videos = 44, 34
+            if split == "test":
+                count = 202 + len(supplement.get("question_numbers", []))
+                videos = 192 + len({
+                    q["filename"] for q in data["questions"] if q["number"] > 202
+                })
             if (data.get("protocol") != CURRENT_VERSION or not has_bag_validation(data)
                     or len(data["questions"]) != count
                     or len({q["filename"] for q in data["questions"]}) != videos):
-                raise ValueError(f"{alias}: requires validation44/34 and test202/192")
+                raise ValueError(
+                    f"{alias}: requires validation44/34 and the frozen test cohort"
+                )
             identity = cohort(data)
             if split in cohorts and cohorts[split] != identity:
                 raise ValueError("selected models do not share the same frozen cohort/frames")
@@ -244,7 +253,8 @@ def verify_finished(root, item, row):
             identity.get("initial_threshold_sha256"),
         )
     result = phase_report(root, item, row)
-    expected = 44 if row["split"] == "validation" else 202
+    plan = read(Path(item["bundle"]) / f"plans/{item['alias']}-{row['split']}.json")
+    expected = len(plan["questions"])
     if result is None or result.get("planned_questions") != expected:
         raise ValueError("completed round report cohort differs")
     return result
@@ -317,9 +327,13 @@ def summarize(root, config, state):
                                   if r["alias"] == item["alias"] and r["split"] == selected_split),
             "valid_complete_rounds": sum(r["state"] == "completed" for r in rounds),
             "latency_aggregation": "statistics of per-round quantiles, not pooled quantiles"}
+    first = config["models"][0]
+    test_questions = 0 if validation_only else len(read(
+        Path(first["bundle"]) / f"plans/{first['alias']}-test.json",
+    )["questions"])
     result = {"batch_id": state["batch_id"], "models": per_model,
               "planned_repeats": config.get("repeats", 10), "validation_questions": 44,
-              "test_questions": 0 if validation_only else 202, "validation_only": validation_only,
+              "test_questions": test_questions, "validation_only": validation_only,
               "reserved_cost_upper_usd": state["reserved_upper_usd"],
               "cost_note": "reservation is not measured cost; missing receipts are not zero cost",
               "not_12_camera_throughput": True}

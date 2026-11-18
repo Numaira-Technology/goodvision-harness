@@ -69,6 +69,9 @@ LAUNCHERS = {
     ),
     "start_qwen8b_vllm.py": ("tools.start_qwen8b_vllm", "qwen8b_r2_vllm", "vllm", True),
     "start_sam.py": ("tools.start_sam", "sam", "sam", True),
+    "start_bag_demo.py": (
+        "tools.start_bag_demo", "bag_demo_videojev", "videojev", True
+    ),
     "start_detector.py": ("tools.start_detector", "detector", "detector", True),
     "diag_qwen8b_vllm_import.py": (
         "tools.diag_qwen8b_vllm_import",

@@ -7,6 +7,14 @@ reader must acquire this same lock before touching the protected state.
 
 import importlib
 import os
+import sys
+
+
+def _load_backend(name):
+    """A blocked import must fail closed. importlib treats a None entry as unloaded."""
+    if name in sys.modules and sys.modules[name] is None:
+        raise ImportError(name)
+    return importlib.import_module(name)
 
 
 def lock_exclusive(file):
@@ -19,10 +27,10 @@ def lock_exclusive(file):
     platform, including after process termination.
     """
     if os.name == "posix":
-        backend = importlib.import_module("fcntl")
+        backend = _load_backend("fcntl")
         backend.flock(file, backend.LOCK_EX | backend.LOCK_NB)
     elif os.name == "nt":
-        backend = importlib.import_module("msvcrt")
+        backend = _load_backend("msvcrt")
         # a/a+ opens at EOF; locking there would let a second opener lock a
         # different byte after the first append. Do not write a sentinel into
         # JSONL evidence. CRT locking permits a region beyond the current EOF.
