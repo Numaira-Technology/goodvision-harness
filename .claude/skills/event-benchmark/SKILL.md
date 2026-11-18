@@ -82,13 +82,19 @@ stereo sources again. Do not tune on the new test questions.
 
 The four-model native CLI without `--execute` checks files only. Qwen R2 launchers
 can rent a GPU and run the selected phases; they are not offline preflight commands.
-Those launchers also write a hardware run log with no extra flag. Optional
+Those launchers also write a hardware run log with no extra flag. The same log
+is written for `python -m tools.unified_benchmark.native_run --execute` when
+`--model` is `clip`, `siglip2`, `videojev`, or `decision3` (the d3-nano
+weights). Other models are not armed. Optional
 `GOODVISION_OPERATOR` sets the name on the index; otherwise the log uses git
 `user.name` and `$USER` (Windows: `%USERNAME%`). The series index is
 `outputs/run-logs/<alias>/logs/manifest.json`. Each run folder there holds
 `vast-offer.json` (redacted offer, written when the instance is created) and
-`entry.json` (offer fields, nvidia-smi probe, timings, score). After the eval
-directory exists, the same files are copied under `<eval-output>/<alias>/logs/`.
+`entry.json` (offer fields, nvidia-smi probe, timings, score). Rental logs are
+also copied under a fresh `<eval-output>/<alias>/logs/`. Native logs stay outside
+the sealed result directory and read `<output>/<split>/report.json` only after
+a successful invocation with a fresh output. Failed or resumed native runs keep
+the score `unknown`; the log records the CLI outcome without changing it.
 A logging failure is printed and does not change the rental, the exam, or the
 exit code. Details: [Hardware run log](../../../tools/unified_benchmark/README.md#hardware-run-log).
 Keep the HF, vLLM and OpenRouter Qwen variants separate. The active vLLM environment

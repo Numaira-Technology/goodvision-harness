@@ -13,6 +13,7 @@ from test_unified_dataset202 import inputs as inputs
 from tools.unified_benchmark import api_run, native_run, preflight, workflow
 from tools.unified_benchmark import dataset202 as d
 from tools.unified_benchmark.contract import CURRENT_VERSION, digest, score
+from tools.vast_run_log import summarize_score
 
 
 @pytest.fixture
@@ -478,6 +479,11 @@ def test_native_pipeline_reports_supplement_after_unchanged_validation(
     assert result["correct"] == result["accuracy_denominator"] == 222
     assert result["cohorts"]["test_supplement"]["correct"] == 20
     assert read(output, "validation/report.json")["accuracy_denominator"] == 24
+    logged = summarize_score(output, alias, native=True)
+    assert logged["test"]["planned_questions"] == 222
+    assert logged["test"]["correct"] == 222
+    assert logged["test"]["accuracy"] == 1
+    assert logged["validation"]["planned_questions"] == 24
     if alias in {"clip", "siglip2"}:
         artifact = read(output, "thresholds.json")
         assert artifact["validation_summary"]["complete_valid_questions"] == 24
