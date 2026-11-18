@@ -14,6 +14,7 @@ offer's ``cpu_cores_effective`` and ``cpu_ram`` do not cover the machine.
 
 from __future__ import annotations
 
+import argparse
 import atexit
 import csv
 import json
@@ -78,6 +79,14 @@ LAUNCHERS = {
 }
 # Armed by tools/__init__.py because that launcher file must not be edited.
 _AUTO_ARM = {"start_qwen8b_r2.py"}
+# GPU benchmarks that share native_run.py. SigLIP2 is the repo name for the
+# contrastive model sometimes called SeekCLIP. decision3 loads d3-nano.
+NATIVE_MODELS = {
+    "clip": ("tools.unified_benchmark.native_run", "clip", "contrastive", False),
+    "siglip2": ("tools.unified_benchmark.native_run", "siglip2", "contrastive", False),
+    "videojev": ("tools.unified_benchmark.native_run", "videojev", "videojev", False),
+    "decision3": ("tools.unified_benchmark.native_run", "decision3", "d3-nano", False),
+}
 SAMPLE_INTERVAL = 2
 _SAMPLE_COLUMNS = (
     "pcie_gen_current",
@@ -230,9 +239,13 @@ _SCORE_FIELDS = (
 _SESSION = None
 
 
-def arm_if_launcher(filename: str, *, late: bool = False) -> None:
+def arm_if_launcher(filename: str, *, late: bool = False) -> RunLog | None:
     """Start a session for the HF launcher. Other renters call ``attach``."""
     base = Path(str(filename).replace("\\", "/")).name
+    if base == "native_run.py":
+        if Path(filename).resolve() == REPO / "tools/unified_benchmark/native_run.py":
+            return _arm_native()
+        return None
     spec = LAUNCHERS.get(base)
     if spec is None:
         return
@@ -250,6 +263,83 @@ def arm_if_launcher(filename: str, *, late: bool = False) -> None:
         return
     _SESSION = session
     atexit.register(session.finish_once)
+
+
+class _NativeLogParser(argparse.ArgumentParser):
+    def error(self, message):
+        # Leave CLI diagnostics and exit handling to the actual runner.
+        raise ValueError(message)
+
+
+def _native_log_parser():
+    parser = _NativeLogParser(add_help=False)
+    # Include every option to preserve argparse's abbreviation ambiguity rules.
+    # Values are validated only by native_run.main, never by the recorder.
+    for name in (
+        "model",
+        "bundle",
+        "deployment",
+        "deployment-sha256",
+        "output",
+        "phase",
+        "thresholds",
+        "thresholds-sha256",
+        "port",
+        "authorization-note",
+    ):
+        parser.add_argument("--" + name)
+    for name in ("execute", "resume"):
+        parser.add_argument("--" + name, action="store_true")
+    parser.add_argument("-h", "--help", action="store_true")
+    return parser
+
+
+def _arm_native() -> RunLog | None:
+    """Log a native GPU eval. Only the four model aliases, and only --execute."""
+    global _SESSION
+    if _SESSION is not None:
+        return None
+    try:
+        args, _ = _native_log_parser().parse_known_args(sys.argv[1:])
+    except ValueError:
+        return None
+    if not args.execute or args.help:
+        return None
+    spec = NATIVE_MODELS.get(args.model or "")
+    if spec is None:
+        return None
+    try:
+        session = RunLog(*spec)
+        session.local_probe = True
+        session.model = spec[1]
+        session.eval_output = str(Path(args.output).resolve()) if args.output else None
+        session.eval_phase = args.phase or "validation"
+        session.eval_phase_source = "argv" if args.phase else "launcher-default"
+        session.root = logs_directory(session.model, session.eval_output)
+        session.run_dir = session.root / session.run_id
+        session._output_absent_at_start = (
+            not args.resume
+            and bool(session.eval_output)
+            and not Path(session.eval_output).exists()
+        )
+        session.mark_rent_start()
+    except Exception as exc:
+        _stderr("arm", exc)
+        return None
+    _SESSION = session
+    atexit.register(session.finish_once)
+    return session
+
+
+def finish_native(session: RunLog | None, code: int) -> None:
+    """Observe the CLI outcome without changing its return or exception."""
+    if session is None:
+        return
+    try:
+        session.note_eval_end(code)
+        session.finish_once()
+    except Exception as exc:
+        _stderr("finish", exc)
 
 
 def attach(globals_dict=None) -> None:
@@ -661,33 +751,39 @@ def _format_container_memory(raw: str) -> str:
     return f"{number} B ({source})"
 
 
-def summarize_score(eval_output, alias) -> dict | str:
+def _read_score_payload(path: Path):
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def summarize_score(eval_output, alias, *, native: bool = False) -> dict | str:
     if not eval_output:
         return "unknown"
-    base = Path(eval_output) / alias
-    if not base.is_dir():
-        return "unknown"
+    root = Path(eval_output)
+    base = root / alias
     found = False
     summary = {}
     for split in ("validation", "test"):
-        path = base / split / "summary.json"
-        if not path.is_file():
-            summary[split] = "unknown"
-            continue
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        path = root / split / "report.json" if native else base / split / "summary.json"
+        payload = _read_score_payload(path)
+        if payload is None:
             summary[split] = "unknown"
             continue
         found = True
-        summary[split] = _score_split(payload if isinstance(payload, dict) else {})
-    manifest = Path(eval_output) / "run-manifest.json"
+        summary[split] = _score_split(payload)
+    manifest = root / ("run.json" if native else "run-manifest.json")
+    slots_key = "slots" if native else "slots_per_model"
     slots = "unknown"
     if manifest.is_file():
         try:
             body = json.loads(manifest.read_text(encoding="utf-8"))
-            if isinstance(body, dict) and "slots_per_model" in body:
-                slots = _measurement(body.get("slots_per_model"))
+            if isinstance(body, dict) and slots_key in body:
+                slots = _measurement(body.get(slots_key))
         except (OSError, ValueError):
             slots = "unknown"
     if not found and slots == "unknown":
@@ -914,6 +1010,29 @@ class RunLog:
         self._write_entry()
         self._sample_without_ready_hook()
 
+    def probe_local(self) -> None:
+        """Read this machine. Used by native GPU evals, which do not SSH."""
+        if self._probed:
+            return
+        self._probed = True
+        try:
+            result = subprocess.run(
+                ["sh", "-c", _PROBE],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.probe = "unknown"
+            self._error("probe", exc)
+            return
+        stdout = result.stdout or ""
+        self.probe = parse_probe(stdout if result.returncode == 0 else "")
+        if result.returncode != 0:
+            self._error("probe", f"nvidia-smi exited {result.returncode}")
+
     def _sample_without_ready_hook(self) -> None:
         if self.sample and not self._expects_ready:
             self.start_sampler()
@@ -1027,7 +1146,9 @@ class RunLog:
         if not self._owns_eval_output:
             return
         try:
-            self.score = summarize_score(self.eval_output, self.model)
+            self.score = summarize_score(
+                self.eval_output, self.model, native=getattr(self, "local_probe", False)
+            )
         except Exception as exc:
             self.score = "unknown"
             self._error("score", exc)
@@ -1041,6 +1162,22 @@ class RunLog:
             self.stop_sampler()
         except Exception as exc:
             self._error("sample", exc)
+        if getattr(self, "local_probe", False):
+            try:
+                self.probe_local()
+            except Exception as exc:
+                self._error("probe", exc)
+            try:
+                if (
+                    self.eval_returncode == 0
+                    and getattr(self, "_output_absent_at_start", False)
+                    and self.eval_output
+                    and Path(self.eval_output).is_dir()
+                ):
+                    self._owns_eval_output = True
+                self.capture_score()
+            except Exception as exc:
+                self._error("score", exc)
         try:
             self._write_entry()
             self._update_manifest()
@@ -1147,6 +1284,9 @@ class RunLog:
         _upsert_manifest(self.root / "manifest.json", self._row(), self)
 
     def _mirror_report(self) -> None:
+        # Native results have a sealed file inventory; keep logs outside it.
+        if getattr(self, "local_probe", False):
+            return
         if not self.eval_output or not self._owns_eval_output:
             return
         report = Path(self.eval_output) / self.model
@@ -1549,12 +1689,13 @@ def _upsert_manifest(path: Path, row: dict, session: RunLog) -> None:
 
 
 def _acquire_lock(lock: Path) -> bool:
-    for _ in range(40):
+    for _ in range(120):
         try:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.close(fd)
             return True
-        except FileExistsError:
+        except (FileExistsError, PermissionError):
+            # Windows reports a held lock as PermissionError, not FileExistsError.
             # Never steal a lock from a paused writer. A crashed writer's lock
             # needs manual removal; the per-run entries remain intact.
             time.sleep(0.05)
