@@ -37,7 +37,7 @@ def verify_bundle(bundle):
     overlay = (report.get("dataset_context") or {}).get("bag_validation")
     if overlay is not None:
         if (not hashes.get("inputs/bag-validation.json") or hashes["inputs/bag-validation.json"] != overlay.get("sha256")
-                or set(report["models"]) - {"clip", "siglip2"} or frozen_rules["version"] != CURRENT_VERSION):
+                or frozen_rules["version"] != CURRENT_VERSION):
             raise ValueError("bag validation manifest or model scope differs")
     test_rows = bundle_test_supplement(bundle, hashes, report, frozen_rules["version"])
     for name in hashes:
@@ -70,9 +70,12 @@ def verify_bundle(bundle):
     models = report.get("models")
     if not isinstance(models, dict) or not models:
         raise ValueError("bundle is missing preflight model/plan records")
+    splits = report.get("prepared_splits", ["validation", "test"])
+    if splits not in (["validation"], ["validation", "test"]):
+        raise ValueError("invalid prepared split scope")
     expected_configs, expected_plans = set(), set()
     for alias, phases in models.items():
-        if Path(alias).name != alias or set(phases) != {"validation", "test"}:
+        if Path(alias).name != alias or set(phases) != set(splits):
             raise ValueError("invalid preflight model/plan records")
         config_name = f"configs/{alias}.json"
         expected_configs.add(config_name)
@@ -130,9 +133,9 @@ def load_threshold_artifact(path, expected_hash, *, bundle, alias, config, bundl
     if artifact.get("comparator") != (">" if kind == "margin" else ">="):
         raise ValueError("threshold decision rule differs")
     if include_bags:
-        if (kind != "margin" or alias not in {"clip", "siglip2"}
+        if (kind not in {"margin", "probability"}
                 or artifact.get("bag_calibration") != BAG_VALIDATION_SCHEMA or set(artifact.get("details", {})) != set(EVENTS)):
-            raise ValueError("complete six-event margin selection required")
+            raise ValueError("complete six-event threshold selection required")
     elif (artifact.get("bag_calibration") != "uncalibrated_no_bag_validation"
             or any(artifact["thresholds"][e] != (0 if kind == "margin" else .5) for e in EVENTS[4:])):
         raise ValueError("threshold decision rule or uncalibrated bag baseline differs")
@@ -203,9 +206,10 @@ def timings(rows, *, split=None):
 def report(plan, config, ledger, thresholds):
     observed = collect(plan, config, ledger)
     result = score(plan, observed, config["kind"], thresholds)
-    if has_bag_validation(plan):
-        zeros = dict.fromkeys(EVENTS, 0.0)
-        result["zero_margin_baseline"] = score(plan, observed, config["kind"], zeros) | {"thresholds": zeros}
+    if has_bag_validation(plan) and config["kind"] in ("margin", "probability"):
+        baseline = dict.fromkeys(EVENTS, 0.0 if config["kind"] == "margin" else .5)
+        label = "zero_margin_baseline" if config["kind"] == "margin" else "fixed_probability_baseline"
+        result[label] = score(plan, observed, config["kind"], baseline) | {"thresholds": baseline}
     sent = {r["unit"] for r in ledger.rows if r["type"] == "intent"}
     # Offline re-scoring must retain the inference date, including across resumes.
     attempt_times = [r["at_unix"] for r in ledger.rows if r["type"] == "intent"

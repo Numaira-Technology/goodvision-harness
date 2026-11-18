@@ -17,10 +17,10 @@ import urllib.error
 import urllib.request
 
 from tools.unified_benchmark.adapters import parse_response, request_body
-from tools.unified_benchmark.api_run import InvalidResponse, MAX_RESPONSE_BYTES, accounting, atomic, http_error_body, retry_after
-from tools.unified_benchmark.contract import EVENTS, canonical, digest, file_hash, score, write_new, write_receipt
-from tools.unified_benchmark.retry import Ledger, Queue, RequestFailure
-from tools.unified_benchmark.workflow import collect, context_for, report, verify_bundle
+from tools.unified_benchmark.api_run import InvalidResponse, MAX_RESPONSE_BYTES, atomic, http_error_body, retry_after
+from tools.unified_benchmark.contract import canonical, digest, file_hash, write_new, write_receipt
+from tools.unified_benchmark.retry import RequestFailure
+from tools.unified_benchmark.workflow import verify_bundle
 
 
 class LocalTransport:
@@ -60,7 +60,7 @@ class LocalTransport:
         prefix = digest(unit["id"]) + f"-attempt-{attempt}"
         receipt = self.output / "receipts" / (prefix + ".json")
         def save(record):
-            write_receipt(receipt, record | {"unit": unit["id"], "request_sha256": unit["request_sha256"]})
+            write_receipt(receipt, record | {"unit": unit["id"], "request_sha256": unit["request_sha256"], "recorded_at_unix": time.time()})
             return {"receipt": str(receipt.relative_to(self.output)), "receipt_sha256": file_hash(receipt)}
         _url, body = request_body(self.config, unit, self.bundle)
         if digest(body) != unit["request_sha256"]:
@@ -105,51 +105,16 @@ class LocalTransport:
         return answers, metadata
 
 
-def execute(alias, bundle, root, endpoint, bundle_digest, phase):
-    output = root / alias
+def execute(alias, bundle, root, endpoint, bundle_digest, phase, *, resume=False, before_intent=None):
+    from tools.unified_benchmark.http_execution import execute_model
     config = json.loads((bundle / "configs" / f"{alias}.json").read_text())
     if (config.get("execution") != "self_hosted_r2" or config.get("backend") != "language"
             or config.get("kind") != "choice"):
         raise ValueError("eval_local requires a self_hosted_r2 hard-answer language profile")
-    thresholds, calibration = {e: .5 for e in EVENTS}, "not_applicable_hard_boolean"
-    output.mkdir(exist_ok=False)
-    stage_results = {}
-    for split in (("validation", "test") if phase == "both" else (phase,)):
-        plan = json.loads((bundle / "plans" / f"{alias}-{split}.json").read_text())
-        directory = output / split
-        directory.mkdir()
-        ledger = Ledger(directory / "attempts.jsonl", context_for(plan, config, bundle_digest))
-        started = time.time()
-        atomic(output / "status.json", {"state": "running", "split": split, "started_at": started,
-                                       "planned_units": len(plan["units"]), "slots": 12})
-        failed = None
-        try:
-            Queue(ledger, config["kind"], LocalTransport(bundle, config, endpoint, directory, ledger)).run(plan["units"])
-        except Exception as error:
-            failed = type(error).__name__ + ": " + str(error)
-        observed = collect(plan, config, ledger)
-        result = report(plan, config, ledger, thresholds)
-        result.update(split=split, calibration=calibration, started_at_unix=started,
-                      finished_at_unix=time.time(), elapsed_seconds=time.time() - started,
-                      failure=failed, accounting=accounting(ledger),
-                      execution="self_hosted_r2", endpoint=endpoint)
-        if split == "test":
-            for label, events in (("base100", EVENTS[:4]), ("bag20", EVENTS[4:])):
-                subset_q = [q for q in plan["questions"] if q["event"] in events and q["number"] <= 120]
-                wanted = {uid for q in subset_q for uid in q["unit_ids"]}
-                subset = plan | {"questions": subset_q, "units": [u for u in plan["units"] if u["id"] in wanted]}
-                result[label] = score(subset, {uid: v for uid, v in observed.items() if uid in wanted},
-                                      config["kind"], thresholds)
-        write_new(directory / "summary.json", result)
-        stage_results[split] = {k: result.get(k) for k in (
-            "correct", "complete_valid_questions", "accuracy", "incomplete_questions",
-            "final_missing_unique_units")}
-        ledger.close()
-        if failed:
-            atomic(output / "status.json", {"state": "stopped", "split": split, "error": failed,
-                                            "results": stage_results})
-            return
-    atomic(output / "status.json", {"state": "completed", "results": stage_results})
+    return execute_model(alias, bundle, root, bundle_digest,
+        lambda cfg, directory, ledger: LocalTransport(bundle, cfg, endpoint, directory, ledger),
+        phase=phase, connection={"endpoint": endpoint}, resume=resume, local=True,
+        before_intent=before_intent)
 
 
 def main(argv=None):
@@ -161,23 +126,32 @@ def main(argv=None):
     parser.add_argument("--phase", choices=("validation", "test", "both"), default="both")
     parser.add_argument("--authorization-note", required=True)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args(argv)
     if not args.execute:
         parser.error("no inference without explicit --execute")
     bundle_digest = verify_bundle(args.bundle)
-    args.output.mkdir(parents=True, exist_ok=False)
+    args.output.mkdir(parents=True, exist_ok=args.resume)
     config = json.loads((args.bundle / "configs" / (args.model + ".json")).read_text())
-    write_new(args.output / "run-manifest.json", {
+    manifest = {
         "bundle_sha256": bundle_digest, "runner_sha256": file_hash(__file__),
         "alias": args.model, "endpoint": args.endpoint, "phase": args.phase,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "authorization": args.authorization_note, "execution": "self_hosted_r2",
         "engine": config.get("engine", "transformers"),
         "engine_version": config.get("engine_version"),
-        "slots_per_model": 12})
-    execute(args.model, args.bundle, args.output, args.endpoint, bundle_digest, args.phase)
+        "slots_per_model": 12}
+    path = args.output / "run-manifest.json"
+    if path.exists():
+        previous = json.loads(path.read_text())
+        if not args.resume or any(previous.get(k) != manifest[k] for k in
+                ("bundle_sha256", "runner_sha256", "alias", "endpoint", "phase", "engine", "engine_version")):
+            raise ValueError("resume Qwen run identity differs")
+    else:
+        write_new(path, manifest)
+    execute(args.model, args.bundle, args.output, args.endpoint, bundle_digest, args.phase, resume=args.resume)
     status = json.loads((args.output / args.model / "status.json").read_text())
-    write_new(args.output / "completion.json", {
+    atomic(args.output / "completion.json", {
         "finished_at": datetime.now(timezone.utc).isoformat(), "model_status": status})
     return 0 if status.get("state") == "completed" else 1
 

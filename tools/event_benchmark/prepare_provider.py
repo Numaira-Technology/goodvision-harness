@@ -21,12 +21,16 @@ def latency_value(endpoint):
     return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
 
 
-def select_provider(catalog, model, backend, digest, selected_at, slug=None):
+def select_provider(catalog, model, backend, digest, selected_at, slug=None, *, required_parameters=None):
     if catalog.get("data", {}).get("id") != model:
         raise ValueError("endpoint catalog model differs")
     endpoints = [e for e in catalog["data"].get("endpoints", []) if e.get("status") == 0]
     if backend == "language":
-        endpoints = [e for e in endpoints if {"temperature", "max_tokens"} <= set(e.get("supported_parameters", []))]
+        required = {"temperature", "max_tokens"} if required_parameters is None else required_parameters
+        if (not isinstance(required, (list, tuple, set)) or not required
+                or any(not isinstance(p, str) or not p.strip() for p in required)):
+            raise ValueError("nonempty required parameter names needed")
+        endpoints = [e for e in endpoints if set(required) <= set(e.get("supported_parameters", []))]
     if not endpoints:
         raise ValueError("no active endpoint supports the fixed request parameters")
     if slug:
@@ -63,6 +67,7 @@ def main(argv=None):
     parser.add_argument("--catalog", type=Path, help="read a saved catalog instead of HTTP GET")
     parser.add_argument("--catalog-out", type=Path, required=True)
     parser.add_argument("--provider-slug", help="explicit override, never labeled fastest")
+    parser.add_argument("--required-parameters", nargs="+", help="language body parameters; defaults to temperature max_tokens")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.out.exists() or args.catalog_out.exists():
@@ -81,7 +86,8 @@ def main(argv=None):
         with args.catalog_out.open("xb") as handle:
             handle.write(raw)
         plan = select_provider(catalog, args.model, args.backend, hashlib.sha256(raw).hexdigest(),
-                               datetime.now(timezone.utc).isoformat(), args.provider_slug)
+                               datetime.now(timezone.utc).isoformat(), args.provider_slug,
+                               required_parameters=args.required_parameters)
         evidence.write_new(args.out, plan)
     except (OSError, ValueError, KeyError, TypeError) as error:
         parser.error(str(error))
