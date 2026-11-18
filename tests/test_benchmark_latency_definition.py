@@ -1,6 +1,7 @@
 """Benchmark P50/P95: timing boundaries, denominators and missing evidence."""
 
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -170,7 +171,9 @@ def test_api_transport_timing_excludes_overhead_and_survives_identity_failure(
 ):
     transport, ledger, unit = api_attempt
     clock = [0.0]
-    monkeypatch.setattr(api_run, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(
+        api_run, "time", SimpleNamespace(monotonic=lambda: clock[0], time=time.time)
+    )
 
     def delayed(original, seconds):
         def wrapped(*args, **kwargs):
@@ -253,7 +256,9 @@ def test_api_transport_timing_excludes_overhead_and_survives_identity_failure(
 def test_api_timeout_is_labelled_and_keeps_its_time(api_attempt, monkeypatch):
     transport, ledger, unit = api_attempt
     clock = [0.0]
-    monkeypatch.setattr(api_run, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(
+        api_run, "time", SimpleNamespace(monotonic=lambda: clock[0], time=time.time)
+    )
 
     def call(url, body=None):
         clock[0] += 90

@@ -361,9 +361,10 @@ def test_api_reports_222_and_keeps_original_subset_denominators(
 ):
     bundle = bundle_factory("api", aliases=(alias,))
 
-    class SyntheticTransport:
-        def __init__(self, bundle, config, _key, directory, _ledger, _stop):
-            self.config = config
+    class SyntheticTransport(api_run.Transport):
+        def __init__(self, bundle, config, key, directory, ledger, stop):
+            super().__init__(bundle, config, key, directory, ledger, stop)
+            self.local = threading.local()
             plan = read(bundle, f"plans/{alias}-{directory.name}.json")
             self.answers = {
                 uid: {q["event"]: q["reference"]}
@@ -372,14 +373,29 @@ def test_api_reports_222_and_keeps_original_subset_denominators(
             }
 
         def __call__(self, unit):
-            return {
-                event: (
-                    {"score": 0.9 if answer == "yes" else 0.1}
-                    if self.config["kind"] == "probability"
-                    else {"answer": answer}
-                )
-                for event, answer in self.answers[unit["id"]].items()
-            }, {"transport_seconds": 0.25}
+            self.local.answer = next(iter(self.answers[unit["id"]].values()))
+            answers, metadata = super().__call__(unit)
+            return answers, metadata | {"transport_seconds": 0.25}
+
+        def call(self, _url, _body=None):
+            # Keep the real parser and durable receipt writer; only HTTP is fake.
+            response = {
+                "model": self.config["model"],
+                "provider": self.config["provider_context"]["config"][
+                    "expected_provider_name"
+                ],
+            }
+            yes = self.local.answer == "yes"
+            if self.config["kind"] == "probability":
+                response["answers"] = {
+                    "answer": {"type": "noul", "noul": 0.9 if yes else 0.1},
+                }
+            else:
+                response["choices"] = [{
+                    "finish_reason": "stop",
+                    "message": {"content": json.dumps({"answer": yes})},
+                }]
+            return response
 
     monkeypatch.setattr(api_run, "Transport", SyntheticTransport)
     output = tmp_path / "api-output"

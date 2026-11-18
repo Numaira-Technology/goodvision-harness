@@ -1,6 +1,7 @@
 """Live throughput excludes EOF catch-up and never counts replayed observations."""
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -20,7 +21,16 @@ def private_spool(tmp_path, monkeypatch):
     monkeypatch.setenv("GOODVISION_SAM_SPOOL_DIRECTORY", str(tmp_path / "sam-spool"))
 
 
-def test_ordered_pending_frames_and_eof_timing_do_not_inflate_live_fps(monkeypatch):
+@pytest.mark.parametrize("capture_seconds,expected_fps", [(0.0, None), (2.0, 0.5)])
+def test_ordered_pending_frames_and_eof_timing_do_not_inflate_live_fps(
+    monkeypatch, capture_seconds, expected_fps,
+):
+    # Capture may finish within one Windows clock tick. Exercise both durations
+    # explicitly without changing the real clock used by HTTP and test timeouts.
+    clock = SimpleNamespace(value=100.0)
+    monkeypatch.setattr(
+        sam_tracking_pipeline, "time", SimpleNamespace(monotonic=lambda: clock.value),
+    )
     records = []
     monkeypatch.setattr(
         sam_tracking_pipeline, "log_timing",
@@ -49,15 +59,18 @@ def test_ordered_pending_frames_and_eof_timing_do_not_inflate_live_fps(monkeypat
         before = coordinator.stats()
         assert before["pending_frames"] == 4
         assert before["session_dropped_backpressure"] == 0
+        clock.value += capture_seconds
         coordinator.flush()
-        capture_seconds = coordinator.stats()["capture_elapsed_seconds"]
+        assert coordinator.stats()["capture_elapsed_seconds"] == capture_seconds
+        clock.value += 30.0  # EOF catch-up must not extend the capture interval.
         server.release.set()
-        assert coordinator.wait_until_idle(3)
+        # Poll non-blockingly: the coordinator clock is intentionally frozen.
+        wait_for(lambda: coordinator.wait_until_idle(0), timeout=3)
         stats = coordinator.stats()
         assert stats["session_source_frames"] == stats["session_admitted_frames"] == 6
         assert stats["completed_during_capture"] == 1
         assert stats["completed_after_capture"] == 5
-        assert stats["completed_analysis_fps"] == pytest.approx(1 / capture_seconds)
+        assert stats["completed_analysis_fps"] == expected_fps
         assert stats["capture_elapsed_seconds"] == capture_seconds
         assert [f.frame_sequence for b in received for f in b.frames] == [
             3, 6, 9, 12, 15, 18,

@@ -23,11 +23,13 @@ import urllib.request
 import uuid
 
 from .adapters import frame_bytes, parse_response, request_body
+from .contract import EVENTS, plan_rules, canonical, digest, file_hash, finite_number, read_receipt, select_thresholds, write_new, write_receipt, atomic_json
 from .latency import REQUEST_TIMEOUT_SECONDS
-from .contract import EVENTS, plan_rules, canonical, digest, file_hash, finite_number, read_receipt, select_thresholds, write_new, write_receipt
 from .native_deploy import ALIASES, environment_for, profile, verify_deployment
 from .locking import lock_exclusive
 from .retry import Ledger, PausedRun, Queue, RequestFailure
+from tools.latency_investigation.http_split import begin_open, bind_request, record_split, reset_request
+
 from .workflow import collect, context_for, load_threshold_artifact, report, verify_bundle
 
 
@@ -36,9 +38,7 @@ def stamp():
 
 
 def save_status(path, value):
-    temporary = path.with_suffix(".tmp")
-    temporary.write_bytes(canonical(value) + b"\n")
-    temporary.replace(path)
+    atomic_json(path, value)
 
 
 def video_groups(units, queue, after=lambda: None):
@@ -124,10 +124,17 @@ class NativeBackend:
     def http(self, body):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/predict", data=canonical(body),
                                      headers={"Content-Type": "application/json"})
+        timings = None
         try:
-            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as r:
-                return r.status, json.load(r)
+            response, timings = begin_open(req, REQUEST_TIMEOUT_SECONDS)
+            with response:
+                status = response.status
+                payload = json.load(response)
+            record_split(self.output, timings, http_status=status)
+            return status, payload
         except urllib.error.HTTPError as e:
+            timings = getattr(e, "_gv_timings", timings)
+            record_split(self.output, timings, http_status=e.code)
             return e.code, {"error": e.read().decode(errors="replace")}
 
     def telemetry(self):
@@ -181,7 +188,8 @@ class NativeBackend:
                 sock.bind(("127.0.0.1", self.port))
             args, env = service_command(self.alias, self.deployment, self.output, self.port)
             self.log = (self.output / "service.log").open("xb")
-            self.service = subprocess.Popen(args, env=env, stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True)
+            self.service = subprocess.Popen(args, env=env, stdout=self.log, stderr=subprocess.STDOUT,
+                start_new_session=os.environ.get("GOODVISION_SUPERVISED_WORKER") != "1")
             deadline = time.monotonic() + 1200
             while True:
                 if self.service.poll() is not None:
@@ -240,15 +248,15 @@ class NativeBackend:
                     write_new(self.output / "final-health.json", self.health())
                 except Exception:
                     pass
-                os.killpg(self.service.pid, signal.SIGINT)
+                self._signal_service(signal.SIGINT)
                 try:
                     self.service.wait(timeout=40)
                 except subprocess.TimeoutExpired:
-                    os.killpg(self.service.pid, signal.SIGTERM)
+                    self._signal_service(signal.SIGTERM)
                     try:
                         self.service.wait(timeout=20)
                     except subprocess.TimeoutExpired:
-                        os.killpg(self.service.pid, signal.SIGKILL)
+                        self._signal_service(signal.SIGKILL)
                         self.service.wait()
         finally:
             if self.log:
@@ -257,6 +265,12 @@ class NativeBackend:
             if self.monitor:
                 self.monitor.join(5)
             write_new(self.output / "gpu-peak.json", {"max_gpu_used_mib": self.peak_mib, "sampling_seconds": 2})
+
+    def _signal_service(self, sig):
+        if os.environ.get("GOODVISION_SUPERVISED_WORKER") == "1":
+            self.service.send_signal(sig)
+        else:
+            os.killpg(self.service.pid, sig)
 
 
 def validate_inputs(bundle, alias, phase, deployment_hash, threshold_path=None, threshold_hash=None):
@@ -306,7 +320,10 @@ def reconcile_receipts(phase_dir, ledger, plan, cfg, output, *, recover=True):
                 raise ValueError("saved receipt missing or differs")
         elif not path.exists():
             continue  # interrupted send still consumes one attempt
-        receipt = read_receipt(path)
+        try:
+            receipt = read_receipt(path)
+        except ValueError as error:
+            raise ValueError("saved incomplete receipt requires finite completed_at_unix and strict raw evidence: " + str(error)) from error
         expected = {"unit": unit["id"], "attempt": row["attempt"], "request_sha256": unit["request_sha256"],
                     "config_sha256": digest(cfg), "frame_sha256": [f["sha256"] for f in unit["frames"]]}
         if any(receipt.get(k) != v for k, v in expected.items()):
@@ -380,7 +397,7 @@ def validate_saved_path(path, output, *, directory=False):
     present = path.exists() or path.is_symlink()
     if (not path.resolve().is_relative_to(output.resolve())
             or present and not (path.is_dir() if directory else path.is_file())):
-        raise ValueError("resume evidence path has wrong type or escapes output: " + str(path.relative_to(output)))
+        raise ValueError("resume evidence path has wrong type or escapes output: " + path.relative_to(output).as_posix())
 
 
 def preflight_resume(alias, bundle, output, cfg, bundle_digest, deployment_hash, phase, threshold_hash):
@@ -499,18 +516,22 @@ def execute(alias, bundle, deployment, output, deployment_hash, *, phase, thresh
                 timing = {}
                 parsed = {}
                 fatal = False
+                token = bind_request(unit["id"], attempt)
                 try:
-                    code, raw, timing = backend.infer(unit, body)
-                    if code == 200:
-                        parsed = parse_response(cfg, unit, raw)
-                    else:
-                        error = "HTTP " + str(code)
-                        fatal = code in (401, 403)
-                except (urllib.error.URLError, TimeoutError, ConnectionError, ValueError, KeyError, TypeError) as e:
-                    error = type(e).__name__ + ": " + str(e)
-                    fatal = "identity differs" in error
-                except Exception as e:
-                    error, fatal = type(e).__name__ + ": " + str(e), True
+                    try:
+                        code, raw, timing = backend.infer(unit, body)
+                        if code == 200:
+                            parsed = parse_response(cfg, unit, raw)
+                        else:
+                            error = "HTTP " + str(code)
+                            fatal = code in (401, 403)
+                    except (urllib.error.URLError, TimeoutError, ConnectionError, ValueError, KeyError, TypeError) as e:
+                        error = type(e).__name__ + ": " + str(e)
+                        fatal = "identity differs" in error
+                    except Exception as e:
+                        error, fatal = type(e).__name__ + ": " + str(e), True
+                finally:
+                    reset_request(token)
                 # Request sent to response parsed; receipt writes stay outside.
                 transport_seconds = time.monotonic() - started
                 write_receipt(path, {"unit": unit["id"], "attempt": attempt, "request_sha256": unit["request_sha256"],
