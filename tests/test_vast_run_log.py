@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -18,11 +19,13 @@ from tools.vast_run_log import (
     _PROBE,
     _SAMPLER_SH,
     LAUNCHERS,
+    NATIVE_MODELS,
     SAMPLE_INTERVAL,
     RunLog,
     _wrap_create,
     _wrap_eval,
     _wrap_release,
+    arm_if_launcher,
     attach,
     logs_directory,
     offer_fields,
@@ -614,6 +617,7 @@ def test_every_vast_rental_calls_the_recorder():
         "tools/start_qwen8b_r2.py",
         "tools/start_qwen8b_vllm.py",
         "tools/start_sam.py",
+        "tools/start_bag_demo.py",
     }
     init = (REPO / "tools/__init__.py").read_text(encoding="utf-8")
     assert "arm_if_launcher" in init
@@ -622,6 +626,7 @@ def test_every_vast_rental_calls_the_recorder():
     for name in (
         "start_qwen8b_vllm.py",
         "start_sam.py",
+        "start_bag_demo.py",
         "start_detector.py",
         "diag_qwen8b_vllm_import.py",
         "r2_pull_bench.py",
@@ -1253,3 +1258,377 @@ def test_sample_phase_requires_owned_report_and_known_clock(
     )
     session._ingest("100\t1, 16, 4, 16, 20 W, 450 W, 210 MHz, 50 %, 10 MiB, 35")
     assert set(session._sample_summary) == {phase}
+
+
+_PROBE_STDOUT = (
+    "RTX 4090, 0000:81:00.0, 1, 4, 8, 16, 450.00 W, 210 MHz, 3105 MHz, "
+    "10251 MHz, 550.90, 24564 MiB, 0 %\n"
+    "HOST\tAMD EPYC\t16\t32000000 kB\t12.8\tunknown\tunknown\n"
+)
+
+
+@pytest.mark.parametrize("model", ["clip", "siglip2", "videojev", "decision3"])
+def test_native_execute_logs_hardware_duration_score_and_person(
+    tmp_path, monkeypatch, model
+):
+    run_log._SESSION = None
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    monkeypatch.setenv("GOODVISION_OPERATOR", "colleague")
+    out = tmp_path / "eval" / model
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "native_run.py",
+            "--model",
+            model,
+            "--execute",
+            "--output",
+            str(out),
+            "--phase",
+            "test",
+        ],
+    )
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout=_PROBE_STDOUT, stderr="")
+
+    monkeypatch.setattr(run_log.subprocess, "run", fake_run)
+    arm_if_launcher(str(REPO / "tools/unified_benchmark/native_run.py"))
+    session = run_log._SESSION
+    assert session is not None and session.model == model
+    assert session.local_probe is True
+    assert not out.exists()
+    (out / "test").mkdir(parents=True)
+    (out / "test" / "report.json").write_text(
+        json.dumps(
+            {
+                "accuracy": 0.5,
+                "final_unknown_questions": 1,
+                "final_missing_unique_units": 0,
+                "test_attempt_latency": {
+                    "p50_seconds": 1.2,
+                    "p95_seconds": 2.2,
+                    "n": 4,
+                    "source": "native",
+                },
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    session.note_eval_end(0)
+    session.finish_once()
+    entry = json.loads((session.run_dir / "entry.json").read_text(encoding="utf-8"))
+    assert entry["who"]["display"] == "colleague"
+    assert entry["eval_returncode"] == 0
+    assert entry["model"] == model
+    assert entry["engine"] == NATIVE_MODELS[model][2]
+    assert isinstance(entry["timings"]["wall_seconds"], float)
+    assert entry["hardware"]["probe"]["status"] == "ok"
+    assert entry["hardware"]["probe"]["gpus"][0]["pcie_gen_current"] == "1"
+    assert entry["hardware"]["probe"]["host"]["cpu_model"] == "AMD EPYC"
+    assert entry["score"]["test"]["accuracy"] == 0.5
+    assert entry["score"]["test"]["p50_seconds"] == 1.2
+    rows = json.loads((session.root / "manifest.json").read_text(encoding="utf-8"))
+    assert rows[-1]["who"]["operator_env"] == "colleague"
+    assert rows[-1]["score"]["test"]["final_missing_unique_units"] == 0
+    run_log._SESSION = None
+
+
+def test_native_log_stays_off_without_execute_or_for_other_models(
+    tmp_path, monkeypatch
+):
+    run_log._SESSION = None
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["native_run.py", "--model", "clip", "--output", str(tmp_path / "out")],
+    )
+    arm_if_launcher("tools/unified_benchmark/native_run.py")
+    assert run_log._SESSION is None
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "native_run.py",
+            "--model",
+            "luna",
+            "--execute",
+            "--output",
+            str(tmp_path / "out"),
+        ],
+    )
+    arm_if_launcher("tools/unified_benchmark/native_run.py")
+    assert run_log._SESSION is None
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "native_run.py",
+            "--model",
+            "qwen8b",
+            "--execute",
+            "--output",
+            str(tmp_path / "out"),
+        ],
+    )
+    arm_if_launcher("tools/unified_benchmark/native_run.py")
+    assert run_log._SESSION is None
+
+
+@pytest.fixture
+def native_log_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_log, "_SESSION", None)
+    monkeypatch.setattr(run_log.atexit, "register", lambda callback: None)
+    monkeypatch.setattr(run_log, "_git_user", lambda: "tester")
+    monkeypatch.setattr(run_log, "_git_commit", lambda: "test-revision")
+    monkeypatch.setenv("GOODVISION_RUN_LOG_ROOT", str(tmp_path / "logs"))
+    output = tmp_path / "eval"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["native_run.py", "--model", "clip", "--execute", "--output", str(output)],
+    )
+    monkeypatch.setattr(
+        run_log.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, _PROBE_STDOUT, ""),
+    )
+    return output
+
+
+@pytest.mark.parametrize(
+    ("problem", "code"),
+    [
+        (None, 0),
+        (SystemExit(0), 0),
+        (SystemExit(None), 0),
+        (SystemExit(7), 7),
+        (SystemExit("invalid"), 1),
+        (FileExistsError("another invocation created output"), 1),
+        (KeyboardInterrupt(), 130),
+    ],
+)
+def test_native_hook_preserves_exit_and_rejects_failed_scores(
+    native_log_env, problem, code
+):
+    output = native_log_env
+
+    def write_report():
+        (output / "test").mkdir(parents=True)
+        (output / "test/report.json").write_text('{"accuracy": 0.5}')
+        (output / "run.json").write_text('{"model": "clip", "slots": 12}')
+
+    script = compile(
+        "write_report()\nif problem is not None: raise problem",
+        str(REPO / "tools/unified_benchmark/native_run.py"),
+        "exec",
+    )
+    globals_dict = {"write_report": write_report, "problem": problem}
+    if problem is None:
+        runpy._run_code(script, globals_dict, mod_name="__main__")
+    else:
+        with pytest.raises(type(problem)) as caught:
+            runpy._run_code(script, globals_dict, mod_name="__main__")
+        assert caught.value is problem
+    session = run_log._SESSION
+    entry_path = session.run_dir / "entry.json"
+    entry = json.loads(entry_path.read_text())
+    assert entry["eval_returncode"] == code
+    assert entry["timings"]["eval_end_utc"] != "unknown"
+    if code == 0:
+        assert entry["score"]["test"]["accuracy"] == 0.5
+        assert entry["score"]["concurrency_slots"] == 12
+    else:
+        assert entry["score"] == "unknown"
+    # The native result inventory must not acquire logs after it is sealed.
+    assert sorted(p.relative_to(output).as_posix() for p in output.rglob("*")) == [
+        "run.json",
+        "test",
+        "test/report.json",
+    ]
+    before = entry_path.read_bytes()
+    session.finish_once()
+    assert entry_path.read_bytes() == before
+
+
+def test_native_reused_output_keeps_old_score_unknown(native_log_env):
+    output = native_log_env
+    (output / "test").mkdir(parents=True)
+    (output / "test/report.json").write_text('{"accuracy": 1}')
+    session = arm_if_launcher("tools/unified_benchmark/native_run.py")
+    run_log.finish_native(session, 0)
+    assert session.score == "unknown"
+    assert not (output / "clip").exists()
+
+
+def test_score_layouts_never_borrow_another_model_report(tmp_path):
+    (tmp_path / "test").mkdir()
+    (tmp_path / "test/report.json").write_text('{"accuracy": 1}')
+    assert summarize_score(tmp_path, "qwen8b_r2_host") == "unknown"
+    (tmp_path / "clip/test").mkdir(parents=True)
+    (tmp_path / "clip/test/summary.json").write_text('{"accuracy": 0}')
+    assert summarize_score(tmp_path, "clip", native=True)["test"]["accuracy"] == 1
+    (tmp_path / "test/report.json").write_text("invalid json")
+    assert summarize_score(tmp_path, "clip", native=True) == "unknown"
+
+
+def test_native_repeated_flags_match_argparse(native_log_env, monkeypatch):
+    output = native_log_env
+    sys.argv += [
+        "--model=siglip2",
+        "--output",
+        str(output / "actual"),
+        "--phase=test",
+        "--phase",
+        "both",
+    ]
+    session = arm_if_launcher("tools/unified_benchmark/native_run.py")
+    assert session.model == "siglip2"
+    assert session.eval_output == str(output / "actual")
+    assert session.eval_phase == "both"
+    monkeypatch.setattr(run_log, "_SESSION", None)
+    sys.argv += ["--model=luna"]
+    assert arm_if_launcher("tools/unified_benchmark/native_run.py") is None
+
+
+def test_native_help_has_no_logging_side_effects(native_log_env):
+    sys.argv += ["--help"]
+    assert arm_if_launcher("tools/unified_benchmark/native_run.py") is None
+    assert not native_log_env.parent.joinpath("logs").exists()
+
+
+@pytest.mark.parametrize(
+    "failure", [OSError("missing sh"), subprocess.TimeoutExpired("sh", 20)]
+)
+def test_native_probe_failure_preserves_cli_outcome(
+    native_log_env, monkeypatch, failure
+):
+    session = arm_if_launcher("tools/unified_benchmark/native_run.py")
+
+    def fail_probe(command, **kwargs):
+        assert command == ["sh", "-c", _PROBE]
+        assert kwargs["timeout"] == 20
+        raise failure
+
+    monkeypatch.setattr(run_log.subprocess, "run", fail_probe)
+    run_log.finish_native(session, 3)
+    entry = json.loads((session.run_dir / "entry.json").read_text())
+    assert entry["hardware"]["probe"] == "unknown"
+    assert entry["eval_returncode"] == 3
+    assert entry["logging_errors"]
+
+
+def test_native_module_failure_is_logged_without_inference(native_log_env, monkeypatch):
+    # This reaches the real CLI and fails before execute or any model loading.
+    output = native_log_env
+    sys.argv += [
+        "--bundle",
+        str(output.parent / "missing-bundle"),
+        "--deployment",
+        str(output.parent / "missing-deployment"),
+        "--deployment-sha256",
+        "unused",
+        "--authorization-note",
+        "offline test",
+    ]
+    monkeypatch.delitem(
+        sys.modules, "tools.unified_benchmark.native_run", raising=False
+    )
+    for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_HUB_DISABLE_XET"):
+        monkeypatch.setenv(name, "1")
+    with pytest.raises(FileNotFoundError):
+        runpy.run_module("tools.unified_benchmark.native_run", run_name="__main__")
+    session = run_log._SESSION
+    entry = json.loads((session.run_dir / "entry.json").read_text())
+    assert entry["eval_returncode"] == 1
+    assert entry["score"] == "unknown"
+    assert not output.exists()
+
+
+def test_native_logging_write_failure_preserves_exception(native_log_env, monkeypatch):
+    def fail_write(self):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(RunLog, "_write_entry", fail_write)
+    problem = RuntimeError("original failure")
+    script = compile(
+        "raise problem", str(REPO / "tools/unified_benchmark/native_run.py"), "exec"
+    )
+    with pytest.raises(RuntimeError) as caught:
+        runpy._run_code(script, {"problem": problem}, mod_name="__main__")
+    assert caught.value is problem
+    assert run_log._SESSION.eval_returncode == 1
+
+
+def test_other_native_run_filename_is_not_armed(native_log_env):
+    assert arm_if_launcher(str(native_log_env.parent / "native_run.py")) is None
+    assert run_log._SESSION is None
+
+
+def test_native_nonzero_probe_is_unknown(native_log_env, monkeypatch):
+    session = arm_if_launcher("tools/unified_benchmark/native_run.py")
+    monkeypatch.setattr(
+        run_log.subprocess,
+        "run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 1, _PROBE_STDOUT, ""),
+    )
+    run_log.finish_native(session, 0)
+    assert session.probe["status"] == "unknown"
+    assert session.probe["gpus"] == "unknown"
+    assert session.logging_errors
+
+
+def test_native_log_tracks_abbreviations_and_parser_options(
+    native_log_env, monkeypatch
+):
+    from tools.unified_benchmark import native_run
+
+    class Parsed(Exception):
+        pass
+
+    def check_options(parser, argv):
+        actual = set(parser._option_string_actions)
+        logged = set(run_log._native_log_parser()._option_string_actions)
+        assert actual == logged
+        raise Parsed
+
+    monkeypatch.setattr(native_run.argparse.ArgumentParser, "parse_args", check_options)
+    with pytest.raises(Parsed):
+        native_run.main([])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "native_run.py",
+            "--mod=decision3",
+            "--exec",
+            "--out",
+            str(native_log_env),
+            "--ph=test",
+        ],
+    )
+    session = arm_if_launcher("tools/unified_benchmark/native_run.py")
+    assert session.model == "decision3"
+    assert session.eval_output == str(native_log_env)
+    assert session.eval_phase == "test"
+
+
+def test_native_log_leaves_invalid_cli_diagnostics_to_runner(native_log_env, capsys):
+    sys.argv += ["--p", "test"]  # ambiguous between --port and --phase
+    assert arm_if_launcher("tools/unified_benchmark/native_run.py") is None
+    assert capsys.readouterr().err == ""
+
+
+def test_native_resume_waiting_for_new_output_never_claims_score(native_log_env):
+    output = native_log_env
+    sys.argv += ["--resume"]
+    session = arm_if_launcher("tools/unified_benchmark/native_run.py")
+    assert not output.exists()
+    # A concurrent invocation can create this while resume waits for its lock.
+    (output / "test").mkdir(parents=True)
+    (output / "test/report.json").write_text('{"accuracy": 1}')
+    run_log.finish_native(session, 0)
+    assert session.score == "unknown"

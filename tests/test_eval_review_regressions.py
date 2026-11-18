@@ -4,8 +4,10 @@ import threading
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from tools.unified_benchmark import api_run, preflight, workflow
+from tools.unified_benchmark.adapters import request_body
 from tools.unified_benchmark.contract import EVENTS, RULES, digest, file_hash, score, select_thresholds, write_new
 from tools.unified_benchmark.retry import Ledger
 
@@ -27,18 +29,23 @@ def seal(bundle):
 def frozen(tmp_path):
     bundle = tmp_path / "bundle"
     bundle.mkdir()
-    config = {"alias": "luna", "model": "synthetic/luna", "kind": "probability", "backend": "decision",
-              "provider_context": {"config": {"expected_provider_name": "Synthetic"}}}
+    config = preflight.model_configs(["luna"])["luna"]
     write_new(bundle / "configs/luna.json", config)
-    choice = config | {"alias": "choice", "kind": "choice", "backend": "language", "model": "synthetic/choice"}
+    choice = config | {"alias": "choice", "kind": "choice", "backend": "language",
+                       "model": "synthetic/choice", "max_tokens": 30, "temperature": 0}
     write_new(bundle / "configs/choice.json", choice)
+    Image.new("RGB", (2, 2)).save(bundle / "frame.jpg")
+    frame = {"path": "frame.jpg", "sha256": file_hash(bundle / "frame.jpg")}
     observed = {}
     for split, counts in (("validation", (6, 6, 6, 6, 0, 0)), ("test", (32, 22, 26, 20, 10, 10))):
         units, questions = [], []
         for event, count in zip(EVENTS, counts):
             for i in range(count):
                 uid = f"{split}/{event}/{i}"
-                units.append({"id": uid, "targets": [event], "request_sha256": digest(uid)})
+                unit = {"id": uid, "targets": [event], "frames": [frame],
+                        "question": "Synthetic offline question " + uid}
+                unit["request_sha256"] = digest(request_body(config, unit, bundle)[1])
+                units.append(unit)
                 questions.append({"number": len(questions) + 1, "event": event,
                                   "reference": "yes" if i < count // 2 else "no", "unit_ids": [uid]})
                 if split == "validation":
@@ -46,7 +53,9 @@ def frozen(tmp_path):
         plan = {"split": split, "config_sha256": digest(config), "rules_sha256": digest(RULES),
                 "units": units, "questions": questions}
         write_new(bundle / f"plans/luna-{split}.json", plan)
-        write_new(bundle / f"plans/choice-{split}.json", plan | {"config_sha256": digest(choice)})
+        choice_units = [u | {"request_sha256": digest(request_body(choice, u, bundle)[1])} for u in units]
+        write_new(bundle / f"plans/choice-{split}.json", plan | {
+            "config_sha256": digest(choice), "units": choice_units})
     write_new(bundle / "rules.json", RULES)
     sources = preflight.freeze_sources(bundle)
     models = {}
@@ -128,12 +137,12 @@ def test_successful_selection_flows_through_test_and_offline_report(frozen, tmp_
     selected = json.loads(path.read_text())
     assert selected["thresholds"] == artifact["thresholds"]
     calls = []
-    class SyntheticTransport:
-        def __init__(self, *args): pass
-        def __call__(self, unit):
-            calls.append(unit["id"])
-            return {unit["targets"][0]: {"score": .6}}, {"usage": {"cost": 0}, "actual_provider": "Synthetic"}
-    monkeypatch.setattr(api_run, "Transport", SyntheticTransport)
+    def synthetic_call(self, uri, body):
+        calls.append(body)
+        return {"model": self.config["model"],
+                "provider": self.config["provider_context"]["config"]["expected_provider_name"],
+                "usage": {"cost": 0}, "answers": {"answer": {"type": "noul", "noul": .6}}}
+    monkeypatch.setattr(api_run.Transport, "call", synthetic_call)
     monkeypatch.setattr(api_run, "load_explicit_key", lambda _: "synthetic-not-a-key")
     output = tmp_path / "run"
     assert api_run.main(["--bundle", str(bundle), "--models", "luna", "--phase", "test",
@@ -142,6 +151,8 @@ def test_successful_selection_flows_through_test_and_offline_report(frozen, tmp_
     result = json.loads((output / "luna/test/summary.json").read_text())
     assert len(calls) == 120 and result["accuracy_denominator"] == 120
     assert result["thresholds"] == selected["thresholds"] and result["final_missing_unique_units"] == 0
+    assert len(list((output / "luna/test/receipts").glob("*.json"))) == 120
+    assert len(list((output / "luna/test/outcomes").glob("*.json"))) == 120
     workflow.main(["report", "--bundle", str(bundle), "--model", "luna",
         "--ledger", str(output / "luna/test/attempts.jsonl"), "--thresholds", str(path),
         "--thresholds-sha256", file_hash(path), "--output", str(tmp_path / "report.json")])

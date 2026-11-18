@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from .contract import BAG_VALIDATION_SCHEMA, EVENTS, file_hash
+from .supplement import parse_test_supplement
 
 PINNED_202_INPUTS = {
     "manifest_202.json": "d5c019130d672afd40638a6ca51c1c84ca8e8c7fad0dbe3faf493187002bb11d",
@@ -107,6 +108,33 @@ def load_extension(out, frozen, parts):
             f.write(path.read_bytes())
     return extend_test(parts, *(json.loads((frozen / name).read_text())
                                for name in ("manifest_202.json", "samples.json", "videos.json")))
+
+
+def add_test_supplement(out, parts, path):
+    """Append ordinary test questions while retaining the original input snapshot."""
+    raw = path.read_bytes()
+    added, overlay = parse_test_supplement(raw)
+    original = parts["test"]["rows"]
+    if [row["number"] for row in original] != list(range(1, 203)):
+        raise ValueError("original202 test membership required before supplement")
+    validation = parts["validation"]["rows"]
+    old_names = {row["filename"] for row in original + validation}
+    old_hashes = {row["sha256"] for row in original + validation}
+    validation_groups = {row["source_video_group"] for row in validation}
+    for row in added:
+        if (row["filename"] in old_names or row["sha256"] in old_hashes
+                or row["source_video_group"] in validation_groups):
+            raise ValueError("supplementary test question overlaps frozen inputs")
+    joined = original + added
+    with (out / "inputs" / "test-supplement.json").open("xb") as f:
+        f.write(raw)
+    context = parts["test"]["dataset_context"]
+    context.update(dataset=overlay["dataset"], test_questions=len(joined),
+                   test_videos=len({row["filename"] for row in joined}),
+                   event_counts=dict(Counter(row["event"] for row in joined)),
+                   test_supplement=overlay)
+    parts["test"]["rows"] = joined
+    parts["test"]["split_context"]["test_supplement"] = context["test_supplement"]
 
 
 def add_bag_validation(out, parts, path, expected_hash):

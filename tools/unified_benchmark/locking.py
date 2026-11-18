@@ -53,7 +53,9 @@ def lock_exclusive(file):
                 finally:
                     done.set()
 
-        threading.Thread(target=acquire, name="benchmark-file-lock", daemon=True).start()
+        threading.Thread(
+            target=acquire, name="benchmark-file-lock", daemon=True
+        ).start()
         if not done.wait(1):
             raise OSError("exclusive lock is held")
         if error:
