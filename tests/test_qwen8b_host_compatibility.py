@@ -83,10 +83,19 @@ def test_main_checks_driver_before_bootstrap_and_downloads(tmp_path, monkeypatch
         monkeypatch.setattr(vast, "search_offers", search)
         monkeypatch.setattr(launcher.S, "create_from_offers", create)
     monkeypatch.setattr(launcher, "_verify_host_driver", real_guard)
+    admission = "nvidia-smi --query-gpu=driver_version --format=csv,noheader"
+
     def driver(argv, **kwargs):
-        assert argv[-1] == "nvidia-smi --query-gpu=driver_version --format=csv,noheader"
-        events.append("driver")
-        return "580.65.06\n"
+        command = argv[-1]
+        # The admission probe is the only call that may gate bootstrap.
+        # Later nvidia-smi probes record restore/serve state and are not it.
+        if command == admission:
+            events.append("driver")
+            return "580.65.06\n"
+        if "nvidia-smi" in command:
+            return "580.65.06, NVIDIA GeForce RTX 4090, 0 MiB, 24564 MiB\n"
+        raise AssertionError(f"unexpected check_output before eval: {command}")
+
     monkeypatch.setattr(launcher.subprocess, "check_output", driver)
     monkeypatch.setattr(launcher.S, "run", lambda *a, **k: events.append("bootstrap"))
     monkeypatch.setattr(launcher, "prefetch_models", lambda **k: events.append("weights"))

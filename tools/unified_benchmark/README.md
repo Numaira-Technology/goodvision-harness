@@ -391,12 +391,10 @@ keys `VAST_API_KEY`, `SAM_SSH_KEY`, `R2_ENDPOINT`, `R2_BUCKET`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`. Attach SSH immediately after create;
 always release the labelled instance. Headline scoring remains correct/all.
 
-The active HF and vLLM profiles now include a typed `env_artifact` identity.
-Prepare a fresh bundle for those active profiles; retain historical bundles and
-their original source snapshots. The launcher captures the selected environment
-before preflight, and restore must acknowledge that same artifact, manifest,
-prefix and compatibility. A registry change during preparation fails closed
-before serving or evaluation and still attempts confirmed instance cleanup.
+The active HF and vLLM profiles bind typed `env_artifact` identities. Create fresh
+bundles for updated active profiles and preserve historical bundles unchanged.
+The captured preflight environment is authoritative through the final restore
+acknowledgement; a changed registry or artifact stops before service/evaluation.
 
 vLLM (independent engine, same exam):
 
@@ -419,19 +417,29 @@ change JPEG size, prompts, max_tokens, or client concurrency to fit VRAM.
 The active declared vLLM artifact is
 `envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz`, SHA-256
 `59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b`,
-4,252,375,781 bytes (torch `+cu130`). It needs host CUDA >=13.0 and NVIDIA driver
->=580. The launcher rejects incompatible or unknown offer/resume metadata and
-checks the actual driver after SSH, before bootstrap or downloads. These checks
-do not establish artifact or GPU acceptance. The superseded `cu128-py312-vllm0310-ada` object is kept frozen for
-provenance only: it is missing `typing_extensions` in the prefix and is never
-restored. The incomplete cu130 `ada` pack is also frozen. The declared ada2
-identity is not producer provenance, a full-archive readback, or a
-restore/import log. Rebuilds require a reviewed successor entry, fresh prefix and
-new immutable identity; follow the [local build and provenance procedure](../qwen8b_vllm/BUILD.md).
-CPU import evidence is not GPU acceptance. The launcher checks sealed profile
-and request identities before rental and again before inference, and retains a
-separate synthetic 720px smoke receipt outside the scored ledger. Changed active
-profiles require new bundles; preserve historical bundles byte-for-byte.
+4,252,375,781 bytes (torch `+cu130`). The profile records this identity and the
+launcher checks it against the registry before rental. The cu130 pack requires
+host CUDA >=13.0 and NVIDIA driver >=580; the HF CUDA 12.8 image label is not a
+driver guarantee. The launcher rejects incompatible or unknown offer/resume
+metadata and checks the actual driver after SSH, before bootstrap or downloads.
+These checks do not establish artifact or GPU acceptance. The superseded
+`cu128-py312-vllm0310-ada` object is kept frozen for provenance only: it is
+missing `typing_extensions` in the prefix and is never restored. The incomplete
+cu130 `ada` pack is also frozen and refused. All published Qwen pack keys,
+including ada2, are frozen. The declared ada2 identity is not producer
+provenance, a full-archive readback, a restore/import log, or an independent
+verification of the claimed historical exam. Rebuilds require a reviewed
+successor entry, a fresh prefix, and a new immutable identity; follow the
+[local build and provenance procedure](../qwen8b_vllm/BUILD.md). The 4090 only
+restores the pinned object and existing weights. A CPU import is not a GPU
+serve, and CPU import evidence is not GPU acceptance.
+
+Bundle/profile/request hashes are checked before rental and rechecked before
+inference. A separate synthetic 720px JPEG is used for smoke, with its request
+and response saved to `vllm-smoke-<instance>.json` beside the evaluation output.
+It is excluded from scored attempts and latency. Scored validation/test units
+are sent only through the evaluation ledger. Create a new bundle for the updated
+ada2 profile; never rewrite a historical bundle to pass identity checks.
 
 Hard-answer profiles omit the threshold flags. Use a fresh output path for a new
 run; an existing compatible evaluator output requires explicit `--resume`, which

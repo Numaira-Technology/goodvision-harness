@@ -411,9 +411,17 @@ def wait_for_worker(process: subprocess.Popen, port: int) -> None:
     raise RuntimeError("SAM continuous analysis did not become ready within 10 minutes; see logs above.")
 
 
+def _release_log(message: str) -> None:
+    """A missing console must not prevent or invalidate provider cleanup."""
+    try:
+        print(message, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
 def release_instance(vast, instance_id: int) -> None:
     """Require confirmed cleanup before another paid rental can be created."""
-    print(f"Destroying instance: {instance_id}", flush=True)
+    _release_log(f"Destroying instance: {instance_id}")
     previous_timeout = vast.client.timeout
     vast.client.timeout = (5, 20)
     try:
@@ -422,7 +430,7 @@ def release_instance(vast, instance_id: int) -> None:
             raise RuntimeError("Vast did not confirm instance destruction.")
     finally:
         vast.client.timeout = previous_timeout
-    print(f"Released instance: {instance_id}", flush=True)
+    _release_log(f"Released instance: {instance_id}")
 
 
 def start_worker(vast, instance_id: int, options: list[str], *, hf_token: str,
