@@ -152,11 +152,14 @@ def test_default_preflight202_all_routes_and_protocol_guard(tmp_path, inputs, mo
     monkeypatch.setattr(api_run.Transport, "call", synthetic_call)
     runs = tmp_path / "runs"; runs.mkdir()
     bundle_digest = workflow.verify_bundle(out)
+    expected_yes = sum(
+        q["proposed_answer"] == "yes" for q in parts["test"]["rows"]
+    )
     for alias in ("qwen8b", "luna"):
         api_run.execute_model(alias, out, runs, "synthetic-not-a-key", threading.Event(), bundle_digest)
         result = json.loads((runs / alias / "test/summary.json").read_text())
         assert result["accuracy_denominator"] == 202
-        assert result["correct"] == sum(q["proposed_answer"] == "yes" for q in parts["test"]["rows"])
+        assert result["correct"] == expected_yes
         assert result["base100"]["accuracy_denominator"] == 100
         assert result["bag20"]["accuracy_denominator"] == 20
         assert result["cohorts"]["original120"]["accuracy_denominator"] == 120
@@ -185,18 +188,30 @@ def test_default_preflight202_all_routes_and_protocol_guard(tmp_path, inputs, mo
         str(runs / "luna/test/attempts.jsonl"), "--output", str(report_path),
         "--thresholds", str(selected_path), "--thresholds-sha256", d.file_hash(selected_path),
     ])
-    assert json.loads(report_path.read_text())["correct"] == 202
+    report = json.loads(report_path.read_text())
+    assert report["correct"] == expected_yes
+    assert report["accuracy_denominator"] == 202
 
-    class SyntheticLocal(SyntheticTransport):
-        def __init__(self, bundle, config, endpoint, directory, ledger):
-            super().__init__(bundle, config, None, directory, ledger, None)
+    def synthetic_local_call(self, body):
+        # Keep real local parsing and durable receipt/outcome writers too.
+        return {
+            "model": self.expected_model,
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {"content": '{"answer":true}'},
+            }],
+        }
 
-    monkeypatch.setattr(eval_local, "LocalTransport", SyntheticLocal)
+    monkeypatch.setattr(eval_local.LocalTransport, "call", synthetic_local_call)
     for alias in ("qwen8b_r2_host", "qwen8b_r2_vllm"):
         eval_local.execute(alias, out, runs, "http://unused.invalid", bundle_digest, "test")
         result = json.loads((runs / alias / "test/summary.json").read_text())
-        assert result["correct"] == result["accuracy_denominator"] == 202
-        assert result["base100"]["correct"] == result["base100"]["accuracy_denominator"] == 100
+        assert result["correct"] == expected_yes
+        assert result["accuracy_denominator"] == 202
+        assert result["base100"]["correct"] == sum(
+            q["proposed_answer"] == "yes" for q in parts["test"]["rows"][:100]
+        )
+        assert result["base100"]["accuracy_denominator"] == 100
         assert result["bag20"]["accuracy_denominator"] == 20
         assert result["cohorts"]["original120"]["accuracy_denominator"] == 120
         assert result["cohorts"]["robot82"]["accuracy_denominator"] == 82
