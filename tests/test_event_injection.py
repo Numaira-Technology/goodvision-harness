@@ -30,9 +30,11 @@ from goodvision_harness.event_registry import (
     vocabulary_from_json,
 )
 from goodvision_harness.grounding import (
+    STREAMING_MULTI_DECISION_PREFIX_RULE,
     build_multi_grounding_messages,
     build_selected_features_grounding_client,
 )
+from goodvision_harness.model_api import ModelAPIClient
 from goodvision_harness.pipeline import StreamingSession
 from goodvision_harness.scene_evidence import EvidenceFrame, InspectionRequest
 from goodvision_harness.scene_inspection import build_temporal_messages
@@ -380,6 +382,70 @@ def test_everyday_events_do_not_get_the_compact_negative_shortcut():
     )
     assert "do not use no_events" in user
     assert '{"no_events":0.95}' not in user
+    assert "return only no_events" not in user
+
+
+@pytest.mark.parametrize("labels", [("texts_on_phone",), ("fight", "texts_on_phone")])
+@pytest.mark.parametrize("omit_details", [False, True])
+def test_streaming_selected_events_keep_definitions_and_full_negative_evidence(
+    labels, omit_details,
+):
+    config = load_config(ROOT / "config.yaml")
+    decisions = [
+        {"event_label": label, "detected": False, "confidence": 0.9}
+        for label in labels
+    ]
+    description = "未发现目标证据。 / No target evidence visible."
+    events = [{**item, "description": description, "objects": []} for item in decisions]
+    if omit_details:
+        events = events[:-1]
+    prefix = json.dumps({"decisions": decisions})[:-1] + ","
+    requests = []
+    preliminary = []
+
+    class StreamTransport:
+        assistant_text = staticmethod(ModelAPIClient.assistant_text)
+
+        def chat_completion_stream(self, **kwargs):
+            requests.append(kwargs)
+            assert kwargs["on_content"](prefix, 0.1)
+            return {"choices": [{"message": {"content": json.dumps({
+                "decisions": decisions, "events": events,
+            })}}]}
+
+    client = build_selected_features_grounding_client(
+        config.inference, config.model_api, features=labels,
+        vocabulary=_injected(), transport=StreamTransport(),
+        stream_decisions=True, preliminary_callback=preliminary.append,
+    )
+    window = replace(_WINDOW, frames=(replace(_WINDOW.frames[0], jpeg_bytes=_jpeg()),))
+    response = client.classify_window(window)
+
+    assert response.ok is (not omit_details)
+    assert [(item.event_label, item.detected) for item in preliminary] == [
+        (label, False) for label in labels
+    ]
+    if omit_details:
+        assert response.classification is None
+    else:
+        assert all(
+            item.description == description
+            for item in response.classification.judgments
+        )
+    assert len(requests) == 1
+    messages = requests[0]["messages"]
+    system = messages[0]["content"]
+    user = messages[1]["content"][0]["text"]
+    assert STREAMING_MULTI_DECISION_PREFIX_RULE in system
+    assert "Treat texts_on_phone as ordinary activity" in system
+    assert "Do not use a compact no_events answer" in system
+    assert "full events array" in system
+    assert "the phone, never the involved person's box" in user
+    assert TEXTS_ON_PHONE["definition"] in user
+    assert "exactly one item for each target event" in user
+    assert "do not use no_events" in user
+    assert "Omit events whose leading decision" not in user
+    assert "Otherwise emit no_events" not in system
     assert "return only no_events" not in user
 
 

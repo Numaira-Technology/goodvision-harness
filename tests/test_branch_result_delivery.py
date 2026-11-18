@@ -35,6 +35,7 @@ from goodvision_harness.service import (
     create_app,
 )
 from goodvision_harness.sliding_window import FrameWindow, SampledFrame
+from goodvision_harness.vision_result import PreliminaryVisionResult
 
 
 def observation(label, timestamp, *, detected=True, message=None, frame=None):
@@ -82,7 +83,7 @@ def runtime_without_workers():
     return runtime, webhook
 
 
-def sse_records(runtime, *, feature=None, after=0):
+def sse_records(runtime, *, feature=None, overall_only=False, after=0):
     async def collect():
         checks = 0
 
@@ -94,6 +95,7 @@ def sse_records(runtime, *, feature=None, after=0):
         request = SimpleNamespace(headers={}, is_disconnected=disconnected)
         response = _result_events_response(
             request, runtime, after=after, feature=feature,
+            overall_only=overall_only,
         )
         result = []
         async for chunk in response.body_iterator:
@@ -110,6 +112,34 @@ def sse_records(runtime, *, feature=None, after=0):
         return result
 
     return asyncio.run(collect())
+
+
+def test_preliminary_result_stays_in_generic_stream_but_not_overall_sse():
+    runtime, _ = runtime_without_workers()
+    preliminary = PreliminaryVisionResult(
+        event_label="smoking",
+        detected=True,
+        confidence=0.9,
+        window_index=1,
+        source_frame_index=2,
+        window_start_seconds=0.0,
+        window_end_seconds=1.0,
+        latency_seconds=0.1,
+    ).as_dict()
+    initial = runtime.results.publish(preliminary, update_snapshots=False)
+    final = observation("smoking", 1.0).as_dict()
+    completed = runtime.results.publish(final)
+
+    assert [payload for _, payload in sse_records(runtime)] == [preliminary, final]
+    overall = sse_records(runtime, overall_only=True)
+    assert len(overall) == 1
+    assert overall[0][0] == f"{runtime.results.epoch}:{completed.cursor}"
+    assert overall[0][1]["type"] == "overall_description"
+    assert overall[0][1]["observation_id"] == final["observation_id"]
+    assert sse_records(runtime, overall_only=True, after=initial.cursor) == overall
+    assert [
+        payload["type"] for _, payload in sse_records(runtime, feature="smoking")
+    ] == ["analysis_result"]
 
 
 def test_latest_global_and_feature_use_source_frame_order_and_original_payload():

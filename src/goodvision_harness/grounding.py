@@ -9,7 +9,7 @@ import math
 import re
 import threading
 import time
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
@@ -53,6 +53,7 @@ from .reference_memory import (
 )
 from .sliding_window import FrameWindow
 from .video_to_stream import encode_jpeg
+from .vision_result import PreliminaryVisionResult
 
 FACE_REFERENCE_ANALYSIS_KIND = "face_reference_match"
 REFERENCE_MEMORY_ANALYSIS_KIND = "reference_memory"
@@ -120,6 +121,28 @@ BILINGUAL_DESCRIPTION_RULE = (
     "negative judgments and supersedes earlier monolingual description examples. "
     "Keep JSON keys, event_label values, object labels, and identifiers unchanged."
 )
+STREAMING_DECISION_PREFIX_RULE = (
+    "Streaming order requirement: begin the JSON object with exactly the "
+    "top-level key detected (boolean), immediately followed by confidence "
+    "(number from 0 to 1). Emit those two keys before description, objects, "
+    "matched_memory_ids, actors, or any other key. Do not use markdown or "
+    "prose before the opening JSON brace. Preserve every other required field."
+)
+STREAMING_MULTI_DECISION_PREFIX_RULE = (
+    "Streaming order requirement: begin the JSON object with exactly the "
+    "top-level key decisions. Its value must be an array containing exactly one "
+    "compact object for every requested event in the stated order. Each compact "
+    "object must contain only event_label, detected, and confidence. Finish this "
+    "decisions array before emitting descriptions, objects, actors, or other "
+    "fields. Do not use markdown or prose before the opening JSON brace."
+)
+_STREAMING_DECISION_PREFIX = re.compile(
+    r'^\s*\{\s*"detected"\s*:\s*(true|false)\s*,\s*'
+    r'"confidence"\s*:\s*'
+    r'(-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*(?=[,}])'
+)
+
+
 def _compact_no_events_rule(noun: str) -> str:
     """The all-negative shortcut, named after whatever was actually requested.
 
@@ -826,6 +849,61 @@ def _normalize_bilingual_description(description: str) -> str:
     return f"{chinese.strip()} / {english.strip()}"
 
 
+def parse_streaming_decision_prefix(text: str) -> tuple[bool, float] | None:
+    """Return only a complete, valid leading decision; partial text stays pending."""
+
+    match = _STREAMING_DECISION_PREFIX.match(text)
+    if match is None:
+        return None
+    confidence = float(match.group(2))
+    if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+        return None
+    return match.group(1) == "true", confidence
+
+
+def _parse_multi_decisions(
+    value: Any,
+    event_labels: tuple[str, ...],
+) -> tuple[tuple[str, bool, float], ...]:
+    if not isinstance(value, list) or len(value) != len(event_labels):
+        raise ValueError("decisions must contain every requested event")
+    decisions: list[tuple[str, bool, float]] = []
+    for index, (item, expected_label) in enumerate(
+        zip(value, event_labels, strict=True)
+    ):
+        if not isinstance(item, Mapping) or set(item) != {
+            "event_label", "detected", "confidence",
+        }:
+            raise ValueError(f"decisions[{index}] has an invalid shape")
+        if item["event_label"] != expected_label:
+            raise ValueError("decisions must use the requested event order")
+        detected = item["detected"]
+        if not isinstance(detected, bool):
+            raise TypeError(f"decisions[{index}].detected must be boolean")
+        confidence = _number(item["confidence"], f"decisions[{index}].confidence")
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError(f"decisions[{index}].confidence must be between 0 and 1")
+        decisions.append((expected_label, detected, confidence))
+    return tuple(decisions)
+
+
+def parse_streaming_multi_decision_prefix(
+    text: str,
+    *,
+    event_labels: tuple[str, ...] = SAFETY_EVENT_LABELS,
+) -> tuple[tuple[str, bool, float], ...] | None:
+    """Parse a complete leading decisions array while the rest is still streaming."""
+
+    match = re.match(r'^\s*\{\s*"decisions"\s*:\s*', text)
+    if match is None:
+        return None
+    try:
+        value, _ = json.JSONDecoder().raw_decode(text[match.end():])
+        return _parse_multi_decisions(value, event_labels)
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+
+
 def parse_grounded_classification(
     text: str,
     *,
@@ -882,6 +960,7 @@ def parse_multi_grounded_classification(
     event_labels: tuple[str, ...] = SAFETY_EVENT_LABELS,
     analysis_kind: str = SAFETY_MULTI_ANALYSIS_KIND,
     require_bilingual: bool = False,
+    allow_omitted_negative_details: bool = True,
 ) -> MultiGroundedClassification:
     """Parse every requested label, accepting a legacy envelope for one label."""
 
@@ -892,12 +971,19 @@ def parse_multi_grounded_classification(
         raise ValueError("event_labels must be unique")
 
     payload = _json_object(text)
+    decisions = (
+        _parse_multi_decisions(payload["decisions"], requested_labels)
+        if "decisions" in payload else None
+    )
     if "no_events" in payload:
-        if set(payload) != {"no_events"}:
+        allowed = {"no_events"} | ({"decisions"} if decisions is not None else set())
+        if set(payload) != allowed:
             raise ValueError("no_events must be the only response field")
         confidence = _number(payload["no_events"], "no_events")
         if not 0.0 <= confidence <= 1.0:
             raise ValueError("no_events must be between 0 and 1")
+        if decisions is not None and any(detected for _, detected, _ in decisions):
+            raise ValueError("decisions contradict no_events")
         return MultiGroundedClassification(
             judgments=tuple(
                 GroundedEventClassification(
@@ -971,9 +1057,40 @@ def parse_multi_grounded_classification(
 
     missing = [label for label in requested_labels if label not in parsed]
     if missing:
-        raise ValueError(
-            "model response is missing event labels: " + ", ".join(missing)
-        )
+        decision_map = {
+            label: (detected, confidence)
+            for label, detected, confidence in (decisions or ())
+        }
+        unsafe_missing = [
+            label
+            for label in missing
+            if not allow_omitted_negative_details
+            or label not in decision_map or decision_map[label][0]
+        ]
+        if unsafe_missing:
+            raise ValueError(
+                "model response is missing event labels: "
+                + ", ".join(unsafe_missing)
+            )
+        # A complete, validated leading decision is authoritative for a
+        # negative. It is safe to expand omitted negative details locally;
+        # positive decisions still require the model's description and box.
+        for label in missing:
+            confidence = decision_map[label][1]
+            parsed[label] = GroundedEventClassification(
+                event_label=label,
+                detected=False,
+                confidence=confidence,
+                description=(
+                    f"未检测到{_EVENT_NAMES_ZH.get(label, label)}。 / "
+                    f"No {label} detected."
+                ),
+                objects=(),
+            )
+    if decisions is not None and any(
+        parsed[label].detected != detected for label, detected, _ in decisions
+    ):
+        raise ValueError("decisions contradict final event judgments")
     return MultiGroundedClassification(
         judgments=tuple(parsed[label] for label in requested_labels),
         analysis_kind=analysis_kind,
@@ -989,6 +1106,7 @@ def build_grounding_messages(
     prompt: str,
     memory_context: MemoryContext | None = None,
     event_sensitivities: Mapping[str, str] | None = None,
+    stream_decisions: bool = False,
 ) -> list[dict[str, Any]]:
     effective_event_label = (
         UNKNOWN_FACE_EVENT_LABEL
@@ -1091,13 +1209,18 @@ def build_grounding_messages(
         }
         for frame in live_frames
     )
+    effective_system_prompt = (
+        _system_prompt_with_evidence_rules(
+            system_prompt, (effective_event_label,), event_sensitivities,
+        )
+        + f"\n\n{BILINGUAL_DESCRIPTION_RULE}"
+    )
+    if stream_decisions:
+        effective_system_prompt += f"\n\n{STREAMING_DECISION_PREFIX_RULE}"
     return [
         {
             "role": "system",
-            "content": _system_prompt_with_evidence_rules(
-                system_prompt, (effective_event_label,), event_sensitivities,
-            )
-            + f"\n\n{BILINGUAL_DESCRIPTION_RULE}",
+            "content": effective_system_prompt,
         },
         {"role": "user", "content": content},
     ]
@@ -1210,6 +1333,7 @@ def build_multi_grounding_messages(
     append_contract: bool = True,
     event_sensitivities: Mapping[str, str] | None = None,
     vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
+    stream_decisions: bool = False,
 ) -> list[dict[str, Any]]:
     """Build one Qwen request that judges every requested event at once.
 
@@ -1237,6 +1361,12 @@ def build_multi_grounding_messages(
     # single-event JSON contract. Keep that policy, and supply just one output
     # contract for this multi-event client, including single-feature selections.
     prompt = prompt.partition("Respond with only this JSON object:")[0].rstrip()
+    if stream_decisions:
+        # Fixed-profile prompts contain a legacy envelope that directly conflicts
+        # with the leading decisions contract. Retain their event policy and let
+        # the authoritative dynamic contract below define the response shape.
+        prompt = prompt.partition("If ALL requested events are negative")[0].rstrip()
+        append_contract = True
     rendered_prompt = (
         prompt.replace("{events}", rendered_events)
         .replace("{event}", rendered_events)
@@ -1265,7 +1395,13 @@ def build_multi_grounding_messages(
     # hide behind the all-negative form. Safety-only requests keep the
     # shortcut unchanged.
     allow_compact_negative = not balanced
-    if allow_compact_negative:
+    if stream_decisions and allow_compact_negative:
+        compact_rule = (
+            "If any decision is positive, then emit detailed events only for "
+            "those positive decisions; negative decisions need no repeated "
+            "event detail. Otherwise follow the decisions array with no_events.\n"
+        )
+    elif allow_compact_negative:
         compact_rule = (
             _compact_no_events_rule("event") if injected else COMPACT_NO_EVENTS_RULE
         ) + "\n"
@@ -1276,6 +1412,8 @@ def build_multi_grounding_messages(
             "verdict is negative, with bilingual descriptions of the visible "
             "evidence that settles each one.\n"
         )
+    if stream_decisions:
+        compact_rule = STREAMING_MULTI_DECISION_PREFIX_RULE + "\n" + compact_rule
     system_text = (
         f"{policy_system_prompt}\n"
         f"{BILINGUAL_DESCRIPTION_RULE}\n"
@@ -1288,13 +1426,20 @@ def build_multi_grounding_messages(
             "safety event and allow multiple simultaneous positives."
         )
     )
+    event_coverage = (
+        "exactly one item for every target event whose leading decision has "
+        "detected=true, in the stated target order. Omit events whose leading "
+        "decision has detected=false; their complete decisions are sufficient."
+        if stream_decisions and allow_compact_negative else
+        "exactly one item for each target event in the stated order and use "
+        "its exact event_label."
+    )
     contract = (
         "When at least one event is positive, use this authoritative "
         + ("requested-event" if injected else "fixed safety-event")
         + " output contract (this supersedes any "
         "earlier single-event JSON example): return only one JSON object with an "
-        "events array. The array must contain exactly one item for each target "
-        "event in the stated order and use its exact event_label. Every item must "
+        f"events array. The array must contain {event_coverage} Every item must "
         "contain event_label, detected (boolean), confidence (0..1 confidence in "
         "that verdict), description (Chinese / English visible evidence), and "
         "objects (array). Each object must contain label, confidence (0..1), and "
@@ -1325,7 +1470,13 @@ def build_multi_grounding_messages(
         "Target events (exact order)" if injected
         else "Target safety events (exact order)"
     )
-    if allow_compact_negative:
+    if stream_decisions and allow_compact_negative:
+        negative_instruction = (
+            'If ALL requested events are negative, follow the leading decisions '
+            'array with "no_events":0.95 using your confidence; omit all other '
+            'fields.\n'
+        )
+    elif allow_compact_negative:
         negative_instruction = (
             'If ALL requested events are negative, return only '
             '{"no_events":0.95} with your confidence; omit all other fields.\n'
@@ -1344,7 +1495,7 @@ def build_multi_grounding_messages(
         f"Sample timestamps: {timestamps}"
         f"{contract_section}\n\n"
         f"{_sensitivity_actor_rule(POSITIVE_EVENT_ACTOR_RULE, smoking_high)}"
-        f"{POSITIVE_EVENT_ACTOR_NEGATIVE_SHORTCUT if allow_compact_negative else ''}"
+        f"{POSITIVE_EVENT_ACTOR_NEGATIVE_SHORTCUT if allow_compact_negative and not stream_decisions else ''}"
         f"\n{negative_instruction}"
         "The live JPEG images follow in chronological order."
     )
@@ -1380,6 +1531,9 @@ class AIClubGroundingClient:
         transport: ModelAPIClient,
         memory_context: MemoryContext | None = None,
         event_sensitivities: Mapping[str, str] | None = None,
+        *,
+        stream_decisions: bool = False,
+        preliminary_callback: Callable[[PreliminaryVisionResult], None] | None = None,
     ) -> None:
         self.settings = settings
         self._transport = transport
@@ -1387,22 +1541,66 @@ class AIClubGroundingClient:
         self.event_sensitivities = (
             dict(event_sensitivities) if event_sensitivities is not None else None
         )
+        self.stream_decisions = stream_decisions
+        self.preliminary_callback = preliminary_callback
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
-        try:
-            response = self._transport.chat_completion(
-                model=self.settings.model,
-                messages=build_grounding_messages(
-                    window,
+        preliminary_emitted = False
+
+        def on_content(text: str, _transport_elapsed: float) -> bool:
+            nonlocal preliminary_emitted
+            if preliminary_emitted:
+                return True
+            decision = parse_streaming_decision_prefix(text)
+            if decision is None:
+                return False
+            if self.preliminary_callback is None:
+                return False
+            detected, confidence = decision
+            try:
+                self.preliminary_callback(PreliminaryVisionResult(
                     event_label=self.settings.event_label,
-                    system_prompt=self.settings.system_prompt,
-                    prompt=self.settings.prompt,
-                    memory_context=self.memory_context,
-                    event_sensitivities=self.event_sensitivities,
-                ),
-                **dict(self.settings.request_parameters),
+                    detected=detected,
+                    confidence=confidence,
+                    window_index=window.index,
+                    source_frame_index=window.newest_frame.source_frame_index,
+                    window_start_seconds=window.start_timestamp,
+                    window_end_seconds=window.end_timestamp,
+                    latency_seconds=time.monotonic() - started,
+                ))
+            except Exception:
+                # A failed advisory delivery must not suppress transport retries.
+                return False
+            preliminary_emitted = True
+            return True
+
+        try:
+            messages = build_grounding_messages(
+                window,
+                event_label=self.settings.event_label,
+                system_prompt=self.settings.system_prompt,
+                prompt=self.settings.prompt,
+                memory_context=self.memory_context,
+                event_sensitivities=self.event_sensitivities,
+                stream_decisions=self.stream_decisions,
             )
+            if self.stream_decisions:
+                stream = getattr(self._transport, "chat_completion_stream", None)
+                if not callable(stream):
+                    raise ValueError("model transport does not support streaming")
+                response = stream(
+                    model=self.settings.model,
+                    messages=messages,
+                    on_content=on_content,
+                    **dict(self.settings.request_parameters),
+                )
+            else:
+                response = self._transport.chat_completion(
+                    model=self.settings.model,
+                    messages=messages,
+                    **dict(self.settings.request_parameters),
+                )
             text = self._transport.assistant_text(response)
         except (ModelAPIError, ValueError) as exc:
             code = _record_analysis_failure(
@@ -1531,6 +1729,9 @@ class AIClubMultiGroundingClient:
         event_labels: tuple[str, ...] = SAFETY_EVENT_LABELS,
         event_sensitivities: Mapping[str, str] | None = None,
         vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
+        *,
+        stream_decisions: bool = False,
+        preliminary_callback: Callable[[PreliminaryVisionResult], None] | None = None,
     ) -> None:
         labels = tuple(event_labels)
         if not labels or len(set(labels)) != len(labels):
@@ -1545,9 +1746,41 @@ class AIClubMultiGroundingClient:
         self.memory_context = None
         self.model_name = PUBLIC_MODEL_NAME
         self._transport = transport
+        self.stream_decisions = stream_decisions and callable(
+            getattr(transport, "chat_completion_stream", None)
+        )
+        self.preliminary_callback = preliminary_callback
 
     def classify_window(self, window: FrameWindow) -> GroundingResponse:
         started = time.monotonic()
+        preliminary_labels: set[str] = set()
+
+        def on_content(text: str, _transport_elapsed: float) -> bool:
+            decisions = parse_streaming_multi_decision_prefix(
+                text, event_labels=self.event_labels,
+            )
+            if decisions is None or self.preliminary_callback is None:
+                return False
+            for event_label, detected, confidence in decisions:
+                if event_label in preliminary_labels:
+                    continue
+                try:
+                    self.preliminary_callback(PreliminaryVisionResult(
+                        event_label=event_label,
+                        detected=detected,
+                        confidence=confidence,
+                        window_index=window.index,
+                        source_frame_index=window.newest_frame.source_frame_index,
+                        window_start_seconds=window.start_timestamp,
+                        window_end_seconds=window.end_timestamp,
+                        latency_seconds=time.monotonic() - started,
+                    ))
+                except Exception:
+                    # Once any verdict reached the caller, retrying could mix
+                    # decisions from different model attempts for one window.
+                    return bool(preliminary_labels)
+                preliminary_labels.add(event_label)
+            return len(preliminary_labels) == len(self.event_labels)
         multi_prompt = str(getattr(self.settings, "multi_event_prompt", "")).strip()
         # The configured multi-event prompt contains a fully expanded four-label
         # JSON example. Reuse it only for that exact request; selected subsets use
@@ -1568,19 +1801,31 @@ class AIClubMultiGroundingClient:
                 int(configured_max_tokens), MIN_MULTI_EVENT_MAX_TOKENS
             )
         try:
-            response = self._transport.chat_completion(
-                model=self.settings.model,
-                messages=build_multi_grounding_messages(
-                    window,
-                    system_prompt=self.settings.system_prompt,
-                    prompt=prompt,
-                    event_labels=self.event_labels,
-                    append_contract=not use_fixed_prompt,
-                    event_sensitivities=self.event_sensitivities,
-                    vocabulary=self.vocabulary,
-                ),
-                **request_parameters,
+            messages = build_multi_grounding_messages(
+                window,
+                system_prompt=self.settings.system_prompt,
+                prompt=prompt,
+                event_labels=self.event_labels,
+                append_contract=not use_fixed_prompt,
+                event_sensitivities=self.event_sensitivities,
+                stream_decisions=self.stream_decisions,
+                vocabulary=self.vocabulary,
             )
+            if self.stream_decisions:
+                stream = getattr(self._transport, "chat_completion_stream", None)
+                assert callable(stream)
+                response = stream(
+                    model=self.settings.model,
+                    messages=messages,
+                    on_content=on_content,
+                    **request_parameters,
+                )
+            else:
+                response = self._transport.chat_completion(
+                    model=self.settings.model,
+                    messages=messages,
+                    **request_parameters,
+                )
             text = self._transport.assistant_text(response)
         except (ModelAPIError, ValueError) as exc:
             code = _record_analysis_failure(
@@ -1605,6 +1850,12 @@ class AIClubMultiGroundingClient:
                 text,
                 event_labels=self.event_labels,
                 require_bilingual=True,
+                # Balanced events retain main's per-label evidence requirement;
+                # a preliminary verdict cannot stand in for missing detail.
+                allow_omitted_negative_details=all(
+                    item.recall != BALANCED_RECALL
+                    for item in self.vocabulary.resolve(self.event_labels)
+                ),
             )
         except (TypeError, ValueError) as exc:
             code = _record_analysis_failure(
@@ -2261,6 +2512,8 @@ def build_grounding_client(
     api_key: str | None = None,
     transport: ModelAPIClient | None = None,
     event_sensitivities: Mapping[str, str] | None = None,
+    stream_decisions: bool = False,
+    preliminary_callback: Callable[[PreliminaryVisionResult], None] | None = None,
 ) -> GroundingClient:
     if dry_run:
         return DryRunGroundingClient(settings, memory_context)
@@ -2269,6 +2522,8 @@ def build_grounding_client(
         transport or ModelAPIClient(aiclub_settings, api_key=api_key),
         memory_context,
         event_sensitivities=event_sensitivities,
+        stream_decisions=stream_decisions,
+        preliminary_callback=preliminary_callback,
     )
 
 
@@ -2286,6 +2541,8 @@ def build_selected_features_grounding_client(
     transport: ModelAPIClient | None = None,
     event_sensitivities: Mapping[str, str] | None = None,
     vocabulary: EventVocabulary = BUILTIN_VOCABULARY,
+    stream_decisions: bool = False,
+    preliminary_callback: Callable[[PreliminaryVisionResult], None] | None = None,
 ) -> SelectedFeaturesGroundingClient:
     """Build one detector graph for an arbitrary non-empty feature subset."""
 
@@ -2314,6 +2571,8 @@ def build_selected_features_grounding_client(
                 safety_labels,
                 event_sensitivities=event_sensitivities,
                 vocabulary=vocabulary,
+                stream_decisions=stream_decisions,
+                preliminary_callback=preliminary_callback,
             )
     if include_stranger:
         if dry_run:
