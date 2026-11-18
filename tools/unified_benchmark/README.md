@@ -79,6 +79,10 @@ still needs its own runtime checks. Stop at a failed prerequisite and report the
 
 ## Fixed method
 
+The counts below describe the retained baseline. With an optional test supplement,
+use the expanded frozen plan counts and report its cohort separately as described
+in [the supplement contract](DATASET202.md#optional-test-supplement).
+
 Test: 202 questions / 192 videos, fight32, smoking22, fall62, weapon66, bag knife10,
 bag alcohol bottle10. Validation: 24 videos/questions, six per base event with
 three yes and three no. There is no bag validation and no fabricated train split.
@@ -201,6 +205,13 @@ python -m tools.unified_benchmark.preflight \
   --media /data/goodvision --models qwen8b luna gemini25_off \
   --output outputs/new-current-frame-bundle
 ```
+
+To append the requested test questions, add
+`--test-supplement /private/path/test-supplement.json`. The current supplement adds
+questions203–222 on ten videos: **222 test questions / 202 test videos**. Keep all
+eight frozen inputs intact; the supplement is a separate retained input. See the
+[supplement contract](DATASET202.md#optional-test-supplement) for validation and
+reporting. The validation plan, prompts, routes and preprocessing stay unchanged.
 
 Default `--protocol unified-frame-202-v1` uses202; for a deliberately selected
 legacy120 run pass `--protocol unified-frame-120-v2` with the five original inputs.
@@ -380,8 +391,16 @@ Vast rentals record the machine through `tools/vast_run_log.py`. Colleagues keep
 the same launcher command. `python -m tools.start_qwen8b_r2` is armed by the
 `tools` package. `python -m tools.start_qwen8b_vllm`, `python tools/start_sam.py`,
 `python tools/start_detector.py`, and `python -m tools.diag_qwen8b_vllm_import`
-call `attach()` themselves. The call pattern, output layout, and checklist are
-in `.cursor/skills/vast-run-log/SKILL.md`. Each eval
+call `attach()` themselves. `python -m tools.unified_benchmark.native_run --execute`
+also writes this log for `--model clip`, `siglip2`, `videojev`, and `decision3`
+only. Native logs use a bounded local probe without login shell startup scripts;
+probe failure is `unknown`. They record the CLI outcome and elapsed wall time
+before probing. Scores come from `<output>/<split>/report.json` only after a
+successful invocation with a fresh output; failed and resumed invocations keep
+scores `unknown`. Native logs stay in the stable series directory, outside the
+sealed native result inventory. No frozen runner source changes for this hook.
+The rental call pattern, output layout, and checklist are
+in `.cursor/skills/vast-run-log/SKILL.md`. Each rental eval
 still needs its own new `--eval-output` (the evaluator refuses an existing
 directory). This update changes the frozen SAM and vLLM launcher sources;
 create a new preflight bundle after updating. Existing bundles keep their source
@@ -454,9 +473,43 @@ python -m tools.unified_benchmark.workflow report --bundle /bundle --model luna 
 
 Keep known receipt USD spend and unknown-cost attempts separate. Specify whether
 cost includes validation/test/retries. GPU actual cost needs a bill or verified
-rate and duration. Test P50/P95 are successful complete transport attempt times,
-including parsing/metadata lookup, excluding queue/backoff; report n and missing.
-They are not independent-probe latency or end-to-end twelve-camera throughput.
+rate and duration. Test latency follows the definition below; report n, failed
+and timeout attempts beside P50/P95. They are not independent-probe latency or
+end-to-end twelve-camera throughput.
+
+### Latency definition (P50/P95)
+
+Code: `tools/unified_benchmark/latency.py`, used by `workflow.py` and
+`.claude/skills/event-benchmark/scripts/latency_bench.py`.
+
+- One sample is one recorded request attempt in the reported split, including retries.
+  Formal test runs use 12 client slots; validation timings are labelled separately.
+  The independent latency bench records its own workload and concurrency.
+- Its time (`transport_seconds`) runs from sending the request to having the parsed
+  response. Building the request, writing and hashing receipts, the OpenRouter
+  generation lookup (recorded separately as `metadata_lookup_seconds`), queue wait
+  and retry backoff are outside it.
+- Percentiles are nearest-rank: sort ascending and take index `ceil(p * n) - 1`.
+- `p50_seconds` / `p95_seconds` use successful attempts only. Failed attempts are
+  never dropped silently: `failed_attempts` and `timeout_attempts` are reported, and
+  `p95_with_failures_seconds` counts each recorded failed attempt at a fixed 90 s
+  request-timeout penalty. This is a penalized statistic, not observed failure latency
+  or a hard wall-clock deadline (urllib uses a socket timeout; local encoders have
+  no HTTP timeout). `p95_with_failures_n` gives its known sample count.
+- `attempts` also includes durable intents without a result (`attempts_without_result`).
+  These are unresolved handoffs, not proven failures or timeouts. Successful results
+  without a finite, nonnegative duration are counted as
+  `successful_attempts_without_timing`. Either gap makes `p95_with_failures_seconds`
+  unavailable (`null`), so missing evidence cannot silently improve the statistic.
+- Ledgers written before `transport_seconds` existed fall back to whole-attempt
+  elapsed time; `attempt_elapsed_fallback` counts valid samples using that fallback.
+  Invalid explicit transport timings are reported as missing, not replaced by a
+  different timing boundary. CLIP/SigLIP2 backend preprocessing, GPU-lock wait and
+  readback remain inside native transport time and are also recorded separately.
+- Hardware run logs retain these qualifications in `latency_details` beside their
+  success-only P50/P95. Missing historical fields and unavailable penalized P95
+  remain `unknown` in log summaries; they are never inferred as zero failures.
+
 `run_date_utc` comes from the first timestamped request intent in the saved ledger,
 including resumed runs; it is null if no such evidence exists. Offline re-scoring
 records its own `report_generated_at_utc` and does not change the inference date.
@@ -484,6 +537,7 @@ In the prepared lightweight environment with pytest, run:
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python -m pytest \
   tests/test_unified_benchmark.py tests/test_unified_dataset202.py tests/test_unified_luna_adapter.py \
+  tests/test_unified_test_supplement.py \
   tests/test_native_workflow.py tests/test_start_qwen8b_r2.py tests/test_qwen8b_vllm.py \
   -o addopts='' -q -p no:cacheprovider
 ```

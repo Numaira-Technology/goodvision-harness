@@ -76,6 +76,7 @@ neural = [
   "safetensors==0.8.0",
 ]
 dev = [
+  "docker>=7.1,<8",
   "jsonschema>=4.23,<5",
   "pytest>=8,<9",
   "ruff>=0.9,<1",
