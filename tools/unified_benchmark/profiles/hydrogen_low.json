@@ -1,0 +1,79 @@
+{
+  "alias": "hydrogen_low",
+  "model": "google/gemini-4-hydrogen",
+  "backend": "language",
+  "kind": "choice",
+  "window_frames": 1,
+  "max_tokens": 8192,
+  "reasoning": {
+    "effort": "low"
+  },
+  "prompt_policy": "current-image-v1",
+  "answer_parser": "boolean-string-v1",
+  "current_access_verified": true,
+  "precision": "provider unverified; catalog=unknown",
+  "weight_revision": null,
+  "selection": "explicit standard endpoint; no fallback or fastest claim",
+  "provider_context": {
+    "config": {
+      "schema_version": 1,
+      "model": "google/gemini-4-hydrogen",
+      "backend": "language",
+      "selected_at": "2026-11-14T23:13:47.210199+00:00",
+      "provider": {
+        "only": [
+          "google-ai-studio"
+        ],
+        "allow_fallbacks": false,
+        "require_parameters": true
+      },
+      "expected_provider_name": "Google AI Studio",
+      "catalog_quantization": "unknown",
+      "catalog_pricing": {
+        "prompt": "0.0000015",
+        "completion": "0.0000075",
+        "image": "0.0000015",
+        "audio": "0.0000015",
+        "input_audio_cache": "0.000000075",
+        "web_search": "0.014",
+        "internal_reasoning": "0.0000075",
+        "input_cache_read": "0.000000075",
+        "input_cache_write": "0.0000000833333333333333",
+        "discount": 0
+      },
+      "selection": {
+        "method": "explicit_endpoint_override",
+        "catalog_sha256": "6b227906d2c454b1bb4400f51baebd19932b91ce300115a9e18f992c7c5eda5a",
+        "eligible_endpoints": [
+          "google-ai-studio/flex",
+          "google-vertex/global",
+          "google-ai-studio",
+          "google-vertex/eu",
+          "google-vertex/us",
+          "google-vertex/global/priority",
+          "google-ai-studio/priority"
+        ],
+        "published_latency": null,
+        "required_parameters": [
+          "max_tokens",
+          "reasoning",
+          "temperature"
+        ]
+      },
+      "limits": [
+        "Published latency is not this benchmark's measured end-to-end latency.",
+        "Actual provider/model must be checked from inference receipts.",
+        "Catalog precision is not independent proof of actual served weights or precision."
+      ]
+    },
+    "sha256": "d8da6b37f05749b7f95ebd2105459a4fed925f06de917c65106d2eeed4cb0e36",
+    "sha256_encoding": "canonical JSON of config"
+  },
+  "profile_origin": "2026-11-14 public catalog and synthetic smoke verified; low/medium validation candidates; 8192-token cap fixed before validation.",
+  "temperature": 1,
+  "access_evidence": {
+    "date": "2026-11-14",
+    "scope": "one synthetic image outside evaluation; not an accuracy result",
+    "receipt_sha256": "9f24428b72be90f4677c88e9bdac734ef488962d0436ea3df4df569624c0fb3d"
+  }
+}

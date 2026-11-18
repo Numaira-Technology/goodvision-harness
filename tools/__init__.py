@@ -1,8 +1,9 @@
-"""Package marker. Arms the HF Qwen rental log without editing that launcher.
+"""Arm hardware logs without editing frozen launcher and native runner sources.
 
 ``python -m tools.start_qwen8b_r2`` is the one renter that must not call
 ``vast_run_log.attach`` itself. Every other Vast rental calls ``attach``
-at the start of ``main``. The hook does not change offer selection or scoring.
+at the start of ``main``. Native GPU CLI runs finish their log when the module
+returns or raises, preserving the outcome. The hook does not change scoring.
 """
 
 from __future__ import annotations
@@ -28,11 +29,12 @@ def _install_run_log_hook() -> None:
         script_name=None,
     ):
         filename = getattr(code, "co_filename", "") or ""
+        native_session = None
         if mod_name == "__main__":
             try:
                 from tools.vast_run_log import arm_if_launcher
 
-                arm_if_launcher(filename)
+                native_session = arm_if_launcher(filename)
             except Exception as exc:
                 try:
                     sys.stderr.write(
@@ -41,15 +43,34 @@ def _install_run_log_hook() -> None:
                     sys.stderr.flush()
                 except (OSError, ValueError):
                     pass
-        return original(
-            code,
-            run_globals,
-            init_globals,
-            mod_name,
-            mod_spec,
-            pkg_name,
-            script_name,
-        )
+        exit_code = 0
+        try:
+            return original(
+                code,
+                run_globals,
+                init_globals,
+                mod_name,
+                mod_spec,
+                pkg_name,
+                script_name,
+            )
+        except SystemExit as exc:
+            exit_code = (
+                exc.code if isinstance(exc.code, int) else 0 if exc.code is None else 1
+            )
+            raise
+        except BaseException as exc:
+            exit_code = 130 if isinstance(exc, KeyboardInterrupt) else 1
+            raise
+        finally:
+            if native_session is not None:
+                try:
+                    from tools.vast_run_log import finish_native
+
+                    finish_native(native_session, exit_code)
+                except Exception:
+                    # Recording must never mask the original CLI exception.
+                    pass
 
     _run_code._gv_run_log = True  # type: ignore[attr-defined]
     runpy._run_code = _run_code

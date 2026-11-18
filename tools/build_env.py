@@ -900,7 +900,11 @@ def main(argv=None):
     if env_spec is None:
         ap.error("model has no env block")
     compat = env_spec["compat"]
-    options = _build_options(env_spec)
+    try:
+        flash_attn = _flash_attn(env_spec)
+        options = _build_options(env_spec)
+    except ValueError as error:
+        ap.error(str(error))
     if compat["python"] != "3.12":
         ap.error("this builder supports only Python 3.12")
     if options["install_default_torch"] and (compat["torch"], compat["cuda"]) != (
@@ -917,7 +921,6 @@ def main(argv=None):
     prefix = Path(env_spec["unpack_to"])
     out = args.out.absolute()
     arch = ";".join(registry.GPU_ARCHES[compat["gpu_family"]])
-    flash_attn = _flash_attn(env_spec)
     if args.upload_only:
         if not out.is_file():
             ap.error(

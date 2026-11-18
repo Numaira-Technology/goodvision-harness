@@ -1,0 +1,24 @@
+{
+  "schema": "event-benchmark-batch-v1",
+  "repeats": 10,
+  "max_process_restarts": 2,
+  "max_controller_restarts": 2,
+  "phase_timeout_seconds": 7200,
+  "stall_timeout_seconds": 1800,
+  "batch_timeout_seconds": 86400,
+  "cleanup_timeout_seconds": 60,
+  "budget_usd": null,
+  "models": [
+    {
+      "alias": "qwen8b",
+      "route": "api",
+      "python": "/absolute/path/to/python",
+      "bundle": "/private/bundle44",
+      "bundle_sha256": "REPLACE_WITH_VERIFIED_BUNDLE_MANIFEST_SHA256",
+      "env_file": "/private/selected-api.env",
+      "credential_file_sha256": "REPLACE_WITH_SELECTED_FILE_SHA256",
+      "attempt_cost_upper_usd": null,
+      "cost_upper_bound_basis": "REPLACE_WITH_CURRENT_VERIFIED_UPPER_BOUND_EVIDENCE"
+    }
+  ]
+}
