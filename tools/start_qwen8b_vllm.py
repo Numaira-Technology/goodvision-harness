@@ -38,13 +38,21 @@ ENV_NAME = "qwen8b-vllm"
 HF_ENV_KEY = "envs/qwen8b/cu128-py312-torch280-ada.tar.gz"
 
 
+def _diagnostic_warning(message: str) -> None:
+    """A broken warning sink must not change the evaluation outcome either."""
+    try:
+        print(message, file=sys.stderr)
+    except (OSError, ValueError):
+        pass
+
+
 def _record_setup(name: str, seconds: float) -> None:
     """Best-effort. A logging failure must not change the rental or the eval."""
     try:
         from tools.vast_run_log import record_setup
         record_setup(name, seconds)
     except Exception as error:
-        print(f"run log: setup timing skipped ({type(error).__name__})", file=sys.stderr)
+        _diagnostic_warning(f"run log: setup timing skipped ({type(error).__name__})")
 
 
 def _run_setup_steps(*, weights, env):
@@ -88,7 +96,7 @@ def _record_client_access(ssh_host: str, ssh_port: int) -> None:
             mode="ssh-local-forward",
         ))
     except Exception as error:
-        print(f"run log: client access skipped ({type(error).__name__})", file=sys.stderr)
+        _diagnostic_warning(f"run log: client access skipped ({type(error).__name__})")
 
 
 def _metrics_snapshot():
@@ -110,7 +118,7 @@ def _metrics_finish(before) -> None:
         else:
             record_metrics_diff(diff_snapshots(before, after))
     except Exception as error:
-        print(f"run log: metrics diff skipped ({type(error).__name__})", file=sys.stderr)
+        _diagnostic_warning(f"run log: metrics diff skipped ({type(error).__name__})")
 
 
 MAX_DPH = 1.85  # refuse silently upgrading past ~1.5x the prior $1.2296/hr
