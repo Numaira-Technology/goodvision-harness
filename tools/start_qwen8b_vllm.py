@@ -38,6 +38,52 @@ EXPECTED_SIZE = 4252375781
 # --ignore-missing-files dropped compilers.errors / compilers.platform.
 # Do not rent a GPU against this object; do not overwrite it.
 INCOMPLETE_VLLM_KEY = "envs/qwen8b-vllm/cu130-py312-vllm0310-ada.tar.gz"
+
+
+def _record_setup(name: str, seconds: float) -> None:
+    """Best-effort. A logging failure must not change the rental or the eval."""
+    try:
+        from tools.vast_run_log import record_setup
+        record_setup(name, seconds)
+    except Exception as error:
+        print(f"run log: setup timing skipped ({type(error).__name__})", file=sys.stderr)
+
+
+def _record_client_access(ssh_host: str, ssh_port: int) -> None:
+    try:
+        from tools.latency_investigation.host_facts import client_access
+        from tools.vast_run_log import record_client_access
+        record_client_access(client_access(
+            endpoint_host="127.0.0.1",
+            endpoint_port=H.LOCAL_PORT,
+            ssh_host=ssh_host,
+            ssh_port=int(ssh_port),
+            mode="ssh-local-forward",
+        ))
+    except Exception as error:
+        print(f"run log: client access skipped ({type(error).__name__})", file=sys.stderr)
+
+
+def _metrics_snapshot():
+    try:
+        from tools.latency_investigation.metrics_diff import fetch_metrics, snapshot_from_text
+        text = fetch_metrics(f"http://127.0.0.1:{H.LOCAL_PORT}/metrics", timeout=5)
+        return snapshot_from_text(text)
+    except Exception:
+        return "unknown"
+
+
+def _metrics_finish(before) -> None:
+    try:
+        from tools.latency_investigation.metrics_diff import diff_snapshots
+        from tools.vast_run_log import record_metrics_diff
+        after = _metrics_snapshot()
+        if before == "unknown" or after == "unknown":
+            record_metrics_diff({"available": False, "reason": "missing_snapshot"})
+        else:
+            record_metrics_diff(diff_snapshots(before, after))
+    except Exception as error:
+        print(f"run log: metrics diff skipped ({type(error).__name__})", file=sys.stderr)
 MAX_DPH = 1.85  # refuse silently upgrading past ~1.5x the prior $1.2296/hr
 STATUS_DEFAULT = Path("outputs/qwen8b-r2-vllm/STATUS.md")
 
@@ -386,15 +432,23 @@ def main() -> int:
         print("Uploading repo...", flush=True)
         H._upload_repo(ssh)
         print("Prefetching pinned weights from R2 (same revision as HF run)...", flush=True)
-        prefetch_models(
-            ssh_options=options, host=host, port=port, remote_dir=H.REPO,
-            models=[(repo, rev)], cache_dir=H.CACHE, r2_env=r2_env, python="python3",
-        )
+        _setup_started = time.monotonic()
+        try:
+            prefetch_models(
+                ssh_options=options, host=host, port=port, remote_dir=H.REPO,
+                models=[(repo, rev)], cache_dir=H.CACHE, r2_env=r2_env, python="python3",
+            )
+        finally:
+            _record_setup("weight_download_seconds", time.monotonic() - _setup_started)
         print("Restoring versioned vLLM packed env from R2 (no GPU pip)...", flush=True)
-        activate = restore_env(
-            ssh_options=options, host=host, port=port, name=ENV_NAME,
-            remote_dir=H.REPO, r2_env=r2_env, python="python3",
-        )
+        _setup_started = time.monotonic()
+        try:
+            activate = restore_env(
+                ssh_options=options, host=host, port=port, name=ENV_NAME,
+                remote_dir=H.REPO, r2_env=r2_env, python="python3",
+            )
+        finally:
+            _record_setup("env_restore_seconds", time.monotonic() - _setup_started)
         _verify_restored_env(ssh, activate)
         smi_ready = subprocess.check_output(
             [*ssh, "nvidia-smi --query-gpu=driver_version,name,memory.used,memory.total "
@@ -423,15 +477,20 @@ def main() -> int:
         from tools.qwen8b.eval_local import main as eval_main
         print("Official eval_local phase=%s model=qwen8b_r2_vllm slots=12 ..." % args.eval_phase,
               flush=True)
-        eval_code = eval_main([
-            "--bundle", str(args.eval_bundle),
-            "--output", str(args.eval_output),
-            "--endpoint", f"http://127.0.0.1:{H.LOCAL_PORT}",
-            "--model", "qwen8b_r2_vllm",
-            "--phase", args.eval_phase,
-            "--authorization-note", args.authorization_note,
-            "--execute",
-        ])
+        _record_client_access(host, port)
+        metrics_before = _metrics_snapshot()
+        try:
+            eval_code = eval_main([
+                "--bundle", str(args.eval_bundle),
+                "--output", str(args.eval_output),
+                "--endpoint", f"http://127.0.0.1:{H.LOCAL_PORT}",
+                "--model", "qwen8b_r2_vllm",
+                "--phase", args.eval_phase,
+                "--authorization-note", args.authorization_note,
+                "--execute",
+            ])
+        finally:
+            _metrics_finish(metrics_before)
         if eval_code:
             raise RuntimeError(
                 f"official @12 eval_local exited {eval_code}; not retrying with fewer clients"

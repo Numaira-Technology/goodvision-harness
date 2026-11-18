@@ -68,6 +68,7 @@ def source_files():
     paths = list((root / "tools/unified_benchmark").glob("*.py"))
     paths += [p for p in (root / "tools/unified_benchmark/native_assets").rglob("*") if p.is_file() and p.suffix in (".py", ".json", ".patch")]
     paths += list((root / "tools/qwen8b").glob("*.py"))
+    paths += list((root / "tools/latency_investigation").glob("*.py"))
     paths += [root / name for name in (
         "tools/models.yaml", "tools/registry.py", "tools/model_source.py",
         "tools/env_source.py", "tools/cloud_env.py", "tools/cloud_prefetch.py",
