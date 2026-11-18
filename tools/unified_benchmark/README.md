@@ -380,8 +380,16 @@ Vast rentals record the machine through `tools/vast_run_log.py`. Colleagues keep
 the same launcher command. `python -m tools.start_qwen8b_r2` is armed by the
 `tools` package. `python -m tools.start_qwen8b_vllm`, `python tools/start_sam.py`,
 `python tools/start_detector.py`, and `python -m tools.diag_qwen8b_vllm_import`
-call `attach()` themselves. The call pattern, output layout, and checklist are
-in `.cursor/skills/vast-run-log/SKILL.md`. Each eval
+call `attach()` themselves. `python -m tools.unified_benchmark.native_run --execute`
+also writes this log for `--model clip`, `siglip2`, `videojev`, and `decision3`
+only. Native logs use a bounded local probe without login shell startup scripts;
+probe failure is `unknown`. They record the CLI outcome and elapsed wall time
+before probing. Scores come from `<output>/<split>/report.json` only after a
+successful invocation with a fresh output; failed and resumed invocations keep
+scores `unknown`. Native logs stay in the stable series directory, outside the
+sealed native result inventory. No frozen runner source changes for this hook.
+The rental call pattern, output layout, and checklist are
+in `.cursor/skills/vast-run-log/SKILL.md`. Each rental eval
 still needs its own new `--eval-output` (the evaluator refuses an existing
 directory). This update changes the frozen SAM and vLLM launcher sources;
 create a new preflight bundle after updating. Existing bundles keep their source
