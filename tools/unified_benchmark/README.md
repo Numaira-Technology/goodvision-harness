@@ -1,5 +1,12 @@
 # Current-frame 202-question evaluation handoff
 
+For the current ten-round task, use **validation44 / 34 videos for every selected
+model**, followed by ten test202 / 192-video rounds. Follow [BATCH.md](BATCH.md)
+for the supervised batch, configuration, budgets, resume and offline verification.
+The existing private bag supplement is required; do not fall back to validation24.
+Single-run/legacy examples below remain available for explicitly selected older
+workflows. API and local Qwen now support `--resume` for this version's outputs.
+
 Default protocol: **unified-frame-202-v1**. See [dataset202 acquisition and limits](DATASET202.md).
 This packages the previously local workflow for another checkout. It does not modify the original videos, questions or references,
 re-run models, or reinterpret old bundles. Keep historical source snapshots with
@@ -25,6 +32,10 @@ fingerprints remain required; they are not the current202 route.
   gemini25_low, gemini38_low, clip, siglip2, videojev, decision3, plus
   `qwen8b_r2_host` and `qwen8b_r2_vllm` (separate self-hosted R2 engines on one
   4090; not OpenRouter).
+- Four additional effort-comparison profiles: `astra_low`, `astra_medium`,
+  `hydrogen_low`, `hydrogen_medium`. The Astra requests omit unsupported
+  temperature; Hydrogen fixes temperature at 1. Each pair differs only in effort.
+  See [validation-only execution](BATCH.md#validation-only-effort-comparison).
 - Offline input/media/frame/request preflight; lossless receipt/score retention;
   cumulative three-attempt queue; validation threshold selection and test reporting.
 - API execution with an explicit selected credential file or per-model file mapping.
@@ -63,7 +74,8 @@ the run. Preserve existing changes; do not reset a checkout to match this note.
 |---|---|
 | Code and instructions | Selected profiles and execution entrypoints exist in the same checkout; revision/local changes are recorded. The agent reads `.claude/skills/event-benchmark/SKILL.md` and the selected route's guide explicitly. |
 | Eight private JSON files | `manifest_validation_24.json`, `validation-samples.json`, `manifest_120.json`, `test-samples.json`, `validation_split.json` plus `manifest_202.json`, `samples.json`, `videos.json` are together under `--inputs`; all eight pass the [pinned-hash check](#get-the-frozen-inputs). |
-| Original videos | 24 validation videos and 192 test videos (202 test questions), obtained from the private samples' team links, pass media fingerprints and full decoding. Do not substitute re-encoded copies. |
+| Bag validation supplement | The existing private `bag-validation10-v1` manifest, its independently recorded SHA-256 and ten original clips are required for this batch. A sample schema is not the frozen manifest. |
+| Original videos | 34 validation videos (44 questions) and 192 test videos (202 questions), obtained from the private samples' team links and bag supplement, pass media fingerprints and full decoding. Do not substitute re-encoded copies. |
 | Offline environment | Python 3.12, Pillow, certifi, FFmpeg/ffprobe; run the [offline preflight](#run-the-offline-preflight) for the selected aliases and retain the new bundle. |
 | API route | Private key file or per-model key-file mapping, account access/balance and selected provider support are checked; model/provider identity must match actual receipts. No keys in Git or command arguments. |
 | Four-model native route | Linux x86_64 RTX 4090 24GB, SSH access, enough disk, fixed model revisions and the Python/CUDA environments in [NATIVE.md](NATIVE.md#2-prepare-the-gpu-deployment-no-evaluation-inference). Deployment verification must pass. R2 is optional for this route. |
@@ -84,8 +96,11 @@ use the expanded frozen plan counts and report its cohort separately as describe
 in [the supplement contract](DATASET202.md#optional-test-supplement).
 
 Test: 202 questions / 192 videos, fight32, smoking22, fall62, weapon66, bag knife10,
-bag alcohol bottle10. Validation: 24 videos/questions, six per base event with
-three yes and three no. There is no bag validation and no fabricated train split.
+bag alcohol bottle10. For the current repeated batch, validation is 44 questions
+on 34 videos: 24 base videos/questions (six per base event, three yes and three no),
+plus 20 existing bag questions on ten supplementary videos, for every model.
+The original validation24-only workflow is retained solely for explicit historical
+single runs. There is no fabricated train split.
 Source-group/hash separation is checked; unknown training/actor/scene overlap and
 prior test reuse remain limitations. The original41 stereo clips are not counted
 again. New questions121–202 are all test; their inherited labels remain pending
@@ -147,19 +162,18 @@ For default202, obtain these original five inputs **plus the three202 files** in
 files validate the unchanged120 subset and validation split. For explicit legacy120,
 only the five below are required.
 
-The original `unified-frame-120-v2` inputs are in the
-[team Drive folder: unified-frame-120-v2-private-inputs-20261107](https://drive.google.com/drive/folders/1bCcadb0FDLxcmnnQI_tZ1ReR0x3avsoD).
-Access is restricted to the existing benchmark team members; the link does not
-grant public access. Sign in with your authorized team account. If access is
-denied, ask Haotian Bi for access instead of changing the folder's link sharing.
+Obtain the original `unified-frame-120-v2` inputs from the benchmark maintainer
+through the team's existing private data channel. Dataset access remains limited
+to authorized team members. Keep folder and file links out of public handoffs;
+ask the maintainer for access rather than changing link-sharing settings.
 
-| Original file | Download from Drive |
+| Original file | Role |
 |---|---|
-| `manifest_validation_24.json` | [File](https://drive.google.com/file/d/1OZrISz2JXSaUyvGI-wV8bN3B3oQhbsUR/view?usp=drivesdk) |
-| `validation-samples.json` | [File](https://drive.google.com/file/d/1SxJYywf0HO7-aQegGCOt3gP4x6eO2Y1q/view?usp=drivesdk) |
-| `manifest_120.json` | [File](https://drive.google.com/file/d/1uvCpUGnOB9PjcPGUsD2FfhjZSf6P5JGD/view?usp=drivesdk) |
-| `test-samples.json` | [File](https://drive.google.com/file/d/1fK0kBHmqbbW59awOIAD17iyXq_72BbbD/view?usp=drivesdk) |
-| `validation_split.json` | [File](https://drive.google.com/file/d/1ULNTVNbSzWH9wdynkSt-4DcPg6xMuf2q/view?usp=drivesdk) |
+| `manifest_validation_24.json` | Original validation manifest |
+| `validation-samples.json` | Original validation samples |
+| `manifest_120.json` | Original test manifest |
+| `test-samples.json` | Original test samples |
+| `validation_split.json` | Frozen split mapping |
 
 Use Drive's **Download** action for the folder or the five files. Extract any ZIP
 and place all five JSON files directly in one private directory outside Git, for
@@ -195,7 +209,6 @@ PY
 The published legacy `tools/event_benchmark/datasets/manifest_120.json` is not a
 substitute for the Drive snapshot. Historical annotation paths inside the inputs
 are provenance only. Do not edit labels or pinned hashes to bypass a mismatch.
-Upload readback on 2026-11-07 verified all five original SHA-256 values.
 
 ### Run the offline preflight
 
@@ -203,6 +216,8 @@ Upload readback on 2026-11-07 verified all five original SHA-256 values.
 python -m tools.unified_benchmark.preflight \
   --inputs /private/goodvision-inputs \
   --media /data/goodvision --models qwen8b luna gemini25_off \
+  --bag-validation /private/goodvision-inputs/bag-validation.json \
+  --bag-validation-sha256 FROZEN_MANIFEST_SHA256 \
   --output outputs/new-current-frame-bundle
 ```
 
@@ -246,10 +261,10 @@ Models on the same provider execute sequentially; different provider groups may
 run concurrently, each with twelve queue slots. The process stops on balance failure.
 It never writes a Sheet or creates a PR.
 
-Luna selects thresholds on complete validation24 and writes a frozen artifact.
+Luna selects thresholds on the complete frozen validation cohort (44 for the current batch) and writes a frozen artifact.
 Incomplete validation stops calibration; no implicit fixed-0.5 fallback. Failed
-selection files and artifacts lacking successful calibration, full validation24
-counts, matching plan/evidence identity or six finite thresholds are rejected before
+selection files and artifacts lacking successful calibration, the full frozen
+validation counts, matching plan/evidence identity or six finite thresholds are rejected before
 any selected test model starts. Offline reporting applies the same check. Older
 artifacts remain untouched; replay them with their retained code, or select a new
 artifact offline from compatible complete validation evidence. For test:
@@ -327,6 +342,8 @@ bundle containing the selected self-hosted aliases (omit an alias if not needed)
 python -m tools.unified_benchmark.preflight \
   --inputs /private/goodvision-inputs --media /data/goodvision \
   --models qwen8b_r2_host qwen8b_r2_vllm \
+  --bag-validation /private/goodvision-inputs/bag-validation.json \
+  --bag-validation-sha256 FROZEN_MANIFEST_SHA256 \
   --output outputs/new-qwen-r2-bundle
 ```
 
@@ -362,10 +379,11 @@ PYTHONPATH=. python -m tools.start_qwen8b_vllm \
   --authorization-note 'Approved self-hosted qwen8b R2 vLLM 4090 run'
 ```
 
-The Qwen evaluator currently requires a new output path and has no supported
-`--resume` CLI. `--resume-instance-id` only reconnects to a rental; it does not
-resume evaluation. Preserve interrupted ledgers and receipts. Do not restart the
-same units with a fresh output to reset the three-attempt budget.
+The local Qwen evaluator supports explicit `--resume` for a compatible output,
+preserving saved responses and the cumulative three-attempt budget. The launcher's
+`--resume-instance-id` reconnects to a rental; it does not replace the evaluator's
+resume flag. For repeated runs use [BATCH.md](BATCH.md) with a prepared service;
+do not rent a fresh instance for every round.
 
 `eval_local` still uses 12 slots. vLLM may batch those 12 internally. Do not
 change JPEG size, prompts, max_tokens, or client concurrency to fit VRAM.
@@ -456,8 +474,9 @@ Luna: 0.01 grid, longest optimal contiguous run midpoint, `>=`; recheck midpoint
 optimality and stop if it is worse. CLIP/SigLIP2: widest finite optimal margin
 interval midpoint, strict `>`, with FP/FN tie rules. Selection requires complete
 validation and cannot read test predictions. Freeze model/config/rules/bundle hashes.
-Bag remains Luna0.5 or margin0, explicitly uncalibrated. Boolean/argmax models have
-no scalar threshold. Past calibrated values are comparisons, not new-run defaults.
+Only historical validation24 runs leave bag thresholds at Luna0.5 or margin0,
+explicitly uncalibrated. Validation44 selects all six thresholds. Boolean/argmax
+models have no scalar threshold. Past calibrated values are comparisons, not new-run defaults.
 After successful native CLIP/SigLIP2 calibration, the validation report uses the
 selected thresholds and cites their artifact hash, as does the subsequent test.
 
