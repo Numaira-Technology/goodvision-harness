@@ -13,6 +13,7 @@ def test_parse_variant_accepts_known_shapes():
     assert bench.parse_variant("s5cmd:16x16") == ("s5cmd", 16, 16)
     assert bench.parse_variant("env:qwen8b") == ("env", "qwen8b", None)
     assert bench.parse_variant("envold:qwen8b") == ("envold", "qwen8b", None)
+    assert bench.parse_variant("extractold:qwen8b") == ("extractold", "qwen8b", None)
     assert bench.parse_variant("both:qwen8b-vllm") == ("both", "qwen8b-vllm", None)
 
 
@@ -55,7 +56,8 @@ def test_find_approved_offer_twin_slot_needs_machine():
     assert bench.find_approved_offer(vast, _args(machine=7))["id"] == 2
 
 
-def test_env_benchmark_preserves_existing_prefix(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("kind", ["env", "envold", "extractold", "both"])
+def test_env_benchmark_preserves_existing_prefix(tmp_path, monkeypatch, capsys, kind):
     from tools import env_source as es
     from tools import model_source as ms
 
@@ -74,7 +76,7 @@ def test_env_benchmark_preserves_existing_prefix(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(ms, "download_object", ms.download_object)
     monkeypatch.delitem(es.__dict__, "_bench_originals", raising=False)
     monkeypatch.delitem(ms.__dict__, "_bench_download_object", raising=False)
-    bench._env_variant("env", "synthetic", ms, _args(), tmp_path / "out")
+    bench._env_variant(kind, "synthetic", ms, _args(), tmp_path / "out")
     assert sentinel.read_text() == "existing environment"
     assert "FAILED FileExistsError" in capsys.readouterr().out
 
@@ -170,9 +172,10 @@ def test_cleanup_requires_confirmed_instance_absence(rows):
         bench._release_owned(vast, 1, "owned", lambda *a: None)
 
 
-def test_unknown_env_is_rejected_before_rental():
+@pytest.mark.parametrize("kind", ["env", "envold", "extractold", "both"])
+def test_unknown_env_is_rejected_before_rental(kind):
     with pytest.raises(SystemExit) as error:
         bench.rent(
-            ["--offer", "1", "--max-dph", "0.1", "--variants", "env:no-such-model"]
+            ["--offer", "1", "--max-dph", "0.1", "--variants", f"{kind}:no-such-model"]
         )
     assert error.value.code == 2

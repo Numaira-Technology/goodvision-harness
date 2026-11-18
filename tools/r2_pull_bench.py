@@ -8,6 +8,9 @@ pulling the same pinned model several ways on the same machine:
                   per step (download, verify, extract, conda-unpack)
     envold:NAME   the same with the previous single download_file call, for a
                   same-box before/after of the env download
+    extractold:NAME  the env restore with the previous r:gz extraction pattern
+                  (getmembers, then extractall: the pack is inflated twice), for
+                  a same-box before/after of the extract step
     both:NAME     that env restore and the weight pull at the same time, as the
                   qwen8b launchers now do
     procs:PxS     model_source.pull_from_r2, P processes x S streams
@@ -67,7 +70,7 @@ S5CMD_SHA256 = "de0fdbfa3aceae55e069ba81a0fc17b2026567637603734a387b2fca06c299b4
 
 def parse_variant(text):
     kind, _, shape = text.partition(":")
-    if kind in {"env", "envold", "both"}:
+    if kind in {"env", "envold", "extractold", "both"}:
         if not shape or not all(c.isalnum() or c in "-_" for c in shape):
             raise argparse.ArgumentTypeError(f"bad variant {text!r} (e.g. env:qwen8b)")
         return kind, shape, None
@@ -216,7 +219,7 @@ def box(argv):
             os.environ.pop(name, None)
         note = ""
         t = time.monotonic()
-        if kind in {"env", "envold", "both"}:
+        if kind in {"env", "envold", "extractold", "both"}:
             _env_variant(kind, a, ms, args, out, env_root=args.env_root)
             continue
         try:
@@ -286,7 +289,10 @@ def _env_variant(kind, name, ms, args, out, env_root=None):
         "_bench_originals", {attr: getattr(es, attr) for attr in labels}
     )
     for attr, label in labels.items():
-        setattr(es, attr, timed(label, originals[attr]))
+        impl = originals[attr]
+        if kind == "extractold" and attr == "_safe_extract":
+            impl = _previous_extract_pattern(es)
+        setattr(es, attr, timed(label, impl))
 
     class OldPathClient:
         """Not a botocore client, so env_source takes its single download_file."""
@@ -326,7 +332,7 @@ def _env_variant(kind, name, ms, args, out, env_root=None):
             raise FileExistsError("benchmark requires an absent environment prefix")
         prefix.parent.mkdir(parents=True, exist_ok=True)
         start = time.monotonic()
-        if kind in {"env", "envold"}:
+        if kind in {"env", "envold", "extractold"}:
             env_s = restore()
             detail = ""
         else:
@@ -361,6 +367,26 @@ def _env_variant(kind, name, ms, args, out, env_root=None):
         f"({env['size'] / 1e9:.2f} GB: {parts}){detail}",
         flush=True,
     )
+
+
+def _previous_extract_pattern(es):
+    """The I/O of env_source's r:gz extraction before the streaming change.
+
+    getmembers() inflates the whole pack, then extractall() seeks back and
+    inflates it again. The cheap per-header checks are left out; only the
+    timing is compared, and the critical files are still checked.
+    """
+
+    def extract(tarball, dest):
+        dest = Path(dest)
+        dest.mkdir(parents=True, exist_ok=False)
+        with tarfile.open(tarball, "r:gz") as tf:
+            members = tf.getmembers()
+            ordered = sorted(members, key=lambda m: m.issym() or m.islnk())
+            tf.extractall(dest, members=ordered, filter="data")
+        es._critical_files(dest)
+
+    return extract
 
 
 # ------------------------------------------------------------------ laptop side
@@ -445,7 +471,7 @@ def rent(argv):
     from tools import registry
 
     for kind, name, _ in args.variants:
-        if kind in {"env", "envold", "both"}:
+        if kind in {"env", "envold", "extractold", "both"}:
             try:
                 if registry.env_of(name) is None:
                     raise ValueError("no packed environment")
