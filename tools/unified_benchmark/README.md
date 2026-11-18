@@ -487,6 +487,9 @@ Code: `tools/unified_benchmark/latency.py`, used by `workflow.py` and
   Invalid explicit transport timings are reported as missing, not replaced by a
   different timing boundary. CLIP/SigLIP2 backend preprocessing, GPU-lock wait and
   readback remain inside native transport time and are also recorded separately.
+- Hardware run logs retain these qualifications in `latency_details` beside their
+  success-only P50/P95. Missing historical fields and unavailable penalized P95
+  remain `unknown` in log summaries; they are never inferred as zero failures.
 
 `run_date_utc` comes from the first timestamped request intent in the saved ledger,
 including resumed runs; it is null if no such evidence exists. Offline re-scoring

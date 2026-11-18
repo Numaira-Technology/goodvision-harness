@@ -1342,11 +1342,30 @@ def _score_split(payload: dict) -> dict:
             if isinstance(latency.get("source"), str)
             else "unknown"
         )
+        # Keep the qualifications beside success-only P50/P95 in both native
+        # and rental logs. Missing evidence remains unknown, never zero.
+        out["latency_details"] = {
+            name: _measurement(latency.get(name))
+            for name in (
+                "failed_attempts",
+                "timeout_attempts",
+                "p95_with_failures_seconds",
+                "failure_penalty_seconds",
+                "percentile_method",
+                "attempts",
+                "attempts_without_result",
+                "successful_attempts_without_timing",
+                "p95_with_failures_n",
+                "attempt_elapsed_fallback",
+                "split",
+            )
+        }
     else:
         out["p50_seconds"] = "unknown"
         out["p95_seconds"] = "unknown"
         out["latency_n"] = "unknown"
         out["latency_source"] = "unknown"
+        out["latency_details"] = "unknown"
     return out
 
 
