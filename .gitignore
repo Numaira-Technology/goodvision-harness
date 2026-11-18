@@ -113,3 +113,6 @@ diag/__pycache__/
 /testABvideos/
 /testABvideos.zip
 /bench_v1_sample/
+
+# local customer demo media (never commit)
+demo-media/

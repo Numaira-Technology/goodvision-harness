@@ -58,7 +58,12 @@ def request_body(config, unit, bundle):
                                           "data:image/jpeg;base64," + images[0], provider)
         if backend == "language":
             body["max_tokens"] = config["max_tokens"]
-            body["temperature"] = config["temperature"]
+            # The legacy builder supplies temperature=0. Some reasoning models
+            # reject temperature entirely; omission must remove that default.
+            if "temperature" in config:
+                body["temperature"] = config["temperature"]
+            else:
+                body.pop("temperature", None)
             if "reasoning" in config:
                 body["reasoning"] = dict(config["reasoning"])
             if event.startswith("bag_"):

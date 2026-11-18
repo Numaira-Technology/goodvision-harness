@@ -42,10 +42,12 @@ fingerprints. Validate source-video groups across splits. Training/development,
 actor/scene and prior test-use limits must remain explicit; do not invent a clean
 training split or claim the reused test is untouched.
 
-Default validation is 24 questions: six per base event, three positive and three negative.
-The optional [CLIP/SigLIP2 bag supplement](../../../tools/unified_benchmark/NATIVE.md#optional-clipsiglip2-bag-validation)
-adds 20 validation questions on ten source clips. It requires complete validation44
-to freeze six per-event midpoints and records the supplement's reference provenance.
+For the current ten-round task, every selected model uses validation44 / 34 videos:
+24 base questions plus the existing 20 bag questions on ten supplementary clips.
+Require complete validation44 before selecting all six Luna probability thresholds
+or all six CLIP/SigLIP2 margin thresholds. Direct boolean/argmax profiles perform
+the same validation but do not acquire a numeric threshold. Preserve supplement
+reference provenance and never reconstruct it from old predictions.
 The new82 questions belong only to test and have
 inherited, pending-review references; never use them for calibration. Incomplete validation stops calibration and test;
 a fixed baseline fallback needs an explicit separate experiment decision.
@@ -61,7 +63,7 @@ execution/selection code must also match the bundle's frozen source fingerprints
 | Qwen / Gemini / Llama | Hard boolean output; no numerical threshold to tune. Validation compares prompt/effort settings. |
 | VideoJev / Decision3 | Native yes/no/unknown argmax; no scalar threshold. |
 
-With default validation24, bag thresholds stay Luna 0.5 and CLIP/SigLIP2 0, explicitly uncalibrated. Do not
+Only for an explicitly selected historical validation24 workflow, bag thresholds stay Luna 0.5 and CLIP/SigLIP2 0, explicitly uncalibrated. Do not
 borrow a base-class threshold or label these bag settings validation-selected.
 See [algorithm details](references/protocol.md) for interval boundaries.
 

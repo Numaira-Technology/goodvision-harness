@@ -1,0 +1,81 @@
+{
+  "alias": "astra_low",
+  "model": "openai/gpt-6-astra",
+  "backend": "language",
+  "kind": "choice",
+  "window_frames": 1,
+  "max_tokens": 8192,
+  "reasoning": {
+    "effort": "low"
+  },
+  "prompt_policy": "current-image-v1",
+  "answer_parser": "boolean-string-v1",
+  "current_access_verified": true,
+  "precision": "provider unverified; catalog=unknown",
+  "weight_revision": null,
+  "selection": "explicit standard endpoint; no fallback or fastest claim",
+  "provider_context": {
+    "config": {
+      "schema_version": 1,
+      "model": "openai/gpt-6-astra",
+      "backend": "language",
+      "selected_at": "2026-11-14T23:13:47.209686+00:00",
+      "provider": {
+        "only": [
+          "openai"
+        ],
+        "allow_fallbacks": false,
+        "require_parameters": true
+      },
+      "expected_provider_name": "OpenAI",
+      "catalog_quantization": "unknown",
+      "catalog_pricing": {
+        "prompt": "0.00001",
+        "completion": "0.00005",
+        "web_search": "0.01",
+        "input_cache_read": "0.000001",
+        "input_cache_write": "0.0000125",
+        "discount": 0,
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.00002",
+            "completion": "0.000075",
+            "input_cache_read": "0.000002",
+            "input_cache_write": "0.000025"
+          }
+        ]
+      },
+      "selection": {
+        "method": "explicit_endpoint_override",
+        "catalog_sha256": "a2d0d08c5ef4521a260d2d67da175381616cd0b85714f88c465bf7d1d2e75e53",
+        "eligible_endpoints": [
+          "openai/flex",
+          "amazon-bedrock/global",
+          "openai",
+          "amazon-bedrock/us-west-2",
+          "openai/fast",
+          "openai/ultrafast"
+        ],
+        "published_latency": null,
+        "required_parameters": [
+          "max_tokens",
+          "reasoning"
+        ]
+      },
+      "limits": [
+        "Published latency is not this benchmark's measured end-to-end latency.",
+        "Actual provider/model must be checked from inference receipts.",
+        "Catalog precision is not independent proof of actual served weights or precision."
+      ]
+    },
+    "sha256": "723a5115b1c35000b920c3e506ffbb9e970cf44bc8e45b60fbe426f5a56df07f",
+    "sha256_encoding": "canonical JSON of config"
+  },
+  "profile_origin": "2026-11-14 public catalog and synthetic smoke verified; low/medium validation candidates; 8192-token cap fixed before validation.",
+  "access_evidence": {
+    "date": "2026-11-14",
+    "scope": "one synthetic image outside evaluation; not an accuracy result",
+    "receipt_sha256": "dd32c2f1bedb88510537b8b839cb8742f47adfc42f0f021089a7f4e1a7a9fd2f"
+  }
+}

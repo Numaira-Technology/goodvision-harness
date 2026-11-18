@@ -32,11 +32,33 @@ def test_exam_rules_still_require_twelve_slots():
 
 
 def test_eval_local_hardcodes_twelve_slots():
-    src = Path(eval_local.__file__).read_text()
-    assert '"slots": 12' in src
+    import inspect
+    from tempfile import TemporaryDirectory
+    from unittest.mock import patch
+
+    from helpers.qwen_bundle import frozen_host_bundle
+    from tools.qwen8b import eval_local
+    from tools.unified_benchmark import http_execution
+    from tools.unified_benchmark.retry import Queue
+
+    src = (ROOT / "tools/qwen8b/eval_local.py").read_text()
     assert '"slots_per_model": 12' in src
     assert "--slots" not in src
-    assert "Queue(ledger, config[\"kind\"], LocalTransport" in src
+    shared_runner = http_execution.execute_model
+    with TemporaryDirectory() as directory:
+        bundle = Path(directory) / "bundle"
+        config, _ = frozen_host_bundle(bundle)
+        with patch.object(http_execution, "execute_model") as execute:
+            eval_local.execute(config["alias"], bundle, Path(directory) / "run",
+                               "http://127.0.0.1:9", "synthetic-bundle", "test")
+        args, kwargs = execute.call_args
+        assert args[:4] == (config["alias"], bundle, Path(directory) / "run", "synthetic-bundle")
+        assert kwargs["local"] is True
+        transport = args[4](config, Path(directory) / "phase", object())
+        assert isinstance(transport, eval_local.LocalTransport)
+        queue = kwargs.get("queue_factory", inspect.signature(shared_runner).parameters["queue_factory"].default)
+        assert queue is Queue
+        assert inspect.signature(queue).parameters["slots"].default == RULES["slots"] == 12
 
 
 def test_vllm_profile_keeps_exam_fields():
