@@ -115,7 +115,14 @@ def archive(path, image=IMAGE, *, extra=None):
 
 
 @pytest.fixture
-def kit(tmp_path):
+def kit(tmp_path, monkeypatch):
+    # The installer only checks model file sizes. A 1.7 GB placeholder is
+    # sparse on macOS/Linux but fully allocated on NTFS, and pytest keeps
+    # every tmp_path until the session ends, so a few kits fill the Windows
+    # runner's disk. Shrink the weights entry; the size check still runs.
+    monkeypatch.setattr(
+        neural, "MODEL_FILES", {**neural.MODEL_FILES, "model.safetensors": 4096}
+    )
     goodvision = tmp_path / "Original GoodVision"
     state = goodvision / "state"
     state.mkdir(parents=True)

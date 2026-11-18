@@ -338,7 +338,7 @@ def _verify_sealed_receipts(output):
             or file_hash(path) != expected
         ):
             raise ValueError("saved receipt differs from retained seal: " + name)
-        receipts[name] = expected
+        receipts[relative.as_posix()] = expected
     return receipts
 
 

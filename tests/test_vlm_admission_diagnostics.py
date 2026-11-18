@@ -79,7 +79,12 @@ def test_diagnostics_observe_constraints_without_changing_admission(
 
 
 def test_timeout_and_success_keep_separate_queue_and_occupancy_metrics(tmp_path):
-    settings = AdmissionSettings(str(tmp_path / "gate.sqlite"), 1, 1, 40, 0.08)
+    # The queue timeout must outlast the waiter's first registration write.
+    # At 0.08 s a slow Windows runner spent the whole budget in that SQLite
+    # transaction and timed out before the first read-only poll, so no
+    # global_full_polls sample existed. The behaviour under test is unchanged.
+    queue_timeout = 0.5
+    settings = AdmissionSettings(str(tmp_path / "gate.sqlite"), 1, 1, 40, queue_timeout)
     gate = SharedAdmission(settings)
     holder_trace, waiting_trace = AdmissionTrace(), AdmissionTrace()
     with gate.slot(
@@ -97,11 +102,11 @@ def test_timeout_and_success_keep_separate_queue_and_occupancy_metrics(tmp_path)
             ):
                 pytest.fail("no capacity was released")
     assert waiting_trace.values["global_full_polls"] > 0
-    assert waiting_trace.values["acquire_wait_seconds"] >= 0.08
+    assert waiting_trace.values["acquire_wait_seconds"] >= queue_timeout
     assert waiting_trace.values.get("acquired", 0) == 0
     assert "occupied_before_release_seconds" not in waiting_trace.values
     assert holder_trace.values["acquired"] == 1
-    assert holder_trace.values["occupied_before_release_seconds"] >= 0.08
+    assert holder_trace.values["occupied_before_release_seconds"] >= queue_timeout
     assert holder_trace.values["release_failed"] == 0
     assert gate.snapshot()["active"] == gate.snapshot()["waiting"] == 0
 

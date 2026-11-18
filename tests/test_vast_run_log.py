@@ -612,6 +612,7 @@ def test_every_vast_rental_calls_the_recorder():
     assert ".create_instance(" not in outside
     assert set(found) == {
         "tools/diag_qwen8b_vllm_import.py",
+        "tools/r2_pull_bench.py",
         "tools/start_detector.py",
         "tools/start_qwen8b_r2.py",
         "tools/start_qwen8b_vllm.py",
@@ -628,6 +629,7 @@ def test_every_vast_rental_calls_the_recorder():
         "start_bag_demo.py",
         "start_detector.py",
         "diag_qwen8b_vllm_import.py",
+        "r2_pull_bench.py",
     ):
         assert LAUNCHERS[name][3] is True
     assert "pip " not in _SAMPLER_SH

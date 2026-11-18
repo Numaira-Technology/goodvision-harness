@@ -15,6 +15,7 @@ import io
 import json
 import math
 import os
+import queue
 import shlex
 import signal
 import subprocess
@@ -37,13 +38,50 @@ ENV_NAME = "qwen8b-vllm"
 HF_ENV_KEY = "envs/qwen8b/cu128-py312-torch280-ada.tar.gz"
 
 
+def _diagnostic_warning(message: str) -> None:
+    """A broken warning sink must not change the evaluation outcome either."""
+    try:
+        print(message, file=sys.stderr)
+    except (OSError, ValueError):
+        pass
+
+
 def _record_setup(name: str, seconds: float) -> None:
     """Best-effort. A logging failure must not change the rental or the eval."""
     try:
         from tools.vast_run_log import record_setup
         record_setup(name, seconds)
     except Exception as error:
-        print(f"run log: setup timing skipped ({type(error).__name__})", file=sys.stderr)
+        _diagnostic_warning(f"run log: setup timing skipped ({type(error).__name__})")
+
+
+def _run_setup_steps(*, weights, env):
+    """Time parallel steps, recording completed work only on the caller thread.
+
+    On the first failure, preserve immediate cleanup. An unfinished sibling
+    may finish later, but cannot write timing logs after cleanup has begun.
+    """
+    timings = queue.SimpleQueue()
+
+    def timed(name, step):
+        started = time.monotonic()
+        try:
+            return step()
+        finally:
+            timings.put((name, time.monotonic() - started))
+
+    try:
+        return H.run_side_by_side(
+            weights=lambda: timed("weight_download_seconds", weights),
+            env=lambda: timed("env_restore_seconds", env),
+        )
+    finally:
+        while True:
+            try:
+                name, seconds = timings.get_nowait()
+            except queue.Empty:
+                break
+            _record_setup(name, seconds)
 
 
 def _record_client_access(ssh_host: str, ssh_port: int) -> None:
@@ -58,7 +96,7 @@ def _record_client_access(ssh_host: str, ssh_port: int) -> None:
             mode="ssh-local-forward",
         ))
     except Exception as error:
-        print(f"run log: client access skipped ({type(error).__name__})", file=sys.stderr)
+        _diagnostic_warning(f"run log: client access skipped ({type(error).__name__})")
 
 
 def _metrics_snapshot():
@@ -80,7 +118,7 @@ def _metrics_finish(before) -> None:
         else:
             record_metrics_diff(diff_snapshots(before, after))
     except Exception as error:
-        print(f"run log: metrics diff skipped ({type(error).__name__})", file=sys.stderr)
+        _diagnostic_warning(f"run log: metrics diff skipped ({type(error).__name__})")
 
 
 MAX_DPH = 1.85  # refuse silently upgrading past ~1.5x the prior $1.2296/hr
@@ -308,7 +346,9 @@ def _verify_eval_bundle(bundle: Path, phase: str, env_spec: dict) -> str:
     from tools.unified_benchmark.workflow import verify_bundle
 
     bundle_sha = verify_bundle(bundle)
-    hashes = json.loads((bundle / "bundle-files-sha256.json").read_text(encoding="utf-8"))
+    hashes = json.loads(
+        (bundle / "bundle-files-sha256.json").read_text(encoding="utf-8")
+    )
     config_name = "configs/qwen8b_r2_vllm.json"
     if config_name not in hashes:
         raise ValueError("vLLM config is not sealed in the bundle")
@@ -634,11 +674,13 @@ def main() -> int:
                 type="on-demand",
                 order="dph_total",
                 storage=float(args.disk_gb),
-                limit=10,
+                limit=64,  # wide enough to see offers near the bucket
             )
             if not offers:
                 raise RuntimeError("No eligible RTX 4090 / CUDA 13.0 offer available.")
-            chosen = _eligible_offers(offers)
+            chosen = H.prefer_near_bucket(
+                H.drop_costly_downloads(_eligible_offers(offers))
+            )
             cheapest = min(float(o["dph_total"]) for o in chosen)
             print(
                 f"{len(chosen)} single-GPU 4090 offers <= ${MAX_DPH}/hr; "
@@ -664,24 +706,33 @@ def main() -> int:
         S.run([*ssh, "bash -s"], input=H.BOOTSTRAP, timeout=15 * 60)
         print("Uploading repo...", flush=True)
         H._upload_repo(ssh)
-        print("Prefetching pinned weights from R2 (same revision as HF run)...", flush=True)
-        _setup_started = time.monotonic()
-        try:
-            prefetch_models(
-                ssh_options=options, host=host, port=port, remote_dir=H.REPO,
-                models=[(repo, rev)], cache_dir=H.CACHE, r2_env=r2_env, python="python3",
-            )
-        finally:
-            _record_setup("weight_download_seconds", time.monotonic() - _setup_started)
-        print("Restoring versioned vLLM packed env from R2 (no GPU pip)...", flush=True)
-        _setup_started = time.monotonic()
-        try:
-            activate = restore_env(
-                ssh_options=options, host=host, port=port, name=ENV_NAME, expected_env=env_spec,
-                remote_dir=H.REPO, r2_env=r2_env, python="python3",
-            )
-        finally:
-            _record_setup("env_restore_seconds", time.monotonic() - _setup_started)
+        print(
+            "Prefetching pinned weights (same revision as HF run) and restoring "
+            "the versioned vLLM packed env from R2, side by side...",
+            flush=True,
+        )
+        activate = _run_setup_steps(
+            weights=lambda: prefetch_models(
+                ssh_options=options,
+                host=host,
+                port=port,
+                remote_dir=H.REPO,
+                models=[(repo, rev)],
+                cache_dir=H.CACHE,
+                r2_env=r2_env,
+                python="python3",
+            ),
+            env=lambda: restore_env(
+                ssh_options=options,
+                host=host,
+                port=port,
+                name=ENV_NAME,
+                expected_env=env_spec,
+                remote_dir=H.REPO,
+                r2_env=r2_env,
+                python="python3",
+            ),
+        )["env"]
         _verify_restored_env(ssh, activate)
 
         snapshot = _remote_snapshot(ssh)

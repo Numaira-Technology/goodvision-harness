@@ -450,6 +450,8 @@ def test_unpack_uses_packed_python_at_final_prefix_without_credentials(
     assert captured["argv"] == [
         str(tmp_path / "bin/python"),
         "-I",
+        "-c",
+        es._UNPACK_PROGRAM,
         str(tmp_path / "bin/conda-unpack"),
     ]
     assert (
@@ -475,6 +477,31 @@ def test_unpack_executes_script_with_stale_shebang(tmp_path):
     )
     es._run_unpack(tmp_path)
     assert (tmp_path / "bin/ran").read_text() == "ok"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="known synthetic POSIX interpreter shim")
+def test_unpack_can_import_its_sibling_progress_module(tmp_path, monkeypatch):
+    """conda-pack's conda-unpack imports bin/conda_unpack_progress.py; -I alone
+    (3.11+: no script dir on sys.path) made every real restore fail."""
+    import shlex
+
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "untrusted"))
+    (tmp_path / "untrusted").mkdir()
+    (tmp_path / "untrusted/conda_unpack_progress.py").write_text("raise SystemExit(9)")
+    (tmp_path / "bin").mkdir()
+    python = tmp_path / "bin/python"
+    python.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
+    python.chmod(0o755)
+    (tmp_path / "bin/conda_unpack_progress.py").write_text(
+        "def progressbar(x):\n    return x\n"
+    )
+    (tmp_path / "bin/conda-unpack").write_text(
+        "#!/usr/bin/env python\nfrom conda_unpack_progress import progressbar\n"
+        "import sys\nfrom pathlib import Path\n"
+        "Path(__file__).with_name('ran').write_text(sys.argv[0])\n"
+    )
+    es._run_unpack(tmp_path)
+    assert (tmp_path / "bin/ran").read_text() == str(tmp_path / "bin/conda-unpack")
 
 
 @pytest.mark.parametrize(
@@ -847,3 +874,29 @@ def test_each_registry_env_launch_path_is_absolute_packed_python(name, tmp_path)
     Path(absent["unpack_to"]).mkdir(parents=True)
     with pytest.raises(RuntimeError, match="packed interpreter missing"):
         es.packed_python(absent)
+
+
+def test_real_client_downloads_env_in_parallel_ranges(pack, tmp_path, monkeypatch):
+    """A real boto3 client takes the ranged parallel path; checks are unchanged."""
+    env, client = pack
+    data = client.tarball.read_bytes()
+
+    class BotoLikeR2(FakeR2):
+        def get_object(self, Bucket=None, Key=None, Range=None, **kw):
+            if Range is None:
+                return super().get_object(Bucket=Bucket, Key=Key)
+            a, b = map(int, Range.removeprefix("bytes=").split("-"))
+            self.ranges.append((a, b))
+            return {"Body": io.BytesIO(data[a : b + 1])}
+
+        def download_file(self, *a, **kw):
+            pytest.fail("real clients must use ranged parallel parts")
+
+    BotoLikeR2.__module__ = "botocore.client"
+    boto = BotoLikeR2(client.tarball, env)
+    boto.ranges = []
+    monkeypatch.setattr(es.model_source, "PART_SIZE", 97)
+    monkeypatch.setenv("R2_PULL_PROCESSES", "1")  # threads in-process for the test
+    es.pull_env(env, client=boto, bucket="synthetic", scratch=tmp_path / "scratch")
+    assert len(boto.ranges) == -(-len(data) // 97)
+    assert es._already_restored(env)
