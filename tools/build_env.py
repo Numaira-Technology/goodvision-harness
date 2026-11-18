@@ -88,7 +88,7 @@ def _ensure_miniconda(home, installer=None, installer_sha256=None):
     return conda
 
 
-def _build_prefix(conda, prefix, requirements, python_ver, arch):
+def _build_prefix(conda, prefix, requirements, python_ver, arch, *, flash_attn=True):
     """Use argv throughout: paths containing shell syntax remain literal paths."""
     _run(
         [
@@ -116,36 +116,39 @@ def _build_prefix(conda, prefix, requirements, python_ver, arch):
         ]
     )
     _run([*pip, "-r", str(requirements)])
-    _run(
-        [
-            *pip,
-            "--no-build-isolation",
-            "flash-attn==2.8.3.post2",
-            "causal-conv1d==1.7.0",
-        ],
-        env={
-            "TORCH_CUDA_ARCH_LIST": arch,
-            "MAX_JOBS": os.environ.get("MAX_JOBS", "4"),
-            "FLASH_ATTENTION_FORCE_BUILD": "TRUE",
-            "CAUSAL_CONV1D_FORCE_BUILD": "TRUE",
-        },
-    )
+    if flash_attn:
+        _run(
+            [
+                *pip,
+                "--no-build-isolation",
+                "flash-attn==2.8.3.post2",
+                "causal-conv1d==1.7.0",
+            ],
+            env={
+                "TORCH_CUDA_ARCH_LIST": arch,
+                "MAX_JOBS": os.environ.get("MAX_JOBS", "4"),
+                "FLASH_ATTENTION_FORCE_BUILD": "TRUE",
+                "CAUSAL_CONV1D_FORCE_BUILD": "TRUE",
+            },
+        )
+    checks = [
+        "import sys, torch",
+        "assert sys.version_info[:2] == (3, 12), 'unexpected Python'",
+        "assert torch.__version__ == '2.8.0+cu128', 'unexpected torch'",
+        "assert torch.version.cuda == '12.8', 'unexpected CUDA runtime'",
+        "assert torch.cuda.is_available(), 'CUDA unavailable'",
+    ]
+    if flash_attn:
+        checks += [
+            "import flash_attn, causal_conv1d",
+            "assert flash_attn.__version__ == '2.8.3.post2', 'unexpected flash-attn'",
+        ]
     _run(
         [
             python,
             "-I",
             "-c",
-            "\n".join(
-                [
-                    "import sys, torch, flash_attn, causal_conv1d",
-                    "assert sys.version_info[:2] == (3, 12), 'unexpected Python'",
-                    "assert torch.__version__ == '2.8.0+cu128', 'unexpected torch'",
-                    "assert torch.version.cuda == '12.8', 'unexpected CUDA runtime'",
-                    "assert flash_attn.__version__ == '2.8.3.post2', "
-                    "'unexpected flash-attn'",
-                    "assert torch.cuda.is_available(), 'CUDA unavailable'",
-                ]
-            ),
+            "\n".join(checks),
         ]
     )
 
@@ -248,6 +251,9 @@ def main(argv=None):
     if env_spec is None:
         ap.error("model has no env block")
     compat = env_spec["compat"]
+    build = env_spec.get("build", {})
+    if not isinstance(build, dict) or type(build.get("flash_attn", True)) is not bool:
+        ap.error("env.build.flash_attn must be a boolean")
     if any(
         compat[k] != v
         for k, v in {"python": "3.12", "torch": "2.8.0", "cuda": "12.8"}.items()
@@ -271,7 +277,8 @@ def main(argv=None):
             args.conda_home, args.miniforge_installer, args.miniforge_sha256
         )
         _build_prefix(
-            conda, prefix, args.requirements.resolve(), compat["python"], arch
+            conda, prefix, args.requirements.resolve(), compat["python"], arch,
+            flash_attn=build.get("flash_attn", True),
         )
         _pack(conda, prefix, out)
     sha = _sha256(out)

@@ -102,6 +102,45 @@ def test_installer_requires_trusted_pin_and_never_downloads(tmp_path, monkeypatc
         be._ensure_miniconda(tmp_path / "conda", installer, "0" * 64)
 
 
+@pytest.mark.parametrize("name", ["clip", "siglip2", "videojev", "d3-nano"])
+def test_main_honors_model_attention_recipe(tmp_path, monkeypatch, name):
+    env = copy.deepcopy(registry.env_of(name))
+    env["unpack_to"] = str(tmp_path / "prefix")
+    out = tmp_path / "new.tar.gz"
+    calls = []
+    monkeypatch.setattr(be.registry, "env_of", lambda _: env)
+    monkeypatch.setattr(be.env_source, "check_compatibility", lambda _: None)
+    monkeypatch.setattr(be, "_ensure_miniconda", lambda *a: tmp_path / "bin/conda")
+    monkeypatch.setattr(be, "_run", lambda argv, **kw: calls.append((argv, kw)))
+    monkeypatch.setattr(be, "_pack", lambda *a: out.write_bytes(b"synthetic pack"))
+    be.main(["--model", name, "--out", str(out), "--skip-upload"])
+    needs_attention = name in {"videojev", "d3-nano"}
+    compiled = [argv for argv, _ in calls if "flash-attn==2.8.3.post2" in argv]
+    assert bool(compiled) is needs_attention
+    if needs_attention:
+        assert "causal-conv1d==1.7.0" in compiled[0]
+    probe = calls[-1][0][-1]
+    assert ("import flash_attn, causal_conv1d" in probe) is needs_attention
+    assert "torch.cuda.is_available()" in probe
+    assert "torch.__version__ == '2.8.0+cu128'" in probe
+
+
+@pytest.mark.parametrize(
+    "build", [None, [], {"flash_attn": "false"}, {"flash_attn": 0}]
+)
+def test_malformed_attention_recipe_fails_before_host_checks(
+    tmp_path, monkeypatch, build
+):
+    env = copy.deepcopy(registry.env_of("clip"))
+    env["build"] = build
+    monkeypatch.setattr(be.registry, "env_of", lambda _: env)
+    monkeypatch.setattr(
+        be.env_source, "check_compatibility", lambda _: pytest.fail("host probed")
+    )
+    with pytest.raises(SystemExit):
+        be.main(["--model", "clip", "--out", str(tmp_path / "new.tar.gz")])
+
+
 @pytest.mark.skipif(os.name != "posix", reason="Linux builder prefix locking")
 def test_main_preserves_existing_prefix(tmp_path, monkeypatch):
     env = copy.deepcopy(registry.env_of("videojev"))
