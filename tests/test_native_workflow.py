@@ -1410,12 +1410,15 @@ def test_native_transport_timing_excludes_receipt_write_and_hash(
     assert latency["failed_attempts"] == (0 if status == 200 else 72)
 
 
+@pytest.mark.parametrize("name", [
+    "tools/unified_benchmark/latency.py",
+    "tools/latency_investigation/http_split.py",
+])
 @pytest.mark.parametrize("mutation", ["snapshot", "active", "inventory"])
 def test_latency_definition_is_part_of_frozen_source_integrity(
-    frozen, tmp_path, monkeypatch, mutation,
+    frozen, tmp_path, monkeypatch, mutation, name,
 ):
     bundle = frozen[0]
-    name = "tools/unified_benchmark/latency.py"
     sources = json.loads((bundle / "source-hashes.json").read_text())
     assert sources[name] == file_hash(workflow.source_files()[name])
     if mutation == "snapshot":
@@ -1435,3 +1438,22 @@ def test_latency_definition_is_part_of_frozen_source_integrity(
     seal(bundle)
     with pytest.raises(ValueError, match="source"):
         workflow.verify_bundle(bundle)
+
+
+def test_frozen_snapshot_imports_in_isolated_interpreter(frozen):
+    import subprocess
+    import sys
+
+    snapshot = frozen[0] / "source-snapshot"
+    code = (
+        "import sys; sys.path.insert(0, sys.argv[1]); "
+        "from tools.qwen8b import eval_local; "
+        "from tools.unified_benchmark import native_run; "
+        "from tools.latency_investigation import http_split; "
+        "from pathlib import Path; "
+        "assert Path(http_split.__file__).is_relative_to(sys.argv[1]); "
+        "assert eval_local.begin_open is http_split.begin_open; "
+        "assert native_run.begin_open is http_split.begin_open"
+    )
+    subprocess.run([sys.executable, "-I", "-c", code, str(snapshot)],
+                   cwd=snapshot, check=True, capture_output=True, text=True)
