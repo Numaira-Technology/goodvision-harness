@@ -372,7 +372,7 @@ def test_api_reports_222_and_keeps_original_subset_denominators(
                     else {"answer": answer}
                 )
                 for event, answer in self.answers[unit["id"]].items()
-            }, {}
+            }, {"transport_seconds": 0.25}
 
     monkeypatch.setattr(api_run, "Transport", SyntheticTransport)
     output = tmp_path / "api-output"
@@ -390,6 +390,15 @@ def test_api_reports_222_and_keeps_original_subset_denominators(
     assert result["base100"]["accuracy_denominator"] == 100
     assert result["bag20"]["accuracy_denominator"] == 20
     assert result["cohorts"]["test_supplement"]["correct"] == 20
+    latency = result["test_attempt_latency"]
+    assert latency["n"] == len(read(bundle, f"plans/{alias}-test.json")["units"])
+    assert latency["p50_seconds"] == latency["p95_seconds"] == 0.25
+    assert latency["attempt_elapsed_fallback"] == 0
+    logged = summarize_score(output, alias)
+    assert logged["test"]["planned_questions"] == 222
+    assert logged["test"]["latency_n"] == latency["n"]
+    assert logged["test"]["latency_details"]["p95_with_failures_seconds"] == 0.25
+    assert logged["validation"]["latency_details"]["split"] == "validation"
     if alias == "luna":
         artifact = read(output, f"{alias}/thresholds.json")
         assert artifact["validation_summary"]["complete_valid_questions"] == 24
@@ -484,6 +493,19 @@ def test_native_pipeline_reports_supplement_after_unchanged_validation(
     assert logged["test"]["correct"] == 222
     assert logged["test"]["accuracy"] == 1
     assert logged["validation"]["planned_questions"] == 24
+    for split in ("test", "validation"):
+        latency = read(output, f"{split}/report.json")["test_attempt_latency"]
+        expected_attempts = len(read(bundle, f"plans/{alias}-{split}.json")["units"])
+        assert latency["n"] == latency["attempts"] == expected_attempts
+        assert logged[split]["latency_n"] == expected_attempts
+        details = logged[split]["latency_details"]
+        assert details["split"] == split
+        assert details["p95_with_failures_n"] == expected_attempts
+        assert details["p95_with_failures_seconds"] == latency["p95_seconds"]
+        assert details["failed_attempts"] == details["timeout_attempts"] == 0
+        assert details["attempts_without_result"] == 0
+        assert details["successful_attempts_without_timing"] == 0
+        assert details["attempt_elapsed_fallback"] == 0
     if alias in {"clip", "siglip2"}:
         artifact = read(output, "thresholds.json")
         assert artifact["validation_summary"]["complete_valid_questions"] == 24
