@@ -8,15 +8,19 @@ verified SHA256, is required. Nothing is fetched from a floating installer URL.
 
 import argparse
 import base64
+import csv
 import hashlib
+import io
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
+from email.parser import Parser
 from pathlib import Path
 
 from tools import env_source, model_source, registry
@@ -115,17 +119,34 @@ def _conda_records(prefix):
     return [json.loads(p.read_text()) for p in sorted(meta.glob("*.json"))]
 
 
+def _distribution_identity(path):
+    with path.open(encoding="utf-8") as stream:
+        text = stream.read(1024 * 1024 + 1)
+    if len(text) > 1024 * 1024:
+        raise RuntimeError("distribution metadata exceeds 1 MiB")
+    metadata = Parser().parsestr(text, headersonly=True)
+    name, version = metadata.get("Name", ""), metadata.get("Version", "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9.!+_-]*", version
+    ):
+        raise RuntimeError(f"invalid distribution identity: {path.name}")
+    return _canonical(name), version
+
+
 def _conda_python_dists(prefix):
-    """Map canonical distribution name -> version for conda-installed dist-info."""
+    """Include conda-owned dist-info and both forms of legacy egg-info."""
     owned = {}
     for rec in _conda_records(prefix):
         for f in rec.get("files", []):
-            m = re.match(
-                r"lib/python3\.\d+/site-packages/([^/]+)-([^/-]+)\.dist-info/METADATA$",
+            if re.fullmatch(
+                r"lib/python3\.\d+/site-packages/[^/]+"
+                r"(?:\.dist-info/METADATA|\.egg-info/PKG-INFO|\.egg-info)",
                 f,
-            )
-            if m:
-                owned[_canonical(m.group(1))] = m.group(2)
+            ):
+                name, version = _distribution_identity(Path(prefix) / f)
+                if name in owned and owned[name] != version:
+                    raise RuntimeError(f"conflicting conda versions of {name}")
+                owned[name] = version
     return owned
 
 
@@ -152,14 +173,19 @@ def check_conda_ownership(prefix):
     if missing:
         raise RuntimeError(f"pip clobbered conda-owned packages: {missing}")
     seen = {}
-    site = next(iter(sorted(prefix.glob("lib/python3.*/site-packages"))), None)
-    for info in sorted(site.glob("*.dist-info")) if site else ():
-        name = _canonical(info.name[: -len(".dist-info")].rsplit("-", 1)[0])
-        if name in seen:
-            raise RuntimeError(
-                f"two installed versions of {name}: {seen[name]}, {info.name}"
+    for site in sorted(prefix.glob("lib/python3.*/site-packages")):
+        for info in sorted([*site.glob("*.dist-info"), *site.glob("*.egg-info")]):
+            metadata = (
+                info / ("METADATA" if info.suffix == ".dist-info" else "PKG-INFO")
+                if info.is_dir()
+                else info
             )
-        seen[name] = info.name
+            name, _ = _distribution_identity(metadata)
+            if name in seen:
+                raise RuntimeError(
+                    f"two installed versions of {name}: {seen[name]}, {info.name}"
+                )
+            seen[name] = info.name
 
 
 def _record_digest(data: bytes) -> str:
@@ -170,30 +196,61 @@ _CONDA_INSTALLER = _record_digest(b"conda\n")
 
 
 def verify_pack(tarball):
-    """Static check of the packed bytes: every dist-info RECORD hash must match.
+    """Hash packed files in bounded chunks; parse installed RECORDs as CSV.
 
-    Reads the archive only; executes nothing. Files outside site-packages (bin
-    launchers get shebang rewrites) and conda placeholder files are reported,
-    not compared. Several distributions may claim one file when they all
-    declare the same bytes (namespace files such as nvidia/__init__.py); with
-    differing bytes only ALLOWED_SHARED_OWNERS may share it, and the packed file
-    must match one of them. conda rewrites dist-info/INSTALLER to "conda".
+    No packed code executes. Launcher hashes outside site-packages are reported
+    separately because conda-pack rewrites their shebangs. A placeholder string
+    never exempts a file from its digest. Only same-version OpenCV distributions
+    may declare differing shared bytes; an actual owner's digest must match.
     """
-    files, records = {}, {}
+    algorithms = ("sha256", "sha384", "sha512")
+    files, records, infos, sites = {}, {}, set(), set()
     with tarfile.open(tarball, "r|gz") as tar:
-        for m in tar:
-            if not m.isfile():
-                continue
-            hit = SITE_PACKAGES.match(m.name)
+        for member in tar:
+            hit = SITE_PACKAGES.match(member.name)
             if not hit:
                 continue
-            data = tar.extractfile(m).read()
-            rel = m.name[hit.end() :]
-            files[rel] = (_record_digest(data), _CONDA_PLACEHOLDER in data)
-            if re.fullmatch(r"[^/]+\.dist-info/RECORD", rel):
-                records[rel] = data.decode("utf-8")
+            sites.add(hit.group())
+            rel = member.name[hit.end() :]
+            if not rel or member.isdir():
+                continue
+            if not member.isfile() or rel in files:
+                raise RuntimeError(f"nonregular or duplicate packed file: {rel}")
+            if rel != posixpath.normpath(rel) or rel.startswith(("/", "../")):
+                raise RuntimeError(f"unsafe packed path: {rel}")
+            top = rel.split("/", 1)[0]
+            if top.endswith(".dist-info"):
+                infos.add(top)
+            is_record = re.fullmatch(r"[^/]+\.dist-info/RECORD", rel)
+            if is_record and member.size > 16 * 1024**2:
+                raise RuntimeError("RECORD exceeds 16 MiB")
+            hashes = {algorithm: hashlib.new(algorithm) for algorithm in algorithms}
+            chunks, tail, placeholder = [], b"", False
+            stream = tar.extractfile(member)
+            while data := stream.read(1024 * 1024):
+                for digest in hashes.values():
+                    digest.update(data)
+                placeholder |= _CONDA_PLACEHOLDER in tail + data
+                tail = data[-len(_CONDA_PLACEHOLDER) :]
+                if is_record:
+                    chunks.append(data)
+            files[rel] = (
+                {
+                    key: base64.urlsafe_b64encode(value.digest()).rstrip(b"=").decode()
+                    for key, value in hashes.items()
+                },
+                member.size,
+                placeholder,
+            )
+            if is_record:
+                records[rel] = b"".join(chunks).decode("utf-8")
+    if len(sites) != 1 or not records:
+        raise RuntimeError("pack must contain one site-packages tree with RECORDs")
+    for info in sorted(infos):
+        if f"{info}/RECORD" not in records or f"{info}/METADATA" not in files:
+            raise RuntimeError(f"{info}: missing RECORD or METADATA")
     claims, problems, outside, placeholder, conda_installer = {}, [], 0, 0, 0
-    dists = {}
+    unhashed, dists = 0, {}
     for rec, text in sorted(records.items()):
         dist = rec.split("/", 1)[0][: -len(".dist-info")]
         name, version = dist.rsplit("-", 1)
@@ -201,34 +258,57 @@ def verify_pack(tarball):
         if name in dists:
             problems.append(f"{name}: two dist-info directories")
         dists[name] = version
-        for row in text.splitlines():
-            path, _, rest = row.partition(",")
-            digest = rest.split(",", 1)[0]
-            if not path or not digest.startswith("sha256="):
-                continue
-            if path.startswith("../") or path.startswith("/"):
+        seen, checked = set(), 0
+        for row in csv.reader(io.StringIO(text, newline=""), strict=True):
+            if len(row) != 3 or not row[0]:
+                raise RuntimeError(f"{rec}: malformed RECORD row")
+            path, digest, size = row
+            path = posixpath.normpath(path)
+            if path.startswith("/") or path in seen:
+                raise RuntimeError(f"{rec}: absolute or duplicate RECORD path")
+            seen.add(path)
+            if path == ".." or path.startswith("../"):
                 outside += 1
                 continue
-            claims.setdefault(path, []).append((name, digest[len("sha256=") :]))
+            if not digest:
+                unhashed += 1
+                continue
+            algorithm, separator, value = digest.partition("=")
+            if (
+                not separator
+                or algorithm not in algorithms
+                or not re.fullmatch(r"[A-Za-z0-9_-]+", value)
+            ):
+                raise RuntimeError(f"{rec}: unsupported or malformed RECORD digest")
+            if size and not size.isdecimal():
+                raise RuntimeError(f"{rec}: invalid RECORD size")
+            claims.setdefault(path, []).append(
+                (name, algorithm, value, int(size) if size else None)
+            )
+            checked += 1
+        if not checked:
+            raise RuntimeError(f"{rec}: no verifiable RECORD entries")
     shared = {}
     for path, owners in sorted(claims.items()):
-        names = {n for n, _ in owners}
-        if len(names) > 1 and len({d for _, d in owners}) > 1:
-            if not names <= ALLOWED_SHARED_OWNERS:
+        names = {owner[0] for owner in owners}
+        if path not in files:
+            problems.append(f"{path}: listed by {sorted(names)} but not packed")
+            continue
+        got, size, has_placeholder = files[path]
+        matches = [
+            got[a] == digest and (expected is None or size == expected)
+            for _, a, digest, expected in owners
+        ]
+        if len(names) > 1 and not all(matches):
+            if names != ALLOWED_SHARED_OWNERS or len({dists[n] for n in names}) != 1:
                 problems.append(f"{path}: claimed by {sorted(names)}")
                 continue
             key = ",".join(sorted(names))
             shared[key] = shared.get(key, 0) + 1
-        if path not in files:
-            problems.append(f"{path}: listed by {sorted(names)} but not packed")
+        if any(matches):
+            placeholder += bool(has_placeholder)
             continue
-        got, has_placeholder = files[path]
-        if any(got == d for _, d in owners):
-            continue
-        if has_placeholder:
-            placeholder += 1
-            continue
-        if path.endswith(".dist-info/INSTALLER") and got == _CONDA_INSTALLER:
+        if path.endswith(".dist-info/INSTALLER") and got["sha256"] == _CONDA_INSTALLER:
             conda_installer += 1
             continue
         problems.append(f"{path}: bytes differ from {sorted(names)} RECORD")
@@ -240,6 +320,7 @@ def verify_pack(tarball):
         "dists": len(dists),
         "pip": dists.get("pip"),
         "files_checked": len(claims),
+        "unhashed_record_entries": unhashed,
         "outside_site_packages_skipped": outside,
         "conda_placeholder_files": placeholder,
         "conda_installer_rewrites": conda_installer,
@@ -265,10 +346,7 @@ def _build_prefix(conda, prefix, requirements, python_ver, arch, *, flash_attn=T
     )
     with tempfile.TemporaryDirectory() as tmp:
         constraints = Path(tmp) / "conda-owned.txt"
-        if (Path(prefix) / "conda-meta").is_dir():
-            _write_constraints(prefix, constraints)
-        else:  # only reachable with a mocked conda
-            constraints.write_text("")
+        _write_constraints(prefix, constraints)
         _install_python_packages(prefix, requirements, arch, constraints, flash_attn)
 
 

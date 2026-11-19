@@ -258,9 +258,12 @@ pip、setuptools、wheel 由 conda 在建环境时安装，之后 pip 不再升�
 conda-pack 对 noarch 包是从 conda 包缓存取文件，不是从环境前缀取；所以 pip 一旦
 覆盖 conda 的包，打出来的包里就会混进旧源码和新 metadata。旧 VideoJev 包
 （`44ac889e…`）就是这样：pip 26.3 的 dist-info 和 launcher，配上 26.2.2 的源码。
-现在每次 pip 安装都带一份约束文件，把 conda 已有的 Python 包钉在原版本。打包前
+现在每次 pip 安装都带一份约束文件，把 conda 已有的 Python 包（包括 egg-info 形式的 setuptools）钉在原版本。打包前
 检查 conda 管理的文件都还在、没有同名包装了两个版本；打包后逐个核对包内每个
-dist-info RECORD 的哈希，只允许声明过的 OpenCV full/headless 共用文件。核对结果
+dist-info RECORD 的哈希和大小，按 CSV 解析路径，并分块读取大型库，避免整库载入内存。
+缺少 RECORD、不支持的摘要、重复路径和内容不匹配均拒绝；占位符字符串不能豁免
+哈希核对。不同内容只允许相同版本的 OpenCV full/headless 共用文件。未带摘要的
+RECORD 条目和 site-packages 以外的 launcher 条目单独计数，不宣称已验证。核对结果
 写进构建输出的 `pack_check`。
 
 ### 每次使用：在远端恢复，再用包内解释器启动

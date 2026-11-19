@@ -73,6 +73,9 @@ def test_large_pack_fails_before_upload(upload, monkeypatch):
 
 def test_builder_invokes_literal_argv_and_strips_credentials(tmp_path, monkeypatch):
     calls = []
+    monkeypatch.setattr(
+        be, "_write_constraints", lambda prefix, path: path.write_text("pip==26.2.2\n")
+    )
     monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "SECRET")
     monkeypatch.setenv("HF_TOKEN", "TOKEN")
     monkeypatch.setenv("PYTHONPATH", "/injected")
@@ -111,6 +114,9 @@ def test_main_honors_model_attention_recipe(tmp_path, monkeypatch, name):
     env["unpack_to"] = str(tmp_path / "prefix")
     out = tmp_path / "new.tar.gz"
     calls = []
+    monkeypatch.setattr(
+        be, "_write_constraints", lambda prefix, path: path.write_text("pip==26.2.2\n")
+    )
     monkeypatch.setattr(be.registry, "env_of", lambda _: env)
     monkeypatch.setattr(be.env_source, "check_compatibility", lambda _: None)
     monkeypatch.setattr(be, "_ensure_miniconda", lambda *a: tmp_path / "bin/conda")
@@ -208,12 +214,11 @@ def test_pack_check_rejects_old_pip_source_under_new_pip_record(tmp_path):
 def test_pack_check_accepts_consistent_pack_and_reports_skips(tmp_path):
     members = {
         **_dist("pip", "26.2.2", {"pip/__init__.py": b"__version__ = '26.2.2'\n"}),
-        **_dist("demo", "1.0", {"demo.py": b"x = 1\n"}),
+        **_dist("demo", "1.0", {"demo.py": be._CONDA_PLACEHOLDER}),
     }
     rec = SP + "demo-1.0.dist-info/RECORD"
     members[rec] += b"../../../bin/demo,sha256=abc,1\n"
-    # conda placeholder file whose bytes conda-unpack will rewrite later
-    members[SP + "demo.py"] = b"PREFIX = '" + be._CONDA_PLACEHOLDER + b"'\n"
+    # A placeholder is reported only after its packed bytes match the RECORD.
     members["bin/pip"] = b"#!/usr/bin/env python\n"
     report = be.verify_pack(_pack_tar(tmp_path / "ok.tar.gz", members))
     assert report["pip"] == "26.2.2"
@@ -256,7 +261,7 @@ def _conda_prefix(tmp_path, pip_version="26.2.2"):
     )
     for f in files:
         (prefix / f).parent.mkdir(parents=True, exist_ok=True)
-        (prefix / f).write_text("x")
+        (prefix / f).write_text(f"Name: pip\nVersion: {pip_version}\n")
     return prefix
 
 
@@ -281,6 +286,9 @@ def test_ownership_check_catches_pip_upgrade_of_conda_pip(tmp_path):
 def test_ownership_check_catches_duplicate_dist_info(tmp_path):
     prefix = _conda_prefix(tmp_path)
     (prefix / SP / "pip-26.3.dist-info").mkdir()
+    (prefix / SP / "pip-26.3.dist-info/METADATA").write_text(
+        "Name: pip\nVersion: 26.3\n"
+    )
     with pytest.raises(RuntimeError, match="two installed versions of pip"):
         be.check_conda_ownership(prefix)
 
@@ -289,6 +297,9 @@ def test_builder_lets_conda_own_pip_and_constrains_every_pip_install(
     tmp_path, monkeypatch
 ):
     calls = []
+    monkeypatch.setattr(
+        be, "_write_constraints", lambda prefix, path: path.write_text("pip==26.2.2\n")
+    )
     monkeypatch.setattr(be, "_run", lambda argv, **kw: calls.append(argv))
     be._build_prefix(
         tmp_path / "conda", tmp_path / "p", tmp_path / "r.txt", "3.12", "8.9"
