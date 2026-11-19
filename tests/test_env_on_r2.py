@@ -10,7 +10,7 @@ import tarfile
 from pathlib import Path
 
 import pytest
-from env_build_helpers import completed_probe, runtime_facts
+from env_build_helpers import completed_probe, runtime_facts, synthetic_pack
 
 from tools import build_env, registry
 from tools import env_source as es
@@ -719,6 +719,18 @@ def _captured_build_prefix(tmp_path, monkeypatch, flash_attn):
 
     def run(argv, **kw):
         calls.append(argv)
+        if "create" in argv:
+            metadata = "lib/python3.12/site-packages/pip-26.2.2.dist-info/METADATA"
+            (prefix / metadata).parent.mkdir(parents=True, exist_ok=True)
+            (prefix / metadata).write_text("Name: pip\nVersion: 26.2.2\n")
+            (prefix / "conda-meta").mkdir(exist_ok=True)
+            (prefix / "conda-meta/pip.json").write_text(
+                json.dumps({"files": [metadata]})
+            )
+        if "install" in argv:
+            assert "--constraint" in argv
+            constraints = Path(argv[argv.index("--constraint") + 1])
+            assert constraints.read_text() == "pip==26.2.2\n"
         return completed_probe(flash_attn)
 
     monkeypatch.setattr(build_env, "_run", run)
@@ -790,7 +802,7 @@ def test_upload_only_requires_existing_tarball(tmp_path):
 
 def test_upload_only_uploads_without_building(tmp_path, monkeypatch, capsys):
     tarball = tmp_path / "videojev-env.tar.gz"
-    archive(tarball)
+    synthetic_pack(tarball)
     env = registry.env_of("videojev")
     build_env._new_record(
         env,
