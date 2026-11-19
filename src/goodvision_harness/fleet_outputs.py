@@ -35,6 +35,7 @@ OUTPUT_PATHS = (
     "/workflow/results",
     "/workflow/output.jpg",
     "/workflow/summaries",
+    "/workflow/objects",
     "/video/source/latest.jpg",
     "/results/latest",
     "/results/events",
