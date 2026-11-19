@@ -8,6 +8,7 @@ import pytest
 
 from tools.unified_benchmark import dataset202 as d, preflight, workflow, api_run
 from tools.unified_benchmark.contract import CURRENT_VERSION, VERSION, digest, rules_for, score
+from tools.qwen8b import eval_local
 
 
 @pytest.fixture(autouse=True)
@@ -120,7 +121,8 @@ def test_default_preflight202_all_routes_and_protocol_guard(tmp_path, inputs, mo
         frames = []
         for i in range(2):
             rel = f"frames/{split}/{row['filename']}-{i}.jpg"
-            p = out / rel; p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(b"synthetic-test-JPEG")
+            p = out / rel; p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(("synthetic-test-JPEG:" + rel).encode())
             frames.append({"path": rel, "sha256": d.file_hash(p), "time": float(i), "size": [720, 480]})
         return {"filename": row["filename"], "frames": frames, "full_decode_passed": True}
     monkeypatch.setattr(preflight, "inspect_video", inspect)
@@ -139,14 +141,28 @@ def test_default_preflight202_all_routes_and_protocol_guard(tmp_path, inputs, mo
         assert len(plan["questions"]) == 202
         assert plan["rules_sha256"] == digest(rules_for(CURRENT_VERSION))
         assert len(json.loads((out / f"plans/{alias}-validation.json").read_text())["questions"]) == 24
+    expected_answers = {}
+    for alias in ("qwen8b", "luna", "qwen8b_r2_host", "qwen8b_r2_vllm"):
+        for split in ("validation", "test"):
+            plan = json.loads((out / f"plans/{alias}-{split}.json").read_text())
+            units = {unit["id"]: unit for unit in plan["units"]}
+            for question in plan["questions"]:
+                expected = question["reference"] == "yes"
+                for uid in question["unit_ids"]:
+                    key = alias, units[uid]["request_sha256"]
+                    assert expected_answers.setdefault(key, expected) == expected
+    assert set(expected_answers.values()) == {True, False}
+
     def synthetic_call(self, uri, body):
         # Exercise the real transport, parser, receipt and outcome writers.
+        expected = expected_answers[self.config["alias"], digest(body)]
         payload = {"model": self.config["model"],
                    "provider": self.config["provider_context"]["config"]["expected_provider_name"]}
         if self.config["kind"] == "probability":
-            payload["answers"] = {"answer": {"type": "noul", "noul": .8}}
+            payload["answers"] = {"answer": {"type": "noul", "noul": .8 if expected else .2}}
         else:
-            payload["choices"] = [{"finish_reason": "stop", "message": {"content": '{"answer":true}'}}]
+            payload["choices"] = [{"finish_reason": "stop",
+                                   "message": {"content": json.dumps({"answer": expected})}}]
         return payload
     monkeypatch.setattr(api_run.Transport, "call", synthetic_call)
     runs = tmp_path / "runs"; runs.mkdir()
@@ -155,7 +171,7 @@ def test_default_preflight202_all_routes_and_protocol_guard(tmp_path, inputs, mo
         api_run.execute_model(alias, out, runs, "synthetic-not-a-key", threading.Event(), bundle_digest)
         result = json.loads((runs / alias / "test/summary.json").read_text())
         assert result["accuracy_denominator"] == 202
-        assert result["correct"] == sum(q["proposed_answer"] == "yes" for q in parts["test"]["rows"])
+        assert result["correct"] == 202
         assert result["base100"]["accuracy_denominator"] == 100
         assert result["bag20"]["accuracy_denominator"] == 20
         assert result["cohorts"]["original120"]["accuracy_denominator"] == 120
@@ -163,6 +179,61 @@ def test_default_preflight202_all_routes_and_protocol_guard(tmp_path, inputs, mo
     artifact = json.loads((runs / "luna/thresholds.json").read_text())
     assert artifact["rules_sha256"] == digest(rules_for(CURRENT_VERSION))
     assert artifact["validation_summary"]["complete_valid_questions"] == 24
+    config = json.loads((out / "configs/luna.json").read_text())
+    threshold_path = runs / "luna/thresholds.json"
+    assert workflow.load_threshold_artifact(
+        threshold_path, d.file_hash(threshold_path), bundle=out, alias="luna",
+        config=config, bundle_digest=bundle_digest,
+    ) == artifact
+    for split in ("validation", "test"):
+        plan = json.loads((out / f"plans/luna-{split}.json").read_text())
+        assert workflow.context_for(plan, config, bundle_digest)["rules_sha256"] == digest(rules_for(CURRENT_VERSION))
+    selected_path, report_path = tmp_path / "selected.json", tmp_path / "report.json"
+    workflow.main([
+        "select", "--bundle", str(out), "--model", "luna", "--ledger",
+        str(runs / "luna/validation/attempts.jsonl"), "--output", str(selected_path),
+    ])
+    selected = json.loads(selected_path.read_text())
+    assert selected["rules_sha256"] == artifact["rules_sha256"]
+    workflow.main([
+        "report", "--bundle", str(out), "--model", "luna", "--ledger",
+        str(runs / "luna/test/attempts.jsonl"), "--output", str(report_path),
+        "--thresholds", str(selected_path), "--thresholds-sha256", d.file_hash(selected_path),
+    ])
+    assert json.loads(report_path.read_text())["correct"] == 202
+
+    def synthetic_local_call(self, body):
+        expected = expected_answers[self.config["alias"], digest(body)]
+        return {"model": self.config["model"], "choices": [{"finish_reason": "stop",
+                "message": {"content": json.dumps({"answer": expected})}}]}
+
+    monkeypatch.setattr(eval_local.LocalTransport, "call", synthetic_local_call)
+    for alias in ("qwen8b_r2_host", "qwen8b_r2_vllm"):
+        eval_local.execute(alias, out, runs, "http://unused.invalid", bundle_digest, "test")
+        result = json.loads((runs / alias / "test/summary.json").read_text())
+        assert result["correct"] == result["accuracy_denominator"] == 202
+        assert result["complete_valid_questions"] == 202
+        assert result["final_missing_unique_units"] == 0
+        assert result["base100"]["correct"] == result["base100"]["accuracy_denominator"] == 100
+        assert result["bag20"]["accuracy_denominator"] == 20
+        assert result["cohorts"]["original120"]["accuracy_denominator"] == 120
+        assert result["cohorts"]["robot82"]["accuracy_denominator"] == 82
+
+    # Even a resealed plan/preflight pair must reject an unsupported protocol.
+    path = out / "plans/qwen8b-test.json"
+    original = json.loads(path.read_text())
+    bad = original | {"protocol": "unsupported-protocol"}
+    path.write_text(json.dumps(bad))
+    audit_path = out / "preflight.json"
+    audit["models"]["qwen8b"]["test"]["plan_sha256"] = digest(bad)
+    audit_path.write_text(json.dumps(audit))
+    hashes = json.loads((out / "bundle-files-sha256.json").read_text())
+    for changed in (path, audit_path):
+        hashes[changed.relative_to(out).as_posix()] = d.file_hash(changed)
+    (out / "bundle-files-sha256.json").write_text(json.dumps(hashes))
+    with pytest.raises(ValueError, match="unsupported unified protocol"):
+        workflow.verify_bundle(out)
+    path.write_text(json.dumps(original))
     path = out / "plans/qwen8b-test.json"
     wrong = json.loads(path.read_text()) | {"protocol": VERSION, "rules_sha256": digest(rules_for(VERSION))}
     path.write_text(json.dumps(wrong))

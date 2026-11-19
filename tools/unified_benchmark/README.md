@@ -7,27 +7,20 @@ The existing private bag supplement is required; do not fall back to validation2
 Single-run/legacy examples below remain available for explicitly selected older
 workflows. API and local Qwen now support `--resume` for this version's outputs.
 
-Default protocol: **unified-frame-202-v1**. See [dataset202 acquisition and limits](DATASET202.md).
+Default protocol: **unified-frame-202-v1**; explicit **unified-frame-120-v2** remains
+available for historical replay. See [dataset202 acquisition and limits](DATASET202.md).
 This packages the previously local workflow for another checkout. It does not modify the original videos, questions or references,
 re-run models, or reinterpret old bundles. Keep historical source snapshots with
-historical artifacts. The historical `tools/event_benchmark/run_eval.py` included
-here remains a separate, supported v2.1 entrypoint, with its own matching
-inputs and interpretation.
-
-Default sequence: **preflight → environment checks → validation → threshold
-selection when applicable → test → local report**. Sheet publication follows only
-the requested target/version/scope. Historical [v2.1](../../.claude/skills/event-benchmark/references/legacy-v2.1.md)
-and [robot41](../../.claude/skills/event-benchmark/references/robot41.md) have separate
-references and executable entrypoints in this checkout. Their matching code/data
-fingerprints remain required; they are not the current202 route.
+historical artifacts. The original `tools/event_benchmark/run_eval.py` remains the
+separate legacy v2.1 runner; it is not the current-frame entrypoint.
 
 ## What is included
 
 - Mandatory byte hashes for validation24/test202 inputs. The eight
   frozen JSON files are private team inputs, not published in this public repository.
-  The additional82 labels remain inherited and pending review.
   Download the original files from the [restricted team Drive](#get-the-frozen-inputs)
-  below; do not regenerate their labels.
+  below; do not regenerate their labels. The added82 test references remain inherited
+  and pending individual-view review; combined202 is provisional reference agreement.
 - Thirteen recorded profiles: qwen8b, qwen235b, maverick, luna, gemini25_off,
   gemini25_low, gemini38_low, clip, siglip2, videojev, decision3, plus
   `qwen8b_r2_host` and `qwen8b_r2_vllm` (separate self-hosted R2 engines on one
@@ -79,7 +72,7 @@ the run. Preserve existing changes; do not reset a checkout to match this note.
 | Offline environment | Python 3.12, Pillow, certifi, FFmpeg/ffprobe; run the [offline preflight](#run-the-offline-preflight) for the selected aliases and retain the new bundle. |
 | API route | Private key file or per-model key-file mapping, account access/balance and selected provider support are checked; model/provider identity must match actual receipts. No keys in Git or command arguments. |
 | Four-model native route | Linux x86_64 RTX 4090 24GB, SSH access, enough disk, fixed model revisions and the Python/CUDA environments in [NATIVE.md](NATIVE.md#2-prepare-the-gpu-deployment-no-evaluation-inference). Deployment verification must pass. R2 is optional for this route. |
-| Qwen R2 route | Complete the [control-machine check](#prepare-the-control-machine), then provide R2 read-only credentials, pinned weights/environment and private launcher credentials. Transformers uses its cu128 pack; vLLM uses the verified cu130 `ada2` pack and a compatible driver. A CUDA image label alone is not driver verification. |
+| Qwen R2 route | Complete the [control-machine check](#prepare-the-control-machine), then provide R2 read-only credentials, pinned weights/environment and private launcher credentials. Transformers uses its cu128 pack; vLLM declares the cu130 `ada2` pack and requires a compatible driver. Artifact and runtime acceptance remain separate from the pin. A CUDA image label alone is not driver verification. |
 | Authorization and costs | Record chosen models, validation/test scope, hardware use or rental, the cost estimate and applicable user approval. Offline preflight is not permission to rent or make paid requests. |
 | Output and recovery locations | New local output/bundle paths and retained logs/receipts; retain old results. Resume only through the selected route's supported procedure with its original identities and remaining attempt budget. |
 
@@ -102,15 +95,14 @@ plus 20 existing bag questions on ten supplementary videos, for every model.
 The original validation24-only workflow is retained solely for explicit historical
 single runs. There is no fabricated train split.
 Source-group/hash separation is checked; unknown training/actor/scene overlap and
-prior test reuse remain limitations. The original41 stereo clips are not counted
-again. New questions121–202 are all test; their inherited labels remain pending
-single-view review. See [membership and limits](DATASET202.md#membership-and-reference-limits).
+prior test reuse remain limitations. Original120 and robot82 stay separately
+reported. The original41 stereo sources are not counted again, and the added82
+test labels must not be used for calibration.
 
 - Sample t=0,1,2,... strictly before duration and at/before the last decoded video
-  frame timestamp (relative to container start). Current202 records the original
-  grid, retained times and excluded tail points in `media-audit.json`; it never
-  repeats the last frame to fill an empty tail or skips failed in-range frames.
-  Use common 720px JPEGs with frozen byte hashes. Legacy120 retains its old boundary.
+  frame timestamp relative to container start; common 720px JPEGs, frozen byte hashes.
+  Current202 records excluded tail points in `media-audit.json`; legacy120 retains
+  its original sampling boundary and matching source snapshot.
 - API profiles use the recorded **current-image** prompts, not whole-video wording.
   Each API request receives one image/question; reference answers never enter it.
 - CLIP/SigLIP2 keep one-frame positive-minus-contrast margins and native precision.
@@ -123,7 +115,7 @@ single-view review. See [membership and limits](DATASET202.md#membership-and-ref
   For a complete question: any yes -> yes; otherwise any no -> no; all unknown -> unknown.
   Unknown is valid but wrong against these binary references. Refusal is missing.
 - Headline **accuracy = correct / all planned questions**, including missing questions
-  (202 overall, 120/82 for the two cohorts, 100 for original base100, each event's fixed count for the breakdown).
+  (202 overall, 120/82 for the cohorts, 100 for original base100).
   `complete_only_accuracy` is diagnostic, never the headline. All-missing is 0/202.
 - Maximum three total attempts per unit (initial + two retries), cumulative across
   continuations. Retain the first valid answer; never retry a valid wrong answer.
@@ -157,10 +149,10 @@ private JSON inputs using the steps below, then run the offline preflight.
 
 ### Get the frozen inputs
 
-For default202, obtain these original five inputs **plus the three202 files** in
-[DATASET202.md](DATASET202.md#acquire-and-verify). Keep them together; the original
-files validate the unchanged120 subset and validation split. For explicit legacy120,
-only the five below are required.
+Default202 requires the five original files below plus `manifest_202.json`,
+`samples.json` and `videos.json` from [the current dataset guide](DATASET202.md#acquire-and-verify),
+all under the same `--inputs` directory. For an explicitly selected legacy120 run,
+only the five original files are required.
 
 Obtain the original `unified-frame-120-v2` inputs from the benchmark maintainer
 through the team's existing private data channel. Dataset access remains limited
@@ -180,8 +172,9 @@ and place all five JSON files directly in one private directory outside Git, for
 example `/private/goodvision-inputs/`; pass that directory as `--inputs`, not the
 ZIP or a parent directory. Preserve filenames and original bytes: do not convert
 to Google Docs, copy text from a preview, or reformat/save the JSON. This folder
-contains only the original five JSON files; add the three202 files from the
-current dataset folder, and obtain videos separately. No credentials or model weights are included.
+contains only the five original JSON files; add the three202 files for the default
+protocol and obtain the videos separately from the existing
+team dataset locations. No credentials or model weights are included.
 
 From the repository root, use the prepared Python environment to check the files
 against the runner's pinned SHA-256 values (replace the example input path).
@@ -243,6 +236,35 @@ against the frozen source fingerprints. After changing code, build a new preflig
 bundle; retain the original code with old artifacts for historical replay. Do not
 rewrite old bundle hashes to pass the check.
 
+## Native receipt continuation
+
+Native `--resume` validates all requested phase identities/completion anchors,
+then retained receipt hashes and reparsed answers before starting a backend. Every ledger result must have one earlier matching intent;
+interrupted intents still consume the existing three-attempt budget. First valid
+answers follow attempt order, even if an older orphan is recovered later.
+A newly recovered fatal outcome is recorded and pauses this invocation before
+startup. A subsequent explicit `--resume` can acknowledge that recorded failure,
+as with a failure recorded during an ordinary run.
+
+New native receipts preserve HTTP status, fatal classification, retry delay and
+completion time. Incomplete orphan receipts missing these authoritative recovery
+fields fail closed with the path and missing field names; do not replace them
+with current time or rewrite historical evidence. Already-recorded legacy failures
+may retain their existing anchored ledger outcome. Recovery keeps completion-based
+cooldowns, including a final rate-limit response's shared delay.
+
+Readers accept both historical `python-json-nonfinite-v1` global and
+`json-text-nonfinite-v1` per-field raw encodings. New writes retain the per-field
+format. Diagnostic decoding neither changes original bytes nor makes nonfinite
+scores valid, and does not permit cross-source execution. Normalized CLIP evidence
+contains only the three validated margin/cosine components; optional diagnostics
+remain in the raw response. A differing historical normalized shape fails reparse
+rather than being rewritten. Bundle checks require
+both the complete physical inventory and recorded preflight config/plan/frame
+bindings. The existing HF-to-vLLM converter's sealed lineage preserves the original
+preflight bytes and binds only its derived serving profile/plans; it cannot repair
+a changed source exam or drop an input from the recorded inventory.
+
 ## API execution after cost approval
 
 Explicitly select models and phase. Start with validation; no past user's approval
@@ -276,12 +298,6 @@ python -m tools.unified_benchmark.api_run \
   --env-file /private/openrouter.env --output outputs/new-test \
   --authorization-note 'Approved test scope and cost' --execute
 ```
-
-Hard-answer profiles omit the threshold flags. Use a fresh output path per phase;
-the API CLI refuses an existing run. Its ledger supports bounded continuation,
-but there is no automatic API restart/recovery command here: inspect stopped
-records, then use a reviewed wrapper retaining contexts and remaining attempt
-budget. The four-model native CLI has its own explicit `--resume` procedure.
 
 ## Self-hosted Qwen8B from R2
 
@@ -335,15 +351,21 @@ Self-hosted Qwen3-VL-8B on a rented 4090 uses `qwen8b_r2_host` (HF generate +
 FA2) or the independent engine profile `qwen8b_r2_vllm` (vLLM), not the
 OpenRouter `qwen8b` profile and not a `qwen8b_selfhost` alias. Both keep the
 same frozen JPEGs, prompts, parser, temperature, max_tokens=30, and **12 client
-slots**. Do not relabel the completed HF run as vLLM. First create an offline
-bundle containing the selected self-hosted aliases (omit an alias if not needed):
+slots**. Do not relabel the completed HF run as vLLM.
+
+These two launchers currently accept only the historical `unified-frame-120-v2`
+protocol (validation24/test120). Explicitly select it below and supply its five
+original frozen JSON inputs. The default 202-question bundle is rejected by these launchers
+before rental. This limitation does not change the general preflight default or
+make historical results evidence for the 202 protocol. Preserve existing bundles unchanged.
+Create a fresh offline bundle containing the selected self-hosted aliases
+(omit an alias if not needed):
 
 ```sh
 python -m tools.unified_benchmark.preflight \
+  --protocol unified-frame-120-v2 \
   --inputs /private/goodvision-inputs --media /data/goodvision \
   --models qwen8b_r2_host qwen8b_r2_vllm \
-  --bag-validation /private/goodvision-inputs/bag-validation.json \
-  --bag-validation-sha256 FROZEN_MANIFEST_SHA256 \
   --output outputs/new-qwen-r2-bundle
 ```
 
@@ -369,6 +391,13 @@ keys `VAST_API_KEY`, `SAM_SSH_KEY`, `R2_ENDPOINT`, `R2_BUCKET`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`. Attach SSH immediately after create;
 always release the labelled instance. Headline scoring remains correct/all.
 
+The active HF and vLLM profiles now include a typed `env_artifact` identity.
+Prepare a fresh bundle for those active profiles; retain historical bundles and
+their original source snapshots. The launcher captures the selected environment
+before preflight, and restore must acknowledge that same artifact, manifest,
+prefix and compatibility. A registry change during preparation fails closed
+before serving or evaluation and still attempts confirmed instance cleanup.
+
 vLLM (independent engine, same exam):
 
 ```sh
@@ -387,21 +416,27 @@ do not rent a fresh instance for every round.
 
 `eval_local` still uses 12 slots. vLLM may batch those 12 internally. Do not
 change JPEG size, prompts, max_tokens, or client concurrency to fit VRAM.
-Restore the existing package; ordinary reruns do not build/upload an environment.
-The authoritative `tools/models.yaml` entry and launcher pin:
+The active declared vLLM artifact is
+`envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz`, SHA-256
+`59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b`,
+4,252,375,781 bytes (torch `+cu130`). It needs host CUDA >=13.0 and NVIDIA driver
+>=580. The launcher rejects incompatible or unknown offer/resume metadata and
+checks the actual driver after SSH, before bootstrap or downloads. These checks
+do not establish artifact or GPU acceptance. The superseded `cu128-py312-vllm0310-ada` object is kept frozen for
+provenance only: it is missing `typing_extensions` in the prefix and is never
+restored. The incomplete cu130 `ada` pack is also frozen. The declared ada2
+identity is not producer provenance, a full-archive readback, or a
+restore/import log. Rebuilds require a reviewed successor entry, fresh prefix and
+new immutable identity; follow the [local build and provenance procedure](../qwen8b_vllm/BUILD.md).
+CPU import evidence is not GPU acceptance. The launcher checks sealed profile
+and request identities before rental and again before inference, and retains a
+separate synthetic 720px smoke receipt outside the scored ledger. Changed active
+profiles require new bundles; preserve historical bundles byte-for-byte.
 
-- R2 object: `envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz`
-- Manifest: `envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.json`
-- SHA-256: `59314d00783b6698ef83cbfbd2e028c2f094d76c9d3383f5a37c3fdf3687b95b`
-- Size: `4252375781` bytes; Python 3.12, torch `2.13.0+cu130`, vLLM `0.31.0`, Ada.
-
-The R2 restore path verifies the downloaded archive before unpacking. See the
-[package acquisition and verification guide](../qwen8b_vllm/BUILD.md#restore-the-current-package).
-Both previous vLLM `…ada.tar.gz` objects are historical and refused as launch
-fallbacks; preserve them and the independent HF pack. `pack_provenance.json`
-describes the old incomplete cu130 object, not `ada2`. A CPU import check alone
-does not prove GPU serving. Preserve old bundles after this metadata correction;
-create a new preflight bundle for a new run rather than editing old fingerprints.
+Hard-answer profiles omit the threshold flags. Use a fresh output path for a new
+run; an existing compatible evaluator output requires explicit `--resume`, which
+validates retained identities and preserves the remaining attempt budget. This
+does not add launcher rental/restart authorization.
 
 ## Hardware run log
 
@@ -537,15 +572,8 @@ body bytes as `body_base64`, the HTTP status, and truncation/redaction flags. Su
 attempts remain invalid and consume the existing three-attempt budget; missing
 cost evidence stays unknown. API key bytes are redacted if echoed in that body.
 
-An agent can prepare a local publication preview and carry out an authorized
-update using [bench-sheet-contribute](../../.claude/skills/bench-sheet-contribute/SKILL.md).
-The user chooses the result version, target tabs and overwrite/append scope; an
-evaluation request alone is not publication authorization. The publication flow
-reads live headers, matches exact model/variant rows, saves before-values and a
-sparse proposed diff, writes only the agreed cells, and verifies the readback.
-Keep a requested review step pending until the user approves; an existing explicit
-write authorization does not need to be requested again. Preserve previous local
-artifacts and styles. Model names include chosen effort, Hardware
+Publish only when requested via bench-sheet-contribute, reading live headers and
+preserving previous local artifacts. Model names include chosen effort, Hardware
 may combine VRAM, Price is actual spend; thresholds and sources go in notes. Do not
 add tabs/columns by default or replace old timing with a mismatched variant.
 

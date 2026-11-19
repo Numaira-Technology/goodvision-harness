@@ -8,6 +8,13 @@ description: >-
 
 # Validation-only threshold selection
 
+For the older controlled v2 API protocol, use the implemented provider-pinned,
+lossless collector and catalog preparation described in
+`tools/event_benchmark/CONTROLLED_RUN.md`. Historical rounded legacy output remains
+ineligible: do not upgrade its labels or precision marker. The separate
+`--legacy-baseline` path is explicitly unpinned and cannot drive controlled tuning.
+Use retained records only with their matching source snapshot.
+
 Use the runner matching the saved artifact. For current202 or explicit legacy120 ledgers, read
 `tools/unified_benchmark/README.md` and use `tools.unified_benchmark.workflow select`
 and `report` for offline analysis. For a new CLIP/SigLIP2 GPU run, follow
@@ -21,15 +28,15 @@ For the older base-four `per_video` schema, use
 mix their validation/test versions). The latter retains historical complete-only
 confusion metrics and explicitly adds all-question headline counts.
 
-For a new current202 bundle, obtain the five original files plus the three202 files
-listed in [DATASET202.md](../../../tools/unified_benchmark/DATASET202.md) from the
+For a new current202 bundle, obtain the five original JSON files plus the three202
+files in [the dataset guide](../../../tools/unified_benchmark/DATASET202.md) from the
 restricted team Drive via [the input acquisition guide](../../../tools/unified_benchmark/README.md#get-the-frozen-inputs).
 Download with an authorized team account into a private directory, verify the
 pinned SHA-256 values, and provide that directory to preflight with `--inputs`.
 Do not reconstruct the validation split, reformat the snapshots, or substitute
 the repository's legacy manifest. An existing frozen bundle keeps its own inputs.
 
-Require reviewed validation data, lossless scores, full validation coverage, and compatible
+Require reviewed data, lossless scores, full validation coverage, and compatible
 model/provider, prompts, effort, precision, sampling, preprocessing and source
 fingerprints. Validate source-video groups across splits. Training/development,
 actor/scene and prior test-use limits must remain explicit; do not invent a clean

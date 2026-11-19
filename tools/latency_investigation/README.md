@@ -113,6 +113,14 @@ population to 200–300 requests, and writes:
 Run the commands from that directory so the relative image paths resolve.
 Do not run them until a GPU run is authorized. This package never calls Vast.
 
+`export-phase` reads a saved durable HTTP evaluation phase only after checking
+the bundle/source inventory, run identity, ledger context, completion seal when
+present, and raw receipt/outcome hashes. It never repairs or reseals evidence.
+The active request-building source must match the retained bundle; use its
+retained source for historical replay rather than resealing old results.
+Each exported arrival belongs to the successful recorded attempt, including
+when an earlier attempt was interrupted.
+
 ## Results table
 
 ```sh

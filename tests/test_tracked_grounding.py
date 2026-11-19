@@ -468,10 +468,10 @@ def offline_inspector(config, *, broker_url):
 def test_twelve_sources_through_http_broker_and_spawned_workers(
     tmp_path, fake_models, monkeypatch, mode, load_profile, request
 ):
-    # Verify every source/frame through the real HTTP and process boundaries.
-    # Shared CI scheduling pauses must not turn this adapter contract into a
-    # throughput benchmark. Production lag/drop rules are exercised with a
-    # controlled clock in test_vlm_sender_lag and test_vlm_source_feeder.
+    # This adapter contract must exercise every planned input exactly once.
+    # Keep real HTTP/process/admission behavior, but do not replace a failed
+    # stage with a retry. Production lag/drop gates are exercised unchanged in
+    # test_vlm_source_feeder and test_vlm_sender_lag using the real feeder.
     monkeypatch.setattr(
         "tools.vlm_multistream_benchmark.TimedSourceFeeder", ContractSourceFeeder
     )

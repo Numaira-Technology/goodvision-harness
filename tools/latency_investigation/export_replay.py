@@ -483,9 +483,21 @@ def records_from_phase(bundle, phase_dir, alias: str) -> list[dict]:
     elapsed time is not copied into the replay body.
     """
     from tools.unified_benchmark.adapters import request_body
+    from tools.unified_benchmark.contract import digest, finite_number
+    from tools.unified_benchmark.http_execution import (
+        _verify_completion, receipt_path, reconcile,
+    )
+    from tools.unified_benchmark.receipts import read_receipt
+    from tools.unified_benchmark.retry import Ledger
+    from tools.unified_benchmark.workflow import context_for, verify_bundle
 
     bundle = Path(bundle)
     phase_dir = Path(phase_dir)
+    if not alias or Path(alias).name != alias or alias in {".", ".."}:
+        raise ValueError("invalid replay alias")
+    if phase_dir.name not in {"validation", "test"} or phase_dir.is_symlink():
+        raise ValueError("invalid replay phase")
+    bundle_digest = verify_bundle(bundle)
     config = json.loads(
         (bundle / "configs" / f"{alias}.json").read_text(encoding="utf-8")
     )
@@ -495,28 +507,61 @@ def records_from_phase(bundle, phase_dir, alias: str) -> list[dict]:
         )
     )
     units = {unit["id"]: unit for unit in plan["units"]}
+    bodies = {}
+    for unit_id, unit in units.items():
+        body = request_body(config, unit, bundle)[1]
+        if digest(body) != unit["request_sha256"]:
+            raise ValueError("recorded replay request fingerprint differs")
+        bodies[unit_id] = body
+    output = phase_dir.parent
+    manifest = output / "run.json"
+    ledger_path = phase_dir / "attempts.jsonl"
+    if manifest.is_symlink() or ledger_path.is_symlink() or not ledger_path.is_file():
+        raise ValueError("invalid replay evidence path")
+    identity = json.loads(manifest.read_text(encoding="utf-8"))
+    if any(identity.get(key) != expected for key, expected in {
+        "alias": alias, "bundle_sha256": bundle_digest, "config_sha256": digest(config),
+    }.items()) or identity.get("phase") not in {phase_dir.name, "both"}:
+        raise ValueError("replay run identity differs")
+    ledger = Ledger(ledger_path, context_for(plan, config, bundle_digest), read_only=True)
+    try:
+        sealed = _verify_completion(output, phase_dir, ledger, config, phase_dir.name)
+        reconcile(phase_dir, ledger, plan, config,
+                  local=config.get("execution") == "self_hosted_r2",
+                  sealed=sealed, validate_only=True)
+        rows = list(ledger.rows)
+        receipts = {}
+        for row in rows:
+            if row["type"] != "result" or row.get("complete") is not True:
+                continue
+            path = receipt_path(phase_dir, units[row["unit"]], row["attempt"])
+            metadata = row.get("metadata", {})
+            if (metadata.get("receipt") != path.relative_to(phase_dir).as_posix()
+                    or metadata.get("receipt_sha256") != _file_sha256(path)):
+                raise ValueError("replay receipt anchor differs")
+            receipts[row["unit"], row["attempt"]] = read_receipt(path)
+    finally:
+        ledger.close()
     intents = {}
     results = {}
-    for line in (phase_dir / "attempts.jsonl").read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        row = json.loads(line)
+    for row in sorted(rows, key=lambda row: row["attempt"]):
         if row.get("type") == "intent":
-            intents.setdefault(row["unit"], row)
+            if not finite_number(row.get("at_unix")) or row["at_unix"] < 0:
+                raise ValueError("invalid replay intent timestamp")
+            intents[row["unit"], row["attempt"]] = row
         elif row.get("type") == "result" and row.get("complete") is True:
-            results[row["unit"]] = row
+            results.setdefault(row["unit"], row)
     if not intents:
         raise ValueError("phase has no request intents")
     origin = min(row["at_unix"] for row in intents.values())
     records = []
     for unit_id in (unit["id"] for unit in plan["units"]):
         result = results.get(unit_id)
-        intent = intents.get(unit_id)
-        if result is None or intent is None:
+        if result is None:
             continue
-        receipt_name = Path(str(result.get("metadata", {}).get("receipt", ""))).name
-        receipt_path = phase_dir / "receipts" / receipt_name
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        key = unit_id, result["attempt"]
+        intent = intents[key]
+        receipt = receipts[key]
         response = (
             receipt.get("response") if isinstance(receipt.get("response"), dict) else {}
         )
@@ -532,7 +577,6 @@ def records_from_phase(bundle, phase_dir, alias: str) -> list[dict]:
             else {}
         )
         output_text = message.get("content") if isinstance(message, dict) else None
-        _url, body = request_body(config, units[unit_id], bundle)
         records.append(
             {
                 "request_id": unit_id,
@@ -542,7 +586,7 @@ def records_from_phase(bundle, phase_dir, alias: str) -> list[dict]:
                 "output_tokens": output_tokens
                 if isinstance(output_tokens, int)
                 else None,
-                "body": body,
+                "body": bodies[unit_id],
             }
         )
     return records

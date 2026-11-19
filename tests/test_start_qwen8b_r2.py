@@ -9,7 +9,8 @@ import pytest
 
 from tools import registry
 from tools.qwen8b.eval_local import LocalTransport
-from tools.start_qwen8b_r2 import _serve_remote, attach_key, wait_for_ssh
+from tools.qwen8b.serve import require_packed_prefix
+from tools.start_qwen8b_r2 import _packed_python, _serve_remote, attach_key, wait_for_ssh
 from tools.unified_benchmark.preflight import model_configs
 
 
@@ -22,12 +23,24 @@ def test_qwen8b_registry_pins():
     assert env["build"]["flash_attn"] is True
 
 
-def test_serve_remote_disables_nounset_before_conda_activate():
+def test_serve_remote_uses_absolute_packed_python_without_activate():
     remote = _serve_remote("/opt/env/qwen8b/bin/activate")
-    assert "set -u" not in remote.split("source", 1)[0]
-    assert "set +u" in remote
-    assert "source /opt/env/qwen8b/bin/activate" in remote
-    assert "python -m tools.qwen8b.serve" in remote
+    assert "source " not in remote
+    assert "conda activate" not in remote
+    assert "python -m " not in remote
+    assert "/opt/env/qwen8b/bin/python -s -c" in remote
+    assert "PYTHONNOUSERSITE=1" in remote
+    assert "sys.prefix" in remote
+    assert "tools.qwen8b.serve" in remote
+    assert "packed interpreter missing" in remote
+    assert _packed_python("/opt/env/qwen8b/bin/activate") == (
+        "/opt/env/qwen8b/bin/python"
+    )
+
+
+def test_serve_require_packed_prefix_rejects_host_python():
+    with pytest.raises(SystemExit, match="sys.prefix"):
+        require_packed_prefix("qwen8b")
 
 
 def test_self_hosted_profile_skips_openrouter_pin():

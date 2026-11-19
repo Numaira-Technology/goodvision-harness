@@ -56,8 +56,9 @@ def test_twelve_sources_native_decisions_and_person_reports(
     tmp_path, monkeypatch, mode, request
 ):
     # This is an adapter/accounting contract, not a host throughput benchmark.
-    # Replay each planned source frame once; production timing/drop rules remain
-    # covered by test_vlm_source_feeder and test_vlm_sender_lag.
+    # Replay each planned source frame once and do not replace a failed stage
+    # with a retry. Production lag/drop gates stay in test_vlm_source_feeder
+    # and test_vlm_sender_lag, which use the real feeder.
     monkeypatch.setattr(
         "tools.vlm_multistream_benchmark.TimedSourceFeeder", ContractSourceFeeder
     )

@@ -18,5 +18,10 @@
   "hardware": "one RTX 4090 24GB",
   "current_access_verified": false,
   "selection": "self-hosted R2 packed env + pinned weights; not an OpenRouter provider",
-  "profile_origin": "Continuation of the qwen8b R2 host GPU eval; distinct from the Parasail API profile and from the unused local vLLM qwen8b_selfhost draft."
+  "profile_origin": "Continuation of the qwen8b R2 host GPU eval; distinct from the Parasail API profile and from the unused local vLLM qwen8b_selfhost draft.",
+  "env_artifact": {
+    "r2_key": "envs/qwen8b/cu128-py312-torch280-ada.tar.gz",
+    "sha256": "d101d333fe942887aefb29a4ff98eb1e0fcaaa0ea5e5f57ac1baeb53818c72ff",
+    "size": 4666450073
+  }
 }

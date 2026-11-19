@@ -29,17 +29,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Fetch pinned historical benchmark source objects
-        shell: bash
-        run: |
-          python - <<'PY'
-          import json
-          import subprocess
-          from pathlib import Path
-
-          sources = json.loads(Path("tools/unified_benchmark/native_assets/sources.json").read_text())
-          for commit in sorted({source["commit"] for source in sources.values()}):
-              subprocess.run(["git", "fetch", "--no-tags", "--depth=1", "origin", commit], check=True)
-          PY
+        run: python -m tools.unified_benchmark.fetch_native_sources
       - name: Check repository hygiene
         run: python tools/check_repo_hygiene.py
       - uses: actions/setup-node@v4
@@ -87,7 +77,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5]
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -127,7 +117,7 @@ jobs:
           # Large successful fixtures need not accumulate on the system disk.
           # Keep failed-case files and the separate CI evidence directory.
           $pytestTempRoot = Join-Path $env:RUNNER_TEMP "goodvision-pytest-${{ matrix.shard }}"
-          $arguments = @('-u', '-m', 'pytest', '-vv', '-o', 'faulthandler_timeout=60', '-o', 'tmp_path_retention_policy=failed', "--basetemp=$pytestTempRoot", '--durations=20', '-p', 'tools.ci_pytest', '--ci-shard', '${{ matrix.shard }}', '--ci-shards', '4', '--ci-evidence', $evidence, "--junitxml=$evidence/junit.xml")
+          $arguments = @('-u', '-m', 'pytest', '-vv', '-o', 'faulthandler_timeout=60', '-o', 'tmp_path_retention_policy=failed', "--basetemp=$pytestTempRoot", '--durations=20', '-p', 'tools.ci_pytest', '--ci-shard', '${{ matrix.shard }}', '--ci-shards', '6', '--ci-evidence', $evidence, "--junitxml=$evidence/junit.xml")
           # Direct file sinks avoid runner-console backpressure. The parent
           # deadline leaves time to stop descendants and upload partial evidence.
           $process = Start-Process -FilePath (Get-Command python).Source -ArgumentList $arguments -NoNewWindow -PassThru -RedirectStandardOutput "$evidence/stdout.log" -RedirectStandardError "$evidence/stderr.log"
@@ -169,7 +159,7 @@ jobs:
       - name: Require all Windows tests and exact-once coverage
         env:
           WINDOWS_RESULT: ${{ needs.windows-regressions.result }}
-        run: python tools/ci_regression.py verify --shards 4 --result "$WINDOWS_RESULT" outputs/ci-windows-downloaded
+        run: python tools/ci_regression.py verify --shards 6 --result "$WINDOWS_RESULT" outputs/ci-windows-downloaded
 
   sam3-onnx-contract:
     name: Optional SAM3 ONNX contract (no weights)

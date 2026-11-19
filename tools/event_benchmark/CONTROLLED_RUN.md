@@ -30,6 +30,11 @@ support ProviderPreferences in OpenRouter's official Python SDK:
 https://github.com/OpenRouterTeam/python-sdk/blob/main/src/openrouter/decisions.py
 https://github.com/OpenRouterTeam/python-sdk/blob/main/src/openrouter/components/providerpreferences.py
 
+Controlled evidence requires the returned model ID to exactly match the frozen
+configuration's model ID. Case, whitespace, provider prefixes and version suffixes
+are not normalized or treated as aliases. A differing receipt stays incomplete
+until its identity is resolved; no alias policy is inferred from a similar name.
+
 Each attempt records the returned generation ID, actual provider/model, available
 usage/cost, elapsed time, score or sanitized error. Missing provider/model metadata
 may be resolved through GET /api/v1/generation after inference, outside timing.

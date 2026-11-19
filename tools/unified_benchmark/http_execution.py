@@ -1,15 +1,14 @@
 """Shared durable API/self-hosted execution. Recovery never sends a request."""
 import json
-import math
 import time
 
 from tools.event_benchmark.evidence import response_metadata
 from .adapters import parse_response, request_body
-from .contract import (EVENTS, atomic_json, digest, file_hash, plan_rules,
+from .contract import (EVENTS, atomic_json, canonical, digest, file_hash, finite_number, plan_rules,
                        read_receipt, select_thresholds, valid_value, write_new)
 from .latency import is_timeout
 from .locking import lock_exclusive
-from .retry import Ledger, PausedRun, Queue, RequestFailure
+from .retry import Ledger, PausedRun, Queue, RequestFailure, validate_rows
 from .workflow import collect, context_for, load_threshold_artifact, report
 
 
@@ -24,6 +23,8 @@ def outcome_path(directory, unit, attempt):
 def decode(config, unit, record, *, local=False):
     """Re-parse the retained response and verify provider/model, without a GET."""
     status = record.get("http_status")
+    if status is not None and (type(status) is not int or not 100 <= status <= 599):
+        raise ValueError("invalid raw receipt http_status")
     if record.get("transport_error") or (status is not None and status != 200):
         from .api_run import retry_after
         reason = record.get("transport_error") or f"HTTP {status}"
@@ -96,11 +97,12 @@ class DurableTransport:
         return answers, metadata
 
 
-def reconcile(directory, ledger, plan, config, *, local=False, sealed=False):
+def reconcile(directory, ledger, plan, config, *, local=False, sealed=False, validate_only=False):
     """Check every recorded answer; recover receipt/outcome gaps before new calls."""
     collect(plan, config, ledger)
     units = {u["id"]: u for u in plan["units"]}
     results = {(r["unit"], r["attempt"]): r for r in ledger.rows if r["type"] == "result"}
+    projected_rows = list(ledger.rows)
     expected_raw, expected_outcomes = set(), set()
     for intent in list(ledger.rows):
         if intent["type"] != "intent":
@@ -114,6 +116,12 @@ def reconcile(directory, ledger, plan, config, *, local=False, sealed=False):
             if path.is_symlink() or not path.resolve().is_relative_to(directory.resolve()):
                 raise ValueError("receipt path escapes run")
         saved = json.loads(outcome.read_text()) if outcome.exists() else None
+        if outcome.exists():
+            required = {"unit", "attempt", "request_sha256", "context", "answers",
+                        "metadata", "elapsed_seconds", "completed_at_unix",
+                        "http_status", "fatal", "retry_after", "error"}
+            if not isinstance(saved, dict) or not required <= set(saved):
+                raise ValueError("invalid saved outcome")
         if result:
             meta = result.get("metadata", {})
             if (not saved or meta.get("outcome") != outcome.relative_to(directory).as_posix()
@@ -124,13 +132,17 @@ def reconcile(directory, ledger, plan, config, *, local=False, sealed=False):
             if any(saved.get(k) != v for k, v in expected.items()):
                 raise ValueError("saved outcome identity differs")
             if (not isinstance(saved.get("answers"), dict)
+                    or not isinstance(saved.get("metadata"), dict)
                     or type(saved.get("fatal")) is not bool):
                 raise ValueError("invalid saved outcome")
+            status = saved["http_status"]
+            if status is not None and (type(status) is not int or not 100 <= status <= 599):
+                raise ValueError("invalid saved outcome http_status")
             for field in ("elapsed_seconds", "completed_at_unix", "retry_after"):
                 value = saved.get(field)
                 if field == "elapsed_seconds" and value is None and saved.get("timing_unknown_after_crash") is True:
                     continue
-                if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                if not finite_number(value) or value < 0:
                     raise ValueError("invalid saved outcome " + field)
         if raw.exists():
             record = read_receipt(raw)
@@ -165,6 +177,7 @@ def reconcile(directory, ledger, plan, config, *, local=False, sealed=False):
             continue
         if sealed:
             raise ValueError("completed phase has an unrecorded outcome")
+        publish_outcome = not outcome.exists()
         if saved:
             answers, metadata = saved["answers"], saved["metadata"]
             elapsed, completed = saved["elapsed_seconds"], saved["completed_at_unix"]
@@ -183,13 +196,13 @@ def reconcile(directory, ledger, plan, config, *, local=False, sealed=False):
                      "elapsed_seconds": None, "completed_at_unix": completed,
                      "http_status": status, "fatal": fatal, "retry_after": delay, "error": error,
                      "timing_unknown_after_crash": True}
-            if not isinstance(completed, (int, float)) or not math.isfinite(completed):
+            if not finite_number(completed) or completed < 0:
                 raise ValueError("raw orphan has no durable completion timestamp")
-            write_new(outcome, saved)
         metadata = dict(metadata, outcome=outcome.relative_to(directory).as_posix(),
-                        outcome_sha256=file_hash(outcome), recovered_receipt=True)
+                        outcome_sha256=file_hash(outcome) if outcome.is_file() else None,
+                        recovered_receipt=True)
         prior = {}
-        for row in sorted((r for r in ledger.rows if r["type"] == "result"
+        for row in sorted((r for r in projected_rows if r["type"] == "result"
                            and r["unit"] == unit["id"] and r["attempt"] < attempt),
                           key=lambda r: r["attempt"]):
             for event, value in row["answers"].items():
@@ -202,13 +215,70 @@ def reconcile(directory, ledger, plan, config, *, local=False, sealed=False):
                          retry_after=delay, error=error)
         if not complete and not fatal and (attempt < 3 or status == 429):
             recovered["cooldown_until"] = completed + max(delay, 30 if attempt == 1 else 60)
-        ledger.append(recovered)
+            if not finite_number(recovered["cooldown_until"]):
+                raise ValueError("invalid recovered cooldown")
+        validate_rows([r for r in projected_rows if r["unit"] == unit["id"]] + [recovered])
+        canonical(saved)
+        canonical({**recovered, "context": ledger.context})
+        if not validate_only:
+            if publish_outcome:
+                write_new(outcome, saved)
+                recovered["metadata"]["outcome_sha256"] = file_hash(outcome)
+            ledger.append(recovered)
+        projected_rows.append(recovered)
     for folder, expected in (("receipts", expected_raw), ("outcomes", expected_outcomes)):
         for path in (directory / folder).glob("*.json"):
             if path not in expected:
                 raise ValueError("unrecorded receipt/outcome without a durable intent")
-    if any(r.get("fatal") for r in ledger.rows):
+    if any(r.get("fatal") for r in projected_rows):
         raise PausedRun("fatal response retained; automatic retries are blocked")
+
+
+def _verify_completion(output, directory, ledger, config, split):
+    completion = directory / "completion.json"
+    if not completion.exists():
+        return False
+    seal = json.loads(completion.read_text(encoding="utf-8"))
+    required = {"run.json", f"{split}/attempts.jsonl", f"{split}/summary.json"}
+    if split == "validation" and config["kind"] == "probability":
+        required.add("thresholds.json")
+    if not isinstance(seal.get("files"), dict) or not required <= set(seal["files"]):
+        raise ValueError("completed phase evidence anchors missing")
+    for name, sha in seal["files"].items():
+        path = output / name
+        if path.is_symlink() or not path.resolve().is_relative_to(output.resolve()):
+            raise ValueError("completed phase changed")
+        actual = ledger.file_hash() if path.resolve() == ledger.path.resolve() else file_hash(path)
+        if actual != sha:
+            raise ValueError("completed phase changed")
+    return True
+
+
+def _preflight_saved_phases(bundle, output, splits, config, bundle_digest, *, local):
+    """Validate every requested phase without recovering or sending any request."""
+    for split in splits:
+        plan = json.loads((bundle / "plans" / f'{config["alias"]}-{split}.json').read_text(encoding="utf-8"))
+        for unit in plan["units"]:
+            if digest(request_body(config, unit, bundle)[1]) != unit["request_sha256"]:
+                raise ValueError("frozen request differs")
+        directory = output / split
+        if directory.is_symlink():
+            raise ValueError("phase evidence path is a symlink")
+        if not directory.exists():
+            continue
+        ledger_path = directory / "attempts.jsonl"
+        if ledger_path.is_symlink() or not directory.is_dir():
+            raise ValueError("invalid phase evidence path")
+        if not ledger_path.exists():
+            if any(directory.iterdir()):
+                raise ValueError("saved phase evidence has no ledger")
+            continue
+        ledger = Ledger(ledger_path, context_for(plan, config, bundle_digest), read_only=True)
+        try:
+            sealed = _verify_completion(output, directory, ledger, config, split)
+            reconcile(directory, ledger, plan, config, local=local, sealed=sealed, validate_only=True)
+        finally:
+            ledger.close()
 
 
 def execute_model(alias, bundle, root, bundle_digest, transport_factory, *, phase,
@@ -236,6 +306,7 @@ def execute_model(alias, bundle, root, bundle_digest, transport_factory, *, phas
             if any(p.name != "execution.lock" for p in output.iterdir()):
                 raise ValueError("run identity missing from nonempty output")
             write_new(manifest, identity)
+        _preflight_saved_phases(bundle, output, splits, cfg, bundle_digest, local=local)
         thresholds, calibration = dict.fromkeys(EVENTS, .5), "not_applicable_hard_boolean"
         if phase == "test" and cfg["kind"] == "probability":
             artifact = load_threshold_artifact(threshold_path, threshold_sha256, bundle=bundle,
@@ -256,21 +327,7 @@ def execute_model(alias, bundle, root, bundle_digest, transport_factory, *, phas
             atomic_json(output / "status.json", {"state": "running", "split": split})
             try:
                 completion = directory / "completion.json"
-                if completion.exists():
-                    seal = json.loads(completion.read_text())
-                    required = {"run.json", f"{split}/attempts.jsonl", f"{split}/summary.json"}
-                    if split == "validation" and cfg["kind"] == "probability":
-                        required.add("thresholds.json")
-                    if not isinstance(seal.get("files"), dict) or not required <= set(seal["files"]):
-                        raise ValueError("completed phase evidence anchors missing")
-                    for name, sha in seal["files"].items():
-                        path = output / name
-                        if not path.resolve().is_relative_to(output.resolve()):
-                            raise ValueError("completed phase changed")
-                        # Windows byte locks forbid reopening the owned ledger.
-                        actual = ledger.file_hash() if path.resolve() == ledger.path.resolve() else file_hash(path)
-                        if actual != sha:
-                            raise ValueError("completed phase changed")
+                _verify_completion(output, directory, ledger, cfg, split)
                 reconcile(directory, ledger, plan, cfg, local=local, sealed=completion.exists())
                 if not completion.exists():
                     transport = DurableTransport(transport_factory(cfg, directory, ledger),

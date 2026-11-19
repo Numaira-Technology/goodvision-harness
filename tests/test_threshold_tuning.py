@@ -413,7 +413,26 @@ def test_changed_serving_identity_or_code_cannot_reuse_thresholds(tmp_path, chan
             for frame in row["frames"]:
                 frame["attempts"][0]["actual_model"] = "changed-returned-model"
     source, manifest = save_run(tmp_path, data)
-    with pytest.raises(ValueError, match="differs"):
+    # Exact returned-model binding now rejects an incoherent serving identity
+    # before the frozen-threshold comparison. Keep the original mutation and
+    # require that stronger failure rather than normalizing the returned name.
+    expected = "incomplete or inconsistent" if change == "actual_model" else "differs"
+    with pytest.raises(ValueError, match=expected):
+        tuner.evaluate_thresholds(artifact, digest, [source], [manifest])
+
+
+def test_coherent_changed_model_cannot_reuse_frozen_thresholds(tmp_path):
+    artifact, digest = freeze(tmp_path)
+    data = run("test")
+    data["model"] = data["provider_context"]["config"]["model"] = "model-b"
+    data["provider_context"]["sha256"] = hashlib.sha256(b"provider-b").hexdigest()
+    for row in data["per_video"]:
+        for frame in row["frames"]:
+            frame["attempts"][0]["actual_model"] = "model-b"
+    refresh_provider(data)
+    tuner.evidence.verify_provider_evidence(data, data["per_video"])
+    source, manifest = save_run(tmp_path, data)
+    with pytest.raises(ValueError, match="model differs"):
         tuner.evaluate_thresholds(artifact, digest, [source], [manifest])
 
 

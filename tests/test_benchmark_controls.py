@@ -18,6 +18,8 @@ def no_network(monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("unexpected network access")
     monkeypatch.setattr(evidence.urllib.request, "urlopen", forbidden)
+    monkeypatch.setattr(evidence, "_metadata_open", forbidden)
+    monkeypatch.setattr("socket.create_connection", forbidden)
 
 
 def provider(tmp_path):
@@ -128,7 +130,7 @@ def test_generation_metadata_lookup_is_get_only_and_preserves_score(monkeypatch)
         calls.append(request)
         return io.BytesIO(json.dumps({"data": {"id": "synthetic-id", "provider_name": "Provider A",
                                               "model": "model-a", "total_cost": 0.001}}).encode())
-    monkeypatch.setattr(evidence.urllib.request, "urlopen", fetch)
+    monkeypatch.setattr(evidence, "_metadata_open", fetch)
     attempts = [{"ok": True, "score": 0.49996, "generation_id": "synthetic-id"}]
     evidence.enrich_attempts(attempts, "secret-key")
     assert len(calls) == 1 and calls[0].get_method() == "GET"
@@ -270,7 +272,7 @@ def test_generation_metadata_failure_keeps_answer_and_can_recover(monkeypatch, b
     def fetch(request, **kwargs):
         calls.append(request.get_method())
         return io.BytesIO(json.dumps(next(replies)).encode())
-    monkeypatch.setattr(evidence.urllib.request, "urlopen", fetch)
+    monkeypatch.setattr(evidence, "_metadata_open", fetch)
     attempts = [{"ok": True, "score": .49996, "generation_id": generation}]
     evidence.enrich_attempts(attempts, "synthetic-key")
     assert attempts[0]["metadata_lookup_error"] == "unavailable"

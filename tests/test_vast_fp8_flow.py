@@ -49,8 +49,10 @@ def offline_inspector(config, *, broker_url):
 @pytest.mark.parametrize("mode", ["events", "compact", "parallel"])
 @pytest.mark.parametrize("sequences", [None, 16, 24, 32])
 def test_twelve_sources_fp8_and_person_reports(tmp_path, monkeypatch, mode, sequences):
-    # Verify every adapter input despite shared-host scheduling gaps. Production
-    # freshness/drop behavior has controlled-clock source-feeder/sender-lag tests.
+    # This adapter contract must exercise every planned input exactly once.
+    # Keep real HTTP/process/admission behavior, but do not replace a failed
+    # stage with a retry. Production lag/drop gates are exercised unchanged in
+    # test_vlm_source_feeder and test_vlm_sender_lag using the real feeder.
     monkeypatch.setattr(
         "tools.vlm_multistream_benchmark.TimedSourceFeeder", ContractSourceFeeder
     )
@@ -78,22 +80,18 @@ def test_twelve_sources_fp8_and_person_reports(tmp_path, monkeypatch, mode, sequ
             {"track_id": "P0001", "bbox": {"x1": 0.1, "y1": 0.1, "x2": 0.5, "y2": 0.9}}
         ]
 
-    with DetectorBroker("http://127.0.0.1:1", tmp_path, transport=detector) as broker:
+    output = tmp_path
+    with DetectorBroker("http://127.0.0.1:1", output, transport=detector) as broker:
         result = run_stage(
-            args,
-            base,
-            12,
-            [[jpeg()] * 4],
-            tmp_path,
-            1,
+            args, base, 12, [[jpeg()] * 4], output, 1,
             inspector_factory=partial(offline_inspector, broker_url=broker.endpoint),
             source_hook=broker.submit,
         )
         detector_counts = broker.drain()
+    assert detector_counts == {"submitted": 48, "ready": 48}
     assert result["sender_missed_samples"] == 0
     assert result["sender_missed_samples_by_stream"] == [0] * 12
     assert result["offer_rejected_by_stream"] == [0] * 12
-    assert detector_counts == {"submitted": 48, "ready": 48}
     assert result["all_drained"] and not result["result_records_missing"]
     assert result["result_retention"]["valid"]
     assert len(calls) == len(set(calls)) == 48

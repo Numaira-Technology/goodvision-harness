@@ -149,6 +149,7 @@ def write_receipt(path, record):
 
 
 def read_receipt(path):
+    """Compatibility entry point using the strict dual historical-codec reader."""
     from .receipts import read_receipt as read_strict_receipt
     return read_strict_receipt(path)
 

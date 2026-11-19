@@ -84,12 +84,19 @@ def generate(processor, model, body):
     with torch.inference_mode():
         out = model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
     trimmed = out[:, inputs["input_ids"].shape[1]:]
+    eos_ids = model.generation_config.eos_token_id
+    if isinstance(eos_ids, int):
+        eos_ids = [eos_ids]
+    # EOS can itself be the final allowed token. Only budget exhaustion without
+    # EOS is a truncated answer; the benchmark parser rejects that receipt.
+    ended_on_eos = bool(trimmed.shape[1] and trimmed[0, -1].item() in (eos_ids or []))
+    finish_reason = "length" if trimmed.shape[1] >= max_tokens and not ended_on_eos else "stop"
     answer = processor.batch_decode(trimmed, skip_special_tokens=True)[0].strip()
     return {
         "id": "qwen8b-r2-host",
         "model": MODEL_ID,
         "object": "chat.completion",
-        "choices": [{"index": 0, "finish_reason": "stop",
+        "choices": [{"index": 0, "finish_reason": finish_reason,
                      "message": {"role": "assistant", "content": answer, "refusal": None}}],
         "provider": "self-hosted-r2-4090",
     }
@@ -143,7 +150,25 @@ def make_handler(processor, model, ready):
     return Handler
 
 
+def require_packed_prefix(name="qwen8b"):
+    import site
+    import sys
+
+    from tools import registry
+
+    env = registry.env_of(name)
+    if env is None:
+        raise SystemExit(f"model {name!r} has no packed env")
+    want = os.path.realpath(env["unpack_to"])
+    got = os.path.realpath(sys.prefix)
+    if got != want:
+        raise SystemExit(f"sys.prefix {got!r} != restored env {want!r}")
+    if site.ENABLE_USER_SITE:
+        raise SystemExit("user site must be disabled (PYTHONNOUSERSITE)")
+
+
 def main(argv=None):
+    require_packed_prefix("qwen8b")
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--cache-dir", type=Path, required=True)
     ap.add_argument("--host", default="127.0.0.1")

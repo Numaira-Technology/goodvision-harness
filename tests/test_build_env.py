@@ -182,7 +182,18 @@ def test_main_honors_model_attention_recipe(tmp_path, monkeypatch, name):
     monkeypatch.setattr(be, "_ensure_miniconda", lambda *a: tmp_path / "bin/conda")
     monkeypatch.setattr(be, "_run", run)
     monkeypatch.setattr(be, "_pack", lambda *a: synthetic_pack(out))
+    restored = []
+
+    def unpack(prefix):
+        # The synthetic pack deliberately contains no executable interpreter.
+        assert (prefix / "bin/python").read_bytes().startswith(b"synthetic,")
+        restored.append(prefix)
+
+    monkeypatch.setattr(be.env_source, "_run_unpack", unpack)
     be.main(["--model", name, "--out", str(out), "--skip-upload"])
+    assert len(restored) == 1
+    assert any(argv[0] == str(restored[0] / "bin/python") and "-I" in argv
+               for argv, _ in calls)
     compiled = [argv for argv, _ in calls if "flash-attn==2.8.3.post2" in argv]
     assert bool(compiled) is needs_attention
     if needs_attention:

@@ -579,7 +579,10 @@ def test_deadline_covers_slow_response_body_and_pool_remains_usable(
     )
     inspector, seen, pools = make_inspector(
         lambda _: next(responses),
-        settings=ModelAPISettings(provider="openrouter", timeout_seconds=0.05),
+        # The deadline covers the whole request. Slow Windows runners can spend
+        # tens of milliseconds before the body read starts, so leave the read
+        # phase enough of the budget to measure.
+        settings=ModelAPISettings(provider="openrouter", timeout_seconds=0.25),
     )
     started = time.monotonic()
     with pytest.raises(ModelAPIError) as error:
@@ -591,7 +594,7 @@ def test_deadline_covers_slow_response_body_and_pool_remains_usable(
     (record,) = [fields for name, fields in logs if name == "vlm_http_timing"]
     assert record["outcome"] == "cancelled"
     assert record["http_status"] == 200
-    assert 0.025 <= record["response_read_seconds"] < 1
+    assert 0.05 <= record["response_read_seconds"] < 1
     assert record["response_chunks"] == len(initial_chunks)
     assert record["response_bytes"] == sum(map(len, initial_chunks))
     assert record["response_first_non_whitespace_seconds"] is None

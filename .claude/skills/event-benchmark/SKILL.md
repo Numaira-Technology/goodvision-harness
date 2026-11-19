@@ -123,6 +123,27 @@ The old cu128 and incomplete cu130 `…ada.tar.gz` objects remain historical, no
 fallbacks. Preserve the HF pack. Do not rebuild an environment during an ordinary
 rerun or lower concurrency, shrink images or shorten outputs to fit the GPU.
 
+The self-hosted Qwen3-VL-8B HF path is profile `qwen8b_r2_host`
+(`execution=self_hosted_r2`): restore the packed env and pinned weights from R2,
+serve with `tools.qwen8b.serve`, and score with `tools.qwen8b.eval_local` through
+`tools.start_qwen8b_r2`. Do not use a vLLM `qwen8b_selfhost` profile or the
+OpenRouter `qwen8b` Parasail cell for that comparison.
+
+An independently authorized serving engine is profile `qwen8b_r2_vllm` via
+`tools.start_qwen8b_vllm` (vLLM OpenAI server, same R2 weights revision, bf16).
+The active declared pack is `envs/qwen8b-vllm/cu130-py312-vllm0310-ada2.tar.gz`
+(torch `+cu130`; requires host CUDA >=13.0 and NVIDIA driver >=580). The older
+`cu128-py312-vllm0310-ada` object is superseded (missing `typing_extensions`),
+frozen, and never restored.
+This published identity is frozen; rebuilds require a new reviewed key and actual
+artifact/runtime evidence. The launcher checks the active source profile and
+sealed request bundle before rental and again before inference. A separate
+synthetic 720px smoke is retained outside the scoring ledger. Preserve historical
+bundles; changed active profiles require fresh bundles. This path does not relabel
+the HF run, and CPU imports do not establish GPU acceptance. Frozen JPEGs, prompts,
+parser, temperature, max_tokens=30, thresholds, retries and 12 queue slots remain
+unchanged. Do not shrink inputs or reduce concurrency to fit a GPU.
+
 ## Fixed interpretation
 
 The current variant uses exact 1 FPS shared 720px JPEGs and current-image API prompts.
