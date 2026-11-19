@@ -194,6 +194,8 @@ class PresenceTracker:
                        for oid in ids}
 
     def update(self, oid: str, detected: bool | None, timestamp: float) -> dict:
+        # None means no valid inference, not evidence of absence. A valid
+        # insufficient answer still becomes False at the decision layer.
         state = self._state[oid]
         changed = False
         if detected:
@@ -201,7 +203,7 @@ class PresenceTracker:
             if not state["present"]:
                 state.update(present=True, since=timestamp)
                 changed = True
-        elif state["present"]:
+        elif detected is False and state["present"]:
             state["misses"] += 1
             if state["misses"] >= self._clear_after:
                 state.update(present=False, misses=0, since=None)
@@ -333,6 +335,7 @@ class ObjectPresenceManager:
         self._on_result = on_result
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._post_closed = False
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -349,8 +352,16 @@ class ObjectPresenceManager:
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout)
+        if thread is None or not thread.is_alive():
+            self._close_post()
+
+    def _close_post(self) -> None:
+        with self._lock:
+            if self._post_closed:
+                return
+            self._post_closed = True
         close = getattr(self._post, "close", None)
-        if close is not None and (thread is None or not thread.is_alive()):
+        if close is not None:
             close()
 
     @property
@@ -365,15 +376,19 @@ class ObjectPresenceManager:
         return "running" if self.busy else "idle"
 
     def _run(self) -> None:
-        next_due = self._clock()
-        while not self._stop.is_set():
-            self.tick()
-            next_due += self.interval
-            # Late ticks skip missed periods instead of queuing a burst.
-            now = self._clock()
-            if next_due < now:
-                next_due = now + self.interval
-            self._stop.wait(max(0.0, next_due - now))
+        try:
+            next_due = self._clock()
+            while not self._stop.is_set():
+                self.tick()
+                next_due += self.interval
+                # Late ticks skip missed periods instead of queuing a burst.
+                now = self._clock()
+                if next_due < now:
+                    next_due = now + self.interval
+                self._stop.wait(max(0.0, next_due - now))
+        finally:
+            # stop() must stay bounded, even while a request is in flight.
+            self._close_post()
 
     # -- one judgment ------------------------------------------------------
     def tick(self) -> dict | None:

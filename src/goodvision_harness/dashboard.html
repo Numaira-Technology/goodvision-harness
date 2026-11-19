@@ -2470,10 +2470,22 @@ function renderOverallDescription(payload,context=overallDescriptionContext(),re
   ui.overallDescription.textContent=blocks.length?blocks.join("\n\n"):missingLanguage?"等待当前语言的全画面描述":overallDescriptionMessage(context);
   ui.overallDescriptionMeta.textContent=["Canvas 定时 Summary",...new Set(metadata)].join(" · ");
 }
-function renderObjectPresence(payload){
+function objectPresenceContext(){
+  const status=state.diagnosticStatus||{},workflow=status.workflow,manager=workflow?.objects;
+  const session=workflow?.stream_session_id||manager?.stream_session_id;
+  const generation=workflow?.generation??manager?.generation;
+  const source=manager?.source_id||status.source_id,node=manager?.node_id;
+  const enabled=state.running&&!status.workflow_test_running&&workflow?.enabled&&
+    manager?.state==="running"&&!!session&&!!node;
+  return {enabled,session,generation,source,node,key:JSON.stringify([!!enabled,session,generation,source,node])};
+}
+function renderObjectPresence(payload,context=objectPresenceContext()){
+  state.objectPresenceKey=context.key;
   const panel=$("object-presence"),list=$("object-presence-list"),meta=$("object-presence-meta");
-  const status=payload?.status||{},items=Array.isArray(payload?.items)?payload.items:[];
-  if(!payload||(status.state==="idle"&&!items.length)){panel.hidden=true;return;}
+  const status=payload?.status||{},items=(Array.isArray(payload?.items)?payload.items:[]).filter(item=>
+    item?.type==="object_presence"&&item.stream_session_id===context.session&&item.generation===context.generation&&
+    item.node_id===context.node&&(!context.source||item.source_id===context.source));
+  if(!context.enabled||!payload){panel.hidden=true;list.replaceChildren();return;}
   panel.hidden=false;
   const latest=items[items.length-1];
   const english=globalThis.GoodvisionI18n?.language?.()==="en";
@@ -2496,12 +2508,25 @@ function renderObjectPresence(payload){
   meta.textContent=parts.join(" · ");
 }
 async function pollObjectPresence(){
+  const context=objectPresenceContext();
+  if(!context.enabled||state.objectPresenceKey!==context.key)renderObjectPresence(null,context);
+  if(!context.enabled)return;
+  const current=()=>!sceneView.closed&&objectPresenceContext().key===context.key;
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3000);
   try{
     const response=await fetch("/v1/workflow/objects?limit=20",{cache:"no-store",signal:controller.signal});
     if(!response.ok)throw new Error("HTTP "+response.status);
-    renderObjectPresence(await response.json());
-  }catch(_){renderObjectPresence(null);}
+    const payload=await response.json();
+    if(!current()){
+      const latest=objectPresenceContext();
+      if(!sceneView.closed&&state.objectPresenceKey!==latest.key)renderObjectPresence(null,latest);
+      return;
+    }
+    if(payload?.status?.state!=="running"||payload.status.stream_session_id!==context.session||payload.status.generation!==context.generation){
+      renderObjectPresence(null,context);return;
+    }
+    renderObjectPresence(payload,context);
+  }catch(_){if(current())renderObjectPresence(null,context);}
   finally{clearTimeout(timer);}
 }
 async function pollOverallDescription(){

@@ -253,6 +253,57 @@ def test_manager_records_errors_without_stopping_or_clearing():
     assert manager.status()["failed"] == 2
 
 
+def test_transport_failures_cannot_clear_a_positive_detection():
+    fake = FakeVideoJev([
+        [row("object/knife", [0.97, 0.02, 0.01])],
+        *[op.ObjectPresenceError("queue_full") for _ in range(4)],
+        *[[row("object/knife", [0.01, 0.98, 0.01])] for _ in range(3)],
+    ])
+    manager = op.ObjectPresenceManager(
+        {"id": "objects", "objects": [KNIFE], "clear_after": 3},
+        frame_provider=frames(9), post=fake, stream_session_id="s",
+    )
+    manager.tick()
+    assert manager.tick()["objects"][0]["present"] is True
+    for _ in range(4):
+        failed = manager.tick()
+        assert failed["error"] == "queue_full"
+        assert failed["objects"][0]["present"] is True
+        assert failed["objects"][0]["changed"] is False
+    assert manager.tick()["objects"][0]["present"] is True
+    assert manager.tick()["objects"][0]["present"] is True
+    assert manager.tick()["objects"][0]["present"] is False
+
+
+def test_stop_closes_transport_after_an_inflight_request_drains():
+    import threading
+
+    entered, release, closed = threading.Event(), threading.Event(), []
+
+    def post(body):
+        entered.set()
+        assert release.wait(5)
+        return {"raw": [row("object/knife", [0, 1, 0])]}
+
+    post.close = lambda: closed.append(True)
+    manager = op.ObjectPresenceManager(
+        {"id": "objects", "objects": [KNIFE], "sample_fps": 4},
+        frame_provider=frames(2), post=post, stream_session_id="s",
+    )
+    manager.start()
+    try:
+        assert entered.wait(5)
+        manager.stop(timeout=0)
+        assert manager.busy and closed == []
+    finally:
+        release.set()
+        manager._thread.join(5)
+    assert not manager.busy
+    assert closed == [True]
+    manager.stop()
+    assert closed == [True]
+
+
 def test_manager_skips_repeated_or_missing_frames():
     calls = []
     same = (5, 1.0, jpeg())
