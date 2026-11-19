@@ -367,6 +367,7 @@ class ObjectPresenceManager:
         on_result: Callable[[dict], None] | None = None,
         history_provider: Callable[[float], Any] | None = None,
         on_tick: Callable[[dict], None] | None = None,
+        wait: Callable[[float], Any] | None = None,
     ):
         self.node_id = spec["id"]
         self.objects = objects_config(spec["objects"])
@@ -400,11 +401,13 @@ class ObjectPresenceManager:
         self._latest: dict | None = None
         self._counts = {
             "succeeded": 0, "failed": 0, "skipped_no_frame": 0,
-            "skipped_no_new_frame": 0, "waiting_for_history": 0,
+            "skipped_no_new_frame": 0, "waiting_for_history": 0, "missed_busy": 0,
         }
         self._last_error = None
         self._on_result = on_result
         self._stop = threading.Event()
+        # Injectable for deterministic CPU tests; production waits on stop.
+        self._wait = wait if wait is not None else self._stop.wait
         self._thread: threading.Thread | None = None
         self._post_closed = False
 
@@ -448,24 +451,66 @@ class ObjectPresenceManager:
 
     def _run(self) -> None:
         try:
-            next_due = self._clock()
-            while not self._stop.is_set():
-                self.tick(scheduled_at=next_due)
-                next_due += self.interval
-                # Late ticks skip missed periods instead of queuing a burst.
-                now = self._clock()
-                if next_due < now:
-                    next_due = now + self.interval
-                self._stop.wait(max(0.0, next_due - now))
+            self._loop()
         finally:
             # stop() must stay bounded, even while a request is in flight.
             self._close_post()
 
+    def _loop(self, max_planned: int | None = None) -> None:
+        """Tick on a fixed grid start + k * interval; never backfill or queue.
+
+        A planned tick whose time passes while the previous request is still
+        running is not sent later; it is logged as ``missed_busy`` with its
+        planned index, so coverage can count every planned tick.
+        """
+        start = self._clock()
+        index = 0
+        while not self._stop.is_set():
+            if max_planned is not None and index >= max_planned:
+                return
+            self.tick(scheduled_at=start + index * self.interval, planned_index=index)
+            index += 1
+            now = self._clock()
+            while start + index * self.interval < now:
+                if max_planned is not None and index >= max_planned:
+                    return
+                self._log_missed(start + index * self.interval, index)
+                index += 1
+            self._wait(max(0.0, start + index * self.interval - now))
+
+    def _log_missed(self, planned_at: float, planned_index: int) -> None:
+        with self._lock:
+            self._counts["missed_busy"] += 1
+        self._log_tick({
+            "tick": self._tick_index,
+            "planned_index": planned_index,
+            "scheduled_at": planned_at,
+            "started_at": None,
+            "newest_sequence": None,
+            "newest_source_time": None,
+            "eligible": False,
+            "reason": "missed_busy",
+            "frame_times": None,
+            "sent_at": None,
+            "completed_at": None,
+            "valid": False,
+            "error": None,
+        })
+        self._tick_index += 1
+
     # -- one judgment ------------------------------------------------------
-    def tick(self, scheduled_at: float | None = None) -> dict | None:
-        """Judge once if a new window is available; log every tick either way."""
+    def tick(
+        self, scheduled_at: float | None = None, planned_index: int | None = None
+    ) -> dict | None:
+        """Judge once if a new window is available; log every tick either way.
+
+        Every planned tick is logged, including no_frame, no_new_frame and
+        waiting_for_history: ``eligible`` only says whether a request was sent,
+        not whether the tick belongs in a coverage denominator.
+        """
         entry = {
             "tick": self._tick_index,
+            "planned_index": planned_index,
             "scheduled_at": self._clock() if scheduled_at is None else scheduled_at,
             "started_at": self._clock(),
             "newest_sequence": None,

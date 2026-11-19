@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import itertools
 from dataclasses import replace
 from pathlib import Path
 from threading import Event, Thread
@@ -820,7 +821,7 @@ def test_four_frame_object_window_uses_the_connection_history(rig, monkeypatch):
     feed_until_judged(connection, adapter, worker, timeout=8.0)
     body = bodies[-1]
     assert len(body["images"]) == 4
-    gaps = [b - a for a, b in zip(body["frame_times"], body["frame_times"][1:])]
+    gaps = [b - a for a, b in itertools.pairwise(body["frame_times"])]
     assert all(0.3 <= g <= 0.5 for g in gaps), gaps
     reasons = {t["reason"] for t in worker.tick_log()}
     assert "valid" in reasons

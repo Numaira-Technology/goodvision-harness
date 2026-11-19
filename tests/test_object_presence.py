@@ -598,3 +598,71 @@ def test_recent_frames_reads_bounded_display_history():
             return ((1, 0.5, 20, 10, b"a"), (2, 1.0, 20, 10, b"b"))
 
     assert op.recent_frames(Connection(), 1.6) == [(1, 0.5, b"a"), (2, 1.0, b"b")]
+
+
+# --- fixed-grid schedule: slow requests and missing frames (review on #121) ---
+
+
+class FakeTime:
+    def __init__(self):
+        self.now = 0.0
+
+    def clock(self):
+        return self.now
+
+    def wait(self, seconds):
+        self.now += seconds
+        return False
+
+
+def grid_manager(fake, post, provider):
+    return op.ObjectPresenceManager(
+        {"id": "objects", "objects": [KNIFE]},
+        frame_provider=provider, post=post, stream_session_id="s",
+        clock=fake.clock, wait=fake.wait,
+    )
+
+
+def test_slow_request_logs_missed_planned_ticks_without_backfill():
+    fake = FakeTime()
+    image = jpeg()
+    calls = []
+
+    def provider():
+        return (len(calls) + int(fake.now * 10), fake.now, image)
+
+    def post(body):
+        calls.append(fake.now)
+        fake.now += 2.5 if len(calls) == 1 else 0.1  # first request is slow
+        return {"raw": [row("object/knife", [0.1, 0.8, 0.1])]}
+
+    manager = grid_manager(fake, post, provider)
+    manager._loop(max_planned=6)
+    log = manager.tick_log()
+    assert [t["planned_index"] for t in log] == [0, 1, 2, 3, 4, 5]
+    assert [t["scheduled_at"] for t in log] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+    assert [t["reason"] for t in log] == [
+        "waiting_for_history", "valid", "missed_busy", "missed_busy", "valid", "valid",
+    ]
+    # No backfill or queue: only ticks 1, 4 and 5 sent, each at its grid time.
+    assert calls == [1.0, 4.0, 5.0]
+    assert manager.status()["missed_busy"] == 2
+
+
+def test_missing_frames_after_start_stay_on_the_planned_grid():
+    fake = FakeTime()
+    image = jpeg()
+    script = iter([(1, 0.0, image), (2, 1.0, image), None, None,
+                   (3, 4.0, image), (4, 5.0, image)])
+    manager = grid_manager(
+        fake, lambda b: {"raw": [row("object/knife", [0.1, 0.8, 0.1])]},
+        script.__next__,
+    )
+    manager._loop(max_planned=6)
+    log = manager.tick_log()
+    assert [(t["planned_index"], t["scheduled_at"], t["reason"]) for t in log] == [
+        (0, 0.0, "waiting_for_history"), (1, 1.0, "valid"),
+        (2, 2.0, "no_frame"), (3, 3.0, "no_frame"),
+        (4, 4.0, "valid"), (5, 5.0, "valid"),
+    ]
+    assert manager.status()["skipped_no_frame"] == 2
