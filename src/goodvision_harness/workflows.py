@@ -166,7 +166,10 @@ def _config(kind: str, value: Any, vocabulary: EventVocabulary | None = None) ->
     elif kind == "summary":
         allowed |= {"interval_seconds", "prompt"}
     elif kind == "objects":
-        allowed |= {"objects", "sample_fps", "clear_after"}
+        allowed |= {
+            "objects", "sample_fps", "clear_after", "window_frames",
+            "frame_step_seconds",
+        }
     elif kind == "source":
         allowed |= {"camera_id"}
     elif kind == "output":
@@ -290,6 +293,15 @@ def _config(kind: str, value: Any, vocabulary: EventVocabulary | None = None) ->
                 ),
                 clear_after=object_presence.clear_after(
                     raw.get("clear_after", object_presence.DEFAULT_CLEAR_AFTER)
+                ),
+                window_frames=object_presence.window_frames(
+                    raw.get("window_frames", object_presence.DEFAULT_WINDOW_FRAMES)
+                ),
+                frame_step_seconds=object_presence.frame_step_seconds(
+                    raw.get(
+                        "frame_step_seconds",
+                        object_presence.DEFAULT_FRAME_STEP_SECONDS,
+                    )
                 ),
             )
         except ValueError as exc:
@@ -532,7 +544,10 @@ def compile_graph(
                 "id": nid,
                 **{
                     key: copy.deepcopy(node["config"][key])
-                    for key in ("objects", "sample_fps", "clear_after")
+                    for key in (
+                        "objects", "sample_fps", "clear_after", "window_frames",
+                        "frame_step_seconds",
+                    )
                 },
             }
         elif kind == "summary":

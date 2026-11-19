@@ -791,3 +791,38 @@ def test_object_presence_dry_run_calls_no_model(rig):
     assert record["error"] is None and record["objects"][0]["answer"] is None
     runtime.stop_session()
     wait_for(lambda: not runtime._processing_lifecycle_busy())
+
+
+def test_four_frame_object_window_uses_the_connection_history(rig, monkeypatch):
+    from goodvision_harness.object_presence import PRESETS
+    from goodvision_harness.videojev_core import OPTIONS
+
+    runtime, connection, adapter, _clock = rig
+    bodies = []
+
+    def videojev(body):
+        bodies.append(body)
+        return {
+            "request_id": body["request_id"],
+            "raw": [{
+                "id": "object/knife", "task": "choice", "answer_index": 1,
+                "answer": OPTIONS[1], "probabilities": [0.1, 0.8, 0.1],
+            }],
+        }
+
+    monkeypatch.setattr(runtime, "_make_object_post", lambda endpoint: videojev)
+    value = objects_graph([PRESETS["knife"]])
+    node = next(n for n in value["nodes"] if n["type"] == "objects")
+    node["config"].update(window_frames=4, frame_step_seconds=0.4)
+    configure(runtime, value)
+    runtime.start_connected_analysis()
+    worker = runtime._workflow_objects
+    feed_until_judged(connection, adapter, worker, timeout=8.0)
+    body = bodies[-1]
+    assert len(body["images"]) == 4
+    gaps = [b - a for a, b in zip(body["frame_times"], body["frame_times"][1:])]
+    assert all(0.3 <= g <= 0.5 for g in gaps), gaps
+    reasons = {t["reason"] for t in worker.tick_log()}
+    assert "valid" in reasons
+    runtime.stop_session()
+    wait_for(lambda: not runtime._processing_lifecycle_busy())

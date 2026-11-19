@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import io
+import itertools
 import json
 
 import pytest
@@ -439,3 +440,161 @@ def test_output_layer_draws_only_present_objects():
     assert drawn != render_output(
         base, {"inputs": [{"port": "objects", "value": None}], "display": {}}, 5.0
     )
+
+
+# --- multi-frame window and per-tick log (knife protocol prerequisites) ---
+
+
+def stream(fps=30.0, seconds=3.0, start=0.0):
+    """Synthetic display history: (sequence, timestamp, jpeg)."""
+    image = jpeg()
+    return [(i, start + i / fps, image) for i in range(int(seconds * fps) + 1)]
+
+
+def test_select_window_picks_frames_about_one_step_apart():
+    history = stream()
+    newest = history[-1]
+    window = op.select_window(history, newest, 4, 0.4)
+    times = [round(f[1], 3) for f in window]
+    assert len(window) == 4 and window[-1] == newest
+    gaps = [b - a for a, b in itertools.pairwise(times)]
+    assert all(0.35 <= g <= 0.45 for g in gaps), gaps
+    assert len({f[0] for f in window}) == 4
+
+
+def test_select_window_waits_until_history_covers_the_span():
+    history = stream(seconds=1.0)  # only 1.0 s; 4 x 0.4 needs 1.2 s
+    assert op.select_window(history, history[-1], 4, 0.4) is None
+    assert op.select_window([history[-1]], history[-1], 2, 0.4) is None
+
+
+def test_select_window_ignores_frames_newer_than_the_newest():
+    history = stream(seconds=3.0)
+    newest = history[60]
+    window = op.select_window(history, newest, 4, 0.4)
+    assert window[-1] == newest and all(f[1] <= newest[1] for f in window)
+
+
+@pytest.mark.parametrize("bad", [3, 1, 5, 2.0, "4"])
+def test_window_frames_must_be_two_or_four(bad):
+    with pytest.raises(ValueError):
+        op.window_frames(bad)
+
+
+@pytest.mark.parametrize("bad", [0.05, 1.5, float("inf"), "0.4"])
+def test_frame_step_bounds(bad):
+    with pytest.raises(ValueError):
+        op.frame_step_seconds(bad)
+
+
+def test_four_frame_window_requires_a_history_provider():
+    with pytest.raises(ValueError, match="history provider"):
+        op.ObjectPresenceManager(
+            {"id": "o", "objects": [KNIFE], "window_frames": 4},
+            frame_provider=lambda: None, post=lambda b: {}, stream_session_id="s",
+        )
+
+
+def four_frame_manager(post, frames, history):
+    return op.ObjectPresenceManager(
+        {"id": "objects", "objects": [KNIFE], "window_frames": 4,
+         "frame_step_seconds": 0.4},
+        frame_provider=iter(frames).__next__,
+        history_provider=lambda seconds: history,
+        post=post, stream_session_id="s",
+    )
+
+
+def test_four_frame_request_is_accepted_by_the_videojev_service():
+    history = stream(seconds=3.0)
+    bodies = []
+    manager = four_frame_manager(
+        lambda b: bodies.append(b) or {"raw": [row("object/knife", [0, 1, 0])]},
+        [history[-1]], history,
+    )
+    record = manager.tick()
+    assert record["error"] is None and len(record["frame_times"]) == 4
+    parsed = videojev_service._request(json.loads(json.dumps(bodies[0])))
+    assert len(parsed["images"]) == 4
+    assert parsed["fps"] == pytest.approx(2.5)  # 1 / 0.4 s
+    assert parsed["frame_times"] == record["frame_times"]
+
+
+def test_tick_log_records_every_tick_with_a_reason():
+    clock = iter(x / 10 for x in range(1000))
+    image = jpeg()
+    frames = iter([None, (1, 0.0, image), (1, 0.0, image), (2, 1.0, image),
+                   (3, 2.0, image)])
+    script = iter([{"raw": [row("object/knife", [0.1, 0.8, 0.1])]},
+                   op.ObjectPresenceError("queue_full")])
+
+    def post(body):
+        step = next(script)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+    ticks = []
+    manager = op.ObjectPresenceManager(
+        {"id": "objects", "objects": [KNIFE]},
+        frame_provider=frames.__next__, post=post, stream_session_id="s",
+        clock=lambda: next(clock), on_tick=ticks.append,
+    )
+    for scheduled in (0.0, 1.0, 2.0, 3.0, 4.0):
+        manager.tick(scheduled_at=scheduled)
+    log = manager.tick_log()
+    assert [t["reason"] for t in log] == [
+        "no_frame", "waiting_for_history", "no_new_frame", "valid", "error",
+    ]
+    assert [t["eligible"] for t in log] == [False, False, False, True, True]
+    assert [t["scheduled_at"] for t in log] == [0.0, 1.0, 2.0, 3.0, 4.0]
+    assert log[3]["valid"] and log[3]["frame_times"] == [0.0, 1.0]
+    assert log[4]["error"] == "queue_full" and not log[4]["valid"]
+    assert log[3]["sent_at"] <= log[3]["completed_at"]
+    assert ticks == log  # callback sees the same entries
+    status = manager.status()
+    assert status["skipped_no_frame"] == 1 and status["skipped_no_new_frame"] == 1
+    assert status["waiting_for_history"] == 1
+
+
+def test_four_frame_tick_waits_for_history_then_judges():
+    short, full = stream(seconds=0.9), stream(seconds=2.0)
+    provided = iter([short, full])
+    image_frames = iter([short[-1], full[-1]])
+    manager = op.ObjectPresenceManager(
+        {"id": "objects", "objects": [KNIFE], "window_frames": 4},
+        frame_provider=image_frames.__next__,
+        history_provider=lambda seconds: next(provided),
+        post=lambda b: {"raw": [row("object/knife", [0.2, 0.7, 0.1])]},
+        stream_session_id="s",
+    )
+    assert manager.tick() is None
+    assert manager.tick()["error"] is None
+    assert [t["reason"] for t in manager.tick_log()] == [
+        "waiting_for_history", "valid",
+    ]
+
+
+def test_compile_graph_carries_window_settings():
+    plan = compile_graph(objects_graph({"objects": [KNIFE], "window_frames": 4,
+                                        "frame_step_seconds": 0.4}))
+    assert plan["objects"]["window_frames"] == 4
+    assert plan["objects"]["frame_step_seconds"] == 0.4
+    default = compile_graph(objects_graph({"objects": [KNIFE]}))["objects"]
+    assert default["window_frames"] == 2
+
+
+@pytest.mark.parametrize("config", [{"window_frames": 3},
+                                    {"frame_step_seconds": 2}])
+def test_graph_rejects_bad_window_settings(config):
+    with pytest.raises(WorkflowValidationError):
+        validate_graph(objects_graph(config))
+
+
+def test_recent_frames_reads_bounded_display_history():
+    class Connection:
+        def display_frames(self, after, max_age_seconds, limit):
+            assert after is None and limit == 120 and max_age_seconds == 1.6
+            return ((1, 0.5, 20, 10, b"a"), (2, 1.0, 20, 10, b"b"))
+
+    assert op.recent_frames(Connection(), 1.6) == [(1, 0.5, b"a"), (2, 1.0, b"b")]

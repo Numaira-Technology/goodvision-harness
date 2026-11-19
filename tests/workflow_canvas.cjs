@@ -772,3 +772,21 @@ test('object editor adds presets and custom objects and edits a field',()=>{
  const html=app.renderObjects(block,false);
  assert.match(html,/data-wc-object="1:gate"/);assert.match(html,/Add custom object/);
 });
+
+test('object block exposes 2 or 4 frames and validates frame spacing',()=>{
+ const g={nodes:[node('input','source')],edges:[]};
+ const block=newNode('objects',g,{x:300,y:100});
+ assert.equal(block.config.window_frames,2);
+ assert.equal(block.config.frame_step_seconds,0.4);
+ const full={nodes:[g.nodes[0],block,node('out','output')],edges:[edge('a','input','frames',block.id,'frames'),edge('b',block.id,'objects','out','objects')]};
+ assert.deepEqual(validateGraph(full,{complete:true}),[]);
+ const three=clone(full);three.nodes[1].config.window_frames=3;
+ assert.ok(validateGraph(three).includes('Frames per judgment must be 2 or 4.'));
+ const step=clone(full);step.nodes[1].config.window_frames=4;step.nodes[1].config.frame_step_seconds=2;
+ assert.ok(validateGraph(step).includes('Frame spacing must be between 0.1 and 1 second.'));
+ const app=appFixture();app.add('objects',{x:300,y:300});const added=app.graph.nodes.at(-1);
+ assert.match(app.renderObjects(added,false),/data-wc-field="window_frames"/);
+ assert.doesNotMatch(app.renderObjects(added,false),/frame_step_seconds/);
+ added.config.window_frames=4;
+ assert.match(app.renderObjects(added,false),/data-wc-field="frame_step_seconds"/);
+});

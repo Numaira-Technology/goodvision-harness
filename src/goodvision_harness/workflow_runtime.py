@@ -545,7 +545,11 @@ class WorkflowRuntimeMixin:
         manager.start()
 
     def _start_workflow_objects(self, connection, *, session_id=None):
-        from .object_presence import ObjectPresenceManager, latest_frame
+        from .object_presence import (
+            ObjectPresenceManager,
+            latest_frame,
+            recent_frames,
+        )
         from .workflow_modules import native_endpoints
 
         plan = self._workflow_plan
@@ -561,6 +565,7 @@ class WorkflowRuntimeMixin:
         manager = ObjectPresenceManager(
             plan["objects"],
             frame_provider=lambda: latest_frame(connection),
+            history_provider=lambda seconds: recent_frames(connection, seconds),
             post=self._make_object_post(native_endpoints(endpoint)[0]),
             stream_session_id=session_id or uuid4().hex,
             source_id=self.source_id,

@@ -34,6 +34,9 @@ MAX_TEXT = 600
 DEFAULT_GATE = 0.95
 DEFAULT_SAMPLE_FPS = 1.0
 DEFAULT_CLEAR_AFTER = 3
+DEFAULT_WINDOW_FRAMES = 2
+DEFAULT_FRAME_STEP_SECONDS = 0.4
+TICK_LOG_LIMIT = 5000
 _SLUG = re.compile(r"[a-z][a-z0-9_]{0,47}\Z")
 _PREAMBLE = (
     "Object presence check. Judge only the last original frame, using earlier "
@@ -133,6 +136,48 @@ def clear_after(value: Any) -> int:
     if type(value) is not int or not 1 <= value <= 30:
         raise ValueError("object clear_after must be an integer from 1 to 30")
     return value
+
+
+def window_frames(value: Any) -> int:
+    if type(value) is not int or value not in (2, 4):
+        raise ValueError("object window_frames must be 2 or 4")
+    return value
+
+
+def frame_step_seconds(value: Any) -> float:
+    if (
+        type(value) not in (int, float)
+        or not math.isfinite(value)
+        or not 0.1 <= value <= 1.0
+    ):
+        raise ValueError("object frame_step_seconds must be between 0.1 and 1.0")
+    return float(value)
+
+
+def select_window(history, newest, count: int, step: float):
+    """Pick ``count`` frames ending at ``newest`` spaced about ``step`` apart.
+
+    ``history`` holds (sequence, timestamp, jpeg) tuples. For each target time
+    newest - k * step, take the latest frame at or before it, within half a
+    step. Returns oldest-first frames, or None while history is too short or a
+    slot would repeat a frame.
+    """
+    frames = sorted(
+        {f[0]: f for f in history if f[1] <= newest[1]}.values(), key=lambda f: f[1]
+    )
+    window = [newest]
+    for k in range(1, count):
+        target = newest[1] - k * step
+        candidates = [
+            f for f in frames if target - step / 2 <= f[1] <= target + 1e-6
+        ]
+        if not candidates:
+            return None
+        chosen = candidates[-1]
+        if chosen[1] >= window[0][1]:
+            return None
+        window.insert(0, chosen)
+    return window
 
 
 def question_id(oid: str) -> str:
@@ -272,6 +317,14 @@ class ObjectPresenceError(RuntimeError):
         self.code = code
 
 
+def recent_frames(connection: Any, seconds: float):
+    """(sequence, timestamp, jpeg) display frames from the last ``seconds``."""
+    frames = connection.display_frames(
+        after=None, max_age_seconds=seconds, limit=120
+    )
+    return [(seq, float(ts), jpeg) for seq, ts, _w, _h, jpeg in frames]
+
+
 def latest_frame(connection: Any):
     """(sequence, timestamp, jpeg) of the newest display frame, or None."""
     status = connection.status()
@@ -312,10 +365,25 @@ class ObjectPresenceManager:
         clock: Callable[[], float] = time.monotonic,
         history_limit: int = 1000,
         on_result: Callable[[dict], None] | None = None,
+        history_provider: Callable[[float], Any] | None = None,
+        on_tick: Callable[[dict], None] | None = None,
     ):
         self.node_id = spec["id"]
         self.objects = objects_config(spec["objects"])
         self.interval = 1.0 / sample_fps(spec.get("sample_fps", DEFAULT_SAMPLE_FPS))
+        self.window_frames = window_frames(
+            spec.get("window_frames", DEFAULT_WINDOW_FRAMES)
+        )
+        self.frame_step = frame_step_seconds(
+            spec.get("frame_step_seconds", DEFAULT_FRAME_STEP_SECONDS)
+        )
+        if self.window_frames > 2 and history_provider is None:
+            raise ValueError("a multi-frame object window needs a history provider")
+        self._history_provider = history_provider
+        self._on_tick = on_tick
+        self._ticks: deque[dict] = deque(maxlen=TICK_LOG_LIMIT)
+        self._tick_index = 0
+        self._last_newest = None
         self._tracker = PresenceTracker(
             [o["id"] for o in self.objects],
             spec.get("clear_after", DEFAULT_CLEAR_AFTER),
@@ -330,7 +398,10 @@ class ObjectPresenceManager:
         self._lock = threading.RLock()
         self._history: deque[dict] = deque(maxlen=history_limit)
         self._latest: dict | None = None
-        self._counts = {"succeeded": 0, "failed": 0, "skipped_no_frame": 0}
+        self._counts = {
+            "succeeded": 0, "failed": 0, "skipped_no_frame": 0,
+            "skipped_no_new_frame": 0, "waiting_for_history": 0,
+        }
         self._last_error = None
         self._on_result = on_result
         self._stop = threading.Event()
@@ -379,7 +450,7 @@ class ObjectPresenceManager:
         try:
             next_due = self._clock()
             while not self._stop.is_set():
-                self.tick()
+                self.tick(scheduled_at=next_due)
                 next_due += self.interval
                 # Late ticks skip missed periods instead of queuing a burst.
                 now = self._clock()
@@ -391,39 +462,119 @@ class ObjectPresenceManager:
             self._close_post()
 
     # -- one judgment ------------------------------------------------------
-    def tick(self) -> dict | None:
+    def tick(self, scheduled_at: float | None = None) -> dict | None:
+        """Judge once if a new window is available; log every tick either way."""
+        entry = {
+            "tick": self._tick_index,
+            "scheduled_at": self._clock() if scheduled_at is None else scheduled_at,
+            "started_at": self._clock(),
+            "newest_sequence": None,
+            "newest_source_time": None,
+            "eligible": False,
+            "reason": None,
+            "frame_times": None,
+            "sent_at": None,
+            "completed_at": None,
+            "valid": False,
+            "error": None,
+        }
+        self._tick_index += 1
+        try:
+            window, reason = self._window()
+            if window is None:
+                entry["reason"] = reason
+                return None
+            newest = window[-1]
+            entry.update(
+                eligible=True,
+                newest_sequence=newest[0],
+                newest_source_time=newest[1],
+                frame_times=[f[1] for f in window],
+                sent_at=self._clock(),
+            )
+            record = self._judge(window)
+            entry.update(
+                completed_at=self._clock(),
+                valid=record["error"] is None,
+                error=record["error"],
+                reason="valid" if record["error"] is None else "error",
+            )
+            self._publish(record)
+            return record
+        finally:
+            self._log_tick(entry)
+
+    def _window(self):
+        """Return (frames oldest-first, None) or (None, reason)."""
         frame = self._frame_provider()
         if frame is None:
             with self._lock:
                 self._counts["skipped_no_frame"] += 1
-            return None
-        previous = self._previous
-        if previous is not None and frame[0] == previous[0]:
-            return None  # same source frame; nothing new to judge
-        self._previous = frame
-        if previous is None or not frame[1] > previous[1]:
-            return None  # need two strictly increasing frames
-        record = self._judge(previous, frame)
-        self._publish(record)
-        return record
+            return None, "no_frame"
+        # Two-frame mode compares with the previous tick's frame (original
+        # behaviour); multi-frame mode with the newest frame last judged.
+        last = self._previous if self.window_frames == 2 else self._last_newest
+        if last is not None and frame[0] == last[0]:
+            with self._lock:
+                self._counts["skipped_no_new_frame"] += 1
+            return None, "no_new_frame"
+        if self.window_frames == 2:
+            previous = self._previous
+            self._previous = frame
+            if previous is None or not frame[1] > previous[1]:
+                with self._lock:
+                    self._counts["waiting_for_history"] += 1
+                return None, "waiting_for_history"
+            self._last_newest = frame
+            return [previous, frame], None
+        span = (self.window_frames - 1) * self.frame_step + self.frame_step
+        window = select_window(
+            self._history_provider(span) or [], frame, self.window_frames,
+            self.frame_step,
+        )
+        if window is None:
+            with self._lock:
+                self._counts["waiting_for_history"] += 1
+            return None, "waiting_for_history"
+        self._last_newest = frame
+        return window, None
 
-    def _body(self, previous, frame) -> dict:
-        delta = frame[1] - previous[1]
+    def _log_tick(self, entry: dict) -> None:
+        with self._lock:
+            self._ticks.append(copy.deepcopy(entry))
+        if self._on_tick is not None:
+            try:
+                self._on_tick(copy.deepcopy(entry))
+            except Exception:
+                pass
+
+    def tick_log(self, limit: int = TICK_LOG_LIMIT) -> list[dict]:
+        if type(limit) is not int or not 1 <= limit <= TICK_LOG_LIMIT:
+            raise ValueError("tick log limit out of range")
+        with self._lock:
+            return copy.deepcopy(list(self._ticks)[-limit:])
+
+    def _body(self, window) -> dict:
+        if self.window_frames == 2:
+            fps = 1.0 / (window[1][1] - window[0][1])
+        else:
+            # Uniform positional FPS for the native model; real times stay separate.
+            fps = 1.0 / self.frame_step
         body = {
             "request_id": uuid4().hex,
             "session": self._session,
-            "fps": 1.0 / delta,
-            "frame_times": [previous[1], frame[1]],
+            "fps": fps,
+            "frame_times": [f[1] for f in window],
             "images": [
-                base64.b64encode(_jpeg_720(previous[2])).decode("ascii"),
-                base64.b64encode(_jpeg_720(frame[2])).decode("ascii"),
+                base64.b64encode(_jpeg_720(f[2])).decode("ascii") for f in window
             ],
         }
         if not self._template_sent:
             body["question_template"] = list(self._template)
         return body
 
-    def _judge(self, previous, frame) -> dict:
+    def _judge(self, window) -> dict:
+        frame = window[-1]
         started = self._clock()
         record = {
             "node_id": self.node_id,
@@ -433,18 +584,19 @@ class ObjectPresenceManager:
             "generation": self.generation,
             "source_frame_sequence": frame[0],
             "timestamp_seconds": frame[1],
+            "frame_times": [f[1] for f in window],
             "error": None,
             "objects": [],
         }
         decisions: dict[str, dict] = {}
         try:
             try:
-                response = self._post(self._body(previous, frame))
+                response = self._post(self._body(window))
             except ObjectPresenceError as exc:
                 if exc.code != "template_missing" or not self._template_sent:
                     raise
                 self._template_sent = False  # service restarted; resend once
-                response = self._post(self._body(previous, frame))
+                response = self._post(self._body(window))
             self._template_sent = True
             decisions = decide(response.get("raw"), self.objects)
         except ObjectPresenceError as exc:
