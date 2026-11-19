@@ -401,7 +401,8 @@ class ObjectPresenceManager:
         self._latest: dict | None = None
         self._counts = {
             "succeeded": 0, "failed": 0, "skipped_no_frame": 0,
-            "skipped_no_new_frame": 0, "waiting_for_history": 0, "missed_busy": 0,
+            "skipped_no_new_frame": 0, "waiting_for_history": 0,
+            "missed_busy": 0, "late_wakeup": 0,
         }
         self._last_error = None
         self._on_result = on_result
@@ -456,31 +457,44 @@ class ObjectPresenceManager:
             # stop() must stay bounded, even while a request is in flight.
             self._close_post()
 
+    def late_tolerance(self) -> float:
+        """How late a planned tick may still be sent: a quarter interval, <= 0.25 s."""
+        return min(0.25, self.interval / 4)
+
     def _loop(self, max_planned: int | None = None) -> None:
         """Tick on a fixed grid start + k * interval; never backfill or queue.
 
-        A planned tick whose time passes while the previous request is still
-        running is not sent later; it is logged as ``missed_busy`` with its
-        planned index, so coverage can count every planned tick.
+        The real clock is read again before every planned tick. A tick still
+        within ``late_tolerance()`` of its planned time is sent; a later one is
+        not sent but logged: ``missed_busy`` when a request was running at its
+        planned time, otherwise ``late_wakeup`` (the scheduler, a slow log
+        callback or the host woke late). Each entry keeps its planned index.
         """
         start = self._clock()
         index = 0
+        busy_from = busy_until = None
         while not self._stop.is_set():
             if max_planned is not None and index >= max_planned:
                 return
-            self.tick(scheduled_at=start + index * self.interval, planned_index=index)
-            index += 1
+            planned = start + index * self.interval
             now = self._clock()
-            while start + index * self.interval < now:
-                if max_planned is not None and index >= max_planned:
-                    return
-                self._log_missed(start + index * self.interval, index)
+            if now < planned:
+                self._wait(planned - now)
+                continue  # re-read the clock after waking
+            if now - planned > self.late_tolerance():
+                busy = busy_from is not None and busy_from <= planned < busy_until
+                reason = "missed_busy" if busy else "late_wakeup"
+                self._log_missed(planned, index, reason)
                 index += 1
-            self._wait(max(0.0, start + index * self.interval - now))
+                continue
+            busy_from = now
+            self.tick(scheduled_at=planned, planned_index=index)
+            busy_until = self._clock()
+            index += 1
 
-    def _log_missed(self, planned_at: float, planned_index: int) -> None:
+    def _log_missed(self, planned_at: float, planned_index: int, reason: str) -> None:
         with self._lock:
-            self._counts["missed_busy"] += 1
+            self._counts[reason] += 1
         self._log_tick({
             "tick": self._tick_index,
             "planned_index": planned_index,
@@ -489,7 +503,7 @@ class ObjectPresenceManager:
             "newest_sequence": None,
             "newest_source_time": None,
             "eligible": False,
-            "reason": "missed_busy",
+            "reason": reason,
             "frame_times": None,
             "sent_at": None,
             "completed_at": None,

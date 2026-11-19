@@ -666,3 +666,73 @@ def test_missing_frames_after_start_stay_on_the_planned_grid():
         (4, 4.0, "valid"), (5, 5.0, "valid"),
     ]
     assert manager.status()["skipped_no_frame"] == 2
+
+
+def test_late_wakeup_is_not_sent_as_the_planned_tick():
+    fake = FakeTime()
+    image = jpeg()
+    calls = []
+    woke = []
+
+    def wait(seconds):
+        if not woke:  # the first wait, meant to end at 1.0 s, wakes at 3.2 s
+            woke.append(True)
+            fake.now = 3.2
+        else:
+            fake.now += seconds
+        return False
+
+    def provider():
+        return (int(fake.now * 10), fake.now, image)
+
+    def post(body):
+        calls.append(round(fake.now, 3))
+        return {"raw": [row("object/knife", [0.1, 0.8, 0.1])]}
+
+    manager = op.ObjectPresenceManager(
+        {"id": "objects", "objects": [KNIFE]}, frame_provider=provider, post=post,
+        stream_session_id="s", clock=fake.clock, wait=wait,
+    )
+    assert manager.late_tolerance() == 0.25
+    manager._loop(max_planned=6)
+    log = manager.tick_log()
+    assert [(t["planned_index"], t["reason"]) for t in log] == [
+        (0, "waiting_for_history"), (1, "late_wakeup"), (2, "late_wakeup"),
+        (3, "valid"), (4, "valid"), (5, "valid"),
+    ]
+    # 1.0 s is never judged at 3.2 s; 3.0 s is within the 0.25 s tolerance.
+    assert calls == [3.2, 4.0, 5.0]
+    assert log[3]["scheduled_at"] == 3.0 and log[3]["sent_at"] == 3.2
+    assert manager.status()["late_wakeup"] == 2
+
+
+def test_slow_log_callback_cannot_push_a_tick_far_past_its_time():
+    fake = FakeTime()
+    image = jpeg()
+    calls = []
+    slow_logs = [0.8, 0.8]  # the first two skip entries take 0.8 s to log
+
+    def on_tick(entry):
+        if entry["reason"] in ("missed_busy", "late_wakeup") and slow_logs:
+            fake.now += slow_logs.pop(0)
+
+    def provider():
+        return (int(fake.now * 10), fake.now, image)
+
+    def post(body):
+        calls.append(round(fake.now, 3))
+        fake.now += 2.5 if len(calls) == 1 else 0.0
+        return {"raw": [row("object/knife", [0.1, 0.8, 0.1])]}
+
+    manager = op.ObjectPresenceManager(
+        {"id": "objects", "objects": [KNIFE]}, frame_provider=provider, post=post,
+        stream_session_id="s", clock=fake.clock, wait=fake.wait, on_tick=on_tick,
+    )
+    manager._loop(max_planned=6)
+    log = manager.tick_log()
+    assert [(t["planned_index"], t["reason"]) for t in log] == [
+        (0, "waiting_for_history"), (1, "valid"), (2, "missed_busy"),
+        (3, "missed_busy"), (4, "late_wakeup"), (5, "valid"),
+    ]
+    # The 4.0 s tick is not sent at 5.1 s; 5.0 s goes out within tolerance.
+    assert calls == [1.0, 5.1]
