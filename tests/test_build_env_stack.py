@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from env_build_helpers import synthetic_pack
+from env_build_helpers import corrupt_package_metadata, synthetic_pack
 
 from tools import build_env as be
 from tools import registry
@@ -49,8 +49,21 @@ def cpu_build(tmp_path, monkeypatch):
     def run(argv, **kwargs):
         calls.append(argv)
         if "create" in argv:
-            Path(spec["unpack_to"]).mkdir()
-            (Path(spec["unpack_to"]) / "keep").write_text("local builder state")
+            prefix = Path(spec["unpack_to"])
+            prefix.mkdir()
+            (prefix / "keep").write_text("local builder state")
+            (prefix / "conda-meta").mkdir()
+            for name, version in (("pip", "26.2.2"), ("setuptools", "84.2.1"), ("wheel", "0.46.1")):
+                rel = f"lib/python3.12/site-packages/{name}-{version}.dist-info/METADATA"
+                metadata = prefix / rel
+                metadata.parent.mkdir(parents=True)
+                metadata.write_text(f"Name: {name}\nVersion: {version}\n")
+                (prefix / "conda-meta" / f"{name}.json").write_text(json.dumps({
+                    "name": name, "version": version, "files": [rel],
+                }))
+        if "install" in argv:
+            constraints = Path(argv[argv.index("--constraint") + 1])
+            assert constraints.read_text() == "pip==26.2.2\nsetuptools==84.2.1\nwheel==0.46.1\n"
         return SimpleNamespace(stdout=json.dumps(cpu_facts()))
 
     monkeypatch.setattr(be, "_run", run)
@@ -77,7 +90,12 @@ def test_cpu_recipe_records_deferred_gpu_and_uploads_only_bound_bytes(
     recipe = be._requirements("qwen8b-vllm")
     assert recipe == Path(be.__file__).parent / "qwen8b_vllm/requirements.txt"
     assert any(str(recipe) in call for call in calls)
-    assert not any("torch==2.8.0" in call or "setuptools" in call for call in calls)
+    assert not any("torch==2.8.0" in call for call in calls)
+    assert set(be.CONDA_BASE_PACKAGES) <= set(calls[0])
+    for call in calls:
+        if "install" in call:
+            assert not set(be.CONDA_BASE_PACKAGES) & set(call[call.index("install") + 1:])
+            assert "--upgrade" not in call
     puts = []
 
     class R2:
@@ -212,7 +230,7 @@ def test_missing_conda_files_fail_before_pack(cpu_build):
     spec, out, args, _calls = cpu_build
     be.main([*args, "--skip-pack"])
     metadata = Path(spec["unpack_to"]) / "conda-meta"
-    metadata.mkdir()
+    metadata.mkdir(exist_ok=True)
     (metadata / "setuptools.json").write_text(
         json.dumps(
             {
@@ -227,6 +245,40 @@ def test_missing_conda_files_fail_before_pack(cpu_build):
     with pytest.raises(ValueError, match="prefix contents changed"):
         be.main([*args, "--pack-only", "--skip-upload"])
     assert not out.exists()
+
+
+@pytest.mark.parametrize("mode", ["build", "skip-pack", "pack-only"])
+def test_cpu_stage_ownership_failure_never_creates_pack(cpu_build, monkeypatch, mode):
+    _, out, args, _ = cpu_build
+    if mode == "pack-only":
+        be.main([*args, "--skip-pack"])
+    stage = be._prefix_record_path(out)
+    original = stage.read_bytes() if stage.exists() else None
+
+    def reject(prefix):
+        raise RuntimeError("synthetic conda ownership failure")
+
+    monkeypatch.setattr(be, "check_conda_ownership", reject)
+    monkeypatch.setattr(be, "_pack", lambda *a: pytest.fail("packed invalid ownership"))
+    flags = ["--skip-upload"] if mode == "build" else ["--" + mode, "--skip-upload"]
+    with pytest.raises(RuntimeError, match="ownership failure"):
+        be.main([*args, *flags])
+    assert not out.exists() and not be._record_path(out).exists()
+    assert (stage.read_bytes() if stage.exists() else None) == original
+
+
+def test_cpu_pack_records_are_checked_before_any_restore(cpu_build, monkeypatch):
+    _, out, args, _ = cpu_build
+
+    def pack(conda, prefix, destination):
+        synthetic_pack(destination)
+        corrupt_package_metadata(destination)
+
+    monkeypatch.setattr(be, "_pack", pack)
+    monkeypatch.setattr(be, "_verify_packed_build", lambda *a: pytest.fail("restored corrupt pack"))
+    with pytest.raises(RuntimeError, match="bytes differ"):
+        be.main([*args, "--skip-upload"])
+    assert not be._record_path(out).exists()
 
 
 def test_generated_cpu_probe_runs_without_any_gpu_call():
