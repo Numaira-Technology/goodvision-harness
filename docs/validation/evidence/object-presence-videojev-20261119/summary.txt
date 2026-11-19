@@ -1,11 +1,13 @@
 == live_obj
- object interval P50 1.00s P95 1.01s max 1.52s n=58
+ object completion interval P50 1.00s P95 1.01s max 1.52s n=58
+ object source-frame interval P50 0.80s P95 1.20s max 1.20s n=58 counts [(0.4, 2), (0.8, 28), (1.2, 28)]
  object transport P50 0.39s P95 0.41s max 0.90s n=68
  object errors {} of 68
  knife           @0.95  TP 0 FN 2 FP 0 TN 8   IMG_2731.MOV:Ymiss@0.94 IMG_2732.MOV:Ymiss@0.74 IMG_1187.MOV:-miss@0.78
  alcohol_bottle  @0.95  TP 0 FN 1 FP 0 TN 9   IMG_2729.MOV:Ymiss@0.57
 == live_par
- object interval P50 1.00s P95 1.09s max 1.11s n=58
+ object completion interval P50 1.00s P95 1.09s max 1.11s n=58
+ object source-frame interval P50 0.80s P95 1.20s max 1.20s n=58 counts [(0.4, 2), (0.8, 28), (1.2, 28)]
  object transport P50 0.41s P95 0.57s max 0.62s n=68
  object errors {} of 68
  event interval P50 0.80s P95 0.80s max 0.80s n=74

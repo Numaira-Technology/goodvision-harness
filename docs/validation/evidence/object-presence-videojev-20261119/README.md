@@ -16,12 +16,14 @@ PR #121 的验收证据。这次只证明服务链路跑通，**不证明**当�
 - **启动（`start_objeval.py`）：** 由 `tools/start_bag_demo.py` 改来，改成启动 `videojev_service`，端口 8097。
   - 用法：设置环境变量 `OBJEVAL_REPO`，可选 `OBJEVAL_ENV_FILE`。
   - 服务启动参数是 `--request-timeout 120 --queue-age 119`，**和生产默认的 20 / 19.5 不同**。实测所有请求都在 1 s 内完成。
-- **汇总（`analyze.py`）：** 先 gunzip 出各 `*.jsonl`。百分位用 `tools/unified_benchmark/latency.py` 的 nearest-rank。
+- **汇总（`analyze.py`）：** 直接读取本目录的 `*.jsonl.gz`。百分位用 `tools/unified_benchmark/latency.py` 的 nearest-rank。
+- **两种间隔要分开看：** 记录里的 `wall` 是结果**完成**的时间，`timestamp_seconds` 是被判断的**源帧**时间。实时回放用的帧在 2.5 fps 网格上（每 0.4 s 一帧），1 s 的定时器取到的是 ≤ 当前时间的最新一帧，所以相邻两次判断的源帧间隔是 0.8 s 或 1.2 s，**不是严格相邻的 1 fps 帧**。
 
 ## 结果（完整输出见 `summary.txt`）
 | | 仅物体节点 | 事件 + 物体并行 |
 |---|---|---|
-| 物体实际间隔 | P50 1.00 s / P95 1.01 s | P50 1.00 s / P95 1.09 s |
+| 物体完成间隔（`wall`） | P50 1.00 s / P95 1.01 s | P50 1.00 s / P95 1.09 s |
+| 物体源帧间隔（`timestamp_seconds`） | 0.8 s ×28、1.2 s ×28、0.4 s ×2，P95 1.2 s | 同左 |
 | 物体请求耗时 | P50 0.39 s / P95 0.41 s | P50 0.41 s / P95 0.57 s |
 | 错误 | 物体 0/68 | 物体 0/68，事件 0/84 |
 | 门限 0.95 下的刀具 | FN 2，FP 0 | FN 2，FP 0 |

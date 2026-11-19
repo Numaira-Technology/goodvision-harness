@@ -1,17 +1,27 @@
-import json, collections, sys
+import gzip, json, collections, sys
+from pathlib import Path
 from tools.unified_benchmark.latency import nearest_rank
 S = sys.argv[1]
-rows=[json.loads(l) for l in open(f"{S}/live.jsonl")]
-off=[json.loads(l) for l in open(f"{S}/offline.jsonl")]
+def load(name):
+    plain, packed = Path(S) / f"{name}.jsonl", Path(S) / f"{name}.jsonl.gz"
+    handle = open(plain) if plain.exists() else gzip.open(packed, "rt")
+    with handle:
+        return [json.loads(l) for l in handle]
+rows=load("live")
+off=load("offline")
 def pct(v): v=sorted(v); return f"P50 {nearest_rank(v,.5):.2f}s P95 {nearest_rank(v,.95):.2f}s max {max(v):.2f}s n={len(v)}"
 for tag in ("live_obj","live_par"):
     obj=[r for r in rows if r["kind"]=="object" and r["tag"]==tag]
-    gaps=[]; byclip=collections.defaultdict(list)
+    gaps=[]; source=[]; byclip=collections.defaultdict(list)
     for r in obj: byclip[r["clip"]].append(r)
     for rs in byclip.values():
-        rs.sort(key=lambda r:r["wall"]); gaps+= [b["wall"]-a["wall"] for a,b in zip(rs,rs[1:])]
+        rs.sort(key=lambda r:r["wall"])
+        # wall = when the result completed; timestamp_seconds = judged source frame.
+        gaps+= [b["wall"]-a["wall"] for a,b in zip(rs,rs[1:])]
+        source+= [round(b["timestamp_seconds"]-a["timestamp_seconds"],3) for a,b in zip(rs,rs[1:])]
     print("==",tag)
-    print(" object interval", pct(gaps))
+    print(" object completion interval", pct(gaps))
+    print(" object source-frame interval", pct(source), "counts", sorted(collections.Counter(source).items()))
     print(" object transport", pct([r["transport_seconds"] for r in obj]))
     print(" object errors", dict(collections.Counter(r["error"] for r in obj if r["error"])), "of", len(obj))
     ev=[r for r in rows if r["kind"]=="event" and r["tag"]==tag]
