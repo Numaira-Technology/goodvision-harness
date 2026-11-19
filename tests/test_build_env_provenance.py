@@ -28,6 +28,10 @@ def fake_builder(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(registry, "env_of", lambda name: specs[name])
     monkeypatch.setattr(be.env_source, "check_compatibility", lambda env: None)
     monkeypatch.setattr(be, "_ensure_miniconda", lambda *args: tmp_path / "conda")
+    monkeypatch.setattr(
+        be, "_write_constraints", lambda prefix, path: path.write_text("pip==26.2.2\n")
+    )
+    monkeypatch.setattr(be, "check_conda_ownership", lambda prefix: None)
     calls = []
 
     def run(argv, **kw):
@@ -282,6 +286,51 @@ def test_existing_record_is_preserved_before_build(fake_builder, tmp_path):
         build()
     assert path.read_text() == "preserve previous build evidence"
     assert not calls
+
+
+def test_failed_ownership_never_packs_or_creates_record(
+    fake_builder, tmp_path, monkeypatch
+):
+    build, _ = fake_builder
+
+    def reject(prefix):
+        raise RuntimeError("synthetic ownership mismatch")
+
+    monkeypatch.setattr(be, "check_conda_ownership", reject)
+    monkeypatch.setattr(be, "_pack", lambda *a: pytest.fail("packed broken ownership"))
+    with pytest.raises(RuntimeError, match="ownership mismatch"):
+        build()
+    assert not be._record_path(tmp_path / "qwen8b.tar.gz").exists()
+
+
+def test_mixed_package_has_no_new_build_record(fake_builder, tmp_path, monkeypatch):
+    from env_build_helpers import corrupt_package_metadata
+
+    build, _ = fake_builder
+
+    def pack(conda, prefix, out):
+        synthetic_pack(out)
+        corrupt_package_metadata(out)
+
+    monkeypatch.setattr(be, "_pack", pack)
+    with pytest.raises(RuntimeError, match="bytes differ"):
+        build()
+    assert not be._record_path(tmp_path / "qwen8b.tar.gz").exists()
+
+
+def test_upload_only_rechecks_package_records(fake_builder, monkeypatch):
+    from env_build_helpers import corrupt_package_metadata
+
+    build, _ = fake_builder
+    pack, record = build()
+    corrupt_package_metadata(pack)
+    record.update(sha256=be._sha256(pack), size=pack.stat().st_size)
+    be._record_path(pack).write_text(json.dumps(record))
+    monkeypatch.setattr(
+        be.model_source, "r2_client", lambda: pytest.fail("broken pack reached R2")
+    )
+    with pytest.raises(RuntimeError, match="bytes differ"):
+        be.main(["--model", "qwen8b", "--out", str(pack), "--upload-only"])
 
 
 @pytest.mark.parametrize("target", ["python3.12", "../../outside", "python"])

@@ -2,8 +2,10 @@
 
 import ast
 import copy
+import io
 import json
 import os
+import tarfile
 
 import pytest
 from env_build_helpers import completed_probe, runtime_facts, synthetic_pack
@@ -75,7 +77,51 @@ def test_large_pack_fails_before_upload(upload, monkeypatch):
     assert not client.calls
 
 
+def test_upload_rejects_record_mismatch_even_with_matching_producer_digest(
+    upload, monkeypatch
+):
+    from env_build_helpers import corrupt_package_metadata
+
+    env, tar, client, evidence = upload
+    corrupt_package_metadata(tar)
+    evidence["record"].update(sha256=be._sha256(tar), size=tar.stat().st_size)
+    monkeypatch.setattr(
+        be.model_source, "r2_client", lambda: pytest.fail("invalid pack reached R2")
+    )
+    with pytest.raises(RuntimeError, match="bytes differ"):
+        be._upload(env, "videojev", tar, env["compat"], "a/b@revision", **evidence)
+    assert not client.calls
+
+
+def test_package_check_and_upload_share_the_immutable_snapshot(upload, monkeypatch):
+    env, tar, client, evidence = upload
+    original = tar.read_bytes()
+    verify = be.verify_pack
+    inspected = []
+
+    def checked(path):
+        assert path != tar
+        assert path.read_bytes() == original
+        inspected.append(path)
+        return verify(path)
+
+    def connect():
+        tar.write_bytes(b"source replaced after validation")
+        return client
+
+    monkeypatch.setattr(be, "verify_pack", checked)
+    monkeypatch.setattr(be.model_source, "r2_client", connect)
+    result = be._upload(env, "videojev", tar, env["compat"], "a/b@revision", **evidence)
+    assert len(inspected) == 1
+    assert result["pack_check"]["files_checked"] == 1
+    assert json.loads(client.calls[1]["Body"])["pack_check"] == result["pack_check"]
+    assert not inspected[0].exists()
+
+
 def test_builder_invokes_literal_argv_and_strips_credentials(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        be, "_write_constraints", lambda prefix, path: path.write_text("pip==26.2.2\n")
+    )
     calls = []
     monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "SECRET")
     monkeypatch.setenv("HF_TOKEN", "TOKEN")
@@ -117,6 +163,10 @@ def test_installer_requires_trusted_pin_and_never_downloads(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("name", ["clip", "siglip2", "videojev", "d3-nano", "qwen8b"])
 def test_main_honors_model_attention_recipe(tmp_path, monkeypatch, name):
+    monkeypatch.setattr(
+        be, "_write_constraints", lambda prefix, path: path.write_text("pip==26.2.2\n")
+    )
+    monkeypatch.setattr(be, "check_conda_ownership", lambda prefix: None)
     env = copy.deepcopy(registry.env_of(name))
     env["unpack_to"] = str(tmp_path / "prefix")
     out = tmp_path / "new.tar.gz"
@@ -189,6 +239,9 @@ def test_main_preserves_existing_prefix(tmp_path, monkeypatch):
 
 
 def test_build_prefix_uses_prefix_python_and_gates_flash_attn(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        be, "_write_constraints", lambda prefix, path: path.write_text("pip==26.2.2\n")
+    )
     calls = []
 
     def run(argv, **kw):
@@ -288,3 +341,165 @@ def test_upload_source_changed_before_snapshot_fails_before_client(upload, monke
     with pytest.raises(ValueError, match="digest/size"):
         be._upload(env, "videojev", tar, env["compat"], "a/b@revision", **evidence)
     assert not client.calls
+
+
+# --- conda/pip ownership (PR #94 pip 26.3-metadata / 26.2.2-source pack) ---
+
+SP = "lib/python3.12/site-packages/"
+
+
+def _record(files):
+    rows = [f"{p},sha256={be._record_digest(b)},{len(b)}" for p, b in files.items()]
+    return "\n".join(rows) + "\n"
+
+
+def _pack_tar(path, members):
+    with tarfile.open(path, "w:gz") as tar:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return path
+
+
+def _dist(name, version, files):
+    info = f"{name}-{version}.dist-info/"
+    files = {**files, info + "METADATA": f"Name: {name}\n".encode()}
+    out = {SP + p: b for p, b in files.items()}
+    out[SP + info + "RECORD"] = (_record(files) + f"{info}RECORD,,\n").encode()
+    return out
+
+
+def test_pack_check_rejects_old_pip_source_under_new_pip_record(tmp_path):
+    new = {
+        "pip/__init__.py": b"__version__ = '26.3'\n",
+        "pip/_internal/cli/main.py": b"def main(): ...\ncli = main\n",
+    }
+    members = _dist("pip", "26.3", new)
+    # conda-pack copied the cached conda pip 26.2.2 source over the same paths
+    members[SP + "pip/__init__.py"] = b"__version__ = '26.2.2'\n"
+    members[SP + "pip/_internal/cli/main.py"] = b"def main(): ...\n"
+    tar = _pack_tar(tmp_path / "broken.tar.gz", members)
+    with pytest.raises(RuntimeError, match=r"pip/_internal/cli/main\.py: bytes differ"):
+        be.verify_pack(tar)
+
+
+def test_pack_check_accepts_consistent_pack_and_reports_skips(tmp_path):
+    members = {
+        **_dist("pip", "26.2.2", {"pip/__init__.py": b"__version__ = '26.2.2'\n"}),
+        **_dist("demo", "1.0", {"demo.py": be._CONDA_PLACEHOLDER}),
+    }
+    rec = SP + "demo-1.0.dist-info/RECORD"
+    members[rec] += b"../../../bin/demo,sha256=abc,1\n"
+    # A placeholder is reported only after its packed bytes match the RECORD.
+    members["bin/pip"] = b"#!/usr/bin/env python\n"
+    report = be.verify_pack(_pack_tar(tmp_path / "ok.tar.gz", members))
+    assert report["pip"] == "26.2.2"
+    assert report["outside_site_packages_skipped"] == 1
+    assert report["conda_placeholder_files"] == 1
+
+
+def test_pack_check_allows_only_declared_shared_owners(tmp_path):
+    cv2 = {"cv2/__init__.py": b"full\n"}
+    members = {
+        **_dist("opencv_python", "4.12.0.88", cv2),
+        **_dist(
+            "opencv_python_headless", "4.12.0.88", {"cv2/__init__.py": b"headless\n"}
+        ),
+    }
+    members[SP + "cv2/__init__.py"] = b"full\n"  # one owner's bytes win
+    report = be.verify_pack(_pack_tar(tmp_path / "cv.tar.gz", members))
+    assert report["declared_shared_files"] == {
+        "opencv-python,opencv-python-headless": 1
+    }
+    members = {**_dist("a", "1", {"x.py": b"1"}), **_dist("b", "1", {"x.py": b"2"})}
+    with pytest.raises(RuntimeError, match="claimed by"):
+        be.verify_pack(_pack_tar(tmp_path / "ab.tar.gz", members))
+
+
+def test_pack_check_rejects_missing_file(tmp_path):
+    members = _dist("demo", "1.0", {"demo.py": b"x\n"})
+    del members[SP + "demo.py"]
+    with pytest.raises(RuntimeError, match="not packed"):
+        be.verify_pack(_pack_tar(tmp_path / "m.tar.gz", members))
+
+
+def _conda_prefix(tmp_path, pip_version="26.2.2"):
+    prefix = tmp_path / "prefix"
+    meta = prefix / "conda-meta"
+    meta.mkdir(parents=True)
+    files = [SP + f"pip-{pip_version}.dist-info/METADATA", SP + "pip/__init__.py"]
+    (meta / f"pip-{pip_version}-pyh.json").write_text(
+        json.dumps({"name": "pip", "version": pip_version, "files": files})
+    )
+    for f in files:
+        (prefix / f).parent.mkdir(parents=True, exist_ok=True)
+        (prefix / f).write_text(f"Name: pip\nVersion: {pip_version}\n")
+    return prefix
+
+
+def test_constraints_pin_conda_owned_dists(tmp_path):
+    prefix = _conda_prefix(tmp_path)
+    out = tmp_path / "c.txt"
+    assert be._write_constraints(prefix, out) == {"pip": "26.2.2"}
+    assert out.read_text() == "pip==26.2.2\n"
+
+
+def test_ownership_check_catches_pip_upgrade_of_conda_pip(tmp_path):
+    prefix = _conda_prefix(tmp_path)
+    be.check_conda_ownership(prefix)
+    # what `pip install --upgrade pip` did: drop conda's dist-info, add its own
+    (prefix / SP / "pip-26.2.2.dist-info/METADATA").unlink()
+    (prefix / SP / "pip-26.2.2.dist-info").rmdir()
+    (prefix / SP / "pip-26.3.dist-info").mkdir()
+    with pytest.raises(RuntimeError, match="clobbered conda-owned"):
+        be.check_conda_ownership(prefix)
+
+
+def test_ownership_check_catches_duplicate_dist_info(tmp_path):
+    prefix = _conda_prefix(tmp_path)
+    (prefix / SP / "pip-26.3.dist-info").mkdir()
+    (prefix / SP / "pip-26.3.dist-info/METADATA").write_text(
+        "Name: pip\nVersion: 26.3\n"
+    )
+    with pytest.raises(RuntimeError, match="two installed versions of pip"):
+        be.check_conda_ownership(prefix)
+
+
+def test_builder_lets_conda_own_pip_and_constrains_every_pip_install(
+    tmp_path, monkeypatch
+):
+    calls = []
+    monkeypatch.setattr(
+        be, "_write_constraints", lambda prefix, path: path.write_text("pip==26.2.2\n")
+    )
+    monkeypatch.setattr(
+        be, "_run", lambda argv, **kw: (calls.append(argv), completed_probe())[1]
+    )
+    be._build_prefix(
+        tmp_path / "conda", tmp_path / "p", tmp_path / "r.txt", "3.12", "8.9"
+    )
+    assert {"pip", "setuptools", "wheel"} <= set(calls[0])
+    installs = [a for a in calls if "install" in a and "-m" in a]
+    assert installs
+    for argv in installs:
+        assert "--constraint" in argv
+        assert "--upgrade" not in argv and "-U" not in argv
+        requested = argv[argv.index("install") + 1 :]
+        assert not {"pip", "setuptools", "wheel"} & set(requested)
+
+
+def test_pack_check_accepts_identical_namespace_files_and_conda_installer(tmp_path):
+    ns = {"nvidia/__init__.py": b""}
+    members = {
+        **_dist("nvidia_cublas_cu12", "12.8", ns),
+        **_dist("nvidia_nvtx_cu12", "12.8", ns),
+        **_dist("packaging", "26.3", {"packaging-26.3.dist-info/INSTALLER": b"pip\n"}),
+    }
+    members[SP + "packaging-26.3.dist-info/INSTALLER"] = b"conda\n"
+    report = be.verify_pack(_pack_tar(tmp_path / "ns.tar.gz", members))
+    assert report["conda_installer_rewrites"] == 1
+    assert report["declared_shared_files"] == {}
+    members[SP + "packaging-26.3.dist-info/INSTALLER"] = b"other\n"
+    with pytest.raises(RuntimeError, match="INSTALLER: bytes differ"):
+        be.verify_pack(_pack_tar(tmp_path / "bad.tar.gz", members))
