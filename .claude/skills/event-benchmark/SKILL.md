@@ -39,6 +39,9 @@ Another agent must read this file and its selected execution guide; discovering
    [all202 videos](https://drive.google.com/file/d/1uYN1PdiF13Aa1L6yj88zDACaO-0i5kqd/view).
    Use the existing downloader with the latter list. Keep the original eight
    frozen inputs unchanged; do not replace their `samples.json` with `samples_222.json`.
+   Use the current supplement from the same Drive link for a new 222-question run.
+   Its v2 format applies human-reviewed answers to matching original test questions
+   before scoring. Retain the v1 supplement with historical runs.
    Haotian's ten bag recordings add questions203-222 in the existing bag categories.
    Their labels are assistant annotations, not human-confirmed. Ashley's ten bag
    validation recordings remain separate; do not tune thresholds on the new test.

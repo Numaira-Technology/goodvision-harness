@@ -39,7 +39,7 @@ def verify_bundle(bundle):
         if (not hashes.get("inputs/bag-validation.json") or hashes["inputs/bag-validation.json"] != overlay.get("sha256")
                 or frozen_rules["version"] != CURRENT_VERSION):
             raise ValueError("bag validation manifest or model scope differs")
-    test_rows = bundle_test_supplement(bundle, hashes, report, frozen_rules["version"])
+    test_rows, reviewed = bundle_test_supplement(bundle, hashes, report, frozen_rules["version"])
     for name in hashes:
         if not name.startswith("plans/") or not name.endswith(".json"):
             continue
@@ -48,7 +48,7 @@ def verify_bundle(bundle):
             raise ValueError("plan protocol differs from bundle")
         if (plan.get("dataset_context") or {}).get("bag_validation") != overlay:
             raise ValueError("plan bag validation fingerprint differs from preflight")
-        verify_supplement_plan(plan, test_rows, report)
+        verify_supplement_plan(plan, test_rows + reviewed, report)
         if frozen_rules["version"] == CURRENT_VERSION:
             count = (
                 (44 if has_bag_validation(plan) else 24)

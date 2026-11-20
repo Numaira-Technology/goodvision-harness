@@ -88,7 +88,7 @@ def extend_test(parts, manifest, samples, registry):
                "event_counts": EVENT_COUNTS, "review_status_by_cohort": REVIEW_STATUS,
                "robot82_source_recordings": len({r["source_video_group"] for r in joined if r["number"] > 120}),
                "new_questions_split": "test", "validation_questions": 24,
-               "limits": ["82 single-view labels inherited, not individually re-reviewed; provisional reference agreement.",
+               "limits": ["Robot views initially inherit their source labels; individual reviews are listed in the test supplement.",
                           "Related left/right views and recording cuts all stay in test; old stereo41 is not counted again.",
                           "Original120 has previous evaluation/development use; this is not a fresh held-out test.",
                           "Train/development/actor/scene isolation remains unproven; validation24 has no bag examples.",
@@ -113,7 +113,7 @@ def load_extension(out, frozen, parts):
 def add_test_supplement(out, parts, path):
     """Append ordinary test questions while retaining the original input snapshot."""
     raw = path.read_bytes()
-    added, overlay = parse_test_supplement(raw)
+    added, overlay, reviewed = parse_test_supplement(raw)
     original = parts["test"]["rows"]
     if [row["number"] for row in original] != list(range(1, 203)):
         raise ValueError("original202 test membership required before supplement")
@@ -125,10 +125,21 @@ def add_test_supplement(out, parts, path):
         if (row["filename"] in old_names or row["sha256"] in old_hashes
                 or row["source_video_group"] in validation_groups):
             raise ValueError("supplementary test question overlaps frozen inputs")
-    joined = original + added
+    joined = list(original) + added
+    for review in reviewed:
+        index = review["number"] - 1
+        row = original[index]
+        if (any(row[k] != review[k] for k in ("filename", "event", "sha256", "source_video_group"))
+                or row["proposed_answer"] != review["previous_answer"]):
+            raise ValueError("review does not match the original test question")
+        joined[index] = row | {"proposed_answer": review["proposed_answer"],
+                               "human_review": "user_reviewed", "reference_review": "user_reviewed"}
     with (out / "inputs" / "test-supplement.json").open("xb") as f:
         f.write(raw)
     context = parts["test"]["dataset_context"]
+    if reviewed:
+        context["review_status_by_cohort"] = dict(context["review_status_by_cohort"],
+            reviewed_questions=overlay["reviewed_question_numbers"])
     context.update(dataset=overlay["dataset"], test_questions=len(joined),
                    test_videos=len({row["filename"] for row in joined}),
                    event_counts=dict(Counter(row["event"] for row in joined)),

@@ -7,6 +7,7 @@ from pathlib import Path, PureWindowsPath
 from .contract import CURRENT_VERSION, EVENTS
 
 SCHEMA = "event-test-supplement-v1"
+REVIEWED_SCHEMA = "event-test-supplement-v2"
 MANIFEST = "inputs/test-supplement.json"
 
 
@@ -15,7 +16,7 @@ def parse_test_supplement(raw):
     doc = json.loads(raw)
     if (
         not isinstance(doc, dict)
-        or doc.get("schema") != SCHEMA
+        or doc.get("schema") not in (SCHEMA, REVIEWED_SCHEMA)
         or doc.get("split") != "test"
     ):
         raise ValueError("a test-only event supplement is required")
@@ -84,20 +85,33 @@ def parse_test_supplement(raw):
         questions.add((name, event))
         added.append(row | {"source_video_group": group})
     overlay = {
-        "schema": SCHEMA,
+        "schema": doc["schema"],
         "sha256": hashlib.sha256(raw).hexdigest(),
         "dataset": dataset,
         "question_numbers": [r["number"] for r in added],
         "review_status": sorted({r["human_review"] for r in added}),
     }
-    return added, overlay
+    reviewed = doc.get("reviewed_answers", [])
+    if not isinstance(reviewed, list) or bool(reviewed) != (doc["schema"] == REVIEWED_SCHEMA):
+        raise ValueError("reviewed answers require a v2 test supplement")
+    seen = set()
+    for row in reviewed:
+        number = row["number"]
+        if (type(number) is not int or not 1 <= number <= 202 or number in seen
+                or row["proposed_answer"] not in ("yes", "no")
+                or row["previous_answer"] not in ("yes", "no")):
+            raise ValueError("invalid reviewed test answer")
+        seen.add(number)
+    if reviewed:
+        overlay["reviewed_question_numbers"] = sorted(seen)
+    return added, overlay, reviewed
 
 
 def bundle_test_supplement(bundle, hashes, report, protocol):
     """Derive the test denominator from the retained input, not report metadata."""
     context = report.get("dataset_context") or {}
     overlay = context.get("test_supplement")
-    rows = []
+    rows, reviewed = [], []
     if overlay is not None:
         if (
             protocol != CURRENT_VERSION
@@ -106,7 +120,7 @@ def bundle_test_supplement(bundle, hashes, report, protocol):
             or hashes[MANIFEST] != overlay.get("sha256")
         ):
             raise ValueError("test supplement manifest fingerprint or protocol differs")
-        rows, expected = parse_test_supplement((bundle / MANIFEST).read_bytes())
+        rows, expected, reviewed = parse_test_supplement((bundle / MANIFEST).read_bytes())
         if overlay != expected or context.get("dataset") != expected["dataset"]:
             raise ValueError("test supplement metadata differs from retained input")
     elif MANIFEST in hashes or (bundle / MANIFEST).exists():
@@ -115,7 +129,7 @@ def bundle_test_supplement(bundle, hashes, report, protocol):
         count = context.get("test_questions", 202)
         if type(count) is not int or count != 202 + len(rows):
             raise ValueError("test question count differs from frozen cohort")
-    return rows
+    return rows, reviewed
 
 
 def verify_supplement_plan(plan, rows, report):
