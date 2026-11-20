@@ -117,3 +117,35 @@ of per-test timer dumps. A fully deadlocked interpreter or blocking native code 
 not service this handler. In that case, incremental progress and process snapshots
 remain available and the unchanged parent deadline still fails and cleans up the
 run; a missing stack is never evidence of success.
+
+For failures in the two opted-in synthetic twelve-source grounding/native-decision
+cases, CI also retains `synthetic-failures/<node-hash>-<stage>/` under the existing
+evidence directory. Only stage `summary.json`, `reports.jsonl`, `status.jsonl`, root
+`detector.jsonl`, and an in-memory sampling diagnostic are eligible. No API audit,
+image, prompt or arbitrary temporary-directory traversal is collected. Successful
+cases copy nothing. Each failure is limited to five payload files, 2 MiB per file
+and 8 MiB total, plus a small manifest with hashes, omissions and JSON validity.
+Missing, oversized, unsafe or malformed files remain explicit; artifact-set
+completeness is not proof of test completion or correctness. Collection errors
+leave the original failure intact.
+
+Source identities are reconstructed after the feeder stops from the existing
+schedule and measured lag prefix, without adding work to the release loop. A
+non-drop means only that the source drop check passed, not that branch offer or
+broker submission succeeded. Compare source identities, retained broker drain
+counts, detector-key observations and `detector.jsonl` states to distinguish
+source drops from submitted frames that expired in the broker. Interrupted
+schedules and unmatched measurement counts are reported without inventing data.
+The snapshot includes original missed/rejected counters and reconciles derived
+source drops against them. Counter mismatches invalidate source completeness.
+Retention uses no-follow directory descriptors for both source traversal and
+output writes; if secure output traversal is unavailable, collection fails
+closed and preserves the original test failure. This collector targets the Linux
+CI plugin, not a new Windows evidence workflow. Diagnostic JSON has a conservative
+pre-encoding size/traversal budget as well as the payload byte limit.
+Parser-depth failures are retained as explicitly unvalidated JSON with their
+copied hash and length. Failed/short writes are removed before being marked
+omitted. If removal also fails, the manifest records a possible retained partial
+file and reserves its full attempted length against the total cap. In that case,
+`copied_bytes` counts only successful copies and `retained_bytes_upper_bound`
+includes these reservations; neither implies all artifacts are complete.

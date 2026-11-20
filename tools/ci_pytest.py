@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from tools.ci_regression import shard_for
+from tools.synthetic_evidence import retain_synthetic_evidence
 
 # The Windows workflow's PowerShell parent hard-kills pytest after 960 s
 # (WaitForExit(960000) + taskkill) and keeps stdout/stderr file logs, but a
@@ -128,6 +129,15 @@ def pytest_runtest_makereport(item, call):
     if report.failed or report.skipped:
         value["detail"] = str(report.longrepr)
     _record(item.config, **value)
+    if report.failed:
+        try:
+            retain_synthetic_evidence(item, report.when)
+        except Exception as exc:
+            # A missing artifact must never turn a failed test into a plugin
+            # internal error, or obscure its original assertion/traceback.
+            report.sections.append(
+                ("synthetic evidence retention error", type(exc).__name__)
+            )
 
 
 def pytest_sessionfinish(session, exitstatus):

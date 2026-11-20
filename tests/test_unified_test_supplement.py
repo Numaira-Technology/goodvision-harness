@@ -173,9 +173,16 @@ def bundle_factory(tmp_path, inputs, supplement, monkeypatch):
 
     monkeypatch.setattr(preflight, "load_inputs", load)
     monkeypatch.setattr(preflight, "inspect_video", inspect)
-    monkeypatch.setattr(
-        preflight.subprocess, "check_output", lambda *_a, **_kw: "synthetic ffmpeg\n"
-    )
+    check_output = preflight.subprocess.check_output
+
+    def ffmpeg_version(command, *args, **kwargs):
+        if command == ["ffmpeg", "-version"]:
+            return "synthetic ffmpeg\n" if kwargs.get("text") else b"synthetic ffmpeg\n"
+        # subprocess is shared with platform.platform(), whose macOS uname
+        # probe expects bytes. Do not replace unrelated subprocess results.
+        return check_output(command, *args, **kwargs)
+
+    monkeypatch.setattr(preflight.subprocess, "check_output", ffmpeg_version)
 
     def build(name, *, extra=True, bags=False, aliases=("clip",)):
         out = tmp_path / name

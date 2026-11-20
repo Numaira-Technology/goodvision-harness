@@ -60,6 +60,7 @@ def test_real_sender_preserves_source_clock_and_exposes_stalled_input(
         # Isolate model/runtime work only. The production release loop, lag
         # decisions, collection, denominator and disk reports remain real.
         def __init__(self, config, **_kwargs):
+            self.config = config
             self.results = self
             self.finished = False
             self.closes = 0
@@ -125,6 +126,7 @@ def test_real_sender_preserves_source_clock_and_exposes_stalled_input(
         deadline=3,
     )
     frames = [b"first-fixture-frame", b"second-fixture-frame"]
+    source_diagnostic = {}
     result = benchmark.run_stage(
         args,
         load_config(ROOT / "config.yaml"),
@@ -132,8 +134,14 @@ def test_real_sender_preserves_source_clock_and_exposes_stalled_input(
         [frames],
         tmp_path,
         1,
+        source_diagnostics=source_diagnostic,
     )
 
+    assert source_diagnostic["complete"]
+    assert source_diagnostic["measured_count"] == 8
+    assert [
+        r["tick"] for r in source_diagnostic["samples"] if r["source_drop"]
+    ] == list(skipped)
     expected = [tick for tick in range(8) if tick not in skipped]
     assert [sequence for sequence, *_ in offers] == expected
     assert [source_pts for _, source_pts, *_ in offers] == pytest.approx(

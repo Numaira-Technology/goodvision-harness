@@ -26,6 +26,7 @@ from goodvision_harness.model_api import ModelAPISettings
 from tools.benchmark_runtime.scene_model import _ResponseValidationError
 from tools.benchmark_runtime.vlm_event_policy import event_policy_text
 from tools.benchmark_runtime.vlm_independent import IndependentEventState
+from tools.synthetic_evidence import register_synthetic_evidence
 from tools.tracked_grounding.detector import DetectorBroker, validate_snapshot
 from tools.tracked_grounding.inspector import (
     TrackedPersonInspector,
@@ -465,7 +466,7 @@ def offline_inspector(config, *, broker_url):
 @pytest.mark.parametrize("mode", ["events", "compact", "parallel"])
 @pytest.mark.parametrize("load_profile", ["historical", "four-second"])
 def test_twelve_sources_through_http_broker_and_spawned_workers(
-    tmp_path, fake_models, monkeypatch, mode, load_profile
+    tmp_path, fake_models, monkeypatch, mode, load_profile, request
 ):
     # Verify every source/frame through the real HTTP and process boundaries.
     # Shared CI scheduling pauses must not turn this adapter contract into a
@@ -493,19 +494,41 @@ def test_twelve_sources_through_http_broker_and_spawned_workers(
         aiclub=ModelAPISettings(provider="local", endpoint=url + "/chat/completions"),
     )
     monkeypatch.delenv("LOCAL_VLM_API_KEY", raising=False)
-    with DetectorBroker(url, tmp_path) as broker:
-        result = run_stage(
-            args,
-            base,
-            12,
-            [[jpeg()] * frame_count],
-            tmp_path,
-            1,
-            inspector_factory=partial(offline_inspector, broker_url=broker.endpoint),
-            source_hook=broker.submit,
-        )
-        # Model windows can finish before the detector-only source tail.
-        detector_counts = broker.drain()
+    source_diagnostics = {}
+    diagnostic = {"source": source_diagnostics, "detector_keys": calls["detector"]}
+    register_synthetic_evidence(request.node, tmp_path, diagnostic)
+
+    def run_once(output):
+        for recorded in calls.values():
+            recorded.clear()
+        source_diagnostics.clear()
+        with DetectorBroker(url, output) as broker:
+            stage = run_stage(
+                args,
+                base,
+                12,
+                [[jpeg()] * frame_count],
+                output,
+                1,
+                inspector_factory=partial(
+                    offline_inspector, broker_url=broker.endpoint
+                ),
+                source_hook=broker.submit,
+                source_diagnostics=source_diagnostics,
+            )
+            # Model windows can finish before the detector-only source tail.
+            counts = broker.drain()
+        diagnostic["drain_counts"] = counts
+        return stage, counts
+
+    output = tmp_path
+    result, detector_counts = run_once(output)
+    assert result["input_timing_valid"], {
+        "sender_missed_samples": result["sender_missed_samples"],
+        "sender_missed_samples_by_stream": result["sender_missed_samples_by_stream"],
+        "input_release_lag_seconds": result["input_release_lag_seconds"],
+        "offer_rejected_by_stream": result["offer_rejected_by_stream"],
+    }
     assert result["sender_missed_samples"] == 0
     assert result["sender_missed_samples_by_stream"] == [0] * 12
     assert result["offer_rejected_by_stream"] == [0] * 12
@@ -533,7 +556,7 @@ def test_twelve_sources_through_http_broker_and_spawned_workers(
         assert result["nominal_requests_per_second"] == (6 if mode == "parallel" else 3)
     rows = [
         json.loads(s)["report"]
-        for s in (tmp_path / "streams-12-repeat-1/reports.jsonl")
+        for s in (output / "streams-12-repeat-1/reports.jsonl")
         .read_text()
         .splitlines()
     ]

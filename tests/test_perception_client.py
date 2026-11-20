@@ -190,12 +190,16 @@ def test_close_timeout_does_not_claim_background_work_has_finished(
         processing_method=server.method.id,
         max_fps=4,
         video_latest_only=video_latest_only,
+        # The candidate expires at the default 2s age. A busy Windows runner
+        # can start the worker later than that, so the blocked request never
+        # reaches the server and close() is never observing in-flight work.
+        video_realtime_max_age_seconds=30,
     )
     coordinator = create_tracking_coordinator(client, rich, lambda _: None)
     server.release.clear()
     try:
         submit(coordinator, frames(1, 1))
-        assert server.entered.wait(2)
+        assert server.entered.wait(15)
         coordinator.close(timeout_seconds=0)
         assert not coordinator.close_complete()
         server.release.set()
