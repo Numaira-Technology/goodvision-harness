@@ -20,7 +20,7 @@ Read [results semantics](references/results-column-contract.md) for result updat
 Read [threshold publication semantics](references/threshold-tuning-column-contract.md)
 for the latest-threshold overview, same-score comparisons and calibration details.
 The [historical A:W map](references/column-contract.md), bundled `validate_row.py`,
-and repository A:Q `sheet_config.json` do not describe the current live layout.
+and repository A:W `sheet_config.json` do not describe the current live layout.
 There is no current-layout reusable writer/validator; retain a range-specific
 mapping and arithmetic audit instead of claiming a legacy validator covers it.
 

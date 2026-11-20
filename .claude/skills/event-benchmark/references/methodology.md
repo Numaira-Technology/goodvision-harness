@@ -65,3 +65,9 @@ copy their OVERALL into a v2 base-event cell without a verified equivalent mappi
 Changing prompts, cadence, aggregation, parser or error policy changes the protocol;
 changing samples or labels changes the dataset fingerprint. Both require new,
 explicitly identified comparison evidence.
+
+PR #61's explicit keep-unmerged acceptance hold remains separate from the current
+unified workflow. It still requires its reviewed validation/media-hash manifest,
+source-group/isolation evidence and fresh compatible lossless calibration/test
+outputs. Legacy `--provisional` diagnostics record hashes without certifying review
+or freeze status, and must not be described as eligible calibration evidence.

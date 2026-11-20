@@ -1,0 +1,488 @@
+{
+ "spec_version": "v2",
+ "frozen": false,
+ "scored_events": [
+  "bag_knife",
+  "bag_alcohol_bottle"
+ ],
+ "samples_json_sha256": "4eb08dde2b87dbfbcfeb14f1490b7c05854802bee0a01122b7f906f1ca99ddfa",
+ "manifest_sha256": null,
+ "runner_sha256": "7079e2a602300d278f63f0bb6d65568c4112d5b7836d968018d8185dd1cb6b64",
+ "spec_sha256": "9abc58e143ec414304984630891d956832f061ddeaf293aa19bb8785bf90f60b",
+ "run_at": "2026-11-01T17:19:19.067441+00:00",
+ "candidate": "luna",
+ "model": "openai/gpt-6-luna-decisions",
+ "backend": "decision",
+ "config": {
+  "gate": 0.5,
+  "sampling": "1.0s (~1fps)",
+  "interval": 1.0,
+  "frame_rule": "n=max(1,round(dur/interval)); t=dur*(i+0.5)/n",
+  "workers": 4,
+  "frame_width": 720,
+  "temperature": 0,
+  "retries": 8,
+  "timeout": 90,
+  "decision": "max-frame-score >= gate"
+ },
+ "overall": {
+  "correct": 18,
+  "total": 20,
+  "attempted": 20,
+  "errors": 0
+ },
+ "per_event": {
+  "bag_knife": {
+   "TP": 2,
+   "FN": 0,
+   "TN": 7,
+   "FP": 1,
+   "err": 0
+  },
+  "bag_alcohol_bottle": {
+   "TP": 0,
+   "FN": 1,
+   "TN": 9,
+   "FP": 0,
+   "err": 0
+  }
+ },
+ "per_video": [
+  {
+   "number": 101,
+   "filename": "IMG_2729.MOV",
+   "event": "bag_knife",
+   "gt": "no",
+   "sha256": "d9243c25a46a3b2673a8e7052a74e2449019bc0a2144cb23f1ce73b7aff4fe14",
+   "score": 0.05,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 7,
+   "frames_ok": 7,
+   "frames_failed": 0,
+   "frame_times": [
+    0.5047619285714285,
+    1.5142857857142857,
+    2.5238096428571426,
+    3.5333335,
+    4.542857357142857,
+    5.552381214285714,
+    6.561905071428571
+   ]
+  },
+  {
+   "number": 102,
+   "filename": "IMG_2729.MOV",
+   "event": "bag_alcohol_bottle",
+   "gt": "yes",
+   "sha256": "d9243c25a46a3b2673a8e7052a74e2449019bc0a2144cb23f1ce73b7aff4fe14",
+   "score": 0.08,
+   "pred": "no",
+   "correct": false,
+   "frames_planned": 7,
+   "frames_ok": 7,
+   "frames_failed": 0,
+   "frame_times": [
+    0.5047619285714285,
+    1.5142857857142857,
+    2.5238096428571426,
+    3.5333335,
+    4.542857357142857,
+    5.552381214285714,
+    6.561905071428571
+   ]
+  },
+  {
+   "number": 103,
+   "filename": "IMG_2730.MOV",
+   "event": "bag_knife",
+   "gt": "no",
+   "sha256": "743d7e75ee7b0609e2a2e77445828a970ade5a0a0be46ca8849370199538a07d",
+   "score": 0.05,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 8,
+   "frames_ok": 8,
+   "frames_failed": 0,
+   "frame_times": [
+    0.4729166875,
+    1.4187500625,
+    2.3645834375,
+    3.3104168124999998,
+    4.2562501875,
+    5.2020835624999995,
+    6.1479169375,
+    7.0937503125
+   ]
+  },
+  {
+   "number": 104,
+   "filename": "IMG_2730.MOV",
+   "event": "bag_alcohol_bottle",
+   "gt": "no",
+   "sha256": "743d7e75ee7b0609e2a2e77445828a970ade5a0a0be46ca8849370199538a07d",
+   "score": 0.08,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 8,
+   "frames_ok": 8,
+   "frames_failed": 0,
+   "frame_times": [
+    0.4729166875,
+    1.4187500625,
+    2.3645834375,
+    3.3104168124999998,
+    4.2562501875,
+    5.2020835624999995,
+    6.1479169375,
+    7.0937503125
+   ]
+  },
+  {
+   "number": 105,
+   "filename": "IMG_2731.MOV",
+   "event": "bag_knife",
+   "gt": "yes",
+   "sha256": "bd2b6b9be97b095093e29e10f108f7315c467ac50d2fddbb4ef3a9895d17aa03",
+   "score": 1,
+   "pred": "yes",
+   "correct": true,
+   "frames_planned": 6,
+   "frames_ok": 6,
+   "frames_failed": 0,
+   "frame_times": [
+    0.47777775,
+    1.4333332499999998,
+    2.38888875,
+    3.34444425,
+    4.2999997500000005,
+    5.25555525
+   ]
+  },
+  {
+   "number": 106,
+   "filename": "IMG_2731.MOV",
+   "event": "bag_alcohol_bottle",
+   "gt": "no",
+   "sha256": "bd2b6b9be97b095093e29e10f108f7315c467ac50d2fddbb4ef3a9895d17aa03",
+   "score": 0.07,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 6,
+   "frames_ok": 6,
+   "frames_failed": 0,
+   "frame_times": [
+    0.47777775,
+    1.4333332499999998,
+    2.38888875,
+    3.34444425,
+    4.2999997500000005,
+    5.25555525
+   ]
+  },
+  {
+   "number": 107,
+   "filename": "IMG_2732.MOV",
+   "event": "bag_knife",
+   "gt": "yes",
+   "sha256": "f422fcf610e21a025e1ef963613030ef32431a9a5a5764cf458fa0d98cafff61",
+   "score": 1,
+   "pred": "yes",
+   "correct": true,
+   "frames_planned": 2,
+   "frames_ok": 2,
+   "frames_failed": 0,
+   "frame_times": [
+    0.60833325,
+    1.8249997500000001
+   ]
+  },
+  {
+   "number": 108,
+   "filename": "IMG_2732.MOV",
+   "event": "bag_alcohol_bottle",
+   "gt": "no",
+   "sha256": "f422fcf610e21a025e1ef963613030ef32431a9a5a5764cf458fa0d98cafff61",
+   "score": 0.05,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 2,
+   "frames_ok": 2,
+   "frames_failed": 0,
+   "frame_times": [
+    0.60833325,
+    1.8249997500000001
+   ]
+  },
+  {
+   "number": 109,
+   "filename": "IMG_2733.MOV",
+   "event": "bag_knife",
+   "gt": "no",
+   "sha256": "939a81e8e1ce8768e8df7131dd8bc2584e58263fefa2cf3c5369e9f4eb6d7f8f",
+   "score": 0.05,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 5,
+   "frames_ok": 5,
+   "frames_failed": 0,
+   "frame_times": [
+    0.4966667,
+    1.4900001,
+    2.4833335,
+    3.4766669,
+    4.470000300000001
+   ]
+  },
+  {
+   "number": 110,
+   "filename": "IMG_2733.MOV",
+   "event": "bag_alcohol_bottle",
+   "gt": "no",
+   "sha256": "939a81e8e1ce8768e8df7131dd8bc2584e58263fefa2cf3c5369e9f4eb6d7f8f",
+   "score": 0.12,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 5,
+   "frames_ok": 5,
+   "frames_failed": 0,
+   "frame_times": [
+    0.4966667,
+    1.4900001,
+    2.4833335,
+    3.4766669,
+    4.470000300000001
+   ]
+  },
+  {
+   "number": 111,
+   "filename": "IMG_1185.MOV",
+   "event": "bag_knife",
+   "gt": "no",
+   "sha256": "85e37d14aeaa8e688ba72b199bef6e22c24c4bf312565a9552182b16ea90dcc2",
+   "score": 0.1,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 9,
+   "frames_ok": 9,
+   "frames_failed": 0,
+   "frame_times": [
+    0.4740740555555556,
+    1.4222221666666668,
+    2.370370277777778,
+    3.318518388888889,
+    4.2666665,
+    5.2148146111111116,
+    6.162962722222223,
+    7.111110833333334,
+    8.059258944444444
+   ]
+  },
+  {
+   "number": 112,
+   "filename": "IMG_1185.MOV",
+   "event": "bag_alcohol_bottle",
+   "gt": "no",
+   "sha256": "85e37d14aeaa8e688ba72b199bef6e22c24c4bf312565a9552182b16ea90dcc2",
+   "score": 0.05,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 9,
+   "frames_ok": 9,
+   "frames_failed": 0,
+   "frame_times": [
+    0.4740740555555556,
+    1.4222221666666668,
+    2.370370277777778,
+    3.318518388888889,
+    4.2666665,
+    5.2148146111111116,
+    6.162962722222223,
+    7.111110833333334,
+    8.059258944444444
+   ]
+  },
+  {
+   "number": 113,
+   "filename": "IMG_1186.MOV",
+   "event": "bag_knife",
+   "gt": "no",
+   "sha256": "00181a984b6113e8f2239f877a9ee9a0cec0955f3a111ff6e9cd9d8aada4dd2f",
+   "score": 0.18,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 6,
+   "frames_ok": 6,
+   "frames_failed": 0,
+   "frame_times": [
+    0.47222225,
+    1.41666675,
+    2.36111125,
+    3.30555575,
+    4.25000025,
+    5.19444475
+   ]
+  },
+  {
+   "number": 114,
+   "filename": "IMG_1186.MOV",
+   "event": "bag_alcohol_bottle",
+   "gt": "no",
+   "sha256": "00181a984b6113e8f2239f877a9ee9a0cec0955f3a111ff6e9cd9d8aada4dd2f",
+   "score": 0.08,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 6,
+   "frames_ok": 6,
+   "frames_failed": 0,
+   "frame_times": [
+    0.47222225,
+    1.41666675,
+    2.36111125,
+    3.30555575,
+    4.25000025,
+    5.19444475
+   ]
+  },
+  {
+   "number": 115,
+   "filename": "IMG_1187.MOV",
+   "event": "bag_knife",
+   "gt": "no",
+   "sha256": "693640f2893c38f2998d972cc93485725413cdb98d5a36c40c79ae6c06d14cbe",
+   "score": 0.98,
+   "pred": "yes",
+   "correct": false,
+   "frames_planned": 8,
+   "frames_ok": 8,
+   "frames_failed": 0,
+   "frame_times": [
+    0.4916666875,
+    1.4750000625,
+    2.4583334375,
+    3.4416668125,
+    4.4250001875,
+    5.408333562499999,
+    6.3916669375,
+    7.375000312499999
+   ]
+  },
+  {
+   "number": 116,
+   "filename": "IMG_1187.MOV",
+   "event": "bag_alcohol_bottle",
+   "gt": "no",
+   "sha256": "693640f2893c38f2998d972cc93485725413cdb98d5a36c40c79ae6c06d14cbe",
+   "score": 0.01,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 8,
+   "frames_ok": 8,
+   "frames_failed": 0,
+   "frame_times": [
+    0.4916666875,
+    1.4750000625,
+    2.4583334375,
+    3.4416668125,
+    4.4250001875,
+    5.408333562499999,
+    6.3916669375,
+    7.375000312499999
+   ]
+  },
+  {
+   "number": 117,
+   "filename": "IMG_1188.MOV",
+   "event": "bag_knife",
+   "gt": "no",
+   "sha256": "999b712dc9a946d1a6be54ed5d7136832f4653335b6caf08e45a7c8b5776fa71",
+   "score": 0.08,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 11,
+   "frames_ok": 11,
+   "frames_failed": 0,
+   "frame_times": [
+    0.5045454545454545,
+    1.5136363636363634,
+    2.522727272727273,
+    3.5318181818181817,
+    4.54090909090909,
+    5.55,
+    6.559090909090909,
+    7.568181818181818,
+    8.577272727272726,
+    9.586363636363636,
+    10.595454545454546
+   ]
+  },
+  {
+   "number": 118,
+   "filename": "IMG_1188.MOV",
+   "event": "bag_alcohol_bottle",
+   "gt": "no",
+   "sha256": "999b712dc9a946d1a6be54ed5d7136832f4653335b6caf08e45a7c8b5776fa71",
+   "score": 0.02,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 11,
+   "frames_ok": 11,
+   "frames_failed": 0,
+   "frame_times": [
+    0.5045454545454545,
+    1.5136363636363634,
+    2.522727272727273,
+    3.5318181818181817,
+    4.54090909090909,
+    5.55,
+    6.559090909090909,
+    7.568181818181818,
+    8.577272727272726,
+    9.586363636363636,
+    10.595454545454546
+   ]
+  },
+  {
+   "number": 119,
+   "filename": "IMG_1189.MOV",
+   "event": "bag_knife",
+   "gt": "no",
+   "sha256": "e2c74c46f03d540be16f8d63b63edfcdca5d5aacf67ac31411bef121b3db0b7d",
+   "score": 0.07,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 6,
+   "frames_ok": 6,
+   "frames_failed": 0,
+   "frame_times": [
+    0.5388889166666667,
+    1.61666675,
+    2.694444583333333,
+    3.7722224166666667,
+    4.85000025,
+    5.927778083333333
+   ]
+  },
+  {
+   "number": 120,
+   "filename": "IMG_1189.MOV",
+   "event": "bag_alcohol_bottle",
+   "gt": "no",
+   "sha256": "e2c74c46f03d540be16f8d63b63edfcdca5d5aacf67ac31411bef121b3db0b7d",
+   "score": 0.01,
+   "pred": "no",
+   "correct": true,
+   "frames_planned": 6,
+   "frames_ok": 6,
+   "frames_failed": 0,
+   "frame_times": [
+    0.5388889166666667,
+    1.61666675,
+    2.694444583333333,
+    3.7722224166666667,
+    4.85000025,
+    5.927778083333333
+   ]
+  }
+ ]
+}

@@ -1,0 +1,1061 @@
+{
+  "schema": "goodvision-validation34-proposed-manifest-v1",
+  "status": "proposed_pending_human_signoff",
+  "human_reviewed": false,
+  "agent_set_review_flags": false,
+  "keep_unmerged": true,
+  "created_at_utc": "2026-11-14T17:33:04Z",
+  "purpose": "Review packet for the 34-video / 44-question validation candidate. Not a runner input. Not a frozen threshold artifact.",
+  "counts": {
+    "videos": 34,
+    "questions": 44,
+    "original24_videos": 24,
+    "bag_validation_videos": 10
+  },
+  "test_excluded_from_this_manifest": {
+    "videos": 192,
+    "questions": 202
+  },
+  "drive_index": {
+    "folder_id": "14QePPZqvuOkF2gCOHSFICdFx--QO0rkX",
+    "index_filename": "validation34.json",
+    "index_sha256": "924f85b9145752023969dec9bbf4a78cc769b8b9ff0faa48928b4603a5aa8a85",
+    "index_bytes": 31510
+  },
+  "published_input_pins": {
+    "validation-samples.json": {
+      "sha256": "efe43e6760cbbeacc1615fa6f9fce5c9bb6f81475b88c04b1cf02fab5a392e45",
+      "matches_published_pin": true,
+      "bytes": 42485
+    },
+    "validation_split.json": {
+      "sha256": "a0375a6a846fe964846a58d94ed68a5a2e18c61a238b0f36940d4c2a83f51b2c",
+      "matches_published_pin": true,
+      "bytes": 36317
+    },
+    "manifest_202.json": {
+      "sha256": "d5c019130d672afd40638a6ca51c1c84ca8e8c7fad0dbe3faf493187002bb11d",
+      "matches_published_pin": true,
+      "bytes": 73262
+    },
+    "samples.json": {
+      "sha256": "bfb685074787eeb449e2b8c6d89ad6cb055a861363cdb4afae898d5c93631545",
+      "matches_published_pin": true,
+      "bytes": 259145
+    },
+    "videos.json": {
+      "sha256": "71a9e6b4b1e59ba59cc584c874b99ae2907ab10dc4459fb251fbc54d0f31cf2c",
+      "matches_published_pin": true,
+      "bytes": 47682
+    },
+    "manifest_validation_24.json": {
+      "sha256_measured_this_session": null,
+      "published_pin": "41a3ef7cadc16e5a4e511ce779688e07811e450aba168bb62b33d0f42bfa7365",
+      "matches_published_pin": null,
+      "note": "The Drive payload was read. Its per-file hashes are the same values recomputed from the 24 downloaded videos, and the hash-verified sidecar records this container pin. The container bytes were not saved to disk in this session, so the container digest itself was not remeasured."
+    },
+    "bag-validation.json": {
+      "sha256_measured_this_session": null,
+      "published_pin_from_validation34_index": "59310f4388dfe1dd13e7a046d51fd42f2ff12079f6289b4b0bf56dde53778dbc",
+      "matches_published_pin": null,
+      "note": "Ten bag media hashes in the index matched the downloaded files. The bag-validation.json container bytes were not saved, so that container digest was not remeasured."
+    }
+  },
+  "files": [
+    {
+      "filename": "ubi_F_182_0_0_1_0.mp4",
+      "bytes": 334536,
+      "sha256": "9eeb940f23ced044fea89af5885ed987d3c3d1f617dda304ec87100d373e037f",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1YPTou3uU4Q0mZhZZwEty8B8D2eonlJ38",
+      "cohort": "original24",
+      "proposed_source_video_group": "UBI:f_182_0_0_1_0",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        1
+      ],
+      "duration_seconds": 16.0,
+      "decoded_frames": 480,
+      "planned_1fps_observations": 16
+    },
+    {
+      "filename": "ubi_F_210_1_0_0_0.mp4",
+      "bytes": 271426,
+      "sha256": "cc12339290435a89eb4f341574f19a17fd220ce0203e7e1d0372e4dbebf322aa",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1nYOM6sw1m123Jn6S0pCMEWR5Cv16vFfu",
+      "cohort": "original24",
+      "proposed_source_video_group": "UBI:f_210_1_0_0_0",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        2
+      ],
+      "duration_seconds": 16.0,
+      "decoded_frames": 480,
+      "planned_1fps_observations": 16
+    },
+    {
+      "filename": "ubi_F_69_0_0_0_0.mp4",
+      "bytes": 822329,
+      "sha256": "59435e1d8364cd0a6f482d6ae700fbf276bbbda181b91db719e54d88ee45842e",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "13iVhyVU9TBeK8kNdG-pSlJkK45c6iU90",
+      "cohort": "original24",
+      "proposed_source_video_group": "UBI:f_69_0_0_0_0",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        3
+      ],
+      "duration_seconds": 32.0,
+      "decoded_frames": 960,
+      "planned_1fps_observations": 32
+    },
+    {
+      "filename": "ubi_N_481_0_0_1_0.mp4",
+      "bytes": 277344,
+      "sha256": "b73ccd63bffe426fd99229deb27be51922ce0d18c618782671b11f1123d0b1c0",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "15d1ASvYloJ22p50jenGGp_98vUAua_Uj",
+      "cohort": "original24",
+      "proposed_source_video_group": "UBI:n_481_0_0_1_0",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        4
+      ],
+      "duration_seconds": 16.0,
+      "decoded_frames": 480,
+      "planned_1fps_observations": 16
+    },
+    {
+      "filename": "ubi_N_537_0_1_1_0.mp4",
+      "bytes": 425714,
+      "sha256": "e7a6904b95f481ff1ba696ba7de4ab24d634f3ac5a6bf3f69a7d24940ac0d34b",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1T1sYIYDGb4OQM4sXByDNbvZYRx4R1wl5",
+      "cohort": "original24",
+      "proposed_source_video_group": "UBI:n_537_0_1_1_0",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        5
+      ],
+      "duration_seconds": 16.0,
+      "decoded_frames": 480,
+      "planned_1fps_observations": 16
+    },
+    {
+      "filename": "ubi_N_724_1_0_1_0.mp4",
+      "bytes": 288637,
+      "sha256": "05f04f52c7142c8a156e3a006e3107dc330a726b7c4a12956c123fcde5c20edb",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "17Iq6qCwjHGgoqFu5MphSz2FP6Deuxaa2",
+      "cohort": "original24",
+      "proposed_source_video_group": "UBI:n_724_1_0_1_0",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        6
+      ],
+      "duration_seconds": 16.0,
+      "decoded_frames": 480,
+      "planned_1fps_observations": 16
+    },
+    {
+      "filename": "smoking_video_smoke_h_nm_np1_fr_goo_1.mp4",
+      "bytes": 595574,
+      "sha256": "a696d0d26898dfdf016216f5a2ab2ff2de9cf55717610234c5de75776491d518",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1FuumsQEFJeWc6Y7WyiCi4gBDkMkKTKeE",
+      "cohort": "original24",
+      "proposed_source_video_group": "HMDB:smoking_video",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        7
+      ],
+      "duration_seconds": 14.767,
+      "decoded_frames": 443,
+      "planned_1fps_observations": 15
+    },
+    {
+      "filename": "nice_smoking_girl_smoke_h_nm_np1_le_med_0.mp4",
+      "bytes": 171686,
+      "sha256": "caf6d3927d09937b048ba7036a2e93378e9486b5fd21e2b114a2e31885c7169f",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1xz0JSboRWZOU3f-PKfTZ6wsHY0IyJt6C",
+      "cohort": "original24",
+      "proposed_source_video_group": "HMDB:nice_smoking_girl",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        8
+      ],
+      "duration_seconds": 5.167,
+      "decoded_frames": 155,
+      "planned_1fps_observations": 6
+    },
+    {
+      "filename": "smoking_1_smoke_h_cm_np1_ri_goo_0.mp4",
+      "bytes": 466326,
+      "sha256": "cc57b94527f82193f76f66614b41b403f047a964ba141dcd982d6c1a765ea126",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1TU8yiDZYQwRYBxkB7S-eobbKNoY1n8hh",
+      "cohort": "original24",
+      "proposed_source_video_group": "HMDB:smoking_1",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        9
+      ],
+      "duration_seconds": 7.533,
+      "decoded_frames": 226,
+      "planned_1fps_observations": 8
+    },
+    {
+      "filename": "adl-24-cam0.mp4",
+      "bytes": 33792,
+      "sha256": "e9c5714da6a0e30766f5590d5dfe8f219d188ff40a64a20edbefe6b56ace39c5",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1Pr5IruOw5PNP-ujZpuPD-JAE-plKBr6D",
+      "cohort": "original24",
+      "proposed_source_video_group": "URFD:adl-24",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        10
+      ],
+      "duration_seconds": 2.333,
+      "decoded_frames": 70,
+      "planned_1fps_observations": 3
+    },
+    {
+      "filename": "adl-25-cam0.mp4",
+      "bytes": 38701,
+      "sha256": "c2774517592fb0f12036efd93ac25aa8becb12e72f162646e439cee80beb5e0b",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1I_qsJyo2IY1ov7raQoXFToSkJdIjDp-0",
+      "cohort": "original24",
+      "proposed_source_video_group": "URFD:adl-25",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        11
+      ],
+      "duration_seconds": 3.666,
+      "decoded_frames": 110,
+      "planned_1fps_observations": 4
+    },
+    {
+      "filename": "adl-30-cam0.mp4",
+      "bytes": 222499,
+      "sha256": "a879572f12ae2b27b522cf3fa5d974e8402b6e7fc10fc962d0a85e4bbea168e5",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1CPIzwcTnYNzjYIIeMiW2aLSLTK1Q339U",
+      "cohort": "original24",
+      "proposed_source_video_group": "URFD:adl-30",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        12
+      ],
+      "duration_seconds": 13.333,
+      "decoded_frames": 400,
+      "planned_1fps_observations": 14
+    },
+    {
+      "filename": "fall-02-cam0.mp4",
+      "bytes": 93187,
+      "sha256": "0ce7885bb313d11476b493f5f6d3baf56553ab7fb5d7b299b3ddbc52b9bcc595",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1nCv8Kwl5U-VrvASy4EzC52KIR5Jgu8tS",
+      "cohort": "original24",
+      "proposed_source_video_group": "URFD:fall-02",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        13
+      ],
+      "duration_seconds": 3.666,
+      "decoded_frames": 110,
+      "planned_1fps_observations": 4
+    },
+    {
+      "filename": "fall-28-cam0.mp4",
+      "bytes": 51200,
+      "sha256": "a1ee3f0b992a687678774c975ef6673a0688b88e4ed55ce33356c949c30a1917",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1FUzTuTvxQXPu31niAufwCO_55eJeDQ5i",
+      "cohort": "original24",
+      "proposed_source_video_group": "URFD:fall-28",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        14
+      ],
+      "duration_seconds": 2.2,
+      "decoded_frames": 66,
+      "planned_1fps_observations": 3
+    },
+    {
+      "filename": "fall-29-cam0.mp4",
+      "bytes": 66050,
+      "sha256": "ac00ba6d13e123eae5a3ebbcf7f8faed04901245891b382fd51cca09b5fc6eb0",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1AERNNIuTvPRR6XYArpnug0zRc60itXCw",
+      "cohort": "original24",
+      "proposed_source_video_group": "URFD:fall-29",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        15
+      ],
+      "duration_seconds": 3.3,
+      "decoded_frames": 99,
+      "planned_1fps_observations": 4
+    },
+    {
+      "filename": "adl-26-cam0.mp4",
+      "bytes": 68033,
+      "sha256": "79dacd23811230a18870d5155f70cdd289fdf9736ba897797d35a83165d468d8",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1m_D5yEWH7T35U0X_MFtW6nW66JnEl6KO",
+      "cohort": "original24",
+      "proposed_source_video_group": "URFD:adl-26",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        16
+      ],
+      "duration_seconds": 3.167,
+      "decoded_frames": 95,
+      "planned_1fps_observations": 4
+    },
+    {
+      "filename": "adl-28-cam0.mp4",
+      "bytes": 36355,
+      "sha256": "287ef0020d55bf86654976f7c747702462b95d6263d5429bdcdf2f4ec2511578",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1DQl1IiV2kgnha6BL4wFwGexL-x21wbgO",
+      "cohort": "original24",
+      "proposed_source_video_group": "URFD:adl-28",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        17
+      ],
+      "duration_seconds": 2.833,
+      "decoded_frames": 85,
+      "planned_1fps_observations": 3
+    },
+    {
+      "filename": "adl-29-cam0.mp4",
+      "bytes": 50417,
+      "sha256": "805afe93e5c0393debdb575611b41e8c38801d2f0a17ccc411273d70188ba626",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1rXKgvU7iL34gusgrUIst5LRMjvb-VtfJ",
+      "cohort": "original24",
+      "proposed_source_video_group": "URFD:adl-29",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        18
+      ],
+      "duration_seconds": 4.166,
+      "decoded_frames": 125,
+      "planned_1fps_observations": 5
+    },
+    {
+      "filename": "w001_converted.avi",
+      "bytes": 810978,
+      "sha256": "f25c3f02c258ebe5ffc1082a61114f220f0b25171ba5194fea28b33d5294f719",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1b_zJ56d5qRE_Kv89tyMpTK920XAyi5Zy",
+      "cohort": "original24",
+      "proposed_source_video_group": "SCVD:train:w001",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        19
+      ],
+      "duration_seconds": 5.133,
+      "decoded_frames": 154,
+      "planned_1fps_observations": 6
+    },
+    {
+      "filename": "w003_converted.avi",
+      "bytes": 707964,
+      "sha256": "7dd2b7ba147eefa8cffb72d780546c83882a0a2cd2855c03fa92d40a63b344d8",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1DBpsq_bwT_QIDotJvC_TN_c7Irr-ya_A",
+      "cohort": "original24",
+      "proposed_source_video_group": "SCVD:train:w003",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        20
+      ],
+      "duration_seconds": 5.567,
+      "decoded_frames": 167,
+      "planned_1fps_observations": 6
+    },
+    {
+      "filename": "w004_converted.avi",
+      "bytes": 1229990,
+      "sha256": "d80e2e73491b703fb38a68e6333949db5e551092514b422f865238805dfab188",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1JigG6UyPOXe76H-P3i2ZoL03BFLI84wJ",
+      "cohort": "original24",
+      "proposed_source_video_group": "SCVD:train:w004",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        21
+      ],
+      "duration_seconds": 7.633,
+      "decoded_frames": 229,
+      "planned_1fps_observations": 8
+    },
+    {
+      "filename": "adl-32-cam0.mp4",
+      "bytes": 119105,
+      "sha256": "f8ec44e3a0e83087fd94543f15236df3bca430e2a7924cfffbedeedde90bc438",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1TNNjWKBnX6ybfQZsHRJ8brSoAVfD-Mcx",
+      "cohort": "original24",
+      "proposed_source_video_group": "URFD:adl-32",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        22
+      ],
+      "duration_seconds": 6.666,
+      "decoded_frames": 200,
+      "planned_1fps_observations": 7
+    },
+    {
+      "filename": "adl-33-cam0.mp4",
+      "bytes": 115535,
+      "sha256": "570e5b2a5c4960ad9d356f92173641ee7b25ce4a56b1a2b65f92ff2b369a219c",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1Atgk5puC5UKShkUPQ9BeEa3W-4d3KBkV",
+      "cohort": "original24",
+      "proposed_source_video_group": "URFD:adl-33",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        23
+      ],
+      "duration_seconds": 6.666,
+      "decoded_frames": 200,
+      "planned_1fps_observations": 7
+    },
+    {
+      "filename": "adl-34-cam0.mp4",
+      "bytes": 134295,
+      "sha256": "1be342c918bfdb43e0811a5d07fbd6430d385b376b5b2f2f0acb50a3909dc14d",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "14aGe_4uWdIlAmO11J9RWOMrGUksZPTFk",
+      "cohort": "original24",
+      "proposed_source_video_group": "URFD:adl-34",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        24
+      ],
+      "duration_seconds": 6.366,
+      "decoded_frames": 191,
+      "planned_1fps_observations": 7
+    },
+    {
+      "filename": "IMG_2892.MOV",
+      "bytes": 3866463,
+      "sha256": "b321cbe2700e4b98657c75c609c55458a562c62d3307dc9e273ed628de400f86",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1XwonXArnG37dlO5AxfPu36hIOLY-LDrU",
+      "cohort": "bag_dev10",
+      "proposed_source_video_group": "Ashley-bag-20261111-green",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        25,
+        26
+      ],
+      "duration_seconds": 8.433,
+      "decoded_frames": 252,
+      "planned_1fps_observations": 9
+    },
+    {
+      "filename": "IMG_2893.MOV",
+      "bytes": 3848510,
+      "sha256": "ebb174a88ec4c65835a11da41c1c0dd8df502dfab6fabd49a1ecd352bee9e776",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1i5u2A1VbSijg-eRBYlRl3BvT-q5vVKE8",
+      "cohort": "bag_dev10",
+      "proposed_source_video_group": "Ashley-bag-20261111-green",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        27,
+        28
+      ],
+      "duration_seconds": 8.533,
+      "decoded_frames": 255,
+      "planned_1fps_observations": 9
+    },
+    {
+      "filename": "IMG_2894.MOV",
+      "bytes": 3792758,
+      "sha256": "d50b5d4f3a4286fbb61b358cedcc3c02d337f839df9afc982d20a0f558e2414b",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1u6pBQ4C4A3zhZXaQiEdlbSTawiJqGWVl",
+      "cohort": "bag_dev10",
+      "proposed_source_video_group": "Ashley-bag-20261111-green",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        29,
+        30
+      ],
+      "duration_seconds": 8.233,
+      "decoded_frames": 246,
+      "planned_1fps_observations": 9
+    },
+    {
+      "filename": "IMG_2895.MOV",
+      "bytes": 3343413,
+      "sha256": "ad634bc73c367da3fbcb163aa2b1f4962e8ac07a8f6a2767dd143d889710bca1",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1gq4a9wZzm2_Y9FdOBxAGooLtqXFu9tUD",
+      "cohort": "bag_dev10",
+      "proposed_source_video_group": "Ashley-bag-20261111-black",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        31,
+        32
+      ],
+      "duration_seconds": 7.233,
+      "decoded_frames": 215,
+      "planned_1fps_observations": 8
+    },
+    {
+      "filename": "IMG_2896.MOV",
+      "bytes": 4331461,
+      "sha256": "1b075f001c7a13fc92f034f9f46328a14f50cc8b93c2a933cc08e880ab64a893",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1YZu5x-rcS2KEstGxdS6rI6f-FjjwJPS6",
+      "cohort": "bag_dev10",
+      "proposed_source_video_group": "Ashley-bag-20261111-black",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        33,
+        34
+      ],
+      "duration_seconds": 9.533,
+      "decoded_frames": 285,
+      "planned_1fps_observations": 10
+    },
+    {
+      "filename": "IMG_2897.MOV",
+      "bytes": 5148352,
+      "sha256": "4a0931730542360c8e5bfceaf44dfee816e7877fb6e74b7d0616c9e4444b0234",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "14hnZD0L5KR7Nz2nBcNIjb7jOFqxO4gJI",
+      "cohort": "bag_dev10",
+      "proposed_source_video_group": "Ashley-bag-20261111-black",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        35,
+        36
+      ],
+      "duration_seconds": 11.3,
+      "decoded_frames": 338,
+      "planned_1fps_observations": 12
+    },
+    {
+      "filename": "IMG_2898.MOV",
+      "bytes": 3436950,
+      "sha256": "29e0e326da87a54e466902d3f1702493bb68ba43bfef6de77f7c3d6e42962e49",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1kunxopcK8ZkvLfQS1IQe6Vw-GVCIgQ_U",
+      "cohort": "bag_dev10",
+      "proposed_source_video_group": "Ashley-bag-20261111-black",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        37,
+        38
+      ],
+      "duration_seconds": 7.6,
+      "decoded_frames": 227,
+      "planned_1fps_observations": 8
+    },
+    {
+      "filename": "IMG_2899.MOV",
+      "bytes": 5080503,
+      "sha256": "73fbfaf7c5ac22777e2e0798fe1b229c77d51556dec504b76e9e3afa0408fdec",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1dAwvzUNe7TYkOIYtz3Zl_BigHMolY3QO",
+      "cohort": "bag_dev10",
+      "proposed_source_video_group": "Ashley-bag-20261111-yellow",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        39,
+        40
+      ],
+      "duration_seconds": 12.0,
+      "decoded_frames": 358,
+      "planned_1fps_observations": 12
+    },
+    {
+      "filename": "IMG_2900.MOV",
+      "bytes": 5126102,
+      "sha256": "ae5be57829cd69cf9b077f3b255348701c6b9b19f895365a4ff0cfa5c5da4acc",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "1yjAt7m_U2kJHS9TLjGrZB9u51dlJbeJH",
+      "cohort": "bag_dev10",
+      "proposed_source_video_group": "Ashley-bag-20261111-yellow",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        41,
+        42
+      ],
+      "duration_seconds": 12.4,
+      "decoded_frames": 371,
+      "planned_1fps_observations": 13
+    },
+    {
+      "filename": "IMG_2901.MOV",
+      "bytes": 4698394,
+      "sha256": "e78371697d64ffd238e69d9b45e495be35b9ed15aaef617d7e0cfbcc3f171bac",
+      "sha256_matches_drive_index": true,
+      "drive_file_id": "14n83ajizXFzGlDmNvqpgyV6N4gx--6lL",
+      "cohort": "bag_dev10",
+      "proposed_source_video_group": "Ashley-bag-20261111-yellow",
+      "group_status": "proposed_not_independently_human_confirmed",
+      "question_numbers": [
+        43,
+        44
+      ],
+      "duration_seconds": 10.4,
+      "decoded_frames": 311,
+      "planned_1fps_observations": 11
+    }
+  ],
+  "questions": [
+    {
+      "number": 1,
+      "filename": "ubi_F_182_0_0_1_0.mp4",
+      "event": "fight",
+      "question": "Does any fighting occur in this video? Answer yes or no.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 2,
+      "filename": "ubi_F_210_1_0_0_0.mp4",
+      "event": "fight",
+      "question": "Does any fighting occur in this video? Answer yes or no.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 3,
+      "filename": "ubi_F_69_0_0_0_0.mp4",
+      "event": "fight",
+      "question": "Does any fighting occur in this video? Answer yes or no.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 4,
+      "filename": "ubi_N_481_0_0_1_0.mp4",
+      "event": "fight",
+      "question": "Does any fighting occur in this video? Answer yes or no.",
+      "proposed_answer": "no",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 5,
+      "filename": "ubi_N_537_0_1_1_0.mp4",
+      "event": "fight",
+      "question": "Does any fighting occur in this video? Answer yes or no.",
+      "proposed_answer": "no",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 6,
+      "filename": "ubi_N_724_1_0_1_0.mp4",
+      "event": "fight",
+      "question": "Does any fighting occur in this video? Answer yes or no.",
+      "proposed_answer": "no",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 7,
+      "filename": "smoking_video_smoke_h_nm_np1_fr_goo_1.mp4",
+      "event": "smoking",
+      "question": "Does this video show a person smoking? Answer yes or no.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 8,
+      "filename": "nice_smoking_girl_smoke_h_nm_np1_le_med_0.mp4",
+      "event": "smoking",
+      "question": "Does this video show a person smoking? Answer yes or no.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 9,
+      "filename": "smoking_1_smoke_h_cm_np1_ri_goo_0.mp4",
+      "event": "smoking",
+      "question": "Does this video show a person smoking? Answer yes or no.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 10,
+      "filename": "adl-24-cam0.mp4",
+      "event": "smoking",
+      "question": "Does this video show a person smoking? Answer yes or no.",
+      "proposed_answer": "no",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 11,
+      "filename": "adl-25-cam0.mp4",
+      "event": "smoking",
+      "question": "Does this video show a person smoking? Answer yes or no.",
+      "proposed_answer": "no",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 12,
+      "filename": "adl-30-cam0.mp4",
+      "event": "smoking",
+      "question": "Does this video show a person smoking? Answer yes or no.",
+      "proposed_answer": "no",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 13,
+      "filename": "fall-02-cam0.mp4",
+      "event": "fall",
+      "question": "Does a person fall in this video? Answer yes or no.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 14,
+      "filename": "fall-28-cam0.mp4",
+      "event": "fall",
+      "question": "Does a person fall in this video? Answer yes or no.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 15,
+      "filename": "fall-29-cam0.mp4",
+      "event": "fall",
+      "question": "Does a person fall in this video? Answer yes or no.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 16,
+      "filename": "adl-26-cam0.mp4",
+      "event": "fall",
+      "question": "Does a person fall in this video? Answer yes or no.",
+      "proposed_answer": "no",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 17,
+      "filename": "adl-28-cam0.mp4",
+      "event": "fall",
+      "question": "Does a person fall in this video? Answer yes or no.",
+      "proposed_answer": "no",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 18,
+      "filename": "adl-29-cam0.mp4",
+      "event": "fall",
+      "question": "Does a person fall in this video? Answer yes or no.",
+      "proposed_answer": "no",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 19,
+      "filename": "w001_converted.avi",
+      "event": "weapon",
+      "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 20,
+      "filename": "w003_converted.avi",
+      "event": "weapon",
+      "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 21,
+      "filename": "w004_converted.avi",
+      "event": "weapon",
+      "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 22,
+      "filename": "adl-32-cam0.mp4",
+      "event": "weapon",
+      "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+      "proposed_answer": "no",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 23,
+      "filename": "adl-33-cam0.mp4",
+      "event": "weapon",
+      "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+      "proposed_answer": "no",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 24,
+      "filename": "adl-34-cam0.mp4",
+      "event": "weapon",
+      "question": "Does this video show a visible weapon, or a visible object being used to strike, stab, or explicitly threaten a person? Answer yes or no.",
+      "proposed_answer": "no",
+      "recorded_review_label": "user_reviewed",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 25,
+      "filename": "IMG_2892.MOV",
+      "event": "bag_knife",
+      "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+      "proposed_answer": "no",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 26,
+      "filename": "IMG_2892.MOV",
+      "event": "bag_alcohol_bottle",
+      "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+      "proposed_answer": "no",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 27,
+      "filename": "IMG_2893.MOV",
+      "event": "bag_knife",
+      "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 28,
+      "filename": "IMG_2893.MOV",
+      "event": "bag_alcohol_bottle",
+      "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+      "proposed_answer": "no",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 29,
+      "filename": "IMG_2894.MOV",
+      "event": "bag_knife",
+      "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+      "proposed_answer": "no",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 30,
+      "filename": "IMG_2894.MOV",
+      "event": "bag_alcohol_bottle",
+      "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 31,
+      "filename": "IMG_2895.MOV",
+      "event": "bag_knife",
+      "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+      "proposed_answer": "no",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 32,
+      "filename": "IMG_2895.MOV",
+      "event": "bag_alcohol_bottle",
+      "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+      "proposed_answer": "no",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 33,
+      "filename": "IMG_2896.MOV",
+      "event": "bag_knife",
+      "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+      "proposed_answer": "no",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 34,
+      "filename": "IMG_2896.MOV",
+      "event": "bag_alcohol_bottle",
+      "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+      "proposed_answer": "no",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 35,
+      "filename": "IMG_2897.MOV",
+      "event": "bag_knife",
+      "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 36,
+      "filename": "IMG_2897.MOV",
+      "event": "bag_alcohol_bottle",
+      "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 37,
+      "filename": "IMG_2898.MOV",
+      "event": "bag_knife",
+      "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+      "proposed_answer": "no",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 38,
+      "filename": "IMG_2898.MOV",
+      "event": "bag_alcohol_bottle",
+      "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 39,
+      "filename": "IMG_2899.MOV",
+      "event": "bag_knife",
+      "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+      "proposed_answer": "no",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 40,
+      "filename": "IMG_2899.MOV",
+      "event": "bag_alcohol_bottle",
+      "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+      "proposed_answer": "no",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 41,
+      "filename": "IMG_2900.MOV",
+      "event": "bag_knife",
+      "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 42,
+      "filename": "IMG_2900.MOV",
+      "event": "bag_alcohol_bottle",
+      "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+      "proposed_answer": "no",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 43,
+      "filename": "IMG_2901.MOV",
+      "event": "bag_knife",
+      "question": "Is a knife visibly exposed inside the bag or taken out of it in this video? Answer yes, no, or unknown.",
+      "proposed_answer": "no",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    },
+    {
+      "number": 44,
+      "filename": "IMG_2901.MOV",
+      "event": "bag_alcohol_bottle",
+      "question": "Is a bottle identifiable as an alcohol bottle visibly exposed inside the bag or taken out of it in this video? Judge its visible appearance only. Answer yes, no, or unknown.",
+      "proposed_answer": "yes",
+      "recorded_review_label": "assistant_visual_review_no_individual_human_labels_supplied",
+      "review_label_set_by_this_agent": false
+    }
+  ],
+  "isolation": {
+    "validation_vs_manifest_202": {
+      "filename_overlap": [],
+      "sha256_overlap": [],
+      "test_video_bytes_rehashed": false,
+      "test_identity_source": "pinned manifest_202.json and samples.json, container hashes verified"
+    },
+    "recording_id_coincidence": [
+      {
+        "validation_file": "w003_converted.avi",
+        "validation_sha256": "7dd2b7ba147eefa8cffb72d780546c83882a0a2cd2855c03fa92d40a63b344d8",
+        "validation_group": "SCVD:train:w003",
+        "validation_question": 20,
+        "test_file": "t_w003_converted.avi",
+        "test_sha256": "eaa2fb25c437c3d5cb3538dafae0101f9f544b2ac35f7e729fc813dc329b47f8",
+        "test_group": "SCVD_v3_t_w003",
+        "test_question": 46,
+        "same_file": false,
+        "note": "Shared SCVD recording number w003. Filenames and full hashes differ. Same person or scene is not established."
+      },
+      {
+        "validation_file": "w004_converted.avi",
+        "validation_sha256": "d80e2e73491b703fb38a68e6333949db5e551092514b422f865238805dfab188",
+        "validation_group": "SCVD:train:w004",
+        "validation_question": 21,
+        "test_file": "t_w004_converted.avi",
+        "test_sha256": "bb3364ca79dcadb08573a184493e64e6efbe39cece0c00e8d1c8f2529154436d",
+        "test_group": "SCVD_v3_t_w004",
+        "test_question": 87,
+        "same_file": false,
+        "note": "Shared SCVD recording number w004. Filenames and full hashes differ. Same person or scene is not established."
+      }
+    ],
+    "training_development": {
+      "train_membership": null,
+      "train_status": "not established for the evaluated pretrained or hosted models",
+      "development_membership": null,
+      "development_status": "complete history unavailable; existing test material has known previous development/evaluation use",
+      "independent_owner_group_review": false,
+      "actor_scene_isolation_proven": false,
+      "scvd_train_token": "SCVD:train:* is the source dataset split label retained by the frozen sidecar, not a claim that these clips were in a model training set."
+    }
+  }
+}
