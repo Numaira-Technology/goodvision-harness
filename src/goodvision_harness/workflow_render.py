@@ -113,6 +113,22 @@ def render_output(jpeg, output, timestamp, *, language="zh"):
                             outline="#32e7a0",
                             width=3,
                         )
+        elif layer == "objects":
+            if value.get("error") or not recent(
+                value.get("timestamp_seconds"), timestamp, 15
+            ):
+                continue
+            present = [
+                (o.get("zh_name") if language == "zh" else None) or o.get("name")
+                for o in value.get("objects", [])
+                if o.get("present") is True
+            ]
+            if present:
+                panel(
+                    " · ".join(str(name) for name in present if name),
+                    settings[layer]["position"],
+                    "#8a5a00",
+                )
         elif layer == "events":
             labels = []
             for record in value.get("results", []):

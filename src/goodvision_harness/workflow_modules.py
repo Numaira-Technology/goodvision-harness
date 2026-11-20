@@ -3,7 +3,12 @@
 import os
 from urllib.parse import urlsplit
 
-ENGINES = {"tracking": ("contour", "bbox"), "events": ("vlm", "system1", "neural")}
+ENGINES = {
+    "tracking": ("contour", "bbox"),
+    "events": ("vlm", "system1", "neural"),
+    # Object presence reuses the native VideoJev worker; more engines later.
+    "objects": ("system1",),
+}
 NAMES = {
     "contour": "Contour",
     "bbox": "Bbox",
@@ -43,13 +48,16 @@ def module_endpoint(engine, config):
 
 
 def display_settings(value):
-    if not isinstance(value, dict) or set(value) - {"tracks", "events", "summary"}:
+    if not isinstance(value, dict) or set(value) - {
+        "tracks", "events", "summary", "objects",
+    }:
         raise ValueError("invalid output display settings")
     result = {}
     for kind, default in (
         ("tracks", "top-left"),
         ("events", "top-left"),
         ("summary", "top-right"),
+        ("objects", "bottom-left"),
     ):
         item = value.get(kind, {})
         if not isinstance(item, dict) or set(item) - {"visible", "position"}:

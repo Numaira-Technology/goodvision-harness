@@ -589,6 +589,13 @@ body.workflow-active #console-main{flex:1;min-height:0;padding:12px;margin:0;max
         </div>
         <p id="overall-description" class="frame-summary-text" data-interface-copy="true">等待定时全画面描述</p>
       </section>
+      <section id="object-presence" class="frame-summary" aria-labelledby="object-presence-title" hidden>
+        <div class="frame-summary-head">
+          <h3 id="object-presence-title">物体存在</h3>
+          <span id="object-presence-meta" class="frame-summary-meta">Canvas 物体存在 · VideoJev</span>
+        </div>
+        <div id="object-presence-list" class="frame-summary-text"></div>
+      </section>
       <div id="annotation-note" class="note annotation-note">
         Original video frames inherit the preceding annotation between analysis updates.
         <a href="/v1/video/stream.mjpeg" target="_blank" rel="noreferrer">Open exact evidence stream</a>.
@@ -2463,6 +2470,65 @@ function renderOverallDescription(payload,context=overallDescriptionContext(),re
   ui.overallDescription.textContent=blocks.length?blocks.join("\n\n"):missingLanguage?"等待当前语言的全画面描述":overallDescriptionMessage(context);
   ui.overallDescriptionMeta.textContent=["Canvas 定时 Summary",...new Set(metadata)].join(" · ");
 }
+function objectPresenceContext(){
+  const status=state.diagnosticStatus||{},workflow=status.workflow,manager=workflow?.objects;
+  const session=workflow?.stream_session_id||manager?.stream_session_id;
+  const generation=workflow?.generation??manager?.generation;
+  const source=manager?.source_id||status.source_id,node=manager?.node_id;
+  const enabled=state.running&&!status.workflow_test_running&&workflow?.enabled&&
+    manager?.state==="running"&&!!session&&!!node;
+  return {enabled,session,generation,source,node,key:JSON.stringify([!!enabled,session,generation,source,node])};
+}
+function renderObjectPresence(payload,context=objectPresenceContext()){
+  state.objectPresenceKey=context.key;
+  const panel=$("object-presence"),list=$("object-presence-list"),meta=$("object-presence-meta");
+  const status=payload?.status||{},items=(Array.isArray(payload?.items)?payload.items:[]).filter(item=>
+    item?.type==="object_presence"&&item.stream_session_id===context.session&&item.generation===context.generation&&
+    item.node_id===context.node&&(!context.source||item.source_id===context.source));
+  if(!context.enabled||!payload){panel.hidden=true;list.replaceChildren();return;}
+  panel.hidden=false;
+  const latest=items[items.length-1];
+  const english=globalThis.GoodvisionI18n?.language?.()==="en";
+  if(!latest){list.textContent=english?"Waiting for the first judgment":"等待第一次判断";}
+  else{
+    list.replaceChildren(...latest.objects.map(item=>{
+      const row=document.createElement("div");
+      const label=(!english&&item.zh_name)||item.name||item.id;
+      const p=Number.isFinite(item.present_probability)?(item.present_probability*100).toFixed(0)+"%":"-";
+      const answer=item.answer===true?(english?"present":"在"):item.answer===false?(english?"absent":"不在"):(english?"unclear":"看不清");
+      row.textContent=(item.present?"● ":"○ ")+label+" · "+(item.present?(english?"PRESENT":"在画面中"):(english?"not present":"未检出"))+
+        " · "+(english?"this frame: ":"本帧：")+answer+" "+p+(english?" / gate ":" / 门限 ")+Math.round(item.gate*100)+"%";
+      row.style.fontWeight=item.present?"600":"400";
+      return row;
+    }));
+  }
+  const parts=["Canvas 物体存在 · VideoJev"];
+  if(latest&&Number.isFinite(Number(latest.timestamp_seconds)))parts.push("视频 "+Number(latest.timestamp_seconds).toFixed(1)+" 秒");
+  if(latest?.error||status.last_error)parts.push("判断失败："+(latest?.error||status.last_error));
+  meta.textContent=parts.join(" · ");
+}
+async function pollObjectPresence(){
+  const context=objectPresenceContext();
+  if(!context.enabled||state.objectPresenceKey!==context.key)renderObjectPresence(null,context);
+  if(!context.enabled)return;
+  const current=()=>!sceneView.closed&&objectPresenceContext().key===context.key;
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),3000);
+  try{
+    const response=await fetch("/v1/workflow/objects?limit=20",{cache:"no-store",signal:controller.signal});
+    if(!response.ok)throw new Error("HTTP "+response.status);
+    const payload=await response.json();
+    if(!current()){
+      const latest=objectPresenceContext();
+      if(!sceneView.closed&&state.objectPresenceKey!==latest.key)renderObjectPresence(null,latest);
+      return;
+    }
+    if(payload?.status?.state!=="running"||payload.status.stream_session_id!==context.session||payload.status.generation!==context.generation){
+      renderObjectPresence(null,context);return;
+    }
+    renderObjectPresence(payload,context);
+  }catch(_){if(current())renderObjectPresence(null,context);}
+  finally{clearTimeout(timer);}
+}
 async function pollOverallDescription(){
   const context=overallDescriptionContext();
   renderOverallDescription(null,context);
@@ -2914,6 +2980,7 @@ async function pollDiagnosticResults(){
     if(globalThis.GoodvisionDiagnosticView==="insights"){
       await pollQuickTaskJudgment();
       ({received,unavailable}=await pollOverallDescription());
+      await pollObjectPresence();
     }
     for(const feature of globalThis.GoodvisionDiagnosticView==="insights"?[]:["overall",...detectionEvents]){
       if(sceneView.closed)break;

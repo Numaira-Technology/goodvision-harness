@@ -5590,6 +5590,15 @@ def create_app(
             headers={"Cache-Control": "no-store"},
         )
 
+    @application.get("/v1/workflow/objects")
+    def workflow_objects(request: Request, limit: int = 100) -> JSONResponse:
+        if not 1 <= limit <= 100:
+            raise HTTPException(400, "object limit must be between 1 and 100")
+        return JSONResponse(
+            _runtime(request).workflow_object_results(limit=limit),
+            headers={"Cache-Control": "no-store"},
+        )
+
     @application.get("/v1/deployment/summary-service")
     def workflow_summary_service(request: Request) -> JSONResponse:
         # Operator-entered connection values must round-trip verbatim. Only the

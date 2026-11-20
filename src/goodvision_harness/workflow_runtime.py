@@ -28,6 +28,7 @@ class WorkflowRuntimeMixin:
     _workflow_plan = None
     _workflow_binding = None
     _workflow_summaries = None
+    _workflow_objects = None
     _workflow_test_manager = None
     _workflow_testing = False
     _workflow_starting = False
@@ -112,7 +113,7 @@ class WorkflowRuntimeMixin:
         if not plan or self.dry_run:
             return
         pending = []
-        for role in ("tracking", "events"):
+        for role in ("tracking", "events", "objects"):
             selected = plan.get(role + "_engine")
             if (
                 selected in LOCAL_PORTS
@@ -347,6 +348,7 @@ class WorkflowRuntimeMixin:
             self._workflow_binding = copy.deepcopy(binding)
             self._workflow_result_context = None
             self._workflow_summaries = None
+            self._workflow_objects = None
             self._workflow_test_manager = None
             operation = self._workflow_operation
             revision = self._rich_config_revision
@@ -386,6 +388,7 @@ class WorkflowRuntimeMixin:
                 manager is not None and manager.busy
                 for manager in (
                     self._workflow_summaries,
+                    self._workflow_objects,
                     self._workflow_test_manager,
                 )
             )
@@ -440,6 +443,7 @@ class WorkflowRuntimeMixin:
                 layout = self._connection_camera_layout
                 self._workflow_result_context = None
                 self._workflow_summaries = None
+                self._workflow_objects = None
             native = bool(
                 choices["features"]
                 or (
@@ -481,6 +485,7 @@ class WorkflowRuntimeMixin:
                     "result_epoch": self.results.epoch,
                 }
                 self._start_workflow_summaries(connection, session_id=session_id)
+                self._start_workflow_objects(connection, session_id=session_id)
                 plan = self._workflow_plan
                 if (
                     plan is not None
@@ -488,6 +493,7 @@ class WorkflowRuntimeMixin:
                     and not choices["features"]
                     and not plan["tracking_enabled"]
                     and not plan["summaries"]
+                    and not plan.get("objects")
                 ):
                     self._workflow_raw_session_id = session_id
                 self._workflow_starting = False
@@ -538,18 +544,76 @@ class WorkflowRuntimeMixin:
         self._workflow_summaries = manager
         manager.start()
 
+    def _start_workflow_objects(self, connection, *, session_id=None):
+        from .object_presence import (
+            ObjectPresenceManager,
+            latest_frame,
+            recent_frames,
+        )
+        from .workflow_modules import native_endpoints
+
+        plan = self._workflow_plan
+        if plan is None or not plan.get("objects"):
+            self._workflow_objects = None
+            return
+        previous = self._workflow_objects
+        if previous is not None and previous.busy:
+            raise RuntimeError("wait for the previous object worker to drain")
+        endpoint = plan.get("objects_service_url")
+        if not endpoint:
+            raise ValueError("Configure the object recognition service URL first.")
+        manager = ObjectPresenceManager(
+            plan["objects"],
+            frame_provider=lambda: latest_frame(connection),
+            history_provider=lambda seconds: recent_frames(connection, seconds),
+            post=self._make_object_post(native_endpoints(endpoint)[0]),
+            stream_session_id=session_id or uuid4().hex,
+            source_id=self.source_id,
+            generation=self._generation,
+        )
+        self._workflow_objects = manager
+        manager.start()
+
+    def _make_object_post(self, endpoint):
+        from .object_presence import http_post, synthetic_post
+
+        # Test mode never calls a model; it reports every object as unclear.
+        return synthetic_post() if self.dry_run else http_post(
+            endpoint, timeout_seconds=10.0
+        )
+
+    def workflow_object_results(self, *, limit=100):
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("object history limit must be within 1 through 1000")
+        with self._control_lock:
+            manager = (
+                self._workflow_objects
+                if self._workflow_context_valid(self._workflow_result_context)
+                else None
+            )
+        return {
+            "camera_id": f"camera{self._fleet_camera_index:02d}",
+            "status": manager.status() if manager else {"state": "idle"},
+            "items": manager.history(limit=limit) if manager else [],
+        }
+
     def _stop_workflow_summaries(self):
         # Stop cannot wait for network work while holding a service lock.
         with self._control_lock:
             self._workflow_operation += 1
             self._workflow_raw_session_id = None
-            managers = (self._workflow_summaries, self._workflow_test_manager)
+            managers = (
+                self._workflow_summaries,
+                self._workflow_objects,
+                self._workflow_test_manager,
+            )
         for manager in managers:
             if manager is not None:
                 manager.stop(timeout=0.2)
 
     def _workflow_status(self, payload):
         manager, test = self._workflow_summaries, self._workflow_test_manager
+        objects = self._workflow_objects
         if self._workflow_testing or (test is not None and test.busy):
             payload["pipeline_state"] = (
                 "stopping"
@@ -559,8 +623,10 @@ class WorkflowRuntimeMixin:
             payload["workflow_test_running"] = True
         elif self._workflow_starting:
             payload["pipeline_state"] = "starting"
-        elif self._workflow_raw_session_id is not None or (
-            manager is not None and manager.busy
+        elif (
+            self._workflow_raw_session_id is not None
+            or (manager is not None and manager.busy)
+            or (objects is not None and objects.busy)
         ):
             if payload.get("pipeline_state") in {
                 None,
@@ -589,6 +655,7 @@ class WorkflowRuntimeMixin:
                     "session_id"
                 ),
                 "summaries": manager.status() if manager is not None else None,
+                "objects": objects.status() if objects is not None else None,
             }
         return payload
 
@@ -649,6 +716,7 @@ class WorkflowRuntimeMixin:
             plan = copy.deepcopy(self._workflow_plan)
             context = copy.deepcopy(self._workflow_result_context)
             manager, connection = self._workflow_summaries, self._video_connection
+            objects = self._workflow_objects
         outputs = []
         if plan is not None:
             for output in plan["outputs"]:
@@ -661,6 +729,12 @@ class WorkflowRuntimeMixin:
                         and self._workflow_context_valid(context)
                     ):
                         value = manager.latest(node_id=item["node_id"])
+                    elif (
+                        port == "objects"
+                        and objects is not None
+                        and self._workflow_context_valid(context)
+                    ):
+                        value = objects.latest()
                     elif (
                         port == "faces"
                         and self._workflow_context_valid(context)
@@ -770,6 +844,10 @@ class WorkflowRuntimeMixin:
                 or (
                     self._workflow_summaries is not None
                     and self._workflow_summaries.state == "running"
+                )
+                or (
+                    self._workflow_objects is not None
+                    and self._workflow_objects.state == "running"
                 )
             )
             if not running or not self._workflow_context_valid(context):

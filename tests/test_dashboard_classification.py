@@ -29,6 +29,7 @@ import pytest
         "task_judgment_cards.cjs",
         "task_observation.cjs",
         "workflow_summary_display.cjs",
+        "object_presence_display.cjs",
     ]
 )
 def test_dashboard_handlers(script_name: str) -> None:

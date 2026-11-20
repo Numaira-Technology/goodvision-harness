@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import itertools
 from dataclasses import replace
 from pathlib import Path
 from threading import Event, Thread
@@ -688,3 +689,141 @@ def test_draft_snapshot_uses_configured_custom_event_vocabulary(rig):
     assert [item["event_label"] for item in events["observations"]] == ["opens_door"]
     assert runtime.results.epoch == before_epoch
     assert runtime._session is None
+
+
+def objects_graph(objects, *, frames=False):
+    value = graph(frames=frames)
+    value["nodes"].append(
+        {
+            "id": "objects",
+            "type": "objects",
+            "config": {"objects": objects, "sample_fps": 4, "clear_after": 2},
+        }
+    )
+    value["edges"] += [
+        {"id": "in-objects", "from_node": "source", "from_port": "frames",
+         "to_node": "objects", "to_port": "frames"},
+        {"id": "out-objects", "from_node": "objects", "from_port": "objects",
+         "to_node": "out", "to_port": "objects"},
+    ]
+    return value
+
+
+def feed_until_judged(connection, adapter, worker, timeout=5.0):
+    import time
+
+    deadline, index = time.monotonic() + timeout, 2
+    while worker.latest() is None:
+        if time.monotonic() >= deadline:
+            pytest.fail("object presence produced no judgment")
+        publish(connection, adapter, frame(index))
+        index += 1
+        time.sleep(0.05)  # new frames across the worker's 0.25 s ticks
+
+
+def test_object_presence_only_runs_without_gpu_and_reports_through_outputs(
+    rig, monkeypatch
+):
+    from goodvision_harness.object_presence import PRESETS
+    from goodvision_harness.videojev_core import OPTIONS
+
+    runtime, connection, adapter, _clock = rig
+    monkeypatch.setattr(
+        runtime,
+        "_require_processing_ready",
+        lambda: pytest.fail("object presence must not require tracking readiness"),
+    )
+    bodies = []
+
+    def videojev(body):
+        bodies.append(body)
+        return {
+            "request_id": body["request_id"],
+            "raw": [
+                {
+                    "id": "object/knife",
+                    "task": "choice",
+                    "answer_index": 0,
+                    "answer": OPTIONS[0],
+                    "probabilities": [0.97, 0.02, 0.01],
+                }
+            ],
+        }
+
+    endpoints = []
+    monkeypatch.setattr(
+        runtime, "_make_object_post", lambda endpoint: endpoints.append(endpoint)
+        or videojev,
+    )
+    configure(runtime, objects_graph([PRESETS["knife"]], frames=True))
+    status = runtime.start_connected_analysis()
+    assert status["pipeline_state"] == "running"
+    assert runtime._session is None
+    session_id = status["workflow"]["stream_session_id"]
+    assert endpoints == ["http://127.0.0.1:8097/predict"]
+    worker = runtime._workflow_objects
+    feed_until_judged(connection, adapter, worker)
+    assert bodies[0]["session"] == session_id + ":objects:objects"
+    value = values(runtime)["objects"]
+    assert value["stream_session_id"] == session_id
+    assert value["objects"][0]["present"] is True
+    api = runtime.workflow_object_results()
+    assert api["status"]["state"] == "running" and api["items"]
+    assert runtime.status()["workflow"]["objects"]["node_id"] == "objects"
+    with pytest.raises(RuntimeError, match="stop"):
+        configure(runtime, graph(frames=True))
+    runtime.stop_session()
+    wait_for(lambda: not runtime._processing_lifecycle_busy())
+    assert runtime.status()["pipeline_state"] == "idle"
+    configure(runtime, graph(frames=True), "different-recipe")
+    assert runtime.workflow_object_results()["items"] == []
+
+
+def test_object_presence_dry_run_calls_no_model(rig):
+    from goodvision_harness.object_presence import PRESETS
+
+    runtime, connection, adapter, _clock = rig
+    assert runtime.dry_run
+    configure(runtime, objects_graph([PRESETS["knife"]]))
+    runtime.start_connected_analysis()
+    worker = runtime._workflow_objects
+    feed_until_judged(connection, adapter, worker)
+    record = worker.latest()
+    assert record["error"] is None and record["objects"][0]["answer"] is None
+    runtime.stop_session()
+    wait_for(lambda: not runtime._processing_lifecycle_busy())
+
+
+def test_four_frame_object_window_uses_the_connection_history(rig, monkeypatch):
+    from goodvision_harness.object_presence import PRESETS
+    from goodvision_harness.videojev_core import OPTIONS
+
+    runtime, connection, adapter, _clock = rig
+    bodies = []
+
+    def videojev(body):
+        bodies.append(body)
+        return {
+            "request_id": body["request_id"],
+            "raw": [{
+                "id": "object/knife", "task": "choice", "answer_index": 1,
+                "answer": OPTIONS[1], "probabilities": [0.1, 0.8, 0.1],
+            }],
+        }
+
+    monkeypatch.setattr(runtime, "_make_object_post", lambda endpoint: videojev)
+    value = objects_graph([PRESETS["knife"]])
+    node = next(n for n in value["nodes"] if n["type"] == "objects")
+    node["config"].update(window_frames=4, frame_step_seconds=0.4)
+    configure(runtime, value)
+    runtime.start_connected_analysis()
+    worker = runtime._workflow_objects
+    feed_until_judged(connection, adapter, worker, timeout=8.0)
+    body = bodies[-1]
+    assert len(body["images"]) == 4
+    gaps = [b - a for a, b in itertools.pairwise(body["frame_times"])]
+    assert all(0.3 <= g <= 0.5 for g in gaps), gaps
+    reasons = {t["reason"] for t in worker.tick_log()}
+    assert "valid" in reasons
+    runtime.stop_session()
+    wait_for(lambda: not runtime._processing_lifecycle_busy())

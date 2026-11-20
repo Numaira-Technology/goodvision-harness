@@ -735,3 +735,58 @@ for(const outcome of ['success','cancel','failed-workflows','failed-summary'])te
   assert.equal(app.summaryServiceDraft.model,'discard-me');assert.equal(app.summaryServiceDraft.api_key,'unsaved-key');assert.deepEqual(app.graph,edited);assert(app.anyDirty());if(outcome==='cancel')assert.deepEqual(requests,[]);else assert.equal(app.error,true);
  }
 });
+
+test('object presence block defaults to the knife preset on System 1 and validates objects',()=>{
+ const {palette,definition}=require('../src/goodvision_harness/assets/workflow_canvas.js');
+ const g={nodes:[node('input','source')],edges:[]};
+ const objects=newNode('objects',g,{x:300,y:100});
+ assert.equal(objects.type,'objects');
+ assert.equal(objects.config.engine,'system1');
+ assert.equal(objects.config.execution_mode,'local');
+ assert.deepEqual(objects.config.objects.map(o=>o.id),['knife']);
+ assert.equal(objects.config.objects[0].gate,0.95);
+ // Shares the VideoJev engine id with System 1 events but stays an objects block.
+ assert.equal(definition(objects),palette.objects);
+ assert.equal(definition({type:'events',config:{engine:'system1'}}).name,'System 1 recognition');
+ const out=node('out','output');
+ const full={nodes:[g.nodes[0],objects,out],edges:[edge('a','input','frames',objects.id,'frames'),edge('b',objects.id,'objects','out','objects')]};
+ assert.deepEqual(validateGraph(full,{complete:true}),[]);
+ const bad=clone(full);bad.nodes[1].config.objects[0].gate=2;
+ assert.ok(validateGraph(bad).includes('Object gates must be between 0.34 and 1.'));
+ const empty=clone(full);empty.nodes[1].config.objects=[];
+ assert.ok(validateGraph(empty).includes('An object block needs 1 to 8 objects.'));
+ const dup=clone(full);dup.nodes[1].config.objects.push(clone(dup.nodes[1].config.objects[0]));
+ assert.ok(validateGraph(dup).includes('Object IDs must be unique lowercase slugs.'));
+ const two=clone(full);two.nodes.push({...clone(objects),id:'objects-2'});
+ assert.ok(validateGraph(two).some(e=>/Only one objects block/.test(e)));
+});
+
+test('object editor adds presets and custom objects and edits a field',()=>{
+ const app=appFixture();
+ app.add('objects',{x:300,y:300});const block=app.graph.nodes.at(-1);app.selected=block.id;
+ app.handleAction('object-add',{dataset:{preset:'alcohol_bottle'}});
+ app.handleAction('object-add',{dataset:{preset:''}});
+ assert.deepEqual(block.config.objects.map(o=>o.id),['knife','alcohol_bottle','object_3']);
+ app.handleAction('object-remove',{dataset:{index:'2'}});
+ assert.deepEqual(block.config.objects.map(o=>o.id),['knife','alcohol_bottle']);
+ const html=app.renderObjects(block,false);
+ assert.match(html,/data-wc-object="1:gate"/);assert.match(html,/Add custom object/);
+});
+
+test('object block exposes 2 or 4 frames and validates frame spacing',()=>{
+ const g={nodes:[node('input','source')],edges:[]};
+ const block=newNode('objects',g,{x:300,y:100});
+ assert.equal(block.config.window_frames,2);
+ assert.equal(block.config.frame_step_seconds,0.4);
+ const full={nodes:[g.nodes[0],block,node('out','output')],edges:[edge('a','input','frames',block.id,'frames'),edge('b',block.id,'objects','out','objects')]};
+ assert.deepEqual(validateGraph(full,{complete:true}),[]);
+ const three=clone(full);three.nodes[1].config.window_frames=3;
+ assert.ok(validateGraph(three).includes('Frames per judgment must be 2 or 4.'));
+ const step=clone(full);step.nodes[1].config.window_frames=4;step.nodes[1].config.frame_step_seconds=2;
+ assert.ok(validateGraph(step).includes('Frame spacing must be between 0.1 and 1 second.'));
+ const app=appFixture();app.add('objects',{x:300,y:300});const added=app.graph.nodes.at(-1);
+ assert.match(app.renderObjects(added,false),/data-wc-field="window_frames"/);
+ assert.doesNotMatch(app.renderObjects(added,false),/frame_step_seconds/);
+ added.config.window_frames=4;
+ assert.match(app.renderObjects(added,false),/data-wc-field="frame_step_seconds"/);
+});
