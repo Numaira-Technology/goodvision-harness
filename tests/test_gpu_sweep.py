@@ -14,9 +14,9 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from tools.unified_benchmark import gpu_sweep
+from tools.videojev_probe import gpu_sweep
 from tools.unified_benchmark.adapters import request_body
-from tools.unified_benchmark.contract import digest, file_hash
+from tools.unified_benchmark.contract import digest, file_hash, source_files
 
 CONFIG = json.loads(Path("tools/unified_benchmark/profiles/videojev.json").read_text())
 EVENTS = ("fight", "smoking")
@@ -100,12 +100,24 @@ def test_run_refuses_a_changed_request(tmp_path):
 
 
 def health(gpu, quantization, **settings):
-    return {"ready": True, "queue_policy": "latest-per-stream", "context": 32768,
-            "max_pixels": 409600, "gpu_batch_size": settings.get("gpu_batch_size", 4),
-            "runtime": {"gpu": gpu, "model": CONFIG["model"], "revision": CONFIG["revision"],
-                        "attention": "flash_attention_2", "prefix_cache": True,
-                        "torch_cpu_threads": 4, "quantization": {"mode": quantization},
-                        "gpu_allocated_bytes_after_load": 9 if quantization == "bf16" else 6}}
+    versions = {"torch": "2.8.0+cu128", "transformers": "5.14.1",
+                "flash-attn": "2.8.3.post2"}
+    if quantization == "fp8":
+        versions["torchao"] = "0.13.0"
+    return {
+        "ready": True, "queue_policy": "latest-per-stream", "context": 32768,
+        "max_pixels": 409600, "gpu_batch_size": 4, "ready_capacity": 4,
+        "queue_age": 19.5, "queue_capacity": 48, "request_timeout": 20,
+        "requests_received": 0, "model": CONFIG["model"], "revision": CONFIG["revision"],
+        "runtime": {
+            "gpu": gpu, "model": CONFIG["model"], "revision": CONFIG["revision"],
+            "attention": "flash_attention_2", "prefix_cache": True, "cuda_runtime": "12.8",
+            "torch_cpu_threads": 4, "torch_interop_threads": 4,
+            "quantization": {"mode": quantization}, "versions": versions,
+            "gpu_allocated_bytes_after_load": 9 if quantization == "bf16" else 6,
+        },
+        **settings,
+    }
 
 
 def saved_run(tmp_path, plan, label, probs, service, stage):
@@ -114,7 +126,8 @@ def saved_run(tmp_path, plan, label, probs, service, stage):
     out.mkdir()
     (out / "units.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
     run = {"label": label, "bundle_sha256": "b", "split": "test", "plan_sha256": digest(plan),
-           "config_sha256": digest(CONFIG), "service": gpu_sweep.describe(service),
+           "config_sha256": digest(CONFIG), "sweep_sha256": "sweep-a",
+           "service": gpu_sweep.describe(service), "warmup_seconds": [stage] * 3,
            "summary": gpu_sweep.summarize(plan, CONFIG, records, wall_seconds=stage * 10),
            "units_sha256": file_hash(out / "units.jsonl")}
     (out / "run.json").write_text(json.dumps(run))
@@ -155,11 +168,15 @@ def test_compare_refuses_without_a_proper_baseline(tmp_path):
         "baseline"]["is_default_baseline"] is False
 
 
-def test_compare_refuses_different_service_settings(tmp_path):
+@pytest.mark.parametrize(("setting", "value"), [
+    ("gpu_batch_size", 2), ("ready_capacity", 2), ("queue_age", 9.5),
+    ("queue_capacity", 24), ("request_timeout", 10), ("context", 8192),
+])
+def test_compare_refuses_different_service_settings(tmp_path, setting, value):
     plan = make_bundle(tmp_path)
     base = saved_run(tmp_path, plan, "base", TRUTHY, health("RTX 4090", "bf16"), 0.2)
     other = saved_run(tmp_path, plan, "other", TRUTHY,
-                      health("RTX 4090", "fp8", gpu_batch_size=2), 0.1)
+                      health("RTX 4090", "fp8", **{setting: value}), 0.1)
     b, bu = gpu_sweep.read_run(base)
     c, cu = gpu_sweep.read_run(other)
     with pytest.raises(ValueError, match="settings differ"):
@@ -175,14 +192,164 @@ def test_read_run_detects_edited_units(tmp_path):
         gpu_sweep.read_run(base)
 
 
-def test_warm_up_uses_separate_sessions_and_is_not_scored(tmp_path):
+@pytest.mark.parametrize(("setting", "value", "message"), [
+    ("versions", {"torch": "wrong"}, "dependency versions differ"),
+    ("cuda_runtime", "12.9", "cuda_runtime differ"),
+    ("torch_interop_threads", 2, "runtime differ"),
+])
+def test_compare_refuses_different_service_environment(tmp_path, setting, value, message):
     plan = make_bundle(tmp_path)
-    seen = []
-    service = fake_service({"warmup-0": TRUTHY["u0"], "warmup-1": TRUTHY["u0"]})
+    base = saved_run(tmp_path, plan, "base", TRUTHY, health("RTX 4090", "bf16"), 0.2)
+    candidate = health("RTX 4090", "fp8")
+    candidate["runtime"][setting] = value
+    other = saved_run(tmp_path, plan, "other", TRUTHY, candidate, 0.1)
+    b, bu = gpu_sweep.read_run(base)
+    c, cu = gpu_sweep.read_run(other)
+    with pytest.raises(ValueError, match=message):
+        gpu_sweep.compare_runs(b, c, bu, cu)
+
+
+@pytest.mark.parametrize("damage", [
+    lambda response: response.pop("raw"),
+    lambda response: response.update(timings=[0.1]),
+    lambda response: response["timings"].update(decision_seconds=float("nan")),
+    lambda response: response["timings"].update(decision_seconds=True),
+])
+def test_malformed_response_does_not_abort_or_count_as_success(tmp_path, damage):
+    plan = make_bundle(tmp_path)
+    respond = fake_service(TRUTHY)
 
     def post(body):
-        seen.append((body["request_id"], body["session"]))
-        return service(body)
+        status, response = respond(body)
+        if body["request_id"] == "u0":
+            damage(response)
+        return status, response
 
-    assert len(gpu_sweep.warm_up(plan, CONFIG, tmp_path, post, 2)) == 2
-    assert seen == [("warmup-0", "warmup-0"), ("warmup-1", "warmup-1")]
+    rows = gpu_sweep.run_units(plan, CONFIG, tmp_path, post)
+    assert len(rows) == 3 and rows[1]["complete"] and rows[2]["complete"]
+    assert rows[0]["error"].startswith("invalid response:") and not rows[0]["complete"]
+    summary = gpu_sweep.summarize(plan, CONFIG, rows, 1.0)
+    assert summary["failed_units"] == 1 and summary["incomplete_questions"] == 2
+    assert summary["planned_questions"] == 4 and summary["accuracy"] == 0.5
+
+
+def run_args(tmp_path, *extra):
+    return ["run", "--bundle", str(tmp_path), "--label", "synthetic",
+            "--output", str(tmp_path / "run"), *extra]
+
+
+def synthetic_sweep(tmp_path, monkeypatch, snapshot):
+    plan = make_bundle(tmp_path)
+    (tmp_path / "plans").mkdir()
+    (tmp_path / "plans/videojev-test.json").write_text(json.dumps(plan))
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs/videojev.json").write_text(json.dumps(CONFIG))
+    monkeypatch.setattr(gpu_sweep, "verify_bundle", lambda bundle: "sealed-synthetic-bundle")
+    monkeypatch.setattr(gpu_sweep, "http_health", lambda url: snapshot)
+    calls = []
+    respond = fake_service({**TRUTHY, **{f"warmup-{i}": TRUTHY["u0"] for i in range(3)}})
+
+    def post(url, body):
+        assert url == "http://127.0.0.1:8093"
+        calls.append(body)
+        return respond(body)
+
+    monkeypatch.setattr(gpu_sweep, "http_post", post)
+    return plan, calls
+
+
+@pytest.mark.parametrize(("alter", "message"), [
+    (lambda snapshot: snapshot.update(model="not-videojev"), "model/revision differs"),
+    (lambda snapshot: snapshot["runtime"].update(revision="wrong"), "model/revision differs"),
+    (lambda snapshot: snapshot.update(requests_received=1), "fresh, dedicated"),
+    (lambda snapshot: snapshot.pop("requests_received"), "fresh, dedicated"),
+    (lambda snapshot: snapshot.pop("ready_capacity"), "sweep settings"),
+    (lambda snapshot: snapshot["runtime"].pop("quantization"), "sweep settings"),
+])
+def test_run_cli_refuses_before_sending_any_frames(tmp_path, monkeypatch, alter, message):
+    snapshot = health("RTX 4090", "bf16")
+    alter(snapshot)
+    _, calls = synthetic_sweep(tmp_path, monkeypatch, snapshot)
+    with pytest.raises(ValueError, match=message):
+        gpu_sweep.main(run_args(tmp_path))
+    assert calls == [] and not (tmp_path / "run").exists()
+
+
+def test_run_cli_seals_sweep_and_sends_exact_frozen_requests(tmp_path, monkeypatch):
+    plan, calls = synthetic_sweep(tmp_path, monkeypatch, health("RTX 4090", "bf16"))
+    gpu_sweep.main(run_args(tmp_path))
+    assert [(body["request_id"], body["session"]) for body in calls[:3]] == [
+        (f"warmup-{i}", f"warmup-{i}") for i in range(3)
+    ]
+    assert {body["request_id"]: digest(body) for body in calls[3:]} == {
+        unit["id"]: unit["request_sha256"] for unit in plan["units"]
+    }
+    result, rows = gpu_sweep.read_run(tmp_path / "run")
+    assert len(result["warmup_seconds"]) == len(rows) == 3
+    assert result["summary"]["accuracy"] == 1.0
+    assert result["sweep_sha256"] == file_hash(gpu_sweep.__file__)
+
+
+@pytest.mark.parametrize("url", [
+    "http://192.0.2.10:8093", "http://127.0.0.1:8093/predict",
+    "https://127.0.0.1:8093", "http://localhost:8093", "http://fake@127.0.0.1:8093",
+])
+def test_run_refuses_nonlocal_or_ambiguous_destination_before_network(tmp_path, monkeypatch, url):
+    def never(*args):
+        pytest.fail("invalid destination reached a network/bundle boundary")
+
+    monkeypatch.setattr(gpu_sweep, "http_health", never)
+    monkeypatch.setattr(gpu_sweep, "verify_bundle", never)
+    with pytest.raises(ValueError, match="loopback"):
+        gpu_sweep.main(run_args(tmp_path, "--url", url))
+
+
+def test_sweep_is_not_part_of_historical_frozen_source_inventory():
+    assert Path(gpu_sweep.__file__).resolve() not in set(source_files().values())
+
+
+def test_http_opener_does_not_follow_redirects_or_use_proxies():
+    from urllib.request import HTTPRedirectHandler, ProxyHandler
+
+    redirects = [h for h in gpu_sweep._HTTP.handlers if isinstance(h, HTTPRedirectHandler)]
+    assert len(redirects) == 1
+    assert redirects[0].redirect_request(None, None, 307, "", {}, "outside") is None
+    assert not any(isinstance(h, ProxyHandler) and h.proxies for h in gpu_sweep._HTTP.handlers)
+
+
+def test_compare_rejects_runs_from_a_different_sweep_revision(tmp_path):
+    plan = make_bundle(tmp_path)
+    base = saved_run(tmp_path, plan, "base", TRUTHY, health("RTX 4090", "bf16"), 0.2)
+    other = saved_run(tmp_path, plan, "other", TRUTHY, health("RTX 4090", "fp8"), 0.1)
+    b, bu = gpu_sweep.read_run(base)
+    c, cu = gpu_sweep.read_run(other)
+    c["sweep_sha256"] = "sweep-b"
+    with pytest.raises(ValueError, match="sweep_sha256"):
+        gpu_sweep.compare_runs(b, c, bu, cu)
+
+
+@pytest.mark.parametrize(("mutate", "message"), [
+    (lambda u: u.update(request_sha256="0" * 64), "frozen request differs"),
+    (lambda u: u.update(source_id="warmup-0"), "warm-up IDs collide"),
+])
+def test_warmup_checks_frozen_input_and_collision_before_sending(tmp_path, mutate, message):
+    plan = make_bundle(tmp_path)
+    unit = plan["units"][1] if message.endswith("collide") else plan["units"][0]
+    mutate(unit)
+    with pytest.raises(ValueError, match=message):
+        gpu_sweep.warm_up(plan, CONFIG, tmp_path, lambda _: pytest.fail("sent data"), 1)
+
+
+def test_compare_requires_same_warmup_count(tmp_path):
+    plan = make_bundle(tmp_path)
+    base = saved_run(tmp_path, plan, "base", TRUTHY, health("RTX 4090", "bf16"), 0.2)
+    other = saved_run(tmp_path, plan, "other", TRUTHY, health("RTX 4090", "fp8"), 0.1)
+    b, bu = gpu_sweep.read_run(base)
+    c, cu = gpu_sweep.read_run(other)
+    c["warmup_seconds"].pop()
+    with pytest.raises(ValueError, match="warm-up counts differ"):
+        gpu_sweep.compare_runs(b, c, bu, cu)
+
+
+def test_zero_warmups_do_not_construct_or_send_a_request():
+    assert gpu_sweep.warm_up({}, None, None, lambda _: pytest.fail("sent data"), 0) == []

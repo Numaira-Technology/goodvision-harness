@@ -228,6 +228,7 @@ class Scorer:
         self._pipeline = deque()
         self._active_sessions = {}
         self._jobs = {}
+        self._requests_received = 0
         self._recent = OrderedDict()
         self._question_templates = OrderedDict()
         self._last_template = None
@@ -269,7 +270,12 @@ class Scorer:
                 "prepared": sum(work.state == "ready" for work in self._pipeline),
                 "gpu_busy": bool(self._gpu_work),
                 "queue_policy": "latest-per-stream",
-                "context": metadata.get("context", self.context),
+                "requests_received": self._requests_received,
+                "queue_age": self.queue_age,
+                "queue_capacity": self.queue_capacity,
+                "ready_capacity": self.ready_capacity,
+                "request_timeout": self.request_timeout,
+                "context": self.context,
                 "max_pixels": self.max_pixels,
                 "gpu_batch_size": self.gpu_batch_size,
                 "model": metadata.get("model"),
@@ -283,6 +289,7 @@ class Scorer:
         replaced = None
         rejected = False
         with self._condition:
+            self._requests_received += 1
             key = body["session"], body["request_id"]
             existing = self._jobs.get(key)
             if existing is not None:
