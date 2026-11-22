@@ -230,7 +230,7 @@ def test_scorer_batches_ready_windows_within_configured_cap(
         prefix_cache = True
 
         def __init__(self):
-            self.metadata = {}
+            self.metadata = {"context": 32768}
 
         def prepare(self, images, fps, **kwargs):
             return SimpleNamespace(value=int(images[0]), record={"tokens": 16})
@@ -261,9 +261,16 @@ def test_scorer_batches_ready_windows_within_configured_cap(
     audit = tmp_path / "results.jsonl"
     scorer = service.Scorer(
         Runtime, audit, gpu_batch_size=cap, ready_capacity=ready_capacity,
+        context=8192, request_timeout=11, queue_age=10, queue_capacity=99,
     )
     try:
         scorer.wait_ready()
+        snapshot = scorer.snapshot()
+        assert {k: snapshot[k] for k in (
+            "context", "request_timeout", "queue_age", "queue_capacity", "ready_capacity",
+            "requests_received",
+        )} == {"context": 8192, "request_timeout": 11, "queue_age": 10,
+               "queue_capacity": 99, "ready_capacity": ready_capacity, "requests_received": 0}
         futures = [scorer.submit(body(0))]
         assert entered.wait(5)
         futures.extend(scorer.submit(body(index)) for index in range(1, 5))
@@ -289,6 +296,9 @@ def test_scorer_batches_ready_windows_within_configured_cap(
         assert len(calls[1][1]) == min(cap, ready_capacity)
         assert calls[1][0] == ("single" if cap == 1 else "batch")
         assert scorer.healthy
+        assert scorer.snapshot()["requests_received"] == 5
+        assert scorer.submit(body(0)).result(timeout=5) == results[0]
+        assert scorer.snapshot()["requests_received"] == 6
     finally:
         release.set()
         scorer.shutdown()

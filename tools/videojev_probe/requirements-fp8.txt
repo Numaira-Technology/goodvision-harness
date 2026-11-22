@@ -1,0 +1,6 @@
+# VideoJev FP8 latency experiment: the BF16 environment plus torchao.
+# Build it as a SEPARATE pack (new r2_key); never rebuild or overwrite
+# envs/videojev/cu128-py312-torch280-ada.tar.gz. torchao 0.13.0 pairs with the
+# torch==2.8.0 cu128 wheel the base recipe installs first.
+-r requirements.txt
+torchao==0.13.0
