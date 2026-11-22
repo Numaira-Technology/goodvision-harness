@@ -65,6 +65,9 @@ class _ModuleList(_Module):
     def append(self, item):
         setattr(self, str(len(self._children)), item)
 
+    def __iter__(self):
+        return iter(self._children.values())
+
 
 nn = types.SimpleNamespace(
     Module=_Module, Linear=_Linear, ModuleList=_ModuleList,
@@ -245,3 +248,46 @@ def test_fp8_requirements_extend_the_bf16_environment():
     lines = Path("tools/videojev_probe/requirements-fp8.txt").read_text().splitlines()
     pins = [line for line in lines if line and not line.startswith("#")]
     assert pins == ["-r requirements.txt", f"torchao=={videojev_core.TORCHAO_VERSION}"]
+
+
+def test_compile_scopes_on_the_real_layer_layout():
+    model = videojev_like()
+    assert videojev_core.compile_targets(model, "off") == []
+    mlps = videojev_core.compile_targets(model, "mlp")
+    assert len(mlps) == 31 and all(n.endswith(".mlp") for n, _ in mlps)  # last layer has none
+    assert len(videojev_core.compile_targets(model, "layers")) == 32
+    with pytest.raises(ValueError, match="compile must be one of"):
+        videojev_core.compile_targets(model, "max-autotune")
+
+
+def test_apply_compile_compiles_modules_in_place():
+    calls = []
+
+    class Spy(_Module):
+        def compile(self, **kwargs):
+            calls.append(kwargs)
+
+    model = _Module()
+    model.backbone = _Module()
+    model.backbone.language_model = _Module()
+    model.backbone.language_model.layers = _ModuleList()
+    for _ in range(3):
+        layer = Spy()
+        layer.mlp = Spy()
+        model.backbone.language_model.layers.append(layer)
+    assert videojev_core.apply_compile(model, "mlp") == {"mode": "mlp", "modules": 3, "dynamic": True}
+    assert calls == [{"dynamic": True}] * 3
+    assert videojev_core.apply_compile(model, "off") == {"mode": "off"}
+
+
+def test_compile_defaults_off_everywhere():
+    for cls in (NativeVideoJevModel, VideoJevRuntime):
+        assert inspect.signature(cls.__init__).parameters["compile_mode"].default == "off"
+
+
+def test_service_cli_refuses_compile_for_decision3(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "argv", [
+        "videojev_service", "--runtime", "decision3", "--compile", "mlp",
+        "--cache-dir", str(tmp_path), "--result-log", str(tmp_path / "r.jsonl")])
+    with pytest.raises(SystemExit):
+        videojev_service.main()

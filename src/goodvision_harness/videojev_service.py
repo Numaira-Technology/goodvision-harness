@@ -22,7 +22,7 @@ from .videojev_contract import (
     parse_choices,
     scene_question_template,
 )
-from .videojev_core import QUANTIZATION_MODES
+from .videojev_core import COMPILE_MODES, QUANTIZATION_MODES
 from .videojev_runtime import VideoJevRuntime
 
 MAX_BODY_BYTES = 64 * 1024 * 1024
@@ -816,9 +816,15 @@ def main():
         "--quantization", choices=QUANTIZATION_MODES, default="bf16",
         help="language-model weight precision; fp8 is a latency experiment (sm_89+, torchao)",
     )
+    parser.add_argument(
+        "--compile", choices=COMPILE_MODES, default="off",
+        help="torch.compile scope for latency experiments; off in production",
+    )
     args = parser.parse_args()
     if args.quantization != "bf16" and args.runtime != "videojev":
         parser.error("--quantization fp8 is only implemented for --runtime videojev")
+    if args.compile != "off" and args.runtime != "videojev":
+        parser.error("--compile is only implemented for --runtime videojev")
     if args.max_pixels is None:
         args.max_pixels = 200704 if args.runtime == "decision3" else 409600
     if args.cpu_threads < 1:
@@ -839,6 +845,7 @@ def main():
         else:
             runtime = VideoJevRuntime(
                 args.cache_dir, prefix_cache=args.prefix_cache, quantization=args.quantization,
+                compile_mode=args.compile,
             )
         started = time.perf_counter()
         template = QuestionTemplate(scene_question_template(

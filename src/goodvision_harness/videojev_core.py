@@ -26,6 +26,11 @@ _FP8_PREFIX = "backbone.language_model.layers."
 # Left alone on purpose: linear_attn (Gated DeltaNet), the vision encoder
 # (prepare_for_inference keeps it FP32), the FP32 decision head, embeddings.
 _FP8_PARTS = (".mlp.", ".self_attn.")
+# torch.compile scope for latency experiments. "off" is production. "mlp"
+# compiles each decoder layer's dense MLP (plain linears + SiLU, dynamic
+# sequence length); "layers" compiles whole decoder layers, where dynamo may
+# graph-break around the flash-attention / Gated DeltaNet kernels.
+COMPILE_MODES = ("off", "mlp", "layers")
 
 
 def choice_indices(raw, expected):
@@ -150,6 +155,27 @@ def apply_fp8(model):
     }
 
 
+def compile_targets(model, mode):
+    """(name, module) pairs that ``mode`` compiles, in layer order."""
+    if mode not in COMPILE_MODES:
+        raise ValueError(f"compile must be one of {COMPILE_MODES}")
+    if mode == "off":
+        return []
+    layers = model.backbone.language_model.layers
+    if mode == "layers":
+        return [(f"backbone.language_model.layers.{i}", layer) for i, layer in enumerate(layers)]
+    return [(f"backbone.language_model.layers.{i}.mlp", layer.mlp)
+            for i, layer in enumerate(layers) if getattr(layer, "mlp", None) is not None]
+
+
+def apply_compile(model, mode):
+    """Compile the selected modules in place (``nn.Module.compile``)."""
+    targets = compile_targets(model, mode)
+    for _, module in targets:
+        module.compile(dynamic=True)
+    return {"mode": mode, "modules": len(targets), "dynamic": True} if targets else {"mode": "off"}
+
+
 class NativeVideoJevModel:
     """Load the native model shared by live inference and probe tools.
 
@@ -157,11 +183,13 @@ class NativeVideoJevModel:
     tests; it is never selected implicitly.
     """
 
-    def __init__(self, cache_dir, *, quantization="bf16"):
+    def __init__(self, cache_dir, *, quantization="bf16", compile_mode="off"):
         import torch
         from transformers import AutoModel, AutoProcessor
 
         check_quantization(quantization)
+        if compile_mode not in COMPILE_MODES:
+            raise ValueError(f"compile must be one of {COMPILE_MODES}")
         if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
             raise RuntimeError("requires a CUDA GPU supporting BF16; no CPU fallback")
         if importlib.metadata.version("transformers") != "5.14.1":
@@ -185,6 +213,7 @@ class NativeVideoJevModel:
         quantized = {"mode": "bf16"}
         if quantization == "fp8":
             quantized = apply_fp8(self.model)
+        compiled = apply_compile(self.model, compile_mode)  # after FP8, so FP8 linears compile too
         torch.cuda.synchronize()
         props = torch.cuda.get_device_properties(0)
         packages = ["torch", "transformers", "flash-attn", "flash-linear-attention",
@@ -200,4 +229,5 @@ class NativeVideoJevModel:
             "cuda_runtime": torch.version.cuda,
             "attention": "flash_attention_2", "context": CONTEXT,
             "quantization": quantized,
+            "compile": compiled,
         }
