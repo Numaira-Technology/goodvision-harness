@@ -82,8 +82,11 @@ python -m tools.videojev_probe.gpu_sweep compare --baseline <runs>/4090-bf16 --c
   - 批量设置不同的两次运行，只有在 `compare` 时用 `--vary gpu_batch_size ready_capacity` 显式声明后才能比较，声明的差异会写进结果。
 
 ## 实测结论（2026-11-22，第一轮）
-**FP8 不值得用。** 同机对比 BF16：4090 吞吐量 +3%，L40S 反而 −11%；准确率差在 ±3 题以内，属于噪声；显存省 2.5 GB。换卡（4090 → L40S）的提速约 1.1–1.3 倍，而同型号 4090 在不同主机上就差了 19%。各请求的时间主要花在 GPU 满载时的排队，以及语言模型的决策阶段。详细数据见 `docs/validation/evidence/videojev-gpu-sweep-20261122/`。
+**单开 FP8（不编译）不值得用。** 同机对比 BF16：4090 吞吐量 +3%，L40S 反而 −11%；准确率差在 ±3 题以内，属于噪声；显存省 2.5 GB。换卡（4090 → L40S）的提速约 1.1–1.3 倍，而同型号 4090 在不同主机上就差了 19%。各请求的时间主要花在 GPU 满载时的排队，以及语言模型的决策阶段。详细数据见 `docs/validation/evidence/videojev-gpu-sweep-20261122/`。
+
+## 实测结论（2026-11-22，第二轮：compile 和批量）
+同一台 4090 上，和 BF16 b4（不编译）比：**只有 FP8 + `--compile mlp` 有效**，吞吐量 +14%，决策阶段 −21%，请求 P50 −10%，准确率 +1 题。BF16 开 compile（`mlp` 或 `layers`）没有变化；`layers` 模式撞到 dynamo 的重新编译上限，退回 eager 执行。批量 8 反而慢了 4%。这个结论只在一台主机上测过，详见 `docs/validation/evidence/videojev-compile-batch-20261122/`。
 
 ## 还没验证
-- `torch.compile`（动态 FP8 的激活量化开销可能要靠它才能消掉）、更大的 batch。
+- 在第二台 4090 上复测 FP8 + compile mlp；用线上 0.5 秒间隔的窗口测一次；`layers` 模式真正编译成功（需要先处理重新编译问题）。
 - H100 和 A100（需要另打环境包）。
