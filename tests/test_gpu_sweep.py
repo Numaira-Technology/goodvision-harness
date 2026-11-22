@@ -173,3 +173,16 @@ def test_read_run_detects_edited_units(tmp_path):
         f.write("{}\n")
     with pytest.raises(ValueError, match="differs"):
         gpu_sweep.read_run(base)
+
+
+def test_warm_up_uses_separate_sessions_and_is_not_scored(tmp_path):
+    plan = make_bundle(tmp_path)
+    seen = []
+    service = fake_service({"warmup-0": TRUTHY["u0"], "warmup-1": TRUTHY["u0"]})
+
+    def post(body):
+        seen.append((body["request_id"], body["session"]))
+        return service(body)
+
+    assert len(gpu_sweep.warm_up(plan, CONFIG, tmp_path, post, 2)) == 2
+    assert seen == [("warmup-0", "warmup-0"), ("warmup-1", "warmup-1")]

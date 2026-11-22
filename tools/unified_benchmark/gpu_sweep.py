@@ -127,6 +127,21 @@ def run_units(plan, config, bundle, post, *, workers=12, clock=time.perf_counter
     return [records[u["id"]] for u in plan["units"]]
 
 
+def warm_up(plan, config, bundle, post, count):
+    """Send ``count`` copies of the first unit under a separate session; not scored."""
+    unit = plan["units"][0]
+    body = request_body(config, unit, bundle)[1]
+    seconds = []
+    for i in range(count):
+        warm = dict(body, request_id=f"warmup-{i}", session=f"warmup-{i}")
+        started = time.perf_counter()
+        status, _ = post(warm)
+        seconds.append(time.perf_counter() - started)
+        if status != 200:
+            raise RuntimeError(f"warm-up request failed with http {status}")
+    return seconds
+
+
 def percentiles(values):
     values = [v for v in values if isinstance(v, (int, float))]
     if not values:
@@ -168,8 +183,10 @@ def run(args):
     health = http_health(args.url)
     if health.get("ready") is not True:
         raise ValueError("service is not ready")
+    post = lambda body: http_post(args.url, body)  # noqa: E731
+    warmup_seconds = warm_up(plan, config, bundle, post, args.warmup)
     started = time.perf_counter()
-    records = run_units(plan, config, bundle, lambda body: http_post(args.url, body))
+    records = run_units(plan, config, bundle, post)
     wall = time.perf_counter() - started
     with (output / "units.jsonl").open("x") as f:
         for record in records:
@@ -178,7 +195,7 @@ def run(args):
         "kind": "videojev-gpu-sweep", "label": args.label, "at": stamp(),
         "bundle_sha256": bundle_digest, "split": args.split,
         "plan_sha256": digest(plan), "config_sha256": digest(config),
-        "service": describe(health), "health": health,
+        "service": describe(health), "health": health, "warmup_seconds": warmup_seconds,
         "summary": summarize(plan, config, records, wall),
         "units_sha256": file_hash(output / "units.jsonl"),
     }
@@ -284,6 +301,8 @@ def main(argv=None):
     r.add_argument("--url", default="http://127.0.0.1:8093")
     r.add_argument("--label", required=True, help="e.g. 4090-bf16 (the baseline), l40s-fp8")
     r.add_argument("--output", required=True, help="new directory")
+    r.add_argument("--warmup", type=int, default=3,
+                   help="unscored requests first (JIT, caches); separate sessions")
     c = sub.add_parser("compare", help="candidate against a baseline run")
     c.add_argument("--baseline", required=True, help="run directory, normally 4090-bf16")
     c.add_argument("--candidate", required=True)
