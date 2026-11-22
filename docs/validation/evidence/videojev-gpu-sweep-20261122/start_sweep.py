@@ -1,5 +1,9 @@
 """Rent one Vast GPU, run the VideoJev gpu_sweep for BF16 then FP8 on it, release.
 
+The 2026-11-22 runs used this launcher at 07b0712, when the tool lived at
+tools/unified_benchmark/gpu_sweep.py; it now points at tools/videojev_probe/.
+Each quantization starts a fresh service process, as the tool requires.
+
 The client runs on the GPU box (like the frozen protocol), so network latency
 stays out of the numbers. Results are copied back to a private local folder.
 
@@ -84,7 +88,7 @@ for q in bf16 fp8; do
   done
   [ $ok = 1 ] || {{ echo "service not ready"; tail -40 {ROUT}/service-{tag}-$q.log; kill $pid; exit 1; }}
   echo "=== {tag} $q: ready; running sweep"
-  PYTHONPATH=src:. {BASE}/env/bin/python -m tools.unified_benchmark.gpu_sweep run \\
+  PYTHONPATH=src:. {BASE}/env/bin/python -m tools.videojev_probe.gpu_sweep run \\
     --bundle {RBUNDLE} --url http://127.0.0.1:8093 --label {tag}-$q --output {ROUT}/{tag}-$q --warmup 3
   nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv > {ROUT}/{tag}-$q/nvidia-smi.csv || true
   # Background jobs of a non-interactive bash ignore SIGINT; stop with TERM, then KILL.

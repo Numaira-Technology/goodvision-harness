@@ -28,7 +28,7 @@ PR #123 的证据。问题是：Qwen8B 上"换卡提速明显、换精度不影�
 
 ## 方法
 - **数据：** unified-frame-202-v1 的测试集，202 题、2037 个窗口、192 段视频。每个窗口取 2 帧，间隔 1 秒，用冻结的 6 个问题。bundle 由 `07b0712` 的 preflight 离线生成，只放在评测机上，不进仓库。
-- **工具：** `tools/unified_benchmark/gpu_sweep.py`。
+- **工具：** `07b0712` 版本的 `tools/unified_benchmark/gpu_sweep.py`。Frank 在 `341c08a` 里把它移到了 `tools/videojev_probe/gpu_sweep.py`，并收紧了比较条件：新增工具自身哈希、预热次数、全新服务进程等检查。本轮的 `run.json` 早于这次修改，新版 `compare` 会以 `sweep_sha256` 不一致为由拒绝；表里的对比都是用 `07b0712` 的 `compare` 算的。之后再跑请用新路径。
   - **客户端：** 在 GPU 机器本机运行，避免把网络延迟算进去。
   - **并发：** 12 个视频 worker，同一源最多 1 个在途请求。
   - **发送：** 每个单元只发一次，不重试。正式计时前先发 3 个不计分的预热请求。
