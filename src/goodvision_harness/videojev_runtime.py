@@ -36,8 +36,8 @@ class VideoJevRuntime(NativeVideoJevModel):
     def batch_enabled(self):
         return self.prefix_cache
 
-    def __init__(self, cache_dir, *, prefix_cache=True):
-        super().__init__(cache_dir)
+    def __init__(self, cache_dir, *, prefix_cache=True, quantization="bf16"):
+        super().__init__(cache_dir, quantization=quantization)
         self.prefix_cache = prefix_cache
         native = vars(sys.modules[type(self.model).__module__])
         self._format_predictions = native["format_predictions"]
