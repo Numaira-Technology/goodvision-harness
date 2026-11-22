@@ -94,12 +94,13 @@ def fp8_linear_filter(module, fqn):
     """Whether ``quantize_`` should turn this module into an FP8 linear.
 
     ``fqn`` is the module's dotted name inside VideoJevForVideoUnderstanding.
-    FP8 matmuls need both dimensions divisible by 16.
+    FP8 matmuls need both dimensions divisible by 16. Matches plain
+    ``torch.nn.Linear`` only (not subclasses), checked by name so this module
+    stays importable without torch.
     """
-    from torch import nn
-
+    kind = type(module)
     return (
-        type(module) is nn.Linear
+        (kind.__module__, kind.__qualname__) == ("torch.nn.modules.linear", "Linear")
         and fqn.startswith(_FP8_PREFIX)
         and any(part in fqn for part in _FP8_PARTS)
         and ".linear_attn." not in fqn

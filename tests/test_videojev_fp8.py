@@ -3,8 +3,10 @@
 A small stand-in model reproduces VideoJev-4B's module names (from the pinned
 revision's weight index): 32 decoder layers, a full-attention layer every 4th,
 the last layer without its MLP, the vision encoder and the FP32 decision head.
-torchao itself is not installed in CI; apply_fp8 is checked against a stub that
-records what quantize_ received.
+CI has neither torch nor torchao, so the stand-in uses a minimal nn whose
+Linear carries torch's own module path, and apply_fp8 is checked against a stub
+that records what quantize_ received. (Run against real torch + torchao 0.13.0
+during development, the converted set equalled this selection.)
 """
 
 from __future__ import annotations
@@ -14,7 +16,6 @@ import sys
 import types
 
 import pytest
-from torch import nn
 
 from goodvision_harness import videojev_core, videojev_service
 from goodvision_harness.videojev_core import (
@@ -27,6 +28,49 @@ from goodvision_harness.videojev_core import (
     fp8_linear_names,
 )
 from goodvision_harness.videojev_runtime import VideoJevRuntime
+
+
+class _Module:
+    """Just enough of torch.nn.Module for named_modules()."""
+
+    def __init__(self, *args, **kwargs):
+        object.__setattr__(self, "_children", {})
+
+    def __setattr__(self, name, value):
+        if isinstance(value, _Module):
+            self._children[name] = value
+        object.__setattr__(self, name, value)
+
+    def named_modules(self, prefix=""):
+        yield prefix, self
+        for name, child in self._children.items():
+            yield from child.named_modules(f"{prefix}.{name}" if prefix else name)
+
+
+class _Linear(_Module):
+    def __init__(self, in_features, out_features, bias=True):
+        super().__init__()
+        self.in_features, self.out_features = in_features, out_features
+
+
+_Linear.__module__, _Linear.__qualname__ = "torch.nn.modules.linear", "Linear"
+
+
+class _ModuleList(_Module):
+    def __init__(self, items=()):
+        super().__init__()
+        for item in items:
+            self.append(item)
+
+    def append(self, item):
+        setattr(self, str(len(self._children)), item)
+
+
+nn = types.SimpleNamespace(
+    Module=_Module, Linear=_Linear, ModuleList=_ModuleList,
+    Sequential=lambda *items: _ModuleList(items),
+    Embedding=_Module, LayerNorm=_Module, Conv1d=_Module,
+)
 
 H, MLP = 32, 64  # stand-ins for 2560 / 9216; both divisible by 16 like the real ones
 
