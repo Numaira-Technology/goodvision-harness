@@ -282,12 +282,8 @@ def _config(kind: str, value: Any, vocabulary: EventVocabulary | None = None) ->
     elif kind == "objects":
         try:
             config.update(
-                objects=object_presence.objects_config(
-                    raw.get(
-                        "objects",
-                        [object_presence.PRESETS["knife"]],
-                    )
-                ),
+                # No default object: experimental presets are an explicit choice.
+                objects=object_presence.objects_config(raw.get("objects")),
                 sample_fps=object_presence.sample_fps(
                     raw.get("sample_fps", object_presence.DEFAULT_SAMPLE_FPS)
                 ),

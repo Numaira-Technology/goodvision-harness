@@ -19,7 +19,7 @@ from goodvision_harness import object_presence as op
 from goodvision_harness import videojev_service
 from goodvision_harness.videojev_core import OPTIONS
 from goodvision_harness.workflow_modules import display_settings
-from goodvision_harness.workflow_render import render_output
+from goodvision_harness.workflow_render import object_labels, render_output
 from goodvision_harness.workflows import (
     WorkflowValidationError,
     compile_graph,
@@ -358,7 +358,8 @@ def test_large_frames_are_downscaled_to_720():
 def objects_graph(config=None, *, extra=()):
     nodes = [
         {"id": "s", "type": "source"},
-        {"id": "o", "type": "objects", "config": config or {}},
+        {"id": "o", "type": "objects",
+         "config": config if config is not None else {"objects": [KNIFE]}},
         {"id": "out", "type": "output"},
         *extra,
     ]
@@ -382,9 +383,11 @@ def test_compile_graph_emits_objects_plan_on_local_videojev():
     assert plan["features"] == [] and plan["enabled"] is True
 
 
-def test_default_objects_node_is_knife_preset():
+def test_objects_node_has_no_default_preset():
+    # Adding the framework must not silently choose an unvalidated preset.
+    with pytest.raises(WorkflowValidationError, match="1 to 8 objects"):
+        validate_graph(objects_graph({}))
     node = validate_graph(objects_graph())["nodes"][1]
-    assert [o["id"] for o in node["config"]["objects"]] == ["knife"]
     assert node["config"]["engine"] == "system1"
 
 
@@ -405,7 +408,7 @@ def test_graph_rejects_bad_object_config(config):
 
 
 def test_only_one_objects_node_per_workflow():
-    second = {"id": "o2", "type": "objects"}
+    second = {"id": "o2", "type": "objects", "config": {"objects": [KNIFE]}}
     with pytest.raises(WorkflowValidationError, match="only one objects"):
         validate_graph(objects_graph(extra=(second,)))
 
@@ -422,6 +425,41 @@ def test_unconsumed_objects_node_is_not_planned():
 
 
 # --- render --------------------------------------------------------------
+
+
+def test_overlay_labels_experimental_presets_and_not_custom_objects():
+    value = {
+        "timestamp_seconds": 5.0,
+        "error": None,
+        "objects": [
+            {"id": "knife", "name": "knife", "zh_name": "刀具",
+             "experimental": True, "present": True},
+            {"id": "forklift", "name": "forklift", "zh_name": "叉车",
+             "experimental": False, "present": True},
+            {"id": "alcohol_bottle", "name": "alcohol bottle", "zh_name": "酒瓶",
+             "present": True},  # older tick without the field: falls back to id
+            {"id": "pallet", "name": "pallet", "present": False},
+        ],
+    }
+    assert object_labels(value) == [
+        "刀具（实验性 · 未验证）", "叉车", "酒瓶（实验性 · 未验证）",
+    ]
+    assert object_labels(value, "en") == [
+        "knife (experimental · not validated)",
+        "forklift",
+        "alcohol bottle (experimental · not validated)",
+    ]
+
+    def drawn(objects):
+        output = {"inputs": [{"port": "objects", "value": {
+            **value, "objects": objects}}], "display": {}}
+        return render_output(jpeg(size=(640, 360)), output, 5.0)
+
+    preset = dict(value["objects"][0])
+    custom = dict(preset, experimental=False)
+    # The experimental qualifier is burned into the frame, the custom one is not.
+    assert drawn([preset]) != drawn([custom])
+    assert drawn([custom]) != drawn([])
 
 
 def test_output_layer_draws_only_present_objects():

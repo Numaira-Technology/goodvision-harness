@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from .object_presence import is_experimental
 from .workflow_modules import display_settings
 
 
@@ -15,6 +16,30 @@ def recent(timestamp, now, age):
         and math.isfinite(timestamp)
         and 0 <= now - timestamp <= age
     )
+
+
+EXPERIMENTAL_SUFFIX = {"zh": "（实验性 · 未验证）", "en": " (experimental · not validated)"}
+
+
+def object_labels(value, language="zh"):
+    """Burned-in labels for present objects; unvalidated presets say so.
+
+    A record without the ``experimental`` field (older ticks) falls back to the
+    shipped preset list, so a preset is never drawn without its qualifier.
+    """
+    labels = []
+    for item in value.get("objects", []):
+        if item.get("present") is not True:
+            continue
+        name = (item.get("zh_name") if language == "zh" else None) or item.get("name")
+        if not name:
+            continue
+        experimental = item.get("experimental")
+        if experimental is None:
+            experimental = is_experimental(str(item.get("id", "")))
+        suffix = EXPERIMENTAL_SUFFIX["zh" if language == "zh" else "en"]
+        labels.append(str(name) + (suffix if experimental else ""))
+    return labels
 
 
 def render_output(jpeg, output, timestamp, *, language="zh"):
@@ -118,14 +143,10 @@ def render_output(jpeg, output, timestamp, *, language="zh"):
                 value.get("timestamp_seconds"), timestamp, 15
             ):
                 continue
-            present = [
-                (o.get("zh_name") if language == "zh" else None) or o.get("name")
-                for o in value.get("objects", [])
-                if o.get("present") is True
-            ]
+            present = object_labels(value, language)
             if present:
                 panel(
-                    " · ".join(str(name) for name in present if name),
+                    " · ".join(present),
                     settings[layer]["position"],
                     "#8a5a00",
                 )

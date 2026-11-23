@@ -736,15 +736,18 @@ for(const outcome of ['success','cancel','failed-workflows','failed-summary'])te
  }
 });
 
-test('object presence block defaults to the knife preset on System 1 and validates objects',()=>{
+test('object presence block starts with an empty custom object, not a preset, and validates objects',()=>{
  const {palette,definition}=require('../src/goodvision_harness/assets/workflow_canvas.js');
  const g={nodes:[node('input','source')],edges:[]};
  const objects=newNode('objects',g,{x:300,y:100});
  assert.equal(objects.type,'objects');
  assert.equal(objects.config.engine,'system1');
  assert.equal(objects.config.execution_mode,'local');
- assert.deepEqual(objects.config.objects.map(o=>o.id),['knife']);
- assert.equal(objects.config.objects[0].gate,0.95);
+ assert.deepEqual(objects.config.objects,[{id:'object_1',name:'',zh_name:'',criterion:'',counter_examples:'',gate:0.95}]);
+ // An unfilled object cannot be applied: the user must describe one or pick a preset.
+ const unfilled={nodes:[g.nodes[0],objects,node('out','output')],edges:[edge('a','input','frames',objects.id,'frames'),edge('b',objects.id,'objects','out','objects')]};
+ assert.ok(validateGraph(unfilled).includes('Every object needs a name and a criterion.'));
+ objects.config.objects=[clone(require('../src/goodvision_harness/assets/workflow_canvas.js').objectPresets.knife)];
  // Shares the VideoJev engine id with System 1 events but stays an objects block.
  assert.equal(definition(objects),palette.objects);
  assert.equal(definition({type:'events',config:{engine:'system1'}}).name,'System 1 recognition');
@@ -764,10 +767,13 @@ test('object presence block defaults to the knife preset on System 1 and validat
 test('object editor adds presets and custom objects and edits a field',()=>{
  const app=appFixture();
  app.add('objects',{x:300,y:300});const block=app.graph.nodes.at(-1);app.selected=block.id;
+ assert.deepEqual(block.config.objects.map(o=>o.id),['object_1']);
+ app.handleAction('object-add',{dataset:{preset:'knife'}});
  app.handleAction('object-add',{dataset:{preset:'alcohol_bottle'}});
  app.handleAction('object-add',{dataset:{preset:''}});
- assert.deepEqual(block.config.objects.map(o=>o.id),['knife','alcohol_bottle','object_3']);
- app.handleAction('object-remove',{dataset:{index:'2'}});
+ assert.deepEqual(block.config.objects.map(o=>o.id),['object_1','knife','alcohol_bottle','object_4']);
+ app.handleAction('object-remove',{dataset:{index:'3'}});
+ app.handleAction('object-remove',{dataset:{index:'0'}});
  assert.deepEqual(block.config.objects.map(o=>o.id),['knife','alcohol_bottle']);
  const html=app.renderObjects(block,false);
  assert.match(html,/data-wc-object="1:gate"/);assert.match(html,/Add custom object/);
@@ -776,6 +782,7 @@ test('object editor adds presets and custom objects and edits a field',()=>{
 test('object block exposes 2 or 4 frames and validates frame spacing',()=>{
  const g={nodes:[node('input','source')],edges:[]};
  const block=newNode('objects',g,{x:300,y:100});
+ block.config.objects=[{id:'forklift',name:'forklift',criterion:'A forklift is visible.',gate:0.9}];
  assert.equal(block.config.window_frames,2);
  assert.equal(block.config.frame_step_seconds,0.4);
  const full={nodes:[g.nodes[0],block,node('out','output')],edges:[edge('a','input','frames',block.id,'frames'),edge('b',block.id,'objects','out','objects')]};
@@ -798,13 +805,16 @@ test('knife and alcohol presets are badged experimental and not validated',()=>{
  assert.equal(experimentalObject('knife'),true);assert.equal(experimentalObject('object_3'),false);
  const app=appFixture();
  app.add('objects',{x:300,y:300});const block=app.graph.nodes.at(-1);app.selected=block.id;
+ // A freshly added block carries no preset and therefore no experimental badge.
+ assert.doesNotMatch(app.renderObjects(block,false),/data-wc-experimental=/);
+ app.handleAction('object-add',{dataset:{preset:'knife'}});
  app.handleAction('object-add',{dataset:{preset:'alcohol_bottle'}});
  app.handleAction('object-add',{dataset:{preset:''}});
  // The marker stays out of the saved object, so the server spec still validates it.
  for(const object of block.config.objects)assert.ok(!('experimental' in object)&&!('validated' in object));
  const html=app.renderObjects(block,false);
  assert.match(html,/data-wc-experimental="knife"/);assert.match(html,/data-wc-experimental="alcohol_bottle"/);
- assert.doesNotMatch(html,/data-wc-experimental="object_3"/);
+ assert.doesNotMatch(html,/data-wc-experimental="object_(1|4)"/);
  assert.equal((html.match(/Experimental · not validated/g)||[]).length,2);
  assert.match(html,/Add custom object/);
  assert.match(html,/opt-in framework/);
