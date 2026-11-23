@@ -173,7 +173,10 @@ def check_conda_ownership(prefix):
     if missing:
         raise RuntimeError(f"pip clobbered conda-owned packages: {missing}")
     seen = {}
-    for site in sorted(prefix.glob("lib/python3.*/site-packages")):
+    # conda's python 3.12 ships a lib/python3.1 -> python3.12 compatibility
+    # symlink; scan each real site-packages directory once.
+    sites = {site.resolve(): site for site in prefix.glob("lib/python3.*/site-packages")}
+    for site in sorted(sites.values()):
         for info in sorted([*site.glob("*.dist-info"), *site.glob("*.egg-info")]):
             metadata = (
                 info / ("METADATA" if info.suffix == ".dist-info" else "PKG-INFO")

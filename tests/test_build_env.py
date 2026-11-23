@@ -293,6 +293,20 @@ def test_ownership_check_catches_duplicate_dist_info(tmp_path):
         be.check_conda_ownership(prefix)
 
 
+def test_ownership_check_scans_the_python31_compat_symlink_once(tmp_path):
+    # conda's python 3.12 ships lib/python3.1 -> python3.12; one PyYAML is one dist.
+    prefix = _conda_prefix(tmp_path)
+    (prefix / "lib/python3.1").symlink_to("python3.12")
+    info = prefix / SP / "PyYAML-6.0.2.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text("Name: PyYAML\nVersion: 6.0.2\n")
+    be.check_conda_ownership(prefix)
+    (prefix / SP / "pip-26.3.dist-info").mkdir()  # a real duplicate is still caught
+    (prefix / SP / "pip-26.3.dist-info/METADATA").write_text("Name: pip\nVersion: 26.3\n")
+    with pytest.raises(RuntimeError, match="two installed versions of pip"):
+        be.check_conda_ownership(prefix)
+
+
 def test_builder_lets_conda_own_pip_and_constrains_every_pip_install(
     tmp_path, monkeypatch
 ):
