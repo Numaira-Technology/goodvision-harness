@@ -13,13 +13,13 @@
 | 输入 | 视频源；以后加录像文件、图片批 | — → `frames` | 只有实时视频源 |
 | 感知（可选） | YOLO / Bbox、Contour（SAM 3.1）、人脸 | `frames` → `tracks` / `faces` | 已有，各自是独立节点 |
 | 理解：识别模块 | VideoJev（System 1）、Decision 3、托管 VLM、自建 VLM（Qwen3-VL-8B）、CLIP（以后加 SigLIP2）、Luna | `frames`（+ 可选 `tracks`）→ `events` | 已有方块：VLM、System 1、CLIP；Decision 3 第一期加上；自建 VLM、SigLIP2、Luna 待做（见「理解层模块清单」） |
-| 理解：任务模块 | 物体存在、定时总结 | `frames`（+ 可选 `tracks`）→ `objects` / `summary` | 物体存在由 VideoJev 回答，第一期加上 Decision 3；总结用托管 VLM |
+| 理解：任务模块 | 物体存在、定时总结 | `frames`（+ 可选 `tracks`）→ `objects` / `summary` | 物体存在由 VideoJev 回答（Decision 3 待加适配）；总结用托管 VLM |
 | 决策（新） | 门限、持续 / 清除、多条件规则（如「有人 + 有刀 = 告警」）、身份 / 陌生人告警策略 | `events` / `objects` / `tracks` / `faces` → `alerts` | 门限和清除写在物体节点里（`object_presence.py`）；身份告警策略在场景结果里（`actions/alerts.py`）；没有独立节点 |
 | 输出 | 看板、Webhook / 投递、归档 | 各类结果 → — | 一个输出节点，投递和归档走现有通道 |
 
 几点取舍：
 
-- **识别模块同级独立，任务模块另算。** VideoJev、Decision 3、托管 VLM、自建 VLM、CLIP 各是一个模块，不合成一个「识别器」节点再在里面选引擎。物体存在和总结是建在识别模型之上的**任务模块**：它们问的问题固定，在节点里选由哪个识别模型来回答（例如物体存在可选 VideoJev 或 Decision 3，以后加 Luna / Gemini）。
+- **识别模块同级独立，任务模块另算。** VideoJev、Decision 3、托管 VLM、自建 VLM、CLIP 各是一个模块，不合成一个「识别器」节点再在里面选引擎。物体存在和总结是建在识别模型之上的**任务模块**：它们问的问题固定，在节点里选由哪个识别模型来回答（例如物体存在现在由 VideoJev 回答，以后加 Decision 3、Luna / Gemini）。
 - **托管 VLM 和自建 VLM 分成两个模块。** 两者的健康检查、费用和 GPU 需求都不同。
 - **YOLO 是可选上游。** 理解层节点都只要求 `frames`；接上 Bbox 的 `tracks` 时才用人框（物体节点裁剪，事件节点整帧 + 坐标），不接时行为和现在一样。
 - **决策从识别里拆出来。** 识别节点只回答「看到了什么、置信多少」，要不要告警、持续多久、几个条件同时满足，放到决策节点里。这样同一份识别结果可以配不同项目的告警规则。
@@ -111,7 +111,7 @@ VideoJev 在 Harness 里有两个入口，处理方式不同：
 - **识别模块**（Contour、Bbox、VLM、System 1、Decision 3、CLIP，以后加自建 VLM、SigLIP2、Luna）在模块库里各有方块，各有服务地址、健康检查和调试入口。模块契约的 `peers` 列出它们：层、模型 ID、本地端口、输出形式。换识别模型就是换一个方块，不在同一个节点里切换。
 - **Decision 3 作为独立模块：** 模型 `vllm-sr/d3-nano`，服务端是 `videojev_service --runtime decision3`，本地端口 8099（System 1 是 8097）。客户端复用 VideoJev 的传输代码（`Decision3Inspector` 继承 `VideoJevInspector`），这只是代码复用，在画布上两者是平级的方块。
 - **一路摄像头同时只跑一个事件识别模块。** 画布上可以同时放 System 1 和 Decision 3 两个方块，但 Apply 只允许启用其中一个，因为目前每路摄像头只有一条原生事件通道。两个模块并行跑同一路视频（例如做对比或投票）留给决策节点那一期再考虑。
-- **任务模块**（物体存在、总结）在节点里选回答它的识别模型。物体存在目前可选 System 1 和 Decision 3；切换时连线保留，服务地址清空，因为两个模型用的是不同的服务。
+- **任务模块**（物体存在、总结）在节点里选回答它的识别模型；有多个可选时节点里出现下拉，切换时连线保留、服务地址清空。物体存在目前只有 System 1。Decision 3 要先有物体请求和响应的适配：它只接受 2 帧、2 FPS 的窗口，返回 `raw.answers` 映射，而现有物体解码器只认 VideoJev 的列表。这个适配放到后面，不能靠调门限绕过（评审 2026-11-23）。
 
 ## 2. 基础盘模板
 
@@ -124,6 +124,7 @@ VideoJev 在 Harness 里有两个入口，处理方式不同：
   - 第二期有了决策节点后，前两个模板改成经过决策节点再到输出（例如「有人 + 有刀 = 告警」）。
 - 第一版里已写好的「VideoJev + YOLO 基础盘」并入「物品检查 / 翻包」，不再单列。
 - **自定义模板**：给客户配好的图可以在画布上「另存为模板」，存在数据目录的 `workflow-templates.json`，单独文件、带上限（64 个、单个 2 MiB），**不进**工作流文档，因此不改 `schema_version`，旧版本读文档不受影响。
+- **视频源是可重新绑定的占位**：模板里的视频源不带通道号，多路模板保存时按占位校验。从模板新建时，画布给每个视频源分配一路不同的已启用通道（优先没被其他工作流用的）；通道不够就提示，不创建。
 - **从模板新建**：生成新的工作流，名字可改。新建后和手工搭的图一样，需要自己选摄像头、填服务地址、Apply。
 - 模板保存和实例化都走现有的 `validate_graph`，不合法的模板存不进去。
 
@@ -160,7 +161,7 @@ VideoJev 在 Harness 里有两个入口，处理方式不同：
 **第一期（本 PR）：**
 1. 模块契约：端口、必需 / 可选、`accepts`、调试类型；识别模块的同级清单（`peers`）和输出形式；任务模块标记。后端校验、编译，前端改读目录。
 2. YOLO 作为可选上游：物体存在的 `tracks` 输入和人框裁剪，测试模式下用模拟人框。
-3. Decision 3 作为独立模块：有自己的方块、本地服务（8099）、健康检查和调试入口；物体存在也可以选它来回答。
+3. Decision 3 作为独立的事件识别模块：有自己的方块、本地服务（8099）、健康检查和调试入口。物体存在暂不接 Decision 3（需要适配，见 1.2）。
 4. 统一调试入口：接口加侧栏分区。物体、总结有完整记录，其他节点显示状态。
 5. 模板存取，三个按项目类型的内置模板。
 
@@ -197,12 +198,13 @@ VideoJev 在 Harness 里有两个入口，处理方式不同：
 | 人框裁剪：`person_crop_box()`（并集、外扩 25%、最小边 0.35、移回画面内）、窗口共用一个裁剪框、无人退回整帧、框查询出错不影响判断 | `object_presence.py` |
 | 人框来源：真实运行按源帧时间从 Bbox 取框；测试模式用一个固定的模拟人框 | `workflow_runtime._start_workflow_objects` |
 | 模板：内置「人员 + 事件」「物品检查 / 翻包」「纯总结巡检」、另存 / 删除、去掉摄像头和服务地址 | `workflow_templates.py`、`workflow_routes.py` |
-| Decision 3 独立模块：模型 `vllm-sr/d3-nano`，本地端口 8099，复用 System 1 的 Python 环境；原生事件通道和单帧测试使用 `Decision3Inspector`；物体存在也可选它；目录 `peers` 列出所有识别模块及其输出形式 | `workflow_modules.py`、`module_service.py`、`module_services.py`、`workflow_runtime.py` |
-| 画布：模块库新增 Decision 3 方块（和 System 1 平级）；物体存在节点内「识别模型」下拉（System 1 / Decision 3），切换后连线保留、服务地址清空；识别模块没有这个下拉 | `assets/workflow_canvas.js` |
+| Decision 3 独立模块：模型 `vllm-sr/d3-nano`，本地端口 8099，复用 System 1 的 Python 环境；原生事件通道和单帧测试使用 `Decision3Inspector`；目录 `peers` 列出所有识别模块及其输出形式 | `workflow_modules.py`、`module_service.py`、`module_services.py`、`workflow_runtime.py` |
+| 画布：模块库新增 Decision 3 方块（和 System 1 平级）；任务模块有多个识别模型可选时才出现「识别模型」下拉（物体存在目前只有 System 1）；从模板新建时给每个视频源分配一路不同的视频通道 | `assets/workflow_canvas.js` |
+| 按摄像头编译：一个模块只有在必需的 `frames` 来自本摄像头时才运行，可选的人框输入不能代替它 | `workflows.compile_graph` |
 | 调试接口：`GET /v1/workflow/nodes/{node_id}/debug?limit=`（1–200，默认 20），fleet 按摄像头转发 | `workflow_runtime.workflow_node_debug`、`service.py`、`fleet_outputs.py` |
 | 画布：端口表改读服务端目录；物体节点的 `tracks` 输入只列 Bbox；「从模板新建…」「另存为模板」；模块侧栏「调试」分区 | `assets/workflow_canvas.js` |
 | 测试 | `tests/test_workflow_composable.py`、`tests/workflow_canvas.cjs` |
 
 调试记录格式各节点一致。物体节点每条对应一个计划 tick（含跳过的 tick 和原因），`input.focus` 记录用了几个框、裁剪框和对齐方式；总结节点每条对应一次请求；Bbox 每条对应一个检测快照（人数、track_id）；事件节点目前只有各事件的最新结果，没有耗时。人脸、Contour 只显示状态。
 
-**没有做的：** 决策节点（第二期）；自建 Qwen 8B、SigLIP2、Luna 模块；System 1 / Decision 3 事件接人框元数据；人脸、Contour 的逐次记录；`compose.modules.yaml` 里的 Decision 3 服务。人框裁剪和 Decision 3 回答物体问题都还没在真实视频上跑过，没有任何准确率数据；Decision 3 本地服务也没有在本次改动后实际启动验证过（需要 GPU）。
+**没有做的：** 决策节点（第二期）；物体存在的 Decision 3 适配；自建 Qwen 8B、SigLIP2、Luna 模块；System 1 / Decision 3 事件接人框元数据；人脸、Contour 的逐次记录；`compose.modules.yaml` 里的 Decision 3 服务。人框裁剪还没在真实视频上跑过，没有任何准确率数据；Decision 3 本地服务也没有在本次改动后实际启动验证过（需要 GPU）。

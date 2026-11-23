@@ -6,9 +6,10 @@ from urllib.parse import urlsplit
 ENGINES = {
     "tracking": ("contour", "bbox"),
     "events": ("vlm", "system1", "decision3", "neural"),
-    # Object presence reuses the native VideoJev protocol; Decision 3 answers the
-    # same questions on its own worker (experimental, not validated).
-    "objects": ("system1", "decision3"),
+    # Object presence uses VideoJev's native window and list response. Decision 3
+    # needs its own adapter (exactly 2 frames at 2 FPS, an `answers` mapping),
+    # so it is not offered here yet.
+    "objects": ("system1",),
 }
 NAMES = {
     "contour": "Contour",

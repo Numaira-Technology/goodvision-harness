@@ -448,7 +448,8 @@ def test_catalog_lists_switchable_engines_per_slot():
         "id": "decision3", "name": "Decision 3 recognition",
         "model": "vllm-sr/d3-nano", "local": True,
     }
-    assert [e["id"] for e in modules["objects"]["engines"]] == ["system1", "decision3"]
+    # Decision 3 needs its own object request/response adapter first.
+    assert [e["id"] for e in modules["objects"]["engines"]] == ["system1"]
     assert modules["summary"]["engines"] == []
     assert modules["objects"]["task"] is True and modules["events"]["task"] is False
 
@@ -486,13 +487,42 @@ def test_decision3_module_compiles_like_system1_on_its_own_service():
         assert decision3[key] == system1[key]
 
 
-def test_objects_node_accepts_decision3_with_person_crop():
+def test_objects_node_does_not_offer_decision3_yet():
     value = base_graph()
     value["nodes"][2]["config"]["engine"] = "decision3"
-    plan = compile_graph(value, camera_id="camera01")
-    assert plan["objects_engine"] == "decision3"
-    assert plan["objects_service_url"] == "http://127.0.0.1:8099"
-    assert plan["objects"]["focus"] == "person_crop"
+    with pytest.raises(WorkflowValidationError, match="unsupported workflow engine"):
+        validate_graph(value)
+
+
+def _two_camera_graph():
+    """Objects takes frames from camera01; Bbox runs on camera02's source."""
+    value = base_graph()
+    value["nodes"].insert(1, {"id": "source2", "type": "source",
+                              "config": {"camera_id": "camera02"}})
+    value["edges"] = [
+        e for e in value["edges"] if e["id"] != "source-frames-track"
+    ] + [edge("source2", "frames", "track"), edge("track", "tracks", "out")]
+    return value
+
+
+def test_optional_tracks_cannot_stand_in_for_this_cameras_frames():
+    value = _two_camera_graph()
+    validate_graph(value, for_apply=True)
+    other = compile_graph(value, camera_id="camera02")
+    assert "objects" not in other and other["tracking_engine"] == "bbox"
+    own = compile_graph(value, camera_id="camera01")
+    assert own["objects"]["id"] == "objects"
+    assert "focus" not in own["objects"]  # camera02's boxes never crop camera01
+    assert own["tracking_enabled"] is False
+
+
+def test_multi_camera_graph_saves_as_a_template_with_unbound_slots(tmp_path):
+    store = TemplateStore(tmp_path / "t.json")
+    saved = store.save({"name": "Two cameras", "graph": _two_camera_graph()})
+    sources = [n for n in saved["graph"]["nodes"] if n["type"] == "source"]
+    assert len(sources) == 2
+    assert all("camera_id" not in n["config"] for n in sources)
+    assert TemplateStore(tmp_path / "t.json").list()[-1]["graph"] == saved["graph"]
 
 
 def test_decision3_uses_the_native_event_lane_and_its_own_model(rig):  # noqa: F811

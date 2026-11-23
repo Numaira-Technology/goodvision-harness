@@ -74,10 +74,13 @@ recognition), **物品检查 / 翻包** (Bbox → Object presence with person cr
 
 **Decision 3 recognition** is its own block beside System 1, VLM and neural
 network recognition, with its own service (local port 8099), readiness and
-Debug section. Enable one event recognition block per camera at a time. The
-Object presence block has a **Recognizer** selector (System 1 or Decision 3);
-switching it keeps connections and clears the service address. Decision 3
-answering object questions is experimental and unmeasured. **Save as template**
+Debug section. Enable one event recognition block per camera at a time. Object
+presence is answered by System 1 only; Decision 3 needs its own object request
+and response adapter first.
+
+Template video sources are unbound slots. Creating a workflow from a template
+binds each source to a distinct enabled camera channel, preferring channels no
+workflow uses; a multi-source template needs that many channels. **Save as template**
 stores the current graph without camera channels or service addresses; choose
 cameras and services after creating a workflow from it. Saved templates live in
 `workflow-templates.json` beside the workflow document.
