@@ -2497,8 +2497,10 @@ function renderObjectPresence(payload,context=objectPresenceContext()){
         (item.experimental?(english?" [experimental · not validated]":"【实验性 · 未验证】"):"");
       const p=Number.isFinite(item.present_probability)?(item.present_probability*100).toFixed(0)+"%":"-";
       const answer=item.answer===true?(english?"present":"在"):item.answer===false?(english?"absent":"不在"):(english?"unclear":"看不清");
+      const decision=item.gate===null?(english?"argmax (no gate)":"取最高概率（无门限）"):
+        (english?"gate ":"门限 ")+Math.round(item.gate*100)+"%";
       row.textContent=(item.present?"● ":"○ ")+label+" · "+(item.present?(english?"PRESENT":"在画面中"):(english?"not present":"未检出"))+
-        " · "+(english?"this frame: ":"本帧：")+answer+" "+p+(english?" / gate ":" / 门限 ")+Math.round(item.gate*100)+"%";
+        " · "+(english?"this frame: ":"本帧：")+answer+" "+p+" / "+decision;
       row.style.fontWeight=item.present?"600":"400";
       return row;
     }));

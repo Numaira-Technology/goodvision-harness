@@ -1,14 +1,14 @@
-"""Benchmark-recipe object presets send exactly the event benchmark's bag request.
+"""Benchmark-recipe presets match bag requests for the same full-frame inputs.
 
 CPU only. The bag_knife / bag_alcohol_bottle presets use recipe bench_bag_v1:
 the frozen six-question template (copied in object_bench_recipe and checked
 against the benchmark profile here), two frames one second apart at fps 1.0,
-and argmax. The object node's request is compared field by field with the
-benchmark adapter's request for the same two frames.
+and argmax. The same two frames also exercise the distinct Bbox-cropped path.
 """
 
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import io
@@ -17,11 +17,13 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
+from test_workflow_composable import base_graph
 
 from goodvision_harness import object_presence as op
 from goodvision_harness import videojev_service
 from goodvision_harness.object_bench_recipe import QUESTION_TEMPLATE, TEMPLATE_SHA256
 from goodvision_harness.videojev_core import OPTIONS
+from goodvision_harness.workflows import compile_graph
 from tools.unified_benchmark.adapters import parse_response, request_body
 
 PROFILE = json.loads(Path("tools/unified_benchmark/profiles/videojev.json").read_text())
@@ -155,7 +157,8 @@ def test_recipe_presets_need_a_history_provider():
         )
 
 
-def test_object_request_equals_the_benchmark_request_for_the_same_frames(tmp_path):
+@pytest.mark.parametrize("wire_tracks", [False, True], ids=["full-frame", "bbox-crop"])
+def test_recipe_request_image_parity_requires_uncropped_frames(tmp_path, wire_tracks):
     # Two 720 px frames exactly 1 s apart, as preflight extracts them.
     images = [jpeg((10, 20, 30)), jpeg((200, 100, 50))]
     frames = []
@@ -178,15 +181,34 @@ def test_object_request_equals_the_benchmark_request_for_the_same_frames(tmp_pat
 
     history = [(1, 7.0, images[0]), (2, 8.0, images[1])]
     bodies = []
-    manager = recipe_manager(
-        lambda b: bodies.append(b) or {"raw": raw_for({})}, history
+    graph = base_graph(wire_tracks=wire_tracks, tracks_to_output=True)
+    node = next(node for node in graph["nodes"] if node["type"] == "objects")
+    node["config"]["objects"] = [BAG_KNIFE, BAG_BOTTLE]
+    plan = compile_graph(graph, camera_id="camera01")
+    manager = op.ObjectPresenceManager(
+        plan["objects"],
+        boxes_provider=op.synthetic_boxes if wire_tracks else None,
+        frame_provider=lambda: history[-1],
+        history_provider=lambda _seconds: history,
+        post=lambda b: bodies.append(b) or {"raw": raw_for({})},
+        stream_session_id="s",
     )
-    manager.tick()
+    record = manager.tick()
+    assert record["error"] is None
     live = bodies[0]
-    for key in ("fps", "frame_times", "images", "question_template"):
+    for key in ("fps", "frame_times", "question_template"):
         assert json.loads(json.dumps(live[key])) == json.loads(
             json.dumps(bench[key])
         ), key
+    if wire_tracks:
+        assert record["focus"]["mode"] == "person_crop"
+        assert all(a != b for a, b in zip(live["images"], bench["images"], strict=True))
+        for encoded in live["images"]:
+            with Image.open(io.BytesIO(base64.b64decode(encoded))) as cropped:
+                assert cropped.width < 720
+    else:
+        assert record["focus"]["mode"] == "full_frame"
+        assert live["images"] == bench["images"]
 
     # And both read the same answer from the same raw response.
     raw = raw_for({"scene/bag_knife": [0.6, 0.3, 0.1]})
