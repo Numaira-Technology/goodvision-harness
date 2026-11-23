@@ -27,6 +27,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 from uuid import uuid4
 
+from .object_bench_recipe import QUESTION_TEMPLATE as BENCH_TEMPLATE
 from .videojev_core import OPTIONS, choice_indices
 
 MAX_OBJECTS = 8
@@ -56,9 +57,36 @@ PRESET_NOTE = (
     "Experimental preset, not validated: no accuracy claim. On the internal "
     "knife check every real knife was missed at gate 0.95."
 )
+# Benchmark recipes: the exact native request the event benchmark scores for
+# its bag-validation questions (frozen six-question template, two frames one
+# second apart, fps 1.0, argmax). An object that names a recipe is answered by
+# that recipe's question; the node sends the whole frozen template unchanged so
+# its request is the benchmark's request. Offline benchmark scores (bag knife /
+# bag alcohol bottle) describe this recipe, not live accuracy.
+RECIPES = {
+    "bench_bag_v1": {
+        "template": BENCH_TEMPLATE,
+        "window_frames": 2,
+        "frame_step_seconds": 1.0,
+        "questions": {
+            "bag_knife": "scene/bag_knife",
+            "bag_alcohol_bottle": "scene/bag_alcohol_bottle",
+        },
+    },
+}
+BENCH_PRESET_NOTE = (
+    "Experimental preset, not validated live: sends the event benchmark's frozen "
+    "bag question unchanged (2 frames 1 s apart, argmax). Benchmark scores are "
+    "offline and do not establish live accuracy."
+)
+
 PRESET_STATUS = {
     "knife": {"status": "experimental", "validated": False},
     "alcohol_bottle": {"status": "experimental", "validated": False},
+    "bag_knife": {"status": "experimental", "validated": False,
+                  "recipe": "bench_bag_v1"},
+    "bag_alcohol_bottle": {"status": "experimental", "validated": False,
+                           "recipe": "bench_bag_v1"},
 }
 PRESETS = {
     "knife": {
@@ -82,13 +110,35 @@ PRESETS = {
         "flasks, thermoses, cups and other non-alcoholic containers do not count.",
         "gate": DEFAULT_GATE,
     },
+    "bag_knife": {
+        "id": "bag_knife",
+        "name": "knife in bag",
+        "zh_name": "翻包刀具",
+        "criterion": "Benchmark recipe bench_bag_v1: the frozen bag-knife "
+        "question is sent unchanged.",
+        "counter_examples": None,
+        "gate": None,
+        "recipe": "bench_bag_v1",
+    },
+    "bag_alcohol_bottle": {
+        "id": "bag_alcohol_bottle",
+        "name": "alcohol bottle in bag",
+        "zh_name": "翻包酒瓶",
+        "criterion": "Benchmark recipe bench_bag_v1: the frozen bag-alcohol-bottle "
+        "question is sent unchanged.",
+        "counter_examples": None,
+        "gate": None,
+        "recipe": "bench_bag_v1",
+    },
 }
 
 
 def preset_status(object_id: str) -> dict | None:
     """Validation status of a shipped preset id; None for custom objects."""
     status = PRESET_STATUS.get(object_id)
-    return dict(status, note=PRESET_NOTE) if status else None
+    if not status:
+        return None
+    return dict(status, note=BENCH_PRESET_NOTE if status.get("recipe") else PRESET_NOTE)
 
 
 def is_experimental(object_id: str) -> bool:
@@ -111,14 +161,23 @@ def _text(value: Any, label: str, *, required: bool, limit: int = MAX_TEXT) -> s
 
 def object_spec(value: Any) -> dict:
     """Validate one object; unknown fields are rejected."""
-    allowed = {"id", "name", "zh_name", "criterion", "counter_examples", "gate"}
+    allowed = {"id", "name", "zh_name", "criterion", "counter_examples", "gate",
+               "recipe"}
     if not isinstance(value, Mapping) or set(value) - allowed:
         raise ValueError("invalid object fields")
     oid = value.get("id")
     if not isinstance(oid, str) or not _SLUG.fullmatch(oid):
         raise ValueError("object id must be a lowercase slug")
+    recipe = value.get("recipe")
+    if recipe is not None:
+        if recipe not in RECIPES or oid not in RECIPES[recipe]["questions"]:
+            raise ValueError("unknown benchmark recipe or object for that recipe")
+        if value.get("gate") is not None:
+            raise ValueError(
+                "benchmark recipe objects decide by argmax; gate must be null"
+            )
     gate = value.get("gate", DEFAULT_GATE)
-    if (
+    if recipe is None and (
         type(gate) not in (int, float)
         or not math.isfinite(gate)
         or not 0.34 <= gate <= 1
@@ -134,7 +193,8 @@ def object_spec(value: Any) -> dict:
         "counter_examples": _text(
             value.get("counter_examples"), "counter examples", required=False
         ),
-        "gate": float(gate),
+        "gate": None if recipe is not None else float(gate),
+        **({"recipe": recipe} if recipe is not None else {}),
     }
 
 
@@ -144,7 +204,18 @@ def objects_config(objects: Any) -> list[dict]:
     specs = [object_spec(item) for item in objects]
     if len({s["id"] for s in specs}) != len(specs):
         raise ValueError("object ids must be unique")
+    recipes = {s.get("recipe") for s in specs}
+    if len(recipes) > 1:
+        raise ValueError(
+            "an objects node cannot mix benchmark-recipe and custom objects"
+        )
     return specs
+
+
+def node_recipe(objects: Sequence[Mapping[str, Any]]) -> dict | None:
+    """The benchmark recipe shared by every object of a node, if any."""
+    name = objects[0].get("recipe") if objects else None
+    return RECIPES[name] if name else None
 
 
 def sample_fps(value: Any) -> float:
@@ -211,6 +282,9 @@ def question_id(oid: str) -> str:
 
 def question_template(objects: Sequence[Mapping[str, Any]]) -> tuple[dict, ...]:
     """Native ``query_parts`` rows; the service inserts frame times between them."""
+    recipe = node_recipe(objects)
+    if recipe is not None:
+        return tuple(copy.deepcopy(row) for row in recipe["template"])
     rows = []
     for spec in objects:
         criterion = "Criterion: " + spec["criterion"]
@@ -231,9 +305,16 @@ def question_template(objects: Sequence[Mapping[str, Any]]) -> tuple[dict, ...]:
 
 def decide(raw: Any, objects: Sequence[Mapping[str, Any]]) -> dict[str, dict]:
     """Per object: answer (True/False/None), present probability, gated decision."""
-    expected = [
-        {"id": question_id(s["id"]), "options": list(OPTIONS)} for s in objects
-    ]
+    recipe = node_recipe(objects)
+    if recipe is not None:
+        expected = [
+            {"id": r["id"], "options": list(r["options"])}
+            for r in recipe["template"]
+        ]
+    else:
+        expected = [
+            {"id": question_id(s["id"]), "options": list(OPTIONS)} for s in objects
+        ]
     if not isinstance(raw, list):
         raise ValueError("incomplete question group")
     flat = []
@@ -243,14 +324,16 @@ def decide(raw: Any, objects: Sequence[Mapping[str, Any]]) -> dict[str, dict]:
     rows = {row["id"]: row for row in flat}
     result = {}
     for spec in objects:
-        qid = question_id(spec["id"])
+        qid = recipe["questions"][spec["id"]] if recipe else question_id(spec["id"])
         index = indices[qid]
         probability = float(rows[qid]["probabilities"][0])
+        gate = spec["gate"]
         result[spec["id"]] = {
             "answer": (True, False, None)[index],
             "present_probability": probability,
-            "gate": spec["gate"],
-            "detected": index == 0 and probability >= spec["gate"],
+            "gate": gate,
+            # Recipe objects follow the benchmark: argmax, no probability gate.
+            "detected": index == 0 and (gate is None or probability >= gate),
         }
     return result
 
@@ -501,8 +584,17 @@ class ObjectPresenceManager:
         self.frame_step = frame_step_seconds(
             spec.get("frame_step_seconds", DEFAULT_FRAME_STEP_SECONDS)
         )
-        if self.window_frames > 2 and history_provider is None:
-            raise ValueError("a multi-frame object window needs a history provider")
+        self.recipe = node_recipe(self.objects)
+        if self.recipe is not None:
+            # The benchmark window, not the node's own settings: 2 frames picked
+            # from history about 1 s apart, positional fps 1.0.
+            self.window_frames = self.recipe["window_frames"]
+            self.frame_step = self.recipe["frame_step_seconds"]
+        self._history_window = self.window_frames > 2 or self.recipe is not None
+        if self._history_window and history_provider is None:
+            raise ValueError(
+                "a multi-frame or recipe object window needs a history provider"
+            )
         self._history_provider = history_provider
         self._on_tick = on_tick
         self._ticks: deque[dict] = deque(maxlen=TICK_LOG_LIMIT)
@@ -698,12 +790,12 @@ class ObjectPresenceManager:
             return None, "no_frame"
         # Two-frame mode compares with the previous tick's frame (original
         # behaviour); multi-frame mode with the newest frame last judged.
-        last = self._previous if self.window_frames == 2 else self._last_newest
+        last = self._last_newest if self._history_window else self._previous
         if last is not None and frame[0] == last[0]:
             with self._lock:
                 self._counts["skipped_no_new_frame"] += 1
             return None, "no_new_frame"
-        if self.window_frames == 2:
+        if not self._history_window:
             previous = self._previous
             self._previous = frame
             if previous is None or not frame[1] > previous[1]:
@@ -762,7 +854,7 @@ class ObjectPresenceManager:
         }
 
     def _body(self, window, crop=None) -> dict:
-        if self.window_frames == 2:
+        if not self._history_window:
             fps = 1.0 / (window[1][1] - window[0][1])
         else:
             # Uniform positional FPS for the native model; real times stay separate.
