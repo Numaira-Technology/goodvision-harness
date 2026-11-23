@@ -222,9 +222,12 @@ python -m tools.unified_benchmark.preflight \
 ```
 
 To append the requested test questions, add
-`--test-supplement /private/path/test-supplement.json`. The current supplement adds
-questions203–222 on ten videos: **222 test questions / 202 test videos**. Keep all
-eight frozen inputs intact; the supplement is a separate retained input. See the
+`--test-supplement /private/path/test-supplement.json` for the selected release.
+Use the [current release index](https://drive.google.com/file/d/1cfh8KTG92xeZTwjw6G5APEY11X0XU4XO/view)
+for acquisition, and the retained supplement and generated plan for run counts.
+The earlier ten-video supplement added questions203–222, producing **222 test
+questions / 202 test videos**; those are historical counts, not a fixed limit.
+Keep all eight frozen inputs intact; the supplement is a separate retained input. See the
 [supplement contract](DATASET202.md#optional-test-supplement) for validation and
 reporting. The validation plan, prompts, routes and preprocessing stay unchanged.
 

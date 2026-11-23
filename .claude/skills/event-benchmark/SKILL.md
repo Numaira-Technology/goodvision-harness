@@ -10,8 +10,9 @@ description: >-
 # Event-recognition benchmark
 
 Default for this team's current evaluation: **unified-frame-202-v1**.
-The current dataset is **222 test questions on 202 videos** when the requested
-test supplement below is included; the retained 202-question baseline stays available.
+The [current dataset release](https://drive.google.com/file/d/1cfh8KTG92xeZTwjw6G5APEY11X0XU4XO/view)
+lists the official question and video counts for the supplement below. The November 23
+release has 236 test questions on 209 videos. The retained baseline has 202 questions.
 Follow **preflight → environment checks → validation → threshold selection when
 applicable → test → local report**. Publishing is a separately scoped action.
 Use [the unified run guide](../../../tools/unified_benchmark/README.md), not the
@@ -29,21 +30,23 @@ Do not substitute the repository's legacy manifest or alter hashes to pass a che
 Another agent must read this file and its selected execution guide; discovering
 `.claude/skills` automatically is not a prerequisite.
 
-## Current202 workflow
+## Current evaluation workflow
 
 1. **Preflight:** run `tools.unified_benchmark.preflight` for the selected profiles.
-   For the current222 test, add `--test-supplement /private/path/test-supplement.json`
+   For the current test set, add `--test-supplement /private/path/test-supplement.json`
    from [the unified dataset folder](https://drive.google.com/drive/folders/1kOyH59vxBp3uppyEoeyMjTMUa_CalTdh):
    [supplement](https://drive.google.com/file/d/1SgKsoMVYQm9w5a1fE84bR7dcxPuscEbV/view),
-   [all222 questions](https://drive.google.com/file/d/1qvcl8vEWNcfxlrw_DhU79Tfxe1q2VBQg/view),
-   [all202 videos](https://drive.google.com/file/d/1uYN1PdiF13Aa1L6yj88zDACaO-0i5kqd/view).
+   [all test questions](https://drive.google.com/file/d/1qvcl8vEWNcfxlrw_DhU79Tfxe1q2VBQg/view),
+   [all test videos](https://drive.google.com/file/d/1uYN1PdiF13Aa1L6yj88zDACaO-0i5kqd/view).
    Use the existing downloader with the latter list. Keep the original eight
-   frozen inputs unchanged; do not replace their `samples.json` with `samples_222.json`.
-   Use the current supplement from the same Drive link for a new 222-question run.
+   frozen inputs unchanged. Keep the combined question list separate from their `samples.json`.
+   Download the supplement for the release being evaluated.
    Its v2 format applies human-reviewed answers to matching original test questions
-   before scoring. Retain the v1 supplement with historical runs.
-   Haotian's ten bag recordings add questions203-222 in the existing bag categories.
-   Their labels are assistant annotations, not human-confirmed. Ashley's ten bag
+   before scoring. Retain each historical run's exact supplement bytes and hash,
+   whether v1 or v2; do not replace them with the latest release.
+   Haotian's first ten bag recordings (Q203–222) have assistant annotations,
+   pending human confirmation.
+   The next seven (Q223–236) have human-reviewed knife and alcohol-bottle answers. Ashley's ten bag
    validation recordings remain separate; do not tune thresholds on the new test.
    Verify all eight frozen inputs and video hashes, decode frames and save the new
    request/code snapshot. Keep pending hardware/provider/authorization checks
@@ -59,8 +62,7 @@ Another agent must read this file and its selected execution guide; discovering
 4. **Thresholds, when applicable:** use `bench-threshold-tune` and the route's own
    selector for Luna/CLIP/SigLIP2; require complete validation, then freeze the
    artifact before test. Boolean/argmax models do not gain a scalar threshold.
-5. **Test:** run the frozen configuration on all planned questions (222 with the
-   supplement, otherwise202). Preserve successful
+5. **Test:** run the frozen configuration on all questions in the selected release. Preserve successful
    answers and the cumulative three-attempt budget across interruptions. For the
    native, API and local Qwen CLIs, use explicit `--resume` for compatible
    outputs; never use a fresh ledger to reset the budget.
@@ -139,8 +141,8 @@ of twelve-camera real-time throughput. Each unit has at most three total attempt
 
 Every planned response must be valid before a question can contribute a correct
 answer. For complete evidence: any yes → yes; otherwise any no → no; otherwise
-unknown. Headline accuracy is correct / all planned questions (222 with the current
-supplement; 202 for the retained baseline). Missing questions stay in the denominator
+unknown. Headline accuracy is correct / all planned questions in the run's test split.
+Missing questions stay in the denominator
 and are reported separately.
 Native/bag unknown is a valid response; a final unknown is wrong against the binary
 references. Refusal or malformed output is missing, not unknown.

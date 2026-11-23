@@ -26,8 +26,9 @@ first valid target answers. Retry invalid/missing responses after the original
 
 A question needs every planned target response. For complete evidence: any yes
 means yes, otherwise any no means no, otherwise unknown. Headline accuracy is
-correct / **all planned test questions** (202 baseline, 222 with the current test
-supplement), with incomplete questions still in the denominator. Report
+correct / **all planned test questions** in the selected release (202 for the
+retained baseline), with incomplete questions still in the denominator. Use the
+retained supplement and test plan, not a fixed supplement count. Report
 missing units, incomplete questions and unknowns separately. A native window is
 two frames, so missing windows and missing single-frame calls are different units.
 This does not establish twelve-camera real-time throughput.
@@ -270,3 +271,36 @@ Source-export tests need the two public Git commits locally. A shallow checkout
 can fetch each pinned commit first; the tests themselves never fetch, install,
 download weights, start services or call a model. Synthetic results only verify
 the flow; they are never evaluation results for the shared table.
+
+## Current-workbench track (`backend: harness_videojev`)
+
+The historical `videojev` backend replays a pinned old service and a frozen
+question template; it does not describe what today's workbench does with the
+same frames. The current-workbench track builds requests and decisions through
+`goodvision_harness.videojev_recipe`, the same object the live System 1
+inspector uses (`VideoJevInspector.recipe`), so for identical frames the
+benchmark body and the live body are byte-identical
+(`tests/test_videojev_recipe.py`).
+
+A profile names a recipe:
+
+```json
+{"backend": "harness_videojev",
+ "recipe": {"name": "production", "labels": ["fight", "smoking", "fall", "weapon"],
+            "window_frames": 2, "frame_step_seconds": 0.5}}
+```
+
+Optional keys: `sensitivities`, `definitions` (injected events such as bag
+questions, same schema as `events.definitions`) and `gates` (per-label minimum
+"present" probability; without one the decision is the argmax, as in
+production). A unit whose frames do not match the recipe window (count and
+spacing within 1 ms) is refused, so frozen 1 FPS bundles cannot stand in for
+the 0.5 s production window.
+
+PPE uses the live service's independent derived decision. Its native choice
+probabilities are diagnostic only and may be invalid or absent, so a
+`ppe_violation` gate is refused rather than applying unrelated scores.
+
+Not yet done (phase 2): preflight windows at the recipe spacing, and running
+the current `goodvision_harness.videojev_service` instead of the historical
+`private-eval/service.py`. Historical results stay reported separately.
