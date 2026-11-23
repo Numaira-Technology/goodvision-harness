@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import io
 import json
 import math
 import time
@@ -13,16 +12,13 @@ from threading import RLock
 from urllib.parse import urlparse
 
 import httpx
-import cv2
-import numpy as np
-from PIL import Image
 
 from .diagnostics import note
 from .model_api import ModelAPIError
 from .scene_inspection import _validate_job
 from .scene_model import _json
-from .videojev_contract import MODEL, scene_question_template
-from .video_to_stream import encode_jpeg
+from .videojev_contract import MODEL
+from .videojev_recipe import encode_frame, production_recipe
 from .vlm_independent_model import IndependentVerdict
 from .vlm_transport import create_vlm_http_client
 
@@ -90,10 +86,11 @@ class VideoJevInspector:
         self._lock = RLock()
         self._loop = None
         self._http = None
-        self._question_template = scene_question_template(
-            labels=config.labels, sensitivities=dict(config.sensitivities),
-            vocabulary=config.vocabulary,
+        # The same recipe object the benchmark's current-workbench track uses.
+        self.recipe = production_recipe(
+            config.labels, dict(config.sensitivities), config.vocabulary
         )
+        self._question_template = self.recipe.question_template()
         self._expected = tuple(
             {"id": row["id"], "options": row["options"]}
             for row in self._question_template
@@ -134,12 +131,7 @@ class VideoJevInspector:
         )
         images, encoded = [], []
         for frame in frames:
-            jpeg = frame.jpeg_bytes
-            with Image.open(io.BytesIO(jpeg)) as image:
-                width, height = image.size
-                if max(width, height) > 720:
-                    bgr = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
-                    jpeg, width, height = encode_jpeg(bgr, max_image_side=720, quality=90)
+            jpeg, width, height = encode_frame(frame.jpeg_bytes)
             images.append(base64.b64encode(jpeg).decode("ascii"))
             encoded.append((frame, jpeg, width, height))
         payload = {
