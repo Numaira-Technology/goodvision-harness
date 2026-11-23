@@ -1,0 +1,93 @@
+{
+ "PRESETS": {
+  "alcohol_bottle": {
+   "counter_examples": "Plain water bottles, soft-drink or plastic bottles, flasks, thermoses, cups and other non-alcoholic containers do not count.",
+   "criterion": "A glass bottle of an alcoholic drink, such as liquor, spirits, wine or beer, typically with a printed brand label, is clearly visible.",
+   "gate": 0.95,
+   "id": "alcohol_bottle",
+   "name": "alcohol bottle",
+   "zh_name": "酒瓶"
+  },
+  "bag_alcohol_bottle": {
+   "counter_examples": null,
+   "criterion": "Benchmark recipe bench_bag_v1: the frozen bag-alcohol-bottle question is sent unchanged.",
+   "gate": null,
+   "id": "bag_alcohol_bottle",
+   "name": "alcohol bottle in bag",
+   "recipe": "bench_bag_v1",
+   "zh_name": "翻包酒瓶"
+  },
+  "bag_knife": {
+   "counter_examples": null,
+   "criterion": "Benchmark recipe bench_bag_v1: the frozen bag-knife question is sent unchanged.",
+   "gate": null,
+   "id": "bag_knife",
+   "name": "knife in bag",
+   "recipe": "bench_bag_v1",
+   "zh_name": "翻包刀具"
+  },
+  "knife": {
+   "counter_examples": "Pictures of knives, cutlery drawings, or long thin objects without a visible blade do not count.",
+   "criterion": "A knife or bladed tool is clearly visible, judged by its visible appearance only.",
+   "gate": 0.95,
+   "id": "knife",
+   "name": "knife",
+   "zh_name": "刀具"
+  }
+ },
+ "PRESET_STATUS": {
+  "alcohol_bottle": {
+   "status": "experimental",
+   "validated": false
+  },
+  "bag_alcohol_bottle": {
+   "recipe": "bench_bag_v1",
+   "status": "experimental",
+   "validated": false
+  },
+  "bag_knife": {
+   "recipe": "bench_bag_v1",
+   "status": "experimental",
+   "validated": false
+  },
+  "knife": {
+   "status": "experimental",
+   "validated": false
+  }
+ },
+ "RECIPES": {
+  "bench_bag_v1": {
+   "frame_step_seconds": 1.0,
+   "questions": {
+    "bag_alcohol_bottle": "scene/bag_alcohol_bottle",
+    "bag_knife": "scene/bag_knife"
+   },
+   "template_len": 6,
+   "window_frames": 2
+  }
+ },
+ "status": {
+  "alcohol_bottle": {
+   "note": "Experimental preset, not validated: no accuracy claim. On the internal knife check every real knife was missed at gate 0.95.",
+   "status": "experimental",
+   "validated": false
+  },
+  "bag_alcohol_bottle": {
+   "note": "Experimental preset, not validated live: sends the event benchmark's frozen bag question unchanged (2 frames 1 s apart, argmax). Benchmark scores are offline and do not establish live accuracy.",
+   "recipe": "bench_bag_v1",
+   "status": "experimental",
+   "validated": false
+  },
+  "bag_knife": {
+   "note": "Experimental preset, not validated live: sends the event benchmark's frozen bag question unchanged (2 frames 1 s apart, argmax). Benchmark scores are offline and do not establish live accuracy.",
+   "recipe": "bench_bag_v1",
+   "status": "experimental",
+   "validated": false
+  },
+  "knife": {
+   "note": "Experimental preset, not validated: no accuracy claim. On the internal knife check every real knife was missed at gate 0.95.",
+   "status": "experimental",
+   "validated": false
+  }
+ }
+}

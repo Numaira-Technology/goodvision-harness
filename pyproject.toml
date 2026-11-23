@@ -129,6 +129,7 @@ goodvision_harness = [
   "assets/*.txt",
   "fonts/*.otf",
   "fonts/*.txt",
+  "object_cards/*.json",
 ]
 
 [tool.pytest.ini_options]

@@ -1,0 +1,34 @@
+{
+  "id": "knife",
+  "version": 1,
+  "names": {
+    "en": "knife",
+    "zh": "刀具"
+  },
+  "scope": "Anywhere in view; judged by visible appearance only.",
+  "engine": "videojev",
+  "recipe": {
+    "kind": "native_choice",
+    "text": {
+      "criterion": "A knife or bladed tool is clearly visible, judged by its visible appearance only.",
+      "counter_examples": "Pictures of knives, cutlery drawings, or long thin objects without a visible blade do not count."
+    }
+  },
+  "decision": {
+    "rule": "gate",
+    "gate": 0.95
+  },
+  "hard_negatives": [
+    "Pictures or drawings of knives",
+    "Long thin objects without a visible blade (rulers, pens)"
+  ],
+  "datasets": {},
+  "status": {
+    "state": "experimental",
+    "note": "Experimental preset, not validated: no accuracy claim. On the internal knife check every real knife was missed at gate 0.95.",
+    "evidence": []
+  },
+  "live": {
+    "supported": true
+  }
+}

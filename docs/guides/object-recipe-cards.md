@@ -1,6 +1,6 @@
 # 物件配方卡：设计说明（草案）
 
-**状态：草案，待 Ashley 确认后再动代码。** 本文只讲结构，不声明任何识别效果。基于 PR #129（`claude/object-bench-recipe`）。
+**状态：Ashley 已于 2026-11-23 确认第 5 节四点；第一期已实现。** 本文只讲结构，不声明任何识别效果。基于 PR #129（`claude/object-bench-recipe`）。
 
 ## 目标
 
@@ -93,12 +93,21 @@
 - 物体节点接 CLIP、托管 VLM、Luna 引擎（按第 2 节的 `live.supported` 留好位置，另做）；
 - 任何实时验收，任何 GPU 运行。
 
-## 5. 需要 Ashley 确认的事
+## 5. 已确认的选择（2026-11-23）
 
-1. **问法用引用、不复制**：卡里指向评测文件，不另写一份；工作台用随代码发布的副本，由测试保证一致。可以吗？
-2. **冻结的评测流程不改**：卡和评测的「同一份配方」靠校验工具保证，而不是让评测程序改成读卡。可以吗？
-3. **改成 `validated` 的门槛**：必须有实时验收记录，只有离线分数不行。可以吗？
-4. **只供离线的卡**（比如 CLIP 翻包）也放进注册表，但 Canvas 里不显示，等对应引擎接进物体节点再开放。可以吗？
+1. **问法用引用、不复制**：卡里指向评测文件，不另写一份；工作台用随代码发布的副本，由测试保证一致。
+2. **冻结的评测流程不改**：卡和评测的「同一份配方」靠校验工具保证，而不是让评测程序改成读卡。
+3. **改成 `validated` 的门槛**：必须有实时验收记录，只有离线分数不行。
+4. **只供离线的卡**（比如 CLIP 翻包）也放进注册表，但 Canvas 里不显示，等对应引擎接进物体节点再开放。
+
+## 5.1 第一期实现说明
+
+- 卡：`src/goodvision_harness/object_cards/*.json`（6 张：4 张工作台预设，2 张只供离线的 CLIP 翻包卡）；加载和校验在 `object_cards/__init__.py`。
+- `object_presence.PRESETS`、`PRESET_STATUS`、`RECIPES` 改由卡生成；`tests/fixtures/object_presets_before_cards.json` 是迁移前的快照，测试保证逐项相同。
+- 哈希口径：VideoJev 题目卡对整个 `question_template` 取哈希（请求会发送整个模板）；CLIP 文字对只对该事件的一对文字取哈希。都用排序键、紧凑分隔的 JSON。
+- 数据集不记哈希副本，只记钉住它们的常量（如 `tools.unified_benchmark.dataset202:PINNED_202_INPUTS`），`verify` 检查常量存在。
+- Canvas：`GET /v1/workflows` 新增 `object_cards`，编辑器优先读它；没有时用内置的离线列表。
+- 校验：`python -m tools.object_cards verify`；有冻结阈值时加 `--thresholds clip_bag_knife=路径/thresholds.json`。
 
 ## 6. 新建一张卡（流程草案）
 

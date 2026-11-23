@@ -22,7 +22,8 @@
     bag_knife:{id:'bag_knife',name:'knife in bag',zh_name:'翻包刀具',criterion:'Benchmark recipe bench_bag_v1: the frozen bag-knife question is sent unchanged.',counter_examples:null,gate:null,recipe:'bench_bag_v1'},
     bag_alcohol_bottle:{id:'bag_alcohol_bottle',name:'alcohol bottle in bag',zh_name:'翻包酒瓶',criterion:'Benchmark recipe bench_bag_v1: the frozen bag-alcohol-bottle question is sent unchanged.',counter_examples:null,gate:null,recipe:'bench_bag_v1'}
   };
-  // Mirrors object_presence.PRESET_STATUS: both presets are experimental and not validated.
+  // Offline fallback only: the server sends the object recipe cards
+  // (object_cards/*.json) as object_cards, and the editor reads those first.
   const objectPresetStatus={knife:{status:'experimental',validated:false},alcohol_bottle:{status:'experimental',validated:false},bag_knife:{status:'experimental',validated:false},bag_alcohol_bottle:{status:'experimental',validated:false}};
   const experimentalObject=id=>objectPresetStatus[id]?.validated===false;
   const objectPresetLabels={knife:'Add knife (experimental)',alcohol_bottle:'Add alcohol bottle (experimental)',bag_knife:'Add bag knife · benchmark recipe (experimental)',bag_alcohol_bottle:'Add bag alcohol bottle · benchmark recipe (experimental)'};
@@ -332,8 +333,9 @@
         +`<label class="wc-field"><span>${esc(this.t('Frames per judgment'))}</span><select data-wc-field="window_frames" data-wc-number="true" ${disabled?'disabled':''}>${[2,4].map(v=>`<option value="${v}" ${(config.window_frames??2)===v?'selected':''}>${v}</option>`).join('')}</select></label>`
         +((config.window_frames??2)===4?this.field('Frame spacing · seconds','frame_step_seconds',config.frame_step_seconds??0.4,'number','min="0.1" max="1" step="0.1"',disabled):'')
         +`<div class="wc-section-label">${esc(this.t('Objects'))}</div>`;
-      items.forEach((item,i)=>{html+=`<div class="wc-object" style="border:1px solid var(--wc-line,#ddd);border-radius:8px;padding:8px;margin:6px 0">`
-        +(experimentalObject(item.id)?`<div class="wc-note is-experimental" data-wc-experimental="${esc(item.id)}"><strong class="wc-badge">${esc(this.t('Experimental · not validated'))}</strong> ${esc(this.t(item.recipe?'Experimental preset, not validated live: sends the event benchmark\'s frozen bag question unchanged (2 frames 1 s apart, argmax). Benchmark scores are offline and do not establish live accuracy.':'Experimental preset, not validated: no accuracy claim. On the internal knife check every real knife was missed at gate 0.95.'))}</div>`:'')
+      const cards=this.objectCards(),card=id=>cards.find(c=>c.id===id);
+      items.forEach((item,i)=>{const c=card(item.id);html+=`<div class="wc-object" style="border:1px solid var(--wc-line,#ddd);border-radius:8px;padding:8px;margin:6px 0">`
+        +(c&&!c.validated?`<div class="wc-note is-experimental" data-wc-experimental="${esc(item.id)}"><strong class="wc-badge">${esc(this.t('Experimental · not validated'))}</strong> ${esc(this.t(c.note))}</div>`:'')
         +`<label class="wc-field"><span>${esc(this.t('Object ID'))}</span>${input(i,'id',item.id,'text','maxlength="48" pattern="[a-z][a-z0-9_]*"')}</label>`
         +`<label class="wc-field"><span>${esc(this.t('Name (English)'))}</span>${input(i,'name',item.name,'text','maxlength="64"')}</label>`
         +`<label class="wc-field"><span>${esc(this.t('Chinese name'))}</span>${input(i,'zh_name',item.zh_name,'text','maxlength="64"')}</label>`
@@ -343,10 +345,11 @@
         +`<label class="wc-field"><span>${esc(this.t('Gate · present probability'))}</span>${input(i,'gate',item.gate??0.95,'number','min="0.34" max="1" step="0.01"')}</label>`)
         +this.button('object-remove','Remove object','',`data-index="${i}" ${off||items.length<2?'disabled':''}`)+`</div>`;});
       const placeholder=items.length===1&&!items[0].recipe&&!items[0].name?.trim();
-      const blocked=key=>{const recipe=objectPresets[key]?.recipe||null;return !placeholder&&items.some(o=>(o.recipe||null)!==recipe);};
-      html+=`<p>${Object.keys(objectPresets).map(key=>this.button('object-add',objectPresetLabels[key]||('Add '+key),'',`data-preset="${key}" ${off||items.length>=8||items.some(o=>o.id===key)||blocked(key)?'disabled':''}`)).join(' ')} ${this.button('object-add','Add custom object','',`data-preset="" ${off||items.length>=8||items.some(o=>o.recipe)?'disabled':''}`)}</p>`;
+      const blocked=c=>{const recipe=c.preset.recipe||null;return !placeholder&&items.some(o=>(o.recipe||null)!==recipe);};
+      html+=`<p>${cards.map(c=>this.button('object-add',objectPresetLabels[c.id]||('Add '+c.names.en+(c.recipe?' · benchmark recipe':'')+(c.validated?'':' (experimental)')),'',`data-preset="${esc(c.id)}" ${off||items.length>=8||items.some(o=>o.id===c.id)||blocked(c)?'disabled':''}`)).join(' ')} ${this.button('object-add','Add custom object','',`data-preset="" ${off||items.length>=8||items.some(o=>o.recipe)?'disabled':''}`)}</p>`;
       return html+`<div class="wc-note is-experimental">${esc(this.t('Object presence is an opt-in framework. The knife and alcohol bottle presets are experimental and not validated; do not rely on them for alerts.'))}</div><div class="wc-note">${esc(this.t('Uses the System 1 (VideoJev) service. Gate 0.95 is a starting default from the bag demo, not a calibrated threshold.'))}</div>`;
     }
+    objectCards(){const served=this.data?.object_cards;if(Array.isArray(served)&&served.every(c=>c&&typeof c.id==='string'&&c.preset&&c.names))return served;return Object.keys(objectPresets).map(id=>({id,names:{en:objectPresets[id].name,zh:objectPresets[id].zh_name},validated:objectPresetStatus[id]?.validated===true,status:objectPresetStatus[id]?.status||'experimental',recipe:objectPresets[id].recipe||null,note:objectPresets[id].recipe?'Experimental preset, not validated live: sends the event benchmark\'s frozen bag question unchanged (2 frames 1 s apart, argmax). Benchmark scores are offline and do not establish live accuracy.':'Experimental preset, not validated: no accuracy claim. On the internal knife check every real knife was missed at gate 0.95.',preset:copy(objectPresets[id])}));}
     editObjects(mutate){const node=this.graph.nodes.find(n=>n.id===this.selected);if(!node||node.type!=='objects'||this.mode!=='edit'||this.editLocked())return;this.checkpoint();this.editCheckpoint=null;node.config.objects=copy(node.config.objects||[]);mutate(node.config.objects);this.invalidateTest();this.render();}
     field(label,key,value,type='text',attrs='',disabled=false){return `<label class="wc-field"><span>${esc(this.t(label))}</span><input data-wc-field="${key}" type="${type}" value="${esc(value)}" ${attrs} ${disabled?'disabled':''}></label>`;}
     availableSourceCameras(node=null){const used=new Set(this.graph.nodes.filter(n=>n.type==='source'&&n.id!==node?.id).map(n=>n.config?.camera_id));return this.cameras.filter(c=>c.enabled!==false&&!used.has(c.id));}
@@ -721,7 +724,7 @@
         case'live':this.navigate('overview','fleet-panel');break;
         case'people':this.navigate('capabilities','face-controls');break;
         case'object-remove':this.editObjects(items=>items.splice(Number(button.dataset.index),1));break;
-        case'object-add':this.editObjects(items=>{const preset=button.dataset.preset;if(preset&&objectPresets[preset]){if(objectPresets[preset].recipe&&items.length===1&&!items[0].recipe&&!items[0].name?.trim())items.length=0;items.push(copy(objectPresets[preset]));return;}let n=items.length+1;while(items.some(o=>o.id==='object_'+n))n++;items.push({id:'object_'+n,name:'',zh_name:'',criterion:'',counter_examples:'',gate:0.95});});break;
+        case'object-add':this.editObjects(items=>{const key=button.dataset.preset,chosen=key&&this.objectCards().find(c=>c.id===key)?.preset;if(chosen){if(chosen.recipe&&items.length===1&&!items[0].recipe&&!items[0].name?.trim())items.length=0;items.push(copy(chosen));return;}let n=items.length+1;while(items.some(o=>o.id==='object_'+n))n++;items.push({id:'object_'+n,name:'',zh_name:'',criterion:'',counter_examples:'',gate:0.95});});break;
         case'source-save':case'source-connect':case'source-disconnect':await this.sourceAction(action.slice(7));break;
         case'summary-service-save':await this.saveSummaryService();break;
         case'summary-service-reload':await this.loadSummaryService();break;

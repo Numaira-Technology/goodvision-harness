@@ -1,0 +1,34 @@
+{
+  "id": "alcohol_bottle",
+  "version": 1,
+  "names": {
+    "en": "alcohol bottle",
+    "zh": "酒瓶"
+  },
+  "scope": "Anywhere in view; glass bottle of an alcoholic drink.",
+  "engine": "videojev",
+  "recipe": {
+    "kind": "native_choice",
+    "text": {
+      "criterion": "A glass bottle of an alcoholic drink, such as liquor, spirits, wine or beer, typically with a printed brand label, is clearly visible.",
+      "counter_examples": "Plain water bottles, soft-drink or plastic bottles, flasks, thermoses, cups and other non-alcoholic containers do not count."
+    }
+  },
+  "decision": {
+    "rule": "gate",
+    "gate": 0.95
+  },
+  "hard_negatives": [
+    "Water, soft-drink or plastic bottles",
+    "Flasks, thermoses and cups"
+  ],
+  "datasets": {},
+  "status": {
+    "state": "experimental",
+    "note": "Experimental preset, not validated: no accuracy claim. On the internal knife check every real knife was missed at gate 0.95.",
+    "evidence": []
+  },
+  "live": {
+    "supported": true
+  }
+}

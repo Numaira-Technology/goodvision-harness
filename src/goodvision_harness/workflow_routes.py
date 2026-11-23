@@ -11,6 +11,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from .event_catalog import event_catalog
+from . import object_cards
 from .workflow_modules import module_catalog
 from .workflows import (
     WorkflowConflictError,
@@ -126,6 +127,7 @@ class WorkflowCoordinator:
             "cameras": cameras,
             "event_catalog": event_catalog(self.vocabulary),
             "modules": module_catalog(),
+            "object_cards": object_cards.catalog(object_cards.CARDS),
             "tracking": (
                 self.application.state.runtime.workflow_tracking_capability()
                 if callable(

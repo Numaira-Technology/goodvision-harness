@@ -27,7 +27,9 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 from uuid import uuid4
 
+from . import object_cards
 from .object_bench_recipe import QUESTION_TEMPLATE as BENCH_TEMPLATE
+from .object_bench_recipe import TEMPLATE_SHA256
 from .videojev_core import OPTIONS, choice_indices
 
 MAX_OBJECTS = 8
@@ -45,92 +47,50 @@ _PREAMBLE = (
     "Use only visible evidence; do not infer hidden objects."
 )
 
-# Starting presets from the 翻包 demo. The 0.95 gate was fitted on a 10-clip
-# smoke sample; it is a default, not a calibrated threshold.
-#
-# EXPERIMENTAL, NOT VALIDATED. The object-presence node is a framework; these
-# presets are examples, not a usable detector. On the internal knife check every
-# real knife was missed at gate 0.95, and alcohol bottles need a hosted VLM.
-# Knife validation is separate follow-up work (docs/validation/
-# object-presence-knife-protocol.md). The UI reads PRESET_STATUS to badge them.
-PRESET_NOTE = (
-    "Experimental preset, not validated: no accuracy claim. On the internal "
-    "knife check every real knife was missed at gate 0.95."
-)
-# Benchmark recipes: the exact native request the event benchmark scores for
-# its bag-validation questions (frozen six-question template, two frames one
-# second apart, fps 1.0, argmax). An object that names a recipe is answered by
-# that recipe's question; the node sends the whole frozen template unchanged so
-# its request is the benchmark's request. Offline benchmark scores (bag knife /
-# bag alcohol bottle) describe this recipe, not live accuracy.
-RECIPES = {
-    "bench_bag_v1": {
-        "template": BENCH_TEMPLATE,
-        "window_frames": 2,
-        "frame_step_seconds": 1.0,
-        "questions": {
-            "bag_knife": "scene/bag_knife",
-            "bag_alcohol_bottle": "scene/bag_alcohol_bottle",
-        },
-    },
-}
-BENCH_PRESET_NOTE = (
-    "Experimental preset, not validated live: sends the event benchmark's frozen "
-    "bag question unchanged (2 frames 1 s apart, argmax). Benchmark scores are "
-    "offline and do not establish live accuracy."
-)
+# Presets come from the object recipe cards (``object_cards/*.json``); see
+# docs/guides/object-recipe-cards.md. Every shipped card is EXPERIMENTAL, NOT
+# VALIDATED: the node is a framework, the cards are examples. On the internal
+# knife check every real knife was missed at gate 0.95; the bench_bag_v1 cards
+# send the event benchmark's frozen bag question, whose offline scores do not
+# establish live accuracy. A card turns validated only with live-acceptance
+# evidence (docs/validation/object-presence-knife-protocol.md).
+_LIVE_CARDS = {cid: c for cid, c in object_cards.CARDS.items() if c["live"]["supported"]}
+# Frozen benchmark templates the live node can send, keyed by profile field hash.
+_BUNDLED_TEMPLATES = {("videojev", "question_template", TEMPLATE_SHA256): BENCH_TEMPLATE}
 
-PRESET_STATUS = {
-    "knife": {"status": "experimental", "validated": False},
-    "alcohol_bottle": {"status": "experimental", "validated": False},
-    "bag_knife": {"status": "experimental", "validated": False,
-                  "recipe": "bench_bag_v1"},
-    "bag_alcohol_bottle": {"status": "experimental", "validated": False,
-                           "recipe": "bench_bag_v1"},
-}
-PRESETS = {
-    "knife": {
-        "id": "knife",
-        "name": "knife",
-        "zh_name": "刀具",
-        "criterion": "A knife or bladed tool is clearly visible, judged by its "
-        "visible appearance only.",
-        "counter_examples": "Pictures of knives, cutlery drawings, or long thin "
-        "objects without a visible blade do not count.",
-        "gate": DEFAULT_GATE,
-    },
-    "alcohol_bottle": {
-        "id": "alcohol_bottle",
-        "name": "alcohol bottle",
-        "zh_name": "酒瓶",
-        "criterion": "A glass bottle of an alcoholic drink, such as liquor, "
-        "spirits, wine or beer, typically with a printed brand label, is "
-        "clearly visible.",
-        "counter_examples": "Plain water bottles, soft-drink or plastic bottles, "
-        "flasks, thermoses, cups and other non-alcoholic containers do not count.",
-        "gate": DEFAULT_GATE,
-    },
-    "bag_knife": {
-        "id": "bag_knife",
-        "name": "knife in bag",
-        "zh_name": "翻包刀具",
-        "criterion": "Benchmark recipe bench_bag_v1: the frozen bag-knife "
-        "question is sent unchanged.",
-        "counter_examples": None,
-        "gate": None,
-        "recipe": "bench_bag_v1",
-    },
-    "bag_alcohol_bottle": {
-        "id": "bag_alcohol_bottle",
-        "name": "alcohol bottle in bag",
-        "zh_name": "翻包酒瓶",
-        "criterion": "Benchmark recipe bench_bag_v1: the frozen bag-alcohol-bottle "
-        "question is sent unchanged.",
-        "counter_examples": None,
-        "gate": None,
-        "recipe": "bench_bag_v1",
-    },
-}
+
+def _recipes(cards) -> dict:
+    recipes: dict[str, dict] = {}
+    for card in cards.values():
+        source = card["recipe"].get("source") or {}
+        rid = source.get("recipe_id")
+        if rid is None:
+            continue
+        key = (source["profile"], source["field"], source["sha256"])
+        if key not in _BUNDLED_TEMPLATES:
+            raise object_cards.CardError(
+                f"object card {card['id']}: no bundled copy of {key}; the live "
+                "node only sends templates verified against the benchmark profile"
+            )
+        window = card["recipe"]["window"]
+        recipe = recipes.setdefault(rid, {
+            "template": _BUNDLED_TEMPLATES[key],
+            "window_frames": window["frames"],
+            "frame_step_seconds": float(window["step_seconds"]),
+            "questions": {},
+        })
+        if source["question_id"] not in {q["id"] for q in recipe["template"]}:
+            raise object_cards.CardError(
+                f"object card {card['id']}: question {source['question_id']} "
+                "is not in the referenced template"
+            )
+        recipe["questions"][card["id"]] = source["question_id"]
+    return recipes
+
+
+RECIPES = _recipes(_LIVE_CARDS)
+PRESET_STATUS = {cid: object_cards.status_of(c) for cid, c in _LIVE_CARDS.items()}
+PRESETS = {cid: object_cards.preset(c) for cid, c in _LIVE_CARDS.items()}
 
 
 def preset_status(object_id: str) -> dict | None:
@@ -138,7 +98,7 @@ def preset_status(object_id: str) -> dict | None:
     status = PRESET_STATUS.get(object_id)
     if not status:
         return None
-    return dict(status, note=BENCH_PRESET_NOTE if status.get("recipe") else PRESET_NOTE)
+    return dict(status, note=_LIVE_CARDS[object_id]["status"]["note"])
 
 
 def is_experimental(object_id: str) -> bool:

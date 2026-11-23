@@ -1,0 +1,50 @@
+{
+  "id": "clip_bag_knife",
+  "version": 1,
+  "names": {
+    "en": "knife in bag · CLIP",
+    "zh": "翻包刀具 · CLIP"
+  },
+  "scope": "Visibly exposed in a bag or being taken out of a bag; single frame.",
+  "engine": "clip",
+  "recipe": {
+    "kind": "text_pair",
+    "summary": "Benchmark CLIP text pair for bag-knife: the frozen positive/negative descriptions in profiles/clip.json.",
+    "source": {
+      "profile": "clip",
+      "field": "prompts",
+      "sha256": "46289787c9701340959dc9bcb26f6f24c000500fd1d077ce8daf80334294e0d3",
+      "prompt_key": "bag_knife",
+      "revision": "32bd64288804d66eefd0ccbe215aa642df71cc41"
+    },
+    "window": {
+      "frames": 1,
+      "step_seconds": 1.0
+    }
+  },
+  "decision": {
+    "rule": "margin",
+    "comparator": ">",
+    "threshold": null,
+    "thresholds_sha256": null
+  },
+  "hard_negatives": [],
+  "datasets": {
+    "validation": {
+      "name": "validation44 (frozen 24 + bag supplement 20)",
+      "pinned_by": "tools.unified_benchmark.preflight:PINNED_INPUTS"
+    },
+    "test": {
+      "name": "current202",
+      "pinned_by": "tools.unified_benchmark.dataset202:PINNED_202_INPUTS"
+    }
+  },
+  "status": {
+    "state": "experimental",
+    "note": "Offline-only card: the live object node has no CLIP engine yet. The margin threshold is filled only from a frozen validation-only thresholds.json.",
+    "evidence": []
+  },
+  "live": {
+    "supported": false
+  }
+}
