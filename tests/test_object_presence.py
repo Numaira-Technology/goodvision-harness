@@ -427,39 +427,38 @@ def test_unconsumed_objects_node_is_not_planned():
 # --- render --------------------------------------------------------------
 
 
-def test_overlay_labels_experimental_presets_and_not_custom_objects():
+def test_overlay_labels_exclude_experimental_presets_and_keep_custom_objects():
     value = {
-        "timestamp_seconds": 5.0,
-        "error": None,
         "objects": [
             {"id": "knife", "name": "knife", "zh_name": "刀具",
              "experimental": True, "present": True},
             {"id": "forklift", "name": "forklift", "zh_name": "叉车",
              "experimental": False, "present": True},
             {"id": "alcohol_bottle", "name": "alcohol bottle", "zh_name": "酒瓶",
-             "present": True},  # older tick without the field: falls back to id
+             "present": True},  # older record: fall back to its shipped preset ID
             {"id": "pallet", "name": "pallet", "present": False},
         ],
     }
-    assert object_labels(value) == [
-        "刀具（实验性 · 未验证）", "叉车", "酒瓶（实验性 · 未验证）",
+    assert object_labels(value) == ["叉车"]
+    assert object_labels(value, "en") == ["forklift"]
+
+
+def test_crowded_video_overlay_does_not_draw_unvalidated_preset():
+    base = jpeg(size=(640, 360))
+    custom = [
+        {"id": f"custom_{i}", "name": "x" * 53, "present": True} for i in range(5)
     ]
-    assert object_labels(value, "en") == [
-        "knife (experimental · not validated)",
-        "forklift",
-        "alcohol bottle (experimental · not validated)",
-    ]
+    preset = {"id": "knife", "name": "knife", "experimental": True, "present": True}
 
     def drawn(objects):
         output = {"inputs": [{"port": "objects", "value": {
-            **value, "objects": objects}}], "display": {}}
-        return render_output(jpeg(size=(640, 360)), output, 5.0)
+            "timestamp_seconds": 5.0, "objects": objects}}], "display": {}}
+        return render_output(base, output, 5.0, language="en")
 
-    preset = dict(value["objects"][0])
-    custom = dict(preset, experimental=False)
-    # The experimental qualifier is burned into the frame, the custom one is not.
-    assert drawn([preset]) != drawn([custom])
-    assert drawn([custom]) != drawn([])
+    # The old renderer ended the crowded panel with "knife (experi…".
+    assert drawn([*custom, preset]) == drawn(custom)
+    assert drawn([preset]) == drawn([])
+    assert drawn(custom) != drawn([])
 
 
 def test_output_layer_draws_only_present_objects():

@@ -18,27 +18,21 @@ def recent(timestamp, now, age):
     )
 
 
-EXPERIMENTAL_SUFFIX = {"zh": "（实验性 · 未验证）", "en": " (experimental · not validated)"}
-
-
 def object_labels(value, language="zh"):
-    """Burned-in labels for present objects; unvalidated presets say so.
+    """Burn in present custom labels, never unvalidated preset detections.
 
-    A record without the ``experimental`` field (older ticks) falls back to the
-    shipped preset list, so a preset is never drawn without its qualifier.
+    The rendered image may crop text and lose a warning. Skip experimental
+    results altogether, also recognizing shipped IDs in older records.
     """
     labels = []
     for item in value.get("objects", []):
         if item.get("present") is not True:
             continue
-        name = (item.get("zh_name") if language == "zh" else None) or item.get("name")
-        if not name:
+        if item.get("experimental") or is_experimental(str(item.get("id", ""))):
             continue
-        experimental = item.get("experimental")
-        if experimental is None:
-            experimental = is_experimental(str(item.get("id", "")))
-        suffix = EXPERIMENTAL_SUFFIX["zh" if language == "zh" else "en"]
-        labels.append(str(name) + (suffix if experimental else ""))
+        name = (item.get("zh_name") if language == "zh" else None) or item.get("name")
+        if name:
+            labels.append(str(name))
     return labels
 
 
