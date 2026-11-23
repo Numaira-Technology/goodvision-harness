@@ -35,11 +35,15 @@ def frames(tmp_path, source, count, step=0.5):
 
 
 def frozen_plan():
-    units = [{"id": f"videojev/test/{s}/all/{i}", "source_id": f"test/{s}", "targets": ["fight"]}
-             for s in ("a", "b") for i in range(2)]
+    units = [
+        {"id": f"videojev/test/{s}/all/{i}", "source_id": f"test/{s}",
+         "targets": ["fight"]}
+        for s in ("a", "b") for i in range(2)
+    ]
     questions = [
         {"number": 1, "event": "fight", "reference": "yes", "filename": "a.mp4",
-         "source_video_group": "g", "unit_ids": ["videojev/test/a/all/0", "videojev/test/a/all/1"]},
+         "source_video_group": "g",
+         "unit_ids": ["videojev/test/a/all/0", "videojev/test/a/all/1"]},
         {"number": 2, "event": "fight", "reference": "no", "filename": "b.mp4",
          "source_video_group": "g", "unit_ids": ["videojev/test/b/all/0"]},
     ]
@@ -62,7 +66,9 @@ def test_request_body_uses_live_fps_and_refuses_other_spacing(tmp_path):
     assert body["fps"] == 2.0 and body["frame_times"] == [0.0, 0.5]
     assert body["question_template"] == CONFIG["question_template"]
     with pytest.raises(ValueError, match="adjacent frames"):
-        live_bundle.request_body(CONFIG, {**unit, "frames": [fs[0], fs[2]]}, tmp_path, 0.5)
+        live_bundle.request_body(
+            CONFIG, {**unit, "frames": [fs[0], fs[2]]}, tmp_path, 0.5,
+        )
 
 
 def test_plan_keeps_questions_and_regroups_them_by_video(tmp_path):
@@ -74,14 +80,17 @@ def test_plan_keeps_questions_and_regroups_them_by_video(tmp_path):
     assert len(q1["unit_ids"]) == 4 and all("/test/a/" in u for u in q1["unit_ids"])
     assert len(q2["unit_ids"]) == 2
     unit = plan["units"][0]
-    assert unit["request_sha256"] == digest(live_bundle.request_body(CONFIG, unit, tmp_path, 0.5))
+    body = live_bundle.request_body(CONFIG, unit, tmp_path, 0.5)
+    assert unit["request_sha256"] == digest(body)
 
 
 def write_live_bundle(tmp_path):
     by_source = {"test/a": frames(tmp_path, "a", 4), "test/b": frames(tmp_path, "b", 3)}
     plan = live_bundle.plan_from_frames(frozen_plan(), CONFIG, tmp_path, by_source, 0.5)
     files = {}
-    for rel, value in (("plans/videojev-test.json", plan), ("configs/videojev.json", CONFIG)):
+    for rel, value in (
+        ("plans/videojev-test.json", plan), ("configs/videojev.json", CONFIG),
+    ):
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text(json.dumps(value))
     for path in tmp_path.rglob("*"):
@@ -113,13 +122,20 @@ def test_sweep_sends_live_bodies_for_a_live_bundle(tmp_path):
         gpu_sweep.checked_body(CONFIG, tampered, tmp_path)
 
 
-@pytest.mark.parametrize("damage", ["plan", "config", "frame", "extra-plan", "split", "count", "request", "parent"])
-def test_run_rejects_unsealed_live_inputs_before_contacting_service(tmp_path, monkeypatch, damage):
+@pytest.mark.parametrize(
+    "damage",
+    ["plan", "config", "frame", "extra-plan", "split", "count", "request", "parent"],
+)
+def test_run_rejects_unsealed_live_inputs_before_contacting_service(
+    tmp_path, monkeypatch, damage,
+):
     plan = write_live_bundle(tmp_path)
     path = tmp_path / "live-manifest.json"
     manifest = json.loads(path.read_text())
     if damage in ("plan", "config"):
-        name = "plans/videojev-test.json" if damage == "plan" else "configs/videojev.json"
+        name = (
+            "plans/videojev-test.json" if damage == "plan" else "configs/videojev.json"
+        )
         manifest["files"].pop(name)
         if damage == "plan":
             # Reference edits do not change any request fingerprint.
@@ -154,11 +170,13 @@ def test_run_rejects_unsealed_live_inputs_before_contacting_service(tmp_path, mo
 
 
 def test_run_accepts_a_sealed_live_bundle(tmp_path, monkeypatch):
-    from test_gpu_sweep import health, raw_row, YES, NO
+    from test_gpu_sweep import NO, YES, health, raw_row
 
     plan = write_live_bundle(tmp_path)
     calls = []
-    monkeypatch.setattr(gpu_sweep, "http_health", lambda url: health("RTX 4090", "bf16"))
+    monkeypatch.setattr(
+        gpu_sweep, "http_health", lambda url: health("RTX 4090", "bf16"),
+    )
 
     def post(url, body):
         calls.append(body)

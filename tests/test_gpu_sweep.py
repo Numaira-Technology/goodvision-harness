@@ -369,10 +369,13 @@ def test_declared_batch_variation_is_allowed_and_recorded(tmp_path):
     c, cu = gpu_sweep.read_run(big)
     with pytest.raises(ValueError, match="settings differ"):
         gpu_sweep.compare_runs(b, c, bu, cu)
-    result = gpu_sweep.compare_runs(b, c, bu, cu, vary=("gpu_batch_size", "ready_capacity"))
+    result = gpu_sweep.compare_runs(
+        b, c, bu, cu, vary=("gpu_batch_size", "ready_capacity"),
+    )
     assert result["declared_variations"] == ["gpu_batch_size", "ready_capacity"]
     assert result["candidate"]["settings"]["gpu_batch_size"] == 8
-    with pytest.raises(ValueError, match="settings differ"):  # undeclared one still refused
+    # The undeclared setting still has to match.
+    with pytest.raises(ValueError, match="settings differ"):
         gpu_sweep.compare_runs(b, c, bu, cu, vary=("gpu_batch_size",))
     with pytest.raises(ValueError, match="may be varied"):
         gpu_sweep.compare_runs(b, c, bu, cu, vary=("queue_age",))
@@ -386,6 +389,8 @@ def test_compile_is_recorded_and_a_compiled_run_is_not_the_default_baseline(tmp_
     b, bu = gpu_sweep.read_run(base)
     c, cu = gpu_sweep.read_run(comp)
     result = gpu_sweep.compare_runs(b, c, bu, cu)
-    assert (result["baseline"]["compile"], result["candidate"]["compile"]) == ("off", "mlp")
+    assert (result["baseline"]["compile"], result["candidate"]["compile"]) == (
+        "off", "mlp",
+    )
     with pytest.raises(ValueError, match="baseline must be RTX 4090"):
         gpu_sweep.compare_runs(c, b, cu, bu)

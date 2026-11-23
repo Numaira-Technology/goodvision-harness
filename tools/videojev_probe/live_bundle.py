@@ -12,8 +12,9 @@ the frames, the windows (about twice as many) and the request ``fps``. This is
 a diagnostic replay, not the frozen protocol; its accuracy is not comparable to
 the frozen table.
 
-The output directory holds frames, ``configs/videojev.json``, ``plans/videojev-test.json``
-and ``live-manifest.json`` (parent bundle digest, step, SHA-256 of every file).
+The output directory holds frames, ``configs/videojev.json``,
+``plans/videojev-test.json`` and ``live-manifest.json`` (parent bundle digest,
+step, SHA-256 of every file).
 Like the frozen bundle it contains reference answers: keep it private.
 """
 
@@ -50,7 +51,10 @@ def request_body(config, unit, bundle, step):
     images = []
     for frame in frames:
         path = (Path(bundle) / frame["path"]).resolve()
-        if not path.is_relative_to(Path(bundle).resolve()) or file_hash(path) != frame["sha256"]:
+        if (
+            not path.is_relative_to(Path(bundle).resolve())
+            or file_hash(path) != frame["sha256"]
+        ):
             raise ValueError("frame path or fingerprint differs")
         images.append(base64.b64encode(path.read_bytes()).decode())
     return {"session": unit["source_id"], "request_id": unit["id"], "fps": 1.0 / step,
@@ -69,9 +73,11 @@ def plan_from_frames(frozen_plan, config, bundle, frames_by_source, step):
             raise ValueError("video too short for a two-frame window: " + source_id)
         ids = []
         for index in range(len(frames) - 1):
-            unit = {"id": f"videojev-live/{source_id}/all/{index}", "source_id": source_id,
-                    "targets": targets[source_id], "frames": frames[index:index + 2],
-                    "question": None}
+            unit = {
+                "id": f"videojev-live/{source_id}/all/{index}", "source_id": source_id,
+                "targets": targets[source_id], "frames": frames[index:index + 2],
+                "question": None,
+            }
             unit["request_sha256"] = digest(request_body(config, unit, bundle, step))
             units.append(unit)
             ids.append(unit["id"])
@@ -107,7 +113,9 @@ def build(frozen, media, output, step=0.5, split="test"):
         path = media / split / filename
         if file_hash(path) != sha:
             raise ValueError("source video differs from the frozen bundle: " + filename)
-        times = live_times(run_eval.probe_duration(path), probe_last_frame_time(path), step)
+        times = live_times(
+            run_eval.probe_duration(path), probe_last_frame_time(path), step,
+        )
         frames = []
         for index, t in enumerate(times):
             uri = run_eval.frame_uri(path, t)
@@ -131,9 +139,11 @@ def build(frozen, media, output, step=0.5, split="test"):
         (output / rel).parent.mkdir(parents=True, exist_ok=True)
         write_new(output / rel, value)
         files[rel] = file_hash(output / rel)
-    manifest = {"kind": KIND, "parent_bundle_sha256": parent_digest, "step_seconds": step,
-                "split": split, "units": len(live_plan["units"]),
-                "questions": len(live_plan["questions"]), "files": files}
+    manifest = {
+        "kind": KIND, "parent_bundle_sha256": parent_digest, "step_seconds": step,
+        "split": split, "units": len(live_plan["units"]),
+        "questions": len(live_plan["questions"]), "files": files,
+    }
     write_new(output / "live-manifest.json", manifest)
     return manifest
 
@@ -146,12 +156,17 @@ def verify(bundle, *, split=None):
         raise ValueError("not a live-spacing bundle")
     recorded_split = manifest.get("split")
     step = manifest.get("step_seconds")
-    if (recorded_split not in ("validation", "test")
-            or (split is not None and split != recorded_split)
-            or type(step) not in (int, float) or not math.isfinite(step) or not 0 < step <= 1):
+    if (
+        recorded_split not in ("validation", "test")
+        or (split is not None and split != recorded_split)
+        or type(step) not in (int, float)
+        or not math.isfinite(step)
+        or not 0 < step <= 1
+    ):
         raise ValueError("live bundle split or step differs")
     files = manifest.get("files")
-    config_name, plan_name = "configs/videojev.json", f"plans/videojev-{recorded_split}.json"
+    config_name = "configs/videojev.json"
+    plan_name = f"plans/videojev-{recorded_split}.json"
     if not isinstance(files, dict) or not {config_name, plan_name} <= set(files):
         raise ValueError("live bundle is missing sealed plan/config")
     for rel, expected in files.items():
@@ -159,19 +174,31 @@ def verify(bundle, *, split=None):
         if not path.is_relative_to(bundle.resolve()) or file_hash(path) != expected:
             raise ValueError("live bundle file differs: " + rel)
     for directory, expected in (("configs", {config_name}), ("plans", {plan_name})):
-        actual = {p.relative_to(bundle).as_posix() for p in (bundle / directory).glob("*.json")}
+        actual = {
+            p.relative_to(bundle).as_posix()
+            for p in (bundle / directory).glob("*.json")
+        }
         if actual != expected:
             raise ValueError("live bundle has unrecorded or missing " + directory)
     plan = json.loads((bundle / plan_name).read_text())
     config = json.loads((bundle / config_name).read_text())
-    if (plan.get("protocol") != KIND or plan.get("split") != recorded_split
-            or plan.get("step_seconds") != step or plan.get("config_sha256") != digest(config)
-            or manifest.get("units") != len(plan["units"])
-            or manifest.get("questions") != len(plan["questions"])):
+    if (
+        plan.get("protocol") != KIND
+        or plan.get("split") != recorded_split
+        or plan.get("step_seconds") != step
+        or plan.get("config_sha256") != digest(config)
+        or manifest.get("units") != len(plan["units"])
+        or manifest.get("questions") != len(plan["questions"])
+    ):
         raise ValueError("live bundle plan identity differs")
-    for fingerprint in (manifest.get("parent_bundle_sha256"), plan.get("parent_plan_sha256")):
-        if (not isinstance(fingerprint, str) or len(fingerprint) != 64
-                or any(c not in "0123456789abcdef" for c in fingerprint)):
+    for fingerprint in (
+        manifest.get("parent_bundle_sha256"), plan.get("parent_plan_sha256"),
+    ):
+        if (
+            not isinstance(fingerprint, str)
+            or len(fingerprint) != 64
+            or any(c not in "0123456789abcdef" for c in fingerprint)
+        ):
             raise ValueError("live bundle is missing parent fingerprints")
     for unit in plan["units"]:
         for frame in unit["frames"]:

@@ -2,10 +2,10 @@
 
 import ast
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -13,15 +13,19 @@ ROOT = Path("docs/validation/evidence/videojev-compile-batch-20261122")
 LAUNCHERS = ("start_sweep.py", "start_sweep_retest.py", "start_sweep_live05.py")
 
 
-@pytest.mark.skipif(sys.platform == "win32" or not shutil.which("bash"), reason="POSIX GPU launcher")
+@pytest.mark.skipif(
+    sys.platform == "win32" or not shutil.which("bash"), reason="POSIX GPU launcher",
+)
 @pytest.mark.parametrize("launcher", LAUNCHERS)
 @pytest.mark.parametrize("mode", ["start-fails", "not-ready", "sweep-fails", "success"])
 def test_generated_launcher_preserves_failure_after_cleanup(tmp_path, launcher, mode):
     # Extract only the pure generator. Importing main would require provider
     # configuration; no provider SDK, credentials or real service is used here.
     path = ROOT / launcher
-    function = next(node for node in ast.parse(path.read_text()).body
-                    if isinstance(node, ast.FunctionDef) and node.name == "sweep_script")
+    function = next(
+        node for node in ast.parse(path.read_text()).body
+        if isinstance(node, ast.FunctionDef) and node.name == "sweep_script"
+    )
     (tmp_path / "repo").mkdir()
     bindir = tmp_path / "env/bin"
     bindir.mkdir(parents=True)
@@ -45,7 +49,8 @@ esac
                "CACHE": str(tmp_path / "cache"), "RBUNDLE": str(tmp_path / "bundle"),
                "ROUT": str(tmp_path / "out"),
                "CONFIGS": (("base", "bf16", "off", 4), ("candidate", "fp8", "mlp", 4))}
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), context)
+    code = compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec")
+    exec(code, context)
     stubs = '''seq() { printf '1\\n'; }
 sleep() { :; }
 curl() { printf '{"ready":true}'; }
@@ -54,10 +59,14 @@ curl() { printf '{"ready":true}'; }
     result = subprocess.run(
         [shutil.which("bash"), "-s"], input=stubs + context["sweep_script"]("offline"),
         text=True, capture_output=True, timeout=10,
-        env={**os.environ, "SWEEP_TEST_MODE": mode, "SWEEP_TEST_ATTEMPTS": str(attempts)},
+        env={
+            **os.environ, "SWEEP_TEST_MODE": mode, "SWEEP_TEST_ATTEMPTS": str(attempts),
+        },
     )
-    assert result.returncode == (0 if mode == "success" else 1), result.stdout + result.stderr
-    assert "candidate: starting service" in result.stdout  # a failure does not skip collection
+    expected_code = 0 if mode == "success" else 1
+    assert result.returncode == expected_code, result.stdout + result.stderr
+    # A failure does not skip collection.
+    assert "candidate: starting service" in result.stdout
     assert "offline: done" in result.stdout
     if mode in ("sweep-fails", "success"):
         assert attempts.read_text().splitlines() == ["attempt", "attempt"]

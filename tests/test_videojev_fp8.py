@@ -254,7 +254,8 @@ def test_compile_scopes_on_the_real_layer_layout():
     model = videojev_like()
     assert videojev_core.compile_targets(model, "off") == []
     mlps = videojev_core.compile_targets(model, "mlp")
-    assert len(mlps) == 31 and all(n.endswith(".mlp") for n, _ in mlps)  # last layer has none
+    # The last layer has no MLP.
+    assert len(mlps) == 31 and all(n.endswith(".mlp") for n, _ in mlps)
     assert len(videojev_core.compile_targets(model, "layers")) == 32
     with pytest.raises(ValueError, match="compile must be one of"):
         videojev_core.compile_targets(model, "max-autotune")
@@ -275,14 +276,17 @@ def test_apply_compile_compiles_modules_in_place():
         layer = Spy()
         layer.mlp = Spy()
         model.backbone.language_model.layers.append(layer)
-    assert videojev_core.apply_compile(model, "mlp") == {"mode": "mlp", "modules": 3, "dynamic": True}
+    assert videojev_core.apply_compile(model, "mlp") == {
+        "mode": "mlp", "modules": 3, "dynamic": True,
+    }
     assert calls == [{"dynamic": True}] * 3
     assert videojev_core.apply_compile(model, "off") == {"mode": "off"}
 
 
 def test_compile_defaults_off_everywhere():
     for cls in (NativeVideoJevModel, VideoJevRuntime):
-        assert inspect.signature(cls.__init__).parameters["compile_mode"].default == "off"
+        parameter = inspect.signature(cls.__init__).parameters["compile_mode"]
+        assert parameter.default == "off"
 
 
 def test_service_cli_refuses_compile_for_decision3(monkeypatch, tmp_path):

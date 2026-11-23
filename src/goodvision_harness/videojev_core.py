@@ -163,9 +163,15 @@ def compile_targets(model, mode):
         return []
     layers = model.backbone.language_model.layers
     if mode == "layers":
-        return [(f"backbone.language_model.layers.{i}", layer) for i, layer in enumerate(layers)]
-    return [(f"backbone.language_model.layers.{i}.mlp", layer.mlp)
-            for i, layer in enumerate(layers) if getattr(layer, "mlp", None) is not None]
+        return [
+            (f"backbone.language_model.layers.{i}", layer)
+            for i, layer in enumerate(layers)
+        ]
+    return [
+        (f"backbone.language_model.layers.{i}.mlp", layer.mlp)
+        for i, layer in enumerate(layers)
+        if getattr(layer, "mlp", None) is not None
+    ]
 
 
 def apply_compile(model, mode):
@@ -173,7 +179,10 @@ def apply_compile(model, mode):
     targets = compile_targets(model, mode)
     for _, module in targets:
         module.compile(dynamic=True)
-    return {"mode": mode, "modules": len(targets), "dynamic": True} if targets else {"mode": "off"}
+    return (
+        {"mode": mode, "modules": len(targets), "dynamic": True}
+        if targets else {"mode": "off"}
+    )
 
 
 class NativeVideoJevModel:
@@ -213,7 +222,8 @@ class NativeVideoJevModel:
         quantized = {"mode": "bf16"}
         if quantization == "fp8":
             quantized = apply_fp8(self.model)
-        compiled = apply_compile(self.model, compile_mode)  # after FP8, so FP8 linears compile too
+        # Compile after quantization so FP8 linears compile too.
+        compiled = apply_compile(self.model, compile_mode)
         torch.cuda.synchronize()
         props = torch.cuda.get_device_properties(0)
         packages = ["torch", "transformers", "flash-attn", "flash-linear-attention",

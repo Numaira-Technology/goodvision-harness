@@ -303,7 +303,8 @@ def run(args):
             f.write(json.dumps(record) + "\n")
     result = {
         "kind": "videojev-gpu-sweep", "label": args.label, "at": stamp(),
-        "bundle_sha256": bundle_digest, "split": args.split, "window_step_seconds": step or 1.0,
+        "bundle_sha256": bundle_digest, "split": args.split,
+        "window_step_seconds": step or 1.0,
         "plan_sha256": digest(plan), "config_sha256": digest(config),
         "sweep_sha256": file_hash(__file__), "service": service, "health": health,
         "warmup_seconds": warmup_seconds,
@@ -317,12 +318,17 @@ def run(args):
 
 
 def is_baseline(service):
-    return (service.get("gpu") in BASELINE_GPUS and service.get("quantization") == "bf16"
-            and service.get("compile", "off") == "off")
+    return (
+        service.get("gpu") in BASELINE_GPUS
+        and service.get("quantization") == "bf16"
+        and service.get("compile", "off") == "off"
+    )
 
 
-def compare_runs(baseline, candidate, base_units, cand_units, *, allow_other_baseline=False,
-                 vary=()):
+def compare_runs(
+    baseline, candidate, base_units, cand_units, *,
+    allow_other_baseline=False, vary=(),
+):
     if set(vary) - set(VARIABLE_SETTINGS):
         raise ValueError(f"only {VARIABLE_SETTINGS} may be varied")
     for key in ("bundle_sha256", "split", "plan_sha256", "config_sha256", "sweep_sha256"):
@@ -331,7 +337,10 @@ def compare_runs(baseline, candidate, base_units, cand_units, *, allow_other_bas
     if len(baseline["warmup_seconds"]) != len(candidate["warmup_seconds"]):
         raise ValueError("baseline and candidate warm-up counts differ")
     b, c = baseline["service"], candidate["service"]
-    held = lambda service: {k: v for k, v in service["settings"].items() if k not in vary}  # noqa: E731
+
+    def held(service):
+        return {k: v for k, v in service["settings"].items() if k not in vary}
+
     if held(b) != held(c):
         raise ValueError("baseline and candidate service settings differ")
     for key in ("runtime", "cuda_runtime"):
@@ -383,8 +392,11 @@ def compare_runs(baseline, candidate, base_units, cand_units, *, allow_other_bas
         "baseline": {"label": baseline["label"], "gpu": b["gpu"], "quantization": b["quantization"],
                      "compile": b.get("compile", "off"), "settings": b["settings"],
                      "is_default_baseline": is_baseline(b)},
-        "candidate": {"label": candidate["label"], "gpu": c["gpu"], "quantization": c["quantization"],
-                      "compile": c.get("compile", "off"), "settings": c["settings"]},
+        "candidate": {
+            "label": candidate["label"], "gpu": c["gpu"],
+            "quantization": c["quantization"], "compile": c.get("compile", "off"),
+            "settings": c["settings"],
+        },
         "declared_variations": sorted(vary),
         "accuracy": {"baseline": bs["accuracy"], "candidate": cs["accuracy"],
                      "correct_delta": cs["correct"] - bs["correct"],
@@ -437,8 +449,10 @@ def main(argv=None):
     c.add_argument("--candidate", required=True)
     c.add_argument("--output", required=True, help="new JSON file")
     c.add_argument("--allow-other-baseline", action="store_true")
-    c.add_argument("--vary", nargs="+", choices=VARIABLE_SETTINGS,
-                   help="service settings the candidate may change (recorded in the output)")
+    c.add_argument(
+        "--vary", nargs="+", choices=VARIABLE_SETTINGS,
+        help="service settings the candidate may change (recorded in the output)",
+    )
     args = parser.parse_args(argv)
     if args.command == "run" and not 0 <= args.warmup <= MAX_WARMUP:
         parser.error(f"--warmup must be between 0 and {MAX_WARMUP}")
