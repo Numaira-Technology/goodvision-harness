@@ -375,6 +375,99 @@ def _jpeg_720(jpeg: bytes) -> bytes:
         return out.getvalue()
 
 
+FOCUS_MODES = ("full_frame", "person_crop")
+CROP_PADDING = 0.25
+CROP_MIN_SIDE = 0.35
+
+
+def focus_mode(value: Any) -> str:
+    if value not in FOCUS_MODES:
+        raise ValueError("object focus must be full_frame or person_crop")
+    return value
+
+
+def person_crop_box(
+    boxes: Sequence[Sequence[float]],
+    *,
+    padding: float = CROP_PADDING,
+    min_side: float = CROP_MIN_SIDE,
+) -> tuple[float, float, float, float] | None:
+    """One normalized crop covering every person box in a window, or None.
+
+    The union of the boxes is padded by ``padding`` of its size on each side,
+    then widened to at least ``min_side`` of the frame in each axis around its
+    centre, and clamped to the frame. Every frame of a window uses this one crop
+    so VideoJev still sees one continuous view.
+    """
+    boxes = [tuple(float(v) for v in box) for box in boxes]
+    if not boxes:
+        return None
+    x1 = min(b[0] for b in boxes)
+    y1 = min(b[1] for b in boxes)
+    x2 = max(b[2] for b in boxes)
+    y2 = max(b[3] for b in boxes)
+    result = []
+    for low, high in ((x1, x2), (y1, y2)):
+        size = high - low
+        low, high = low - size * padding, high + size * padding
+        if high - low < min_side:
+            centre = (low + high) / 2
+            low, high = centre - min_side / 2, centre + min_side / 2
+        # Shift back inside the frame before clamping, keeping the size.
+        if low < 0:
+            low, high = 0.0, high - low
+        if high > 1:
+            low, high = low - (high - 1), 1.0
+        result.append((max(0.0, low), min(1.0, high)))
+    (x1, x2), (y1, y2) = result
+    return (round(x1, 4), round(y1, 4), round(x2, 4), round(y2, 4))
+
+
+def _crop_jpeg(jpeg: bytes, box: Sequence[float] | None) -> bytes:
+    """Crop a normalized box (None keeps the full frame), then cap at 720 px."""
+    if box is None:
+        return _jpeg_720(jpeg)
+    from PIL import Image
+
+    with Image.open(io.BytesIO(jpeg)) as image:
+        width, height = image.size
+        left, top = int(box[0] * width), int(box[1] * height)
+        right = max(left + 1, math.ceil(box[2] * width))
+        bottom = max(top + 1, math.ceil(box[3] * height))
+        image = image.convert("RGB").crop((left, top, right, bottom))
+        image.thumbnail((720, 720))
+        out = io.BytesIO()
+        image.save(out, format="JPEG", quality=90)
+        return out.getvalue()
+
+
+def synthetic_boxes(_sequence: int, _timestamp: float) -> dict:
+    """Test-mode person box: one fixed centred person, marked synthetic."""
+    return {"alignment": "synthetic", "boxes": [(0.3, 0.2, 0.7, 0.95)]}
+
+
+def rich_label_boxes(coordinator_provider: Callable[[], Any], session_id: str):
+    """Boxes for a display frame from the Bbox coordinator, aligned by source time."""
+
+    def provider(sequence: int, timestamp: float) -> dict:
+        coordinator = coordinator_provider()
+        if coordinator is None:
+            return {"alignment": "none", "boxes": []}
+        selection = coordinator.select(
+            session_id, timestamp, frame_sequence=sequence
+        )
+        return {
+            "alignment": selection.mode,
+            "boxes": [
+                (o.bbox.x1, o.bbox.y1, o.bbox.x2, o.bbox.y2)
+                for o in selection.objects
+                if o.label == "person"
+            ],
+        }
+
+    return provider
+
+
 class ObjectPresenceManager:
     """Run one objects node on a timer thread; keep bounded source-qualified results."""
 
@@ -393,8 +486,13 @@ class ObjectPresenceManager:
         history_provider: Callable[[float], Any] | None = None,
         on_tick: Callable[[dict], None] | None = None,
         wait: Callable[[float], Any] | None = None,
+        boxes_provider: Callable[[int, float], Mapping[str, Any]] | None = None,
     ):
         self.node_id = spec["id"]
+        self.focus = focus_mode(spec.get("focus", "full_frame"))
+        if self.focus == "person_crop" and boxes_provider is None:
+            raise ValueError("a person-crop object node needs a box provider")
+        self._boxes_provider = boxes_provider
         self.objects = objects_config(spec["objects"])
         self.interval = 1.0 / sample_fps(spec.get("sample_fps", DEFAULT_SAMPLE_FPS))
         self.window_frames = window_frames(
@@ -534,6 +632,7 @@ class ObjectPresenceManager:
             "completed_at": None,
             "valid": False,
             "error": None,
+            "focus": None,
         })
         self._tick_index += 1
 
@@ -561,6 +660,7 @@ class ObjectPresenceManager:
             "completed_at": None,
             "valid": False,
             "error": None,
+            "focus": None,
         }
         self._tick_index += 1
         try:
@@ -578,6 +678,7 @@ class ObjectPresenceManager:
             )
             record = self._judge(window)
             entry.update(
+                focus=copy.deepcopy(record["focus"]),
                 completed_at=self._clock(),
                 valid=record["error"] is None,
                 error=record["error"],
@@ -638,7 +739,29 @@ class ObjectPresenceManager:
         with self._lock:
             return copy.deepcopy(list(self._ticks)[-limit:])
 
-    def _body(self, window) -> dict:
+    def _focus(self, window) -> dict:
+        """Which part of the frames VideoJev sees; logged with every request."""
+        if self.focus != "person_crop":
+            return {"mode": "full_frame", "crop": None, "boxes": None,
+                    "alignment": None}
+        boxes, alignment = [], []
+        for frame in window:
+            try:
+                found = self._boxes_provider(frame[0], frame[1]) or {}
+            except Exception:  # a box lookup never stops the judgment
+                found = {"alignment": "error", "boxes": []}
+            alignment.append(found.get("alignment", "none"))
+            boxes.extend(found.get("boxes", ()))
+        crop = person_crop_box(boxes)
+        return {
+            # No person in the window: keep the whole frame (a knife on a table).
+            "mode": "person_crop" if crop else "full_frame_no_person",
+            "crop": list(crop) if crop else None,
+            "boxes": len(boxes),
+            "alignment": alignment,
+        }
+
+    def _body(self, window, crop=None) -> dict:
         if self.window_frames == 2:
             fps = 1.0 / (window[1][1] - window[0][1])
         else:
@@ -650,7 +773,8 @@ class ObjectPresenceManager:
             "fps": fps,
             "frame_times": [f[1] for f in window],
             "images": [
-                base64.b64encode(_jpeg_720(f[2])).decode("ascii") for f in window
+                base64.b64encode(_crop_jpeg(f[2], crop)).decode("ascii")
+                for f in window
             ],
         }
         if not self._template_sent:
@@ -671,16 +795,18 @@ class ObjectPresenceManager:
             "frame_times": [f[1] for f in window],
             "error": None,
             "objects": [],
+            "focus": self._focus(window),
         }
+        crop = record["focus"]["crop"]
         decisions: dict[str, dict] = {}
         try:
             try:
-                response = self._post(self._body(window))
+                response = self._post(self._body(window, crop))
             except ObjectPresenceError as exc:
                 if exc.code != "template_missing" or not self._template_sent:
                     raise
                 self._template_sent = False  # service restarted; resend once
-                response = self._post(self._body(window))
+                response = self._post(self._body(window, crop))
             self._template_sent = True
             decisions = decide(response.get("raw"), self.objects)
         except ObjectPresenceError as exc:
@@ -730,6 +856,7 @@ class ObjectPresenceManager:
                 "stream_session_id": self.stream_session_id,
                 "generation": self.generation,
                 "interval_seconds": self.interval,
+                "focus": self.focus,
                 "last_error": self._last_error,
                 **self._counts,
                 "objects": self._tracker.snapshot(),

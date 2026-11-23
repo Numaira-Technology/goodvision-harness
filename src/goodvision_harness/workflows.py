@@ -21,15 +21,19 @@ from . import object_presence
 from .event_catalog import event_catalog
 from .event_registry import EventVocabulary
 from .workflow_modules import (
+    CONTRACT,
     ENGINES,
     EXECUTION_MODES,
     LOCAL_PORTS,
     NAMES,
     NEURAL_EVENTS,
+    accepts,
     display_settings,
     engine_for,
     execution_mode,
     module_endpoint,
+    node_ports,
+    required_inputs,
     service_url,
 )
 
@@ -44,18 +48,7 @@ MAX_CAMERAS = 1024
 MAX_PROMPT = 4000
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}\Z")
 _CAMERA = re.compile(r"camera(?:0[1-9]|[1-9][0-9]+)\Z")
-NODE_PORTS = {
-    "source": {"inputs": (), "outputs": ("frames",)},
-    "face": {"inputs": ("frames",), "outputs": ("faces",)},
-    "tracking": {"inputs": ("frames",), "outputs": ("tracks",)},
-    "events": {"inputs": ("frames",), "outputs": ("events",)},
-    "summary": {"inputs": ("frames",), "outputs": ("summary",)},
-    "objects": {"inputs": ("frames",), "outputs": ("objects",)},
-    "output": {
-        "inputs": ("frames", "faces", "tracks", "events", "summary", "objects"),
-        "outputs": (),
-    },
-}
+NODE_PORTS = {kind: node_ports(kind) for kind in CONTRACT}
 _NAMES = {
     "source": "Video source",
     "face": "Face recognition",
@@ -369,6 +362,12 @@ def validate_graph(
             or out_port != in_port
         ):
             _fail("incompatible component ports")
+        upstream = by_id[source]
+        if not accepts(
+            by_id[target]["type"], in_port, upstream["type"],
+            engine_for(upstream["type"], upstream["config"]),
+        ):
+            _fail(f"this {in_port} input does not accept that module")
         key = (source, out_port, target, in_port)
         if key in bindings:
             _fail("duplicate connection")
@@ -435,6 +434,15 @@ def validate_graph(
             incoming[nid] for nid in outputs
         ):
             _fail("enabled components require connected source-to-output paths")
+        for node in nodes:
+            if node["id"] in active and any(
+                not any(
+                    e["to_port"] == port and e["from_node"] in active
+                    for e in incoming[node["id"]]
+                )
+                for port in required_inputs(node["type"])
+            ):
+                _fail("connect the frames input of every enabled component")
     return normalized
 
 
@@ -505,6 +513,24 @@ def compile_graph(
             for e in graph["edges"]
             if e["from_node"] in reachable and e["to_node"] in active
         )
+    # A node runs for this camera only while each required input comes from a
+    # node that runs for this camera: an optional input (e.g. Bbox tracks from
+    # another camera's source) never stands in for the frames connection.
+    changed = True
+    while changed:
+        changed = False
+        for nid in sorted(reachable):
+            if any(
+                not any(
+                    e["to_node"] == nid
+                    and e["to_port"] == port
+                    and e["from_node"] in reachable
+                    for e in graph["edges"]
+                )
+                for port in required_inputs(nodes[nid]["type"])
+            ):
+                reachable.discard(nid)
+                changed = True
     outputs, consumed = [], set()
     for nid, node in nodes.items():
         if node["type"] != "output" or nid not in reachable:
@@ -520,6 +546,20 @@ def compile_graph(
             if "display" in node["config"]:
                 outputs[-1]["display"] = node["config"]["display"]
             consumed.update(binding["node_id"] for binding in inputs)
+    # Upstream modules feeding a consumed module (e.g. Bbox tracks into object
+    # presence) run too. Before optional inputs existed this added only sources.
+    pending = list(consumed)
+    while pending:
+        nid = pending.pop()
+        for e in graph["edges"]:
+            if (
+                e["to_node"] == nid
+                and e["from_node"] in reachable
+                and e["from_node"] not in consumed
+                and nodes[e["from_node"]]["type"] != "source"
+            ):
+                consumed.add(e["from_node"])
+                pending.append(e["from_node"])
     features, sensitivities, summaries = set(), {}, []
     face_id = event_id = tracking_id = objects_id = None
     objects = None
@@ -546,6 +586,16 @@ def compile_graph(
                     )
                 },
             }
+            tracks = sorted(
+                e["from_node"]
+                for e in graph["edges"]
+                if e["to_node"] == nid
+                and e["to_port"] == "tracks"
+                and e["from_node"] in reachable
+            )
+            if tracks:
+                # Only present when wired, so unwired plans keep their shape.
+                objects.update(focus="person_crop", tracks_node_id=tracks[0])
         elif kind == "summary":
             summaries.append(
                 {

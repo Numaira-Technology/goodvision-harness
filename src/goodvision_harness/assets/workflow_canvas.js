@@ -9,11 +9,11 @@
     face:{name:'Face recognition',zh:'人脸识别',icon:'◎',kind:'Pipeline',inputs:[['frames','frames']],outputs:[['faces','faces']],single:true},
     events:{name:'VLM semantic recognition',zh:'VLM 语义识别',icon:'◇',kind:'Pipeline',inputs:[['frames','frames']],outputs:[['events','events']],single:true},
     summary:{name:'Every-minute summary',zh:'每分钟总结',icon:'◷',kind:'Pipeline',inputs:[['frames','frames']],outputs:[['summary','summary']]},
-    objects:{name:'Object presence',zh:'物体存在',icon:'◫',kind:'Pipeline',inputs:[['frames','frames']],outputs:[['objects','objects']],single:true},
+    objects:{name:'Object presence',zh:'物体存在',icon:'◫',kind:'Pipeline',inputs:[['frames','frames',true],['tracks','tracks',false,[['tracking','bbox']]]],outputs:[['objects','objects']],single:true},
     output:{name:'Output',zh:'输出',icon:'↗',kind:'Output',inputs:[['frames','frames'],['tracks','tracks'],['faces','faces'],['events','events'],['summary','summary'],['objects','objects']],outputs:[]}
   });
-  const palette={source:definitions.source,tracking:{...definitions.tracking,engine:'contour',category:'Person tracking'},bbox:{...definitions.tracking,name:'Bbox',zh:'Bbox',engine:'bbox',category:'Person tracking'},events:{...definitions.events,engine:'vlm',category:'Event recognition'},system1:{...definitions.events,name:'System 1 recognition',zh:'System 1 快速识别',engine:'system1',category:'Event recognition'},neural:{...definitions.events,name:'Neural network recognition',zh:'神经网络识别',engine:'neural',category:'Event recognition'},face:definitions.face,summary:definitions.summary,objects:{...definitions.objects,engine:'system1',category:'Object detection'},output:definitions.output};
-  const family=type=>({bbox:'tracking',system1:'events',neural:'events'}[type]||type);
+  const palette={source:definitions.source,tracking:{...definitions.tracking,engine:'contour',category:'Person tracking'},bbox:{...definitions.tracking,name:'Bbox',zh:'Bbox',engine:'bbox',category:'Person tracking'},events:{...definitions.events,engine:'vlm',category:'Event recognition'},system1:{...definitions.events,name:'System 1 recognition',zh:'System 1 快速识别',engine:'system1',category:'Event recognition'},decision3:{...definitions.events,name:'Decision 3 recognition',zh:'Decision 3 识别',engine:'decision3',category:'Event recognition'},neural:{...definitions.events,name:'Neural network recognition',zh:'神经网络识别',engine:'neural',category:'Event recognition'},face:definitions.face,summary:definitions.summary,objects:{...definitions.objects,engine:'system1',category:'Object detection'},output:definitions.output};
+  const family=type=>({bbox:'tracking',system1:'events',decision3:'events',neural:'events'}[type]||type);
   const engine=node=>node?.config?.engine||({tracking:'contour',events:'vlm',objects:'system1'}[node?.type]);
   const objectPresets={
     knife:{id:'knife',name:'knife',zh_name:'刀具',criterion:'A knife or bladed tool is clearly visible, judged by its visible appearance only.',counter_examples:'Pictures of knives, cutlery drawings, or long thin objects without a visible blade do not count.',gate:0.95},
@@ -22,7 +22,14 @@
   // Mirrors object_presence.PRESET_STATUS: both presets are experimental and not validated.
   const objectPresetStatus={knife:{status:'experimental',validated:false},alcohol_bottle:{status:'experimental',validated:false}};
   const experimentalObject=id=>objectPresetStatus[id]?.validated===false;
-  const localEngines=['bbox','system1','neural'];
+  const localEngines=['bbox','system1','neural','decision3'];
+  const localPorts={bbox:8096,system1:8097,neural:8098,decision3:8099};
+  // Recognizers (System 1, Decision 3, VLM, CLIP, Bbox, Contour) are peer
+  // modules with their own blocks. Only task modules choose the recognizer that
+  // backs them inside the node; the server catalog replaces this list.
+  const nodeEngines={objects:['system1']};
+  const templateCameraShortage='This template needs distinct enabled, stopped, unassigned camera channels for its video sources.';
+  const engineNames={contour:'Contour',bbox:'Bbox',vlm:'VLM semantic recognition',system1:'System 1 recognition',decision3:'Decision 3 recognition',neural:'Neural network recognition'};
   const executionMode=node=>node?.config?.execution_mode||(node?.config?.service_url?'server':'local');
   const remoteUrl=node=>node?.config?.[executionMode(node)==='cloud'?'cloud_service_url':'service_url'];
   const moduleConfigured=node=>executionMode(node)==='local'||!!remoteUrl(node)?.trim();
@@ -34,6 +41,7 @@
   Object.assign(strings,{'Removed cameras return to their preserved manual analysis settings on the next Start. To keep a camera excluded, leave it in the group and turn it Off.':'移除的摄像头在下次开始分析时恢复保留的手动设置。要保持排除，请将摄像头留在组内并关闭。','Removing the assignment restores preserved manual analysis settings on the next Start. Video stays connected; nothing starts automatically.':'取消分配后，摄像头在下次开始分析时恢复保留的手动设置。视频保持连接，不会自动开始分析。','This native pipeline is already in the workflow. Select its existing block to configure it.':'此原生流程已在工作流中，请选择现有模块配置。','Synthetic · test mode':'模拟结果 · 测试模式','Waiting for input':'等待输入','Partially ready':'部分就绪','Workflow outputs':'工作流输出','Video & analysis':'视频与分析','Refresh results':'刷新结果','Close workflow outputs':'关闭工作流输出','Waiting for results.':'等待结果。','Summaries':'总结','Source-qualified results from applied workflows; start analysis in the live workspace.':'已应用工作流的逐路结果；请在实时工作台开始分析。','Last updated':'最近更新','No summaries yet.':'暂无总结。','No cameras in this scope.':'当前范围内没有摄像头。','group':'组','groups':'组','camera':'摄像头','cameras':'摄像头','blocks':'模块','connections':'连接','Add':'添加','Create a workflow to begin.':'创建工作流以开始。','Choose a workflow in the editor and Apply it to this group.':'在编辑器选择工作流并将其应用到此组。','Pipeline':'视觉流程','Shared input':'共享输入','Frames from assigned cameras':'来自已分配摄像头的画面','Every 60s → text':'每 60 秒 → 文字','required':'必需','Choose an output':'选择输出','Workflow canvas':'工作流画布','Connections':'连接','Connection':'连接','Select connection':'选择连接','Zoom in':'放大','Zoom out':'缩小','Sensitivity':'敏感度','Enter a name.':'请输入名称。','On cannot bypass the group gate.':'单路开启无法绕过组关闭。','output':'输出','input':'输入','Choose a replacement or unassign':'选择替代工作流或取消分配','Unavailable':'不可用','Drag to pan · Ctrl/⌘ + scroll to zoom':'拖动平移 · Ctrl/⌘ + 滚轮缩放','Discard all unsaved workflow edits and reload?':'放弃所有未保存工作流修改并重新加载？','Face detection → recognition → shared gallery match → identity observations':'人脸检测 → 识别 → 共享人员库比对 → 身份观察','Sample frames → event judgement → confirmation → event records':'画面采样 → 事件判断 → 确认 → 事件记录','Latest snapshot → summary instruction → configured analysis service → summary record':'最新单帧 → 总结指令 → 已配置分析服务 → 总结记录','Results remain available through the existing channel output APIs.':'结果继续通过现有通道输出接口提供。'});
   Object.assign(strings,{'Workflow to apply':'将要应用的工作流'});
   Object.assign(strings,{'Object presence':'物体存在','Object detection':'物体检测','Objects':'物体','Object ID':'物体 ID','Name (English)':'英文名','Chinese name':'中文名','Criterion':'判断标准','Does not count':'不算的情况','Gate · present probability':'门限 · 「在」的概率','Remove object':'删除物体','Add knife':'添加刀具','Add alcohol bottle':'添加酒瓶','Add custom object':'添加自定义物体','Judge every · frames per second':'判断频率 · 每秒次数','Clear after · misses':'连续几次「不在」后清除','Uses the System 1 (VideoJev) service. Gate 0.95 is a starting default from the bag demo, not a calibrated threshold.':'使用 System 1（VideoJev）服务。门限 0.95 是翻包 demo 的初始默认值，尚未校准。','Newest frame + previous frame → one present/absent/unclear question per object → gate → hold until cleared':'最新帧 + 上一帧 → 每个物体问一次在/不在/看不清 → 门限 → 保持到清除','An object block needs 1 to 8 objects.':'物体模块需要 1–8 个物体。','Object IDs must be unique lowercase slugs.':'物体 ID 须为不重复的小写英文标识。','Every object needs a name and a criterion.':'每个物体都需要英文名和判断标准。','Object gates must be between 0.34 and 1.':'物体门限须在 0.34–1 之间。','Object sampling must be between 0.2 and 4 frames per second.':'判断频率须为每秒 0.2–4 次。','Clear after must be a whole number from 1 to 30.':'清除次数须为 1–30 的整数。','Object labels':'物体提示','Object results':'物体结果','Frames per judgment':'每次判断取帧数','Frame spacing · seconds':'帧间隔 · 秒','Frames per judgment must be 2 or 4.':'每次判断取帧数须为 2 或 4。','Frame spacing must be between 0.1 and 1 second.':'帧间隔须在 0.1–1 秒之间。','Experimental · not validated':'实验性 · 未验证','Add knife (experimental)':'添加刀具（实验性）','Add alcohol bottle (experimental)':'添加酒瓶（实验性）','Experimental preset, not validated: no accuracy claim. On the internal knife check every real knife was missed at gate 0.95.':'实验性预设，未经验证，不代表任何准确率。内部刀具检查中，门限 0.95 下所有真实刀具均被漏检。','Object presence is an opt-in framework. The knife and alcohol bottle presets are experimental and not validated; do not rely on them for alerts.':'物体存在是需手动添加的框架模块。刀具和酒瓶预设为实验性、未经验证，请勿依赖它们告警。'});
+  Object.assign(strings,{"Recognizer":"识别模型","Decision 3 recognition":"Decision 3 识别","The recognizer that answers this task. Switching keeps connections and clears the service address, because each recognizer runs its own service.":"由哪个识别模型回答这个任务。切换后连线保留；各识别模型使用各自的服务，所以服务地址会清空。","Debug":"调试","Bind a camera to see debug records.":"为视频源绑定摄像头后可查看调试记录。","Load the last records of the applied workflow for a camera.":"选择摄像头，查看已应用工作流中此模块的最近记录。","Not in the applied plan for this camera.":"此模块不在该摄像头已应用的计划中。","No records yet.":"暂无记录。","Latency":"耗时","Input":"输入","Output":"输出","Synthetic":"模拟","Debug records are unavailable.":"调试记录暂不可用。","From template…":"从模板新建…","Save as template":"另存为模板","Use template":"使用模板","Built-in":"内置","Saved":"已保存","Save":"保存","Template saved.":"模板已保存。","A template has no camera or service addresses. Choose cameras and services after creating the workflow.":"模板不含摄像头和服务地址，新建工作流后请选择摄像头并配置服务。","Camera channels and service addresses are removed from the template.":"保存时会去掉视频通道和服务地址。","This input only accepts Bbox person boxes.":"此输入只接受 Bbox 人框。","optional":"可选",[templateCameraShortage]:"此模板的每个视频源都需要一路已启用、已停止分析且未分配给工作流的视频通道。"});
   Object.assign(strings,{"Keep at least one event selected, or turn off this block.": "至少保留一个事件；如需停止事件检测，请关闭此模块。", "Select at least one event.": "请至少选择一个事件。", "Choose supported events from the current event list.": "请选择当前事件目录中支持的事件。", "Sensitivity settings must match the selected events.": "敏感度设置须与已选择的事件一致。", "Choose a supported sensitivity for each selected event.": "请为已选择的事件设置有效的敏感度。", "Summary interval must be between 1 and 3600 seconds.": "总结间隔须为 1–3600 秒。", "Enter a summary instruction.": "请输入总结指令。", "Summary instructions must be at most 4000 characters.": "总结指令不能超过 4000 字符。", "Add an enabled workflow input.": "请添加并启用工作流输入。", "Add an enabled output.": "请添加并启用输出模块。", "Connect every enabled block from the workflow input to an output.": "每个启用的模块都须接入从工作流输入到输出的完整路径。", "A workflow supports at most 64 blocks.": "每个工作流最多支持 64 个模块。", "A workflow supports at most 256 connections.": "每个工作流最多支持 256 条连接。", "Only stopped cameras can be tested.": "请先停止该摄像头的分析并等待清理完成，再运行测试。", "The workspace changed. Reload before retrying.": "工作流配置已被其他操作更新，请重新加载后再重试。", "The service returned an unreadable response.": "无法读取工作流服务的响应，请重试。", "The workflow service returned an invalid document.": "工作流服务返回的配置无效，请重试。", "Add connection": "添加连接", "Choose existing blocks.": "请选择现有模块。", "A block cannot connect to itself.": "模块不能连接自身。", "These port types do not match.": "连接两端的接口类型不匹配。", "This input already has a connection. Disconnect it first.": "此连接已存在，请先断开原连接。", "Connections cannot create a cycle.": "连接不能形成循环。", "Enter a nonempty block name of at most 128 characters.": "模块名称不能为空，且不能超过 128 字符。"});
   Object.assign(strings,{
     'Person tracking':'人物追踪',
@@ -82,12 +90,25 @@
   function graphOf(value){const graph=value&&typeof value==='object'?value:{};return {nodes:Array.isArray(graph.nodes)?copy(graph.nodes):[],edges:Array.isArray(graph.edges)?copy(graph.edges):[]};}
   function edgeValue(edge){return {id:edge.id,from_node:edge.from_node,from_port:edge.from_port,to_node:edge.to_node,to_port:edge.to_port};}
   function nodePorts(node,direction){return definitions[node?.type]?.[direction==='out'?'outputs':'inputs']||[];}
+  // The server's module contract (GET /v1/workflows → modules) is the source of
+  // truth for ports; the literal table above only serves an older server.
+  function syncPorts(modules){
+    if(!modules||typeof modules!=='object')return;
+    for(const [kind,spec] of Object.entries(modules)){
+      if(!definitions[kind]||!Array.isArray(spec?.inputs)||!Array.isArray(spec?.outputs))continue;
+      const inputs=spec.inputs.map(i=>[i.port,i.type,i.required!==false,Array.isArray(i.accepts)?i.accepts:undefined]),outputs=spec.outputs.map(o=>[o.port,o.type]);
+      for(const d of [definitions[kind],...Object.entries(palette).filter(([key])=>family(key)===kind).map(([,d])=>d)]){d.inputs=inputs;d.outputs=outputs;}
+      if(spec.task&&Array.isArray(spec.engines)&&spec.engines.length&&nodeEngines[kind])nodeEngines[kind]=spec.engines.map(e=>typeof e==='string'?e:e.id).filter(id=>engineNames[id]);
+    }
+  }
+  function acceptsFrom(target,port,source){const accepts=port?.[3];return !accepts||accepts.some(([kind,eng])=>source?.type===kind&&engine(source)===eng);}
   function connectionError(graph,fromNode,fromPort,toNode,toPort){
     const source=graph.nodes.find(n=>n.id===fromNode),target=graph.nodes.find(n=>n.id===toNode);
     if(!source||!target)return 'Choose existing blocks.';
     if(fromNode===toNode)return 'A block cannot connect to itself.';
     const output=nodePorts(source,'out').find(p=>p[0]===fromPort),input=nodePorts(target,'in').find(p=>p[0]===toPort);
     if(!output||!input||output[1]!==input[1])return 'These port types do not match.';
+    if(!acceptsFrom(target,input,source))return 'This input only accepts Bbox person boxes.';
     if(graph.edges.some(e=>e.from_node===fromNode&&e.from_port===fromPort&&e.to_node===toNode&&e.to_port===toPort))return 'This input already has a connection. Disconnect it first.';
     const reaches=(id,seen=new Set())=>id===fromNode||(!seen.has(id)&&(seen.add(id),graph.edges.some(e=>e.from_node===id&&reaches(e.to_node,seen))));
     if(reaches(toNode))return 'Connections cannot create a cycle.';
@@ -102,6 +123,21 @@
       const sensitivity=event.sensitivity,value=saved[event.id];
       return [event.id,sensitivity.options.some(option=>option.value===value)?value:sensitivity.default];
     }));
+  }
+  // Change a node's engine in place: connections stay; engine-specific service
+  // addresses and an unsupported execution location are cleared, and event
+  // choices are narrowed to what the new engine supports.
+  function switchEngine(node,next,catalog=[]){
+    const previous=engine(node),config=node.config||(node.config={});
+    if(!config.name||config.name===engineNames[previous])config.name=engineNames[next];
+    config.engine=next;delete config.service_url;delete config.cloud_service_url;delete config.execution_mode;
+    if(node.type==='events'){
+      const supported=moduleEvents(node,catalog).map(e=>e.id);
+      let features=(config.features||[]).filter(id=>!catalog.length||supported.includes(id));
+      if(!features.length)features=moduleEvents(node,catalog).filter(e=>e.default_enabled!==false).map(e=>e.id);
+      config.features=features;config.event_sensitivities=eventSensitivities(config,catalog);
+    }
+    return node;
   }
   function validateGraph(graph,{complete=false,catalog=null}={}){
     const errors=[],ids=new Set(),single=new Set(),nodes=graph.nodes||[],edges=graph.edges||[],built={nodes,edges:[]};
@@ -232,8 +268,8 @@
     catalog(){const value=this.data?.event_catalog;try{if(root.GoodvisionEvents){const events=root.GoodvisionEvents.parse({event_catalog:value});return events.filter(e=>e.kind!=='identity');}}catch(_){}const events=Array.isArray(value)?value:value?.events||[];return events.filter(e=>e.kind!=='identity');}
     eventName(event){const lang=root.GoodvisionI18n?.language?.()||'zh';return event.labels?.[lang]||event.labels?.en||event.labels?.zh||event.id;}
     say(text,error=false,reload=false){this.notice=this.t(text);this.error=error;this.reloadRequired=reload;this.feedback();}
-    async request(url,options={},timeout=30000){const controller=new AbortController(),timer=root.setTimeout(()=>controller.abort(),timeout);try{const response=await this.fetch(url,{cache:'no-store',...options,signal:controller.signal});let value;try{value=await response.json();}catch(_){throw new Error('The service returned an unreadable response.');}if(!response.ok){const error=new Error(typeof value.detail==='string'?value.detail:JSON.stringify(value.detail||value.error||response.status));error.status=response.status;throw error;}return value;}finally{root.clearTimeout(timer);}}
-    accept(data){if(!data?.document||!Array.isArray(data.document.workflows)||!Array.isArray(data.document.groups))throw new Error('The workflow service returned an invalid document.');this.data=data;if(!this.workflows.some(w=>w.id===this.workflowId))this.workflowId=this.workflows[0]?.id||null;if(!this.groups.some(g=>g.id===this.groupId))this.groupId=this.groups[0]?.id||null;if(this.scope!=='all'&&!this.group?.camera_ids?.includes(this.scope))this.scope='all';if(!this.cameras.some(c=>c.id===this.testCamera))this.testCamera=this.cameras.find(c=>c.enabled!==false)?.id||'';}
+    async request(url,options={},timeout=30000){const controller=new AbortController(),timer=root.setTimeout(()=>controller.abort(),timeout);try{const response=await this.fetch(url,{cache:'no-store',...options,signal:controller.signal});if(response.status===204&&response.ok)return null;let value;try{value=await response.json();}catch(_){throw new Error('The service returned an unreadable response.');}if(!response.ok){const error=new Error(typeof value.detail==='string'?value.detail:JSON.stringify(value.detail||value.error||response.status));error.status=response.status;throw error;}return value;}finally{root.clearTimeout(timer);}}
+    accept(data){if(!data?.document||!Array.isArray(data.document.workflows)||!Array.isArray(data.document.groups))throw new Error('The workflow service returned an invalid document.');syncPorts(data.modules?.modules);this.data=data;if(!this.workflows.some(w=>w.id===this.workflowId))this.workflowId=this.workflows[0]?.id||null;if(!this.groups.some(g=>g.id===this.groupId))this.groupId=this.groups[0]?.id||null;if(this.scope!=='all'&&!this.group?.camera_ids?.includes(this.scope))this.scope='all';if(!this.cameras.some(c=>c.id===this.testCamera))this.testCamera=this.cameras.find(c=>c.enabled!==false)?.id||'';}
     async load(discard=false){
       if(this.busy||this.summaryServiceLoading||this.summaryServiceSaving)return;
       if(discard&&this.anyDirty()&&!this.confirm(this.t('Discard all unsaved workflow edits and reload?')))return;
@@ -271,7 +307,7 @@
       else if(hadDialog)this.el.querySelector('[data-wc-action=manage]')?.focus({preventScroll:true});
       this.scheduleLive();this.updateRuntimeLocks();if(this.inspector&&this.graph.nodes.some(n=>n.id===this.selected&&n.type==='summary')&&!this.summaryServiceDraft&&!this.summaryServiceLoading&&!this.summaryServiceError)this.loadSummaryService();
     }
-    renderContextActions(){const disabled=this.busy?'disabled':'';return this.mode==='edit'?this.button('new-workflow','New workflow','',disabled)+(this.workflow?this.button('copy','Make a copy','',disabled)+(this.assignedGroups().length?this.button('assign-groups','Camera group assignments…','',this.editLocked()?'disabled':''):''):'')+this.button('manage','Workflow list','',disabled):this.button('new-group','Add group','',disabled)+this.button('edit-group','Edit group','',!this.group||this.busy?'disabled':'')+this.button('edit-applied','Edit workflow','',!this.group?.workflow_id||this.busy?'disabled':'')+this.button('manage','Group list','',disabled);}
+    renderContextActions(){const disabled=this.busy?'disabled':'';return this.mode==='edit'?this.button('new-workflow','New workflow','',disabled)+this.button('templates','From template…','',disabled)+(this.workflow?this.button('copy','Make a copy','',disabled)+this.button('save-template','Save as template','',disabled)+(this.assignedGroups().length?this.button('assign-groups','Camera group assignments…','',this.editLocked()?'disabled':''):''):'')+this.button('manage','Workflow list','',disabled):this.button('new-group','Add group','',disabled)+this.button('edit-group','Edit group','',!this.group||this.busy?'disabled':'')+this.button('edit-applied','Edit workflow','',!this.group?.workflow_id||this.busy?'disabled':'')+this.button('manage','Group list','',disabled);}
     renderLibrary(){let category='';return `<div class="wc-pane-head"><strong>${esc(this.t('Blocks'))}</strong><button class="wc-icon-button" type="button" data-wc-action="library" aria-label="${esc(this.t('Close blocks'))}">×</button></div><p class="wc-subtitle">${esc(this.t('Drag onto the canvas or click +.'))}</p>`+Object.entries(palette).map(([key,d])=>{const group=d.category||(key==='source'?'Source':key==='output'?'Outputs':'Other modules'),heading=group!==category?`<div class="wc-library-title">${esc(this.t(group))}</div>`:'';category=group;return heading+`<button type="button" class="wc-block" data-wc-add="${key}" aria-label="${esc(this.t('Add')+' '+this.t(d.name))}" ${this.editLocked()||!this.workflow||d.single&&this.graph.nodes.some(n=>sameModule(n,key))?'disabled':''}><span class="wc-block-icon">${d.icon}</span><span class="wc-block-copy"><strong>${esc(this.t(d.name))}</strong><small>${esc(this.t(d.category||d.kind))}</small></span><span aria-hidden="true">+</span></button>`;}).join('');}
 
     scopeReadiness(node){const states=(this.group?.camera_ids||[]).filter(id=>this.scope==='all'||id===this.scope).map(id=>nodeReadiness(this.graph,this.group,node,id));if(!states.length)return 'waiting';if(states.every(s=>s==='off'))return 'off';if(states.every(s=>s==='on'))return 'on';if(states.some(s=>s==='on'||s==='partial'))return 'partial';return 'waiting';}
@@ -385,7 +421,7 @@
         html+=this.button('start-module',managed?'Check module service':'Start / check local service','',`data-engine="${selected}" ${disabled||this.cameras.some(camera=>cameraBusy(camera))?'disabled':''}`);
       }else{
         const key=mode==='cloud'?'cloud_service_url':'service_url';
-        html+=this.field(mode==='cloud'?'Cloud service URL':'Service URL',key,config[key]||'','url','placeholder="http://gpu-host:'+({bbox:8096,system1:8097,neural:8098}[selected])+'"',disabled);
+        html+=this.field(mode==='cloud'?'Cloud service URL':'Service URL',key,config[key]||'','url','placeholder="http://gpu-host:'+localPorts[selected]+'"',disabled);
         html+=`<p class="wc-note">${esc(this.t(mode==='cloud'?'Connect to this module running on your cloud GPU server.':'Connect to this module running on an independent server.'))}</p>`;
       }
       return html;
@@ -409,17 +445,17 @@
       if(!node)return head(this.t('No block selected'))+`<p class="wc-subtitle">${esc(this.t('Select a block or connection.'))}</p>`;
       const config=node.config||{},disabled=!editing||this.editLocked(),d=definition(node);let html=head(this.name(node));
       if(!editing)html+=this.renderGroupControls(node);
-      if(['events','tracking'].includes(node.type)&&!['bbox','system1','neural'].includes(engine(node)))html+=`<div class="wc-service-settings" data-wc-service="${node.type==='tracking'?'tracking':'analysis'}"></div>`;
-      html+=`<fieldset data-wc-edit-fields style="border:0;margin:0;padding:0;min-width:0" ${disabled?'disabled':''}>`+this.field('Instance name','name',config.name||d.name,'text','maxlength="80"',disabled);
+      if(['events','tracking'].includes(node.type)&&!localEngines.includes(engine(node)))html+=`<div class="wc-service-settings" data-wc-service="${node.type==='tracking'?'tracking':'analysis'}"></div>`;
+      html+=`<fieldset data-wc-edit-fields style="border:0;margin:0;padding:0;min-width:0" ${disabled?'disabled':''}>`+this.field('Instance name','name',config.name||d.name,'text','maxlength="80"',disabled)+this.renderEngine(node,disabled);
       if(['tracking','events'].includes(node.type))html+=`<p class="wc-note">${esc(this.t('Use one module per category; enabling this module turns the other options off.'))}</p>`;if(localEngines.includes(engine(node)))html+=this.renderModuleSettings(node,disabled);if(editing)html+=`<label class="wc-toggle">${esc(this.t('Enable block'))}<input type="checkbox" data-wc-node-enabled ${node.enabled!==false?'checked':''}></label>`;
       if(d.inputs.length){
         html+=`<div class="wc-section-label">${esc(this.t('Inputs'))}</div>`;
         for(const port of d.inputs){
           const bindings=graph.edges.filter(edge=>edge.to_node===node.id&&edge.to_port===port[0]);
           for(const binding of [...bindings,null]){
-            const choices=graph.nodes.filter(other=>other.id!==node.id).flatMap(other=>nodePorts(other,'out').filter(output=>output[1]===port[1]&&!bindings.some(edge=>edge!==binding&&edge.from_node===other.id&&edge.from_port===output[0])).map(output=>`<option value="${esc(other.id+'|'+output[0])}" ${binding?.from_node===other.id&&binding?.from_port===output[0]?'selected':''}>${esc(this.name(other)+' · '+output[0])}</option>`));
+            const choices=graph.nodes.filter(other=>other.id!==node.id).flatMap(other=>nodePorts(other,'out').filter(output=>output[1]===port[1]&&acceptsFrom(node,port,other)&&!bindings.some(edge=>edge!==binding&&edge.from_node===other.id&&edge.from_port===output[0])).map(output=>`<option value="${esc(other.id+'|'+output[0])}" ${binding?.from_node===other.id&&binding?.from_port===output[0]?'selected':''}>${esc(this.name(other)+' · '+output[0])}</option>`));
             if(!binding&&!choices.length)continue;
-            html+=`<label class="wc-field"><span>${port[0]} · ${port[1]}${node.type!=='output'?' · '+esc(this.t('required')):!binding?' · '+esc(this.t('Add connection')):''}</span><select data-wc-binding="${port[0]}" data-wc-edge-id="${esc(binding?.id||'')}" ${disabled?'disabled':''}><option value="">${esc(this.t(binding?'Disconnect':'Choose an output'))}</option>${choices.join('')}</select></label>`;
+            html+=`<label class="wc-field"><span>${port[0]} · ${port[1]}${node.type!=='output'?' · '+esc(this.t(port[2]===false?'optional':'required')):!binding?' · '+esc(this.t('Add connection')):''}</span><select data-wc-binding="${port[0]}" data-wc-edge-id="${esc(binding?.id||'')}" ${disabled?'disabled':''}><option value="">${esc(this.t(binding?'Disconnect':'Choose an output'))}</option>${choices.join('')}</select></label>`;
           }
         }
       }
@@ -434,8 +470,57 @@
       if(node.type==='objects')html+=`<p class="wc-pipeline-help">${esc(this.t('Newest frame + previous frame → one present/absent/unclear question per object → gate → hold until cleared'))}</p>`;
       if(['face','events','summary'].includes(node.type))html+=`<p class="wc-pipeline-help">${esc(node.type==='face'?this.t('Face detection → recognition → shared gallery match → identity observations'):node.type==='events'?this.t('Sample frames → event judgement → confirmation → event records'):this.t('Latest snapshot → summary instruction → configured analysis service → summary record'))}</p>`;
       html+=`<div class="wc-section-label">${esc(this.t('Outputs'))}</div>`+(d.outputs.map(p=>`<div class="wc-connection"><span>${p[0]}</span><span>${p[1]}</span></div>`).join('')||`<div class="wc-note">${esc(this.t('Results remain available through the existing channel output APIs.'))}</div>`);
+      if(!['source','output'].includes(node.type))html+=this.renderDebug(node);
       return html;
     }
+    renderEngine(node,disabled){
+      const choices=nodeEngines[node.type];if(!choices||choices.length<2)return '';
+      const current=engine(node);
+      return `<label class="wc-field"><span>${esc(this.t('Recognizer'))}</span><select data-wc-engine aria-label="${esc(this.t('Recognizer'))}" ${disabled?'disabled':''}>${choices.map(id=>`<option value="${esc(id)}" ${id===current?'selected':''}>${esc(this.t(engineNames[id]))}</option>`).join('')}</select></label><p class="wc-note">${esc(this.t('The recognizer that answers this task. Switching keeps connections and clears the service address, because each recognizer runs its own service.'))}</p>`;
+    }
+    debugCameras(){return [...new Set(this.mode==='edit'?this.graph.nodes.filter(n=>n.type==='source'&&n.config?.camera_id).map(n=>n.config.camera_id):(this.group?.camera_ids||[]).filter(id=>this.scope==='all'||id===this.scope))];}
+    renderDebug(node){
+      const cameras=this.debugCameras();let html=`<div class="wc-section-label">${esc(this.t('Debug'))}</div>`;
+      if(!cameras.length)return html+`<div class="wc-note">${esc(this.t('Bind a camera to see debug records.'))}</div>`;
+      html+=`<div class="wc-note">${esc(this.t('Load the last records of the applied workflow for a camera.'))}</div><div class="wc-actions">${cameras.map(id=>this.button('debug-refresh',this.cameraName(id),'',`data-camera="${esc(id)}" data-node="${esc(node.id)}" ${this.debugBusy?'disabled':''}`)).join('')}</div>`;
+      const debug=this.debug?.node===node.id?this.debug:null;
+      if(!debug)return html;
+      if(debug.error)return html+`<div class="wc-note is-error">${esc(debug.error)}</div>`;
+      const v=debug.value||{},status=v.status||{};
+      if(status.state==='not_in_plan')return html+`<div class="wc-note">${esc(this.cameraName(debug.camera)+' · '+this.t('Not in the applied plan for this camera.'))}</div>`;
+      const brief=x=>{if(x==null)return '—';const text=JSON.stringify(x);return text.length>160?text.slice(0,157)+'…':text;};
+      const counts=Object.entries(v.counts||{}).map(([k,n])=>k+' '+n).join(' · ');
+      html+=`<div class="wc-connection"><span>${esc(this.cameraName(debug.camera))}</span><span>${esc(status.state||'')}${status.last_error?' · '+esc(status.last_error):''}</span></div>`;
+      if(v.synthetic)html+=`<div class="wc-note">${esc(this.t('Synthetic · test mode'))}</div><p>${this.button('real-analysis','Use real analysis')}</p>`;
+      if(counts)html+=`<div class="wc-note">${esc(counts)}</div>`;
+      const items=(v.items||[]).slice().reverse();
+      if(!items.length)return html+`<div class="wc-note">${esc(this.t('No records yet.'))}</div>`;
+      return html+`<div class="wc-debug">${items.map(item=>{const time=Array.isArray(item.frame_times)&&item.frame_times.length?Number(item.frame_times[item.frame_times.length-1]).toFixed(2)+'s':'—',latency=Number.isFinite(item.latency_seconds)?Math.round(item.latency_seconds*1000)+' ms':'—';return `<div class="wc-debug-row${item.error?' is-error':''}"><div class="wc-connection"><span>#${esc(item.source_frame_sequence??'—')} · ${esc(time)}</span><span>${esc(this.t('Latency'))} ${esc(latency)} · ${esc(item.error||item.reason||'')}${item.synthetic?' · '+esc(this.t('Synthetic')):''}</span></div><small>${esc(this.t('Input'))}: ${esc(brief(item.input))}</small><br><small>${esc(this.t('Output'))}: ${esc(brief(item.output))}</small></div>`;}).join('')}</div>`;
+    }
+    async loadDebug(camera,node){
+      if(this.debugBusy)return;this.debugBusy=true;this.debug={node,camera,value:null};this.render();
+      try{this.debug.value=await this.request(`/v1/fleet/cameras/${encodeURIComponent(camera)}/workflow/nodes/${encodeURIComponent(node)}/debug?limit=20`);}
+      catch(error){this.debug.error=this.t(error?.message||'Debug records are unavailable.');}
+      finally{this.debugBusy=false;this.render();}
+    }
+    // Do not bind active or assigned channels: a draft referencing an active
+    // camera is locked immediately, and Apply cannot take another workflow's
+    // channel. Prefer available channels not already referenced by another draft.
+    bindTemplate(value){
+      const graph=copy(value),sources=graph.nodes.filter(n=>n.type==='source');
+      if(!sources.length)return graph;
+      const assigned=new Set(this.groups.filter(g=>g.workflow_id).flatMap(g=>g.camera_ids||[]));
+      const used=new Set(this.workflows.flatMap(w=>(w.graph?.nodes||[]).filter(n=>n.type==='source').map(n=>n.config?.camera_id)).filter(Boolean));
+      const usable=this.cameras.filter(c=>c.enabled!==false&&!assigned.has(c.id)&&!cameraBusy(c));
+      const channels=[...usable.filter(c=>!used.has(c.id)),...usable.filter(c=>used.has(c.id))];
+      if(channels.length<sources.length){
+        if(sources.length!==1)return null;
+        delete sources[0].config?.camera_id;return graph;
+      }
+      sources.forEach((node,index)=>{node.config={...(node.config||{}),camera_id:channels[index].id};});
+      return graph;
+    }
+    async loadTemplates(){const value=await this.request('/v1/workflow-templates');return Array.isArray(value?.templates)?value.templates:[];}
     summaryServiceLocked(){return this.busy||this.testBusy||this.summaryServiceLoading||this.summaryServiceSaving||this.summaryServiceSaved?.persistence_available===false||this.cameras.some(camera=>cameraBusy(camera));}
     summaryServiceDirty(){return Boolean(this.summaryServiceDraft&&JSON.stringify(this.summaryServiceDraft)!==this.summaryServiceBaseline);}
     acceptSummaryService(value){
@@ -499,6 +584,8 @@
         const groups=this.groups.filter(group=>selected.has(group.id)),count=groups.reduce((sum,group)=>sum+(group.camera_ids||[]).length,0);
         body=`<div class="wc-note">${esc(this.t('Workflow to apply'))}: <strong>${esc(this.workflow?.name||'')}</strong></div><div class="wc-note">${esc(this.t('Apply updates every group already using this workflow.'))}</div><div class="wc-note">${esc(this.t('Only stopped cameras can be changed.'))}</div>${errors.length?`<div class="wc-note is-error">${errors.map(error=>esc(this.t(error))).join('<br>')}</div>`:''}${this.groups.map(group=>`<label class="wc-asset"><input type="checkbox" data-wc-apply-group="${esc(group.id)}" ${selected.has(group.id)?'checked':''} ${this.busy||assigned.has(group.id)||this.affectedBusy(group)?'disabled':''}><span class="wc-asset-copy"><strong>${esc(group.name)}</strong><small>${group.camera_ids.length} ${esc(this.t('cameras'))}${assigned.has(group.id)?' · '+esc(this.t('Already using this workflow')):group.workflow_id?' · '+esc(this.workflows.find(workflow=>workflow.id===group.workflow_id)?.name||''):''}${this.affectedBusy(group)?' · '+esc(this.t('Only stopped cameras can be changed.')):''}</small></span></label>`).join('')}${!selected.size?`<div class="wc-note">${esc(this.t('No group selected: apply the workflow configuration only.'))}</div>`:''}`;
         actions=this.button('confirm-apply',groups.length?this.t('Apply')+' · '+groups.length+' '+this.t('groups')+' · '+count+' '+this.t('cameras'):this.t('Apply')+' · '+this.t('Workflow configuration only'),'wc-primary',this.editLocked()||errors.length||groups.some(group=>this.affectedBusy(group))?'disabled':'');
+      }else if(kind==='templates'){title=this.t('From template…');body=`<div class="wc-note">${esc(this.t('A template has no camera or service addresses. Choose cameras and services after creating the workflow.'))}</div>`+((data.items||[]).map(item=>`<div class="wc-asset"><div class="wc-asset-copy"><strong>${esc(item.name)}</strong><small>${esc(this.t(item.builtin?'Built-in':'Saved'))} · ${(item.graph?.nodes||[]).length} ${esc(this.t('blocks'))}</small><small>${esc(item.description||'')}</small></div><div class="wc-actions">${this.button('use-template','Use template','',`data-id="${esc(item.id)}"`)}${item.builtin?'':this.button('delete-template','Delete','wc-danger',`data-id="${esc(item.id)}" ${this.busy?'disabled':''}`)}</div></div>`).join('')||`<div class="wc-note">${esc(this.t('No items.'))}</div>`);
+      }else if(kind==='save-template'){title=this.t('Save as template');body=this.dialogField('Name','name',data.name||'')+`<div class="wc-note">${esc(this.t('Camera channels and service addresses are removed from the template.'))}</div>`;actions=this.button('confirm-save-template','Save','wc-primary',this.busy?'disabled':'');
       }else if(kind==='new-workflow'){title=this.t('New workflow');body=this.dialogField('Name','name',data.name||'');actions=this.button('confirm-new-workflow','Create','wc-primary',this.busy?'disabled':'');
       }else if(kind==='new-group'||kind==='edit-group'){title=this.t(kind==='new-group'?'Add group':'Edit group');body=this.dialogField('Name','name',data.name||'')+`<div class="wc-note">${esc(this.t('Configure video connections on the workflow source blocks.'))}</div><div class="wc-note">${esc(this.t('Removed cameras return to their preserved manual analysis settings on the next Start. To keep a camera excluded, leave it in the group and turn it Off.'))}</div><div class="wc-section-label">${esc(this.t('Cameras'))}</div>`+this.cameras.map(c=>{const assigned=this.groups.find(g=>g.id!==data.id&&g.camera_ids?.includes(c.id));return `<label class="wc-check"><input type="checkbox" data-wc-group-camera="${esc(c.id)}" ${data.cameras?.includes(c.id)?'checked':''} ${assigned||c.enabled===false&&!data.cameras?.includes(c.id)?'disabled':''}><span>${esc(c.label||c.id)}${assigned?' · '+esc(assigned.name):c.enabled===false?' · '+esc(this.t('Unavailable')):''}</span></label>`;}).join('');actions=this.button('confirm-group',kind==='new-group'?'Create':'Save','wc-primary',this.busy?'disabled':'');
       }else if(kind==='delete-group'){const group=this.groups.find(g=>g.id===data.id);title=this.t('Confirm deletion');body=`<p style="margin-top:15px"><strong>${esc(group?.name)}</strong></p><div class="wc-note">${esc(this.t('Move this group to Trash? Its cameras remain deployed and connected.'))}</div><div class="wc-note">${esc(this.t('Removing the assignment restores preserved manual analysis settings on the next Start. Video stays connected; nothing starts automatically.'))}</div>${this.button('live','Manage video connections')}`;actions=this.button('confirm-delete-group','Move to Trash','wc-danger',this.busy||this.affectedBusy(group)?'disabled':'');
@@ -602,8 +689,14 @@
         case'manager-groups':case'manager-workflows':case'manager-trash':this.dialog={kind:'manage',scope:this.dialog?.scope||(this.mode==='edit'?'workflows':'groups'),tab:action.slice(8)};this.render();this.el.querySelector(`[data-wc-action="${action}"]`)?.focus();break;
         case'close-dialog':this.closeDialog();break;
         case'new-workflow':this.openDialog({kind:'new-workflow',name:''});break;
+        case'templates':try{this.openDialog({kind:'templates',items:await this.loadTemplates()});}catch(error){this.say(error.message,true);}break;
+        case'use-template':{const item=(this.dialog?.items||[]).find(t=>t.id===button.dataset.id);if(!item)break;const graph=this.bindTemplate(item.graph);if(!graph){this.say(templateCameraShortage,true);break;}this.dialog=null;this.openDialog({kind:'new-workflow',name:item.name,graph,templateGraph:item.graph});break;}
+        case'delete-template':{if(this.busy)break;this.busy=true;try{await this.request('/v1/workflow-templates/'+encodeURIComponent(button.dataset.id),{method:'DELETE'});if(this.dialog?.kind==='templates')this.dialog.items=await this.loadTemplates();}catch(error){this.say(error.message,true);}finally{this.busy=false;this.render();}break;}
+        case'save-template':if(this.draft)this.openDialog({kind:'save-template',name:this.draft.name});break;
+        case'confirm-save-template':{const name=this.dialog?.name?.trim();if(!name){this.say(this.t('Enter a name.'),true);break;}if(this.busy)break;this.busy=true;try{await this.request('/v1/workflow-templates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,graph:copy(this.graph)})});this.busy=false;this.closeDialog();this.say('Template saved.');}catch(error){this.say(error.message,true);}finally{this.busy=false;this.render();}break;}
+        case'debug-refresh':await this.loadDebug(button.dataset.camera,button.dataset.node);break;
         case'copy':if(this.draft)this.openDialog({kind:'new-workflow',name:this.draft.name+' copy',graph:copy(this.graph)});break;
-        case'confirm-new-workflow':{const name=this.dialog?.name?.trim();if(!name){this.say(this.t('Enter a name.'),true);break;}const oldIds=new Set(this.workflows.map(w=>w.id));const graph=this.dialog.graph||{nodes:[],edges:[]};if(await this.command('create_workflow',{name,graph})){this.workflowId=this.workflows.find(w=>!oldIds.has(w.id))?.id||this.workflowId;this.mode='edit';this.selected=this.graph.nodes[0]?.id||null;this.render();this.fit();}break;}
+        case'confirm-new-workflow':{const name=this.dialog?.name?.trim();if(!name){this.say(this.t('Enter a name.'),true);break;}const oldIds=new Set(this.workflows.map(w=>w.id));const graph=this.dialog.templateGraph?this.bindTemplate(this.dialog.templateGraph):this.dialog.graph||{nodes:[],edges:[]};if(!graph){this.say(templateCameraShortage,true);break;}if(await this.command('create_workflow',{name,graph})){this.workflowId=this.workflows.find(w=>!oldIds.has(w.id))?.id||this.workflowId;this.mode='edit';this.selected=this.graph.nodes[0]?.id||null;this.render();this.fit();}break;}
         case'new-group':this.openDialog({kind:'new-group',name:'',cameras:[]});break;
         case'edit-group':{const group=this.groups.find(g=>g.id===(button.dataset.id||this.groupId));if(group)this.openDialog({kind:'edit-group',id:group.id,name:group.name,cameras:[...(group.camera_ids||[])]});break;}
         case'confirm-group':{const dialog=this.dialog,name=dialog?.name?.trim();if(!name){this.say(this.t('Enter a name.'),true);break;}const oldIds=new Set(this.groups.map(g=>g.id));if(await this.command(dialog.kind==='new-group'?'create_group':'update_group',{...(dialog.id?{id:dialog.id}:{}),name,camera_ids:dialog.cameras||[]})){if(!dialog.id)this.groupId=this.groups.find(g=>!oldIds.has(g.id))?.id||this.groupId;this.render();}break;}
@@ -652,6 +745,7 @@
         if(target.matches('[data-wc-group-block]')){await this.groupPatch({block_enabled:{...this.group.block_enabled,[target.dataset.wcGroupBlock]:target.checked}});return;}
         if(target.matches('[data-wc-policy]')){const overrides=copy(this.group.camera_overrides||{}),camera=overrides[this.scope]||{enabled:null,block_enabled:{}};const value=target.value==='inherit'?null:target.value==='on';if(target.dataset.wcPolicy==='camera')camera.enabled=value;else camera.block_enabled={...camera.block_enabled,[target.dataset.node]:value};overrides[this.scope]=camera;await this.groupPatch({camera_overrides:overrides});return;}
         const node=this.graph.nodes.find(n=>n.id===this.selected);if(!node||this.mode!=='edit'||this.editLocked())return;
+        if(target.matches('[data-wc-engine]')){if(!(nodeEngines[node.type]||[]).includes(target.value)||target.value===engine(node))return;this.checkpoint();switchEngine(node,target.value,this.catalog());this.changed();return;}
         if(target.matches('[data-wc-execution-mode]')){if(!['local','server','cloud'].includes(target.value)||!localEngines.includes(engine(node)))return;this.checkpoint();node.config.execution_mode=target.value;this.changed();return;}
         if(target.matches('[data-wc-source-camera]')){if(!this.checkpoint())return;if(target.value)node.config.camera_id=target.value;else delete node.config.camera_id;this.changed();return;}
         if(target.matches('[data-wc-binding]')){
@@ -706,7 +800,7 @@
     updateDirtyStatus(){const status=this.el.querySelector('.wc-head .wc-counter');if(status){status.textContent=this.t(this.needsApply()?'Unapplied changes':'Applied');status.classList.toggle('wc-dirty',this.needsApply());}const undo=this.el.querySelector('[data-wc-action=undo]');if(undo)undo.disabled=this.editLocked()||!this.history().length;}
     renderPreservingFocus(target){const attributes=['data-wc-field','data-wc-dialog-field','data-wc-apply-group','data-wc-binding','data-wc-feature','data-wc-sensitivity','data-wc-display'],key=attributes.find(k=>target.hasAttribute(k)),value=key&&target.getAttribute(key),selection=typeof target.selectionStart==='number'?[target.selectionStart,target.selectionEnd]:null;this.render();if(key){const field=[...this.el.querySelectorAll('['+key+']')].find(e=>e.getAttribute(key)===value);field?.focus({preventScroll:true});if(field&&selection&&field.setSelectionRange)try{field.setSelectionRange(...selection);}catch(_){}}}
   }
-  const api={WorkflowCanvas,definitions,palette,engine,definition,eventSensitivities,graphOf,edgeValue,connectionError,validateGraph,effectiveEnabled,nodeReadiness,removeSelection,fitViewport,isEditingTarget,newNode,cameraBusy,objectPresets,objectPresetStatus,experimentalObject};
+  const api={WorkflowCanvas,definitions,palette,engine,switchEngine,nodeEngines,definition,eventSensitivities,graphOf,edgeValue,connectionError,validateGraph,effectiveEnabled,nodeReadiness,removeSelection,fitViewport,isEditingTarget,newNode,cameraBusy,objectPresets,objectPresetStatus,experimentalObject};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;root.GoodvisionWorkflows=api;
   if(root.document&&!root.GoodvisionDiagnostic){const mount=()=>{const element=root.document.getElementById('workflow-root');if(element&&!element.dataset.wcMounted){element.dataset.wcMounted='true';api.app=new WorkflowCanvas(element);}};if(root.document.readyState==='loading')root.document.addEventListener('DOMContentLoaded',mount,{once:true});else mount();}
 })(typeof globalThis!=='undefined'?globalThis:this);

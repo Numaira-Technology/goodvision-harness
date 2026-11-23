@@ -200,6 +200,7 @@ from .vlm_admission import AdmissionSettings
 from .vlm_fusion import VLMFusion
 from .vlm_independent import IndependentVLMBranch, VLMProcessConfig
 from .vlm_rich_labeling import RICH_ANNOTATION_CAPABILITY, VLMRichLabelClient
+from .workflow_modules import NATIVE_EVENT_ENGINES
 from .workflow_runtime import WorkflowRuntimeMixin
 
 LOGGER = logging.getLogger(__name__)
@@ -2257,7 +2258,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         ):
             self._workflow_bbox_probe(self._workflow_plan.get("tracking_service_url"))
         if (self._workflow_plan and not self.dry_run
-                and self._workflow_plan.get("events_engine") in {"system1", "neural"}):
+                and self._workflow_plan.get("events_engine") in NATIVE_EVENT_ENGINES):
             self._workflow_event_probe(self._workflow_plan)
         if (tracking and not bbox) or (
             features and self._workflow_plan is None and not independent_events
@@ -5598,6 +5599,16 @@ def create_app(
             _runtime(request).workflow_object_results(limit=limit),
             headers={"Cache-Control": "no-store"},
         )
+
+    @application.get("/v1/workflow/nodes/{node_id}/debug")
+    def workflow_node_debug(
+        request: Request, node_id: str, limit: int = 20
+    ) -> JSONResponse:
+        try:
+            value = _runtime(request).workflow_node_debug(node_id, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return JSONResponse(value, headers={"Cache-Control": "no-store"})
 
     @application.get("/v1/deployment/summary-service")
     def workflow_summary_service(request: Request) -> JSONResponse:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import atexit
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -184,16 +185,28 @@ class LocalModuleServices:
                     "The provisioned local module service is unavailable. "
                     "Start its worker on the deployment host."
                 )
-            directory = module_directory()
-            directory.mkdir(parents=True, exist_ok=True)
             root = Path(__file__).resolve().parents[2]
             isolated = root / f".venv-module-{engine}" / (
                 "Scripts/python.exe" if os.name == "nt" else "bin/python"
             )
-            python = os.environ.get(
-                f"GOODVISION_{engine.upper()}_PYTHON",
-                str(isolated) if isolated.is_file() else sys.executable,
-            )
+            python_override = f"GOODVISION_{engine.upper()}_PYTHON"
+            if engine == "decision3":
+                # Decision 3 and VideoJev pin different Transformers/FLA versions.
+                # Don't silently start this worker in the Harness or System 1 env.
+                python = shutil.which(os.environ.get(python_override) or str(isolated))
+                if python is None:
+                    raise ValueError(
+                        "Decision 3 requires a separate Python environment. "
+                        "Set up .venv-module-decision3 or set "
+                        "GOODVISION_DECISION3_PYTHON to its Python executable."
+                    )
+            else:
+                python = os.environ.get(
+                    python_override,
+                    str(isolated) if isolated.is_file() else sys.executable,
+                )
+            directory = module_directory()
+            directory.mkdir(parents=True, exist_ok=True)
             command = [
                 python,
                 "-u",

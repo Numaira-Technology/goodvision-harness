@@ -820,3 +820,165 @@ test('knife and alcohol presets are badged experimental and not validated',()=>{
  assert.match(html,/opt-in framework/);
 });
 
+
+test('object presence takes optional Bbox tracks and refuses Contour tracks',()=>{
+ const {palette}=require('../src/goodvision_harness/assets/workflow_canvas.js');
+ const g={nodes:[node('input','source'),{...node('bbox','tracking'),config:{name:'bbox',engine:'bbox'}},{...node('contour','tracking'),config:{name:'contour',engine:'contour'}},node('objects','objects'),node('out','output')],edges:[]};
+ assert.equal(connectionError(g,'bbox','tracks','objects','tracks'),null);
+ assert.equal(connectionError(g,'contour','tracks','objects','tracks'),'This input only accepts Bbox person boxes.');
+ assert.equal(connectionError(g,'contour','tracks','out','tracks'),null);
+ assert.deepEqual(palette.objects.inputs.map(p=>[p[0],p[2]]),[['frames',true],['tracks',false]]);
+ const app=appFixture();app.graph.nodes.push(...clone(g.nodes.slice(1,4)));app.selected='objects';
+ const html=app.renderInspector();
+ assert.match(html,/tracks · tracks · optional/);
+ assert.match(html,/value="bbox\|tracks"/);
+ assert.doesNotMatch(html,/value="contour\|tracks"/);
+});
+
+test('server module contract replaces the local port table',()=>{
+ const app=appFixture(),data=clone(app.data);
+ data.modules={modules:{objects:{inputs:[{port:'frames',type:'frames',required:true},{port:'tracks',type:'tracks',required:false,accepts:[['tracking','bbox']]}],outputs:[{port:'objects',type:'objects'}]}}};
+ app.accept(data);
+ assert.deepEqual(definitions.objects.inputs,[['frames','frames',true,undefined],['tracks','tracks',false,[['tracking','bbox']]]]);
+ assert.deepEqual(definitions.objects.outputs,[['objects','objects']]);
+});
+
+test('debug section loads one camera record set and labels synthetic results',async()=>{
+ const app=appFixture();app.graph.nodes[0].config.camera_id='camera01';app.selected='summary';
+ const urls=[];
+ app.request=async url=>{urls.push(url);return {node_id:'summary',kind:'summary',synthetic:true,status:{state:'running',last_error:null},counts:{succeeded:2,failed:1},items:[{at:1,source_frame_sequence:7,frame_times:[3.25],input:{},output:{summary:'<b>desk</b>'},latency_seconds:0.4,error:null,reason:'completed',synthetic:true},{at:2,source_frame_sequence:8,frame_times:[4],input:{},output:null,latency_seconds:null,error:'timeout',reason:'error',synthetic:true}]};};
+ assert.match(app.renderInspector(),/data-wc-action="debug-refresh" data-camera="camera01" data-node="summary"/);
+ await app.handleAction('debug-refresh',{dataset:{camera:'camera01',node:'summary'}});
+ assert.deepEqual(urls,['/v1/fleet/cameras/camera01/workflow/nodes/summary/debug?limit=20']);
+ const html=app.renderDebug(app.graph.nodes.find(n=>n.id==='summary'));
+ assert.match(html,/Synthetic · test mode/);assert.match(html,/real-analysis/);
+ assert.match(html,/succeeded 2 · failed 1/);
+ assert.match(html,/#7 · 3.25s/);assert.match(html,/400 ms/);
+ assert.match(html,/wc-debug-row is-error/);assert.match(html,/timeout/);
+ assert.doesNotMatch(html,/<b>desk/);
+ app.request=async()=>({status:{state:'not_in_plan'},items:[]});
+ await app.loadDebug('camera01','summary');
+ assert.match(app.renderDebug(app.graph.nodes.find(n=>n.id==='summary')),/Not in the applied plan/);
+ app.request=async()=>{throw new Error('camera unavailable');};
+ await app.loadDebug('camera01','summary');
+ assert.match(app.renderDebug(app.graph.nodes.find(n=>n.id==='summary')),/camera unavailable/);
+ const unbound=appFixture();assert.match(unbound.renderDebug(unbound.graph.nodes[1]),/Bind a camera/);
+});
+
+test('templates start a new workflow and the current graph saves as a template',async()=>{
+ const previous=globalThis.requestAnimationFrame;globalThis.requestAnimationFrame=callback=>{callback();return 0;};
+ try{
+ const app=appFixture();app.el.querySelector=()=>null;
+ app.data.cameras.push({id:'camera02',enabled:true,status:{analysis_state:'idle'}});
+ const template={id:'builtin-videojev-yolo',name:'VideoJev + YOLO 基础盘',description:'d',builtin:true,graph:{nodes:[node('source','source')],edges:[]}};
+ const calls=[];
+ app.request=async(url,options={})=>{calls.push([url,options.method||'GET',options.body&&JSON.parse(options.body)]);return url==='/v1/workflow-templates'&&!options.method?{templates:[template]}:{};};
+ assert.match(app.renderContextActions(),/data-wc-action="templates"/);
+ assert.match(app.renderContextActions(),/data-wc-action="save-template"/);
+ await app.handleAction('templates',{dataset:{}});
+ assert.equal(app.dialog.kind,'templates');
+ assert.match(app.renderDialog(),/use-template/);assert.doesNotMatch(app.renderDialog(),/delete-template/);
+ await app.handleAction('use-template',{dataset:{id:template.id}});
+ assert.equal(app.dialog.kind,'new-workflow');assert.equal(app.dialog.name,template.name);
+ assert.equal(app.dialog.graph.nodes[0].config.camera_id,'camera02');assert.equal(template.graph.nodes[0].config.camera_id,undefined);
+ app.dialog=null;
+ await app.handleAction('save-template',{dataset:{}});
+ assert.equal(app.dialog.kind,'save-template');app.dialog.name='Store';
+ await app.handleAction('confirm-save-template',{dataset:{}});
+ const saved=calls.find(c=>c[1]==='POST');
+ assert.equal(saved[0],'/v1/workflow-templates');assert.equal(saved[2].name,'Store');
+ assert.deepEqual(saved[2].graph,app.graph);
+ assert.equal(app.dialog,null);assert.equal(app.busy,false);assert.equal(app.notice,'Template saved.');
+ }finally{if(previous===undefined)delete globalThis.requestAnimationFrame;else globalThis.requestAnimationFrame=previous;}
+});
+
+test('System 1 and Decision 3 are peer blocks; only object presence picks its recognizer in the node',()=>{
+ const {switchEngine,palette}=require('../src/goodvision_harness/assets/workflow_canvas.js');
+ assert.equal(palette.decision3.engine,'decision3');assert.equal(palette.system1.engine,'system1');
+ const app=appFixture();
+ const events={id:'events',type:'events',x:0,y:0,enabled:true,config:{name:'System 1 recognition',engine:'system1',features:['smoking']}};
+ const objects={id:'objects',type:'objects',x:0,y:0,enabled:true,config:{name:'Object presence',engine:'system1',execution_mode:'server',service_url:'http://gpu:8097',objects:[{id:'knife',name:'knife',criterion:'A knife.',gate:0.95}]}};
+ app.graph.nodes.push(events,objects);
+ app.graph.edges.push({id:'in-o',from_node:'input',from_port:'frames',to_node:'objects',to_port:'frames'},{id:'out-o',from_node:'objects',from_port:'objects',to_node:'out',to_port:'objects'});
+ app.selected='events';assert.doesNotMatch(app.renderInspector(),/data-wc-engine/);
+ // Object presence has one recognizer today (Decision 3 needs its own adapter).
+ app.selected='objects';assert.doesNotMatch(app.renderInspector(),/data-wc-engine/);
+ const edges=clone(app.graph.edges);
+ switchEngine(objects,'decision3');
+ assert.equal(objects.config.engine,'decision3');assert.equal(objects.config.name,'Object presence');
+ assert.equal(objects.config.service_url,undefined);assert.equal(objects.config.execution_mode,undefined);
+ assert.deepEqual(app.graph.edges,edges);
+ app.add('decision3');assert.equal(app.graph.nodes.at(-1).config.engine,'decision3');assert.equal(app.graph.nodes.at(-1).type,'events');
+});
+
+test('template sources bind to distinct cameras and template delete accepts 204',async()=>{
+ const app=appFixture();
+ const camera=(id,enabled=true)=>({id,enabled,status:{analysis_state:'idle'}});
+ app.data.cameras=[camera('camera01'),camera('camera02'),camera('camera03',false)];
+ app.data.document.groups=[];
+ app.data.document.workflows[0].graph.nodes[0].config.camera_id='camera01';
+ const two={nodes:[node('a','source'),node('b','source'),node('out','output')],edges:[]};
+ const bound=app.bindTemplate(two);
+ assert.deepEqual(bound.nodes.filter(n=>n.type==='source').map(n=>n.config.camera_id),['camera02','camera01']);
+ assert.equal(two.nodes[0].config.camera_id,undefined);
+ app.data.cameras=[camera('camera01')];
+ assert.equal(app.bindTemplate(two),null);
+ const one=app.bindTemplate({nodes:[node('a','source')],edges:[]});assert.equal(one.nodes[0].config.camera_id,'camera01');
+ app.data.cameras=[];assert.equal(app.bindTemplate({nodes:[node('a','source')],edges:[]}).nodes[0].config.camera_id,undefined);
+ const real=Object.create(WorkflowCanvas.prototype);
+ real.fetch=async()=>({ok:true,status:204,json:async()=>{throw new Error('no body');}});
+ assert.equal(await real.request('/v1/workflow-templates/x',{method:'DELETE'}),null);
+});
+
+test('a single-source template stays editable when the only camera is in active use',async()=>{
+ const app=appFixture();app.el.querySelector=()=>null;app.fit=()=>{};
+ const previous=globalThis.requestAnimationFrame;globalThis.requestAnimationFrame=callback=>{callback();return 0;};
+ try{
+  app.data.cameras[0].status={analysis_state:'running'};
+  const template={id:'single',name:'Single',graph:{nodes:[node('a','source')],edges:[]}};
+  app.dialog={kind:'templates',items:[template]};
+  const calls=[];
+  app.request=async(url,options)=>{
+   assert.equal(url,'/v1/workflows/command');
+   const request=JSON.parse(options.body);calls.push(request);
+   const data=clone(app.data);data.document.workflows.push({id:'created',name:request.name,graph:request.graph});return data;
+  };
+  await app.handleAction('use-template',{dataset:{id:template.id}});
+  assert.equal(app.dialog.kind,'new-workflow');
+  await app.handleAction('confirm-new-workflow',{});
+  assert.equal(calls.length,1);assert.equal(calls[0].action,'create_workflow');
+  assert.equal(calls[0].graph.nodes[0].config.camera_id,undefined);
+  assert.equal(app.workflowId,'created');assert.equal(app.editLocked(),false);
+  assert.deepEqual(app.group.camera_ids,['camera01']);assert.equal(app.group.workflow_id,'workflow-1');
+ }finally{if(previous===undefined)delete globalThis.requestAnimationFrame;else globalThis.requestAnimationFrame=previous;}
+});
+
+test('multi-source template uses idle unassigned channels and rechecks before save',async()=>{
+ const app=appFixture();app.el.querySelector=()=>null;app.fit=()=>{};
+ const previous=globalThis.requestAnimationFrame;globalThis.requestAnimationFrame=callback=>{callback();return 0;};
+ try{
+  const camera=(id,status={analysis_state:'idle'},enabled=true)=>({id,status,enabled});
+  app.data.cameras=[camera('camera01'),camera('camera02',{analysis_state:'running'}),camera('camera03',null),camera('camera04',undefined,false),camera('camera05'),camera('camera06')];
+  const template={id:'multi',name:'Multi',graph:{nodes:[node('a','source'),node('b','source')],edges:[]}};
+  app.dialog={kind:'templates',items:[template]};
+  const calls=[];
+  app.request=async(url,options)=>{
+   assert.equal(url,'/v1/workflows/command');
+   const request=JSON.parse(options.body);calls.push(request);
+   const data=clone(app.data);data.document.workflows.push({id:'created',name:request.name,graph:request.graph});return data;
+  };
+  await app.handleAction('use-template',{dataset:{id:template.id}});
+  assert.equal(app.dialog.kind,'new-workflow');
+  assert.deepEqual(app.dialog.graph.nodes.map(n=>n.config.camera_id),['camera05','camera06']);
+  app.data.cameras[5].status={analysis_state:'idle',session_start_pending:true};
+  await app.handleAction('confirm-new-workflow',{});
+  assert.equal(calls.length,0);assert.equal(app.error,true);
+  assert.match(app.notice,/distinct enabled, stopped, unassigned/);
+  assert.equal(app.dialog.kind,'new-workflow');
+  app.data.cameras.push(camera('camera07'));
+  await app.handleAction('confirm-new-workflow',{});
+  assert.equal(calls.length,1);
+  assert.deepEqual(calls[0].graph.nodes.map(n=>n.config.camera_id),['camera05','camera07']);
+  assert.equal(app.editLocked(),false);
+ }finally{if(previous===undefined)delete globalThis.requestAnimationFrame;else globalThis.requestAnimationFrame=previous;}
+});

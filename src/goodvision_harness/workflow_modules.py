@@ -5,8 +5,10 @@ from urllib.parse import urlsplit
 
 ENGINES = {
     "tracking": ("contour", "bbox"),
-    "events": ("vlm", "system1", "neural"),
-    # Object presence reuses the native VideoJev worker; more engines later.
+    "events": ("vlm", "system1", "decision3", "neural"),
+    # Object presence uses VideoJev's native window and list response. Decision 3
+    # needs its own adapter (exactly 2 frames at 2 FPS, an `answers` mapping),
+    # so it is not offered here yet.
     "objects": ("system1",),
 }
 NAMES = {
@@ -14,12 +16,19 @@ NAMES = {
     "bbox": "Bbox",
     "vlm": "VLM semantic recognition",
     "system1": "System 1 recognition",
+    "decision3": "Decision 3 recognition",
     "neural": "Neural network recognition",
 }
-MODELS = {"system1": "ZhuYuhan/VideoJev-4B", "neural": "openai/clip-vit-large-patch14"}
+MODELS = {
+    "system1": "ZhuYuhan/VideoJev-4B",
+    "decision3": "vllm-sr/d3-nano",
+    "neural": "openai/clip-vit-large-patch14",
+}
+# Engines that run in the native independent event lane (not the shared VLM).
+NATIVE_EVENT_ENGINES = ("system1", "decision3", "neural")
 NEURAL_EVENTS = ("fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter")
 POSITIONS = ("top-left", "top-right", "bottom-left", "bottom-right")
-LOCAL_PORTS = {"bbox": 8096, "system1": 8097, "neural": 8098}
+LOCAL_PORTS = {"bbox": 8096, "system1": 8097, "neural": 8098, "decision3": 8099}
 EXECUTION_MODES = ("local", "server", "cloud")
 
 
@@ -100,3 +109,112 @@ def service_url(value):
         if parsed.port == 0:
             raise ValueError("Service URL port must be within 1..65535.")
     return value
+
+
+# Module contract: typed ports per node kind. ``frames`` stays the required
+# input of every analysis node; any upstream input added later is optional and
+# lists the (kind, engine) modules it accepts. Old graphs never use an optional
+# input, so their validation and compiled plans are unchanged.
+PORT_TYPES = ("frames", "tracks", "faces", "events", "summary", "objects")
+CONTRACT = {
+    "source": {"inputs": (), "outputs": ("frames",)},
+    "face": {"inputs": (("frames", True),), "outputs": ("faces",)},
+    "tracking": {"inputs": (("frames", True),), "outputs": ("tracks",)},
+    "events": {"inputs": (("frames", True),), "outputs": ("events",)},
+    "summary": {"inputs": (("frames", True),), "outputs": ("summary",)},
+    # Bbox person boxes focus VideoJev on people (person crop). Contour tracks
+    # carry no boxes, so only Bbox is accepted.
+    "objects": {
+        "inputs": (("frames", True), ("tracks", False)),
+        "outputs": ("objects",),
+    },
+    "output": {
+        "inputs": tuple((port, False) for port in PORT_TYPES),
+        "outputs": (),
+    },
+}
+ACCEPTS = {("objects", "tracks"): (("tracking", "bbox"),)}
+# Task modules (object presence, summary) ask a task of a recognizer chosen in
+# the node. Every recognizer is its own peer module with its own block, service,
+# health check and debug entry; System 1 and Decision 3 only share transport code.
+TASK_KINDS = ("objects", "summary")
+# How each peer module reports, so a later decision node can consume them alike.
+OUTPUT_CONTRACTS = {
+    "contour": "person_contours",
+    "bbox": "person_boxes",
+    "system1": "native_option_probabilities",
+    "decision3": "native_option_probabilities",
+    "neural": "embedding_margin",
+    "vlm": "generative_json",
+}
+LAYERS = {"tracking": "perception", "face": "perception", "events": "understanding"}
+# Nodes whose debug entry has a per-request record, not only a status line.
+DEBUG_RECORDS = {"objects", "summary", "tracking", "events"}
+
+
+def node_ports(kind):
+    """{"inputs": (port, ...), "outputs": (port, ...)} for validation."""
+    spec = CONTRACT[kind]
+    return {
+        "inputs": tuple(port for port, _ in spec["inputs"]),
+        "outputs": spec["outputs"],
+    }
+
+
+def required_inputs(kind):
+    return tuple(port for port, required in CONTRACT[kind]["inputs"] if required)
+
+
+def accepts(kind, port, source_kind, source_engine):
+    allowed = ACCEPTS.get((kind, port))
+    return allowed is None or (source_kind, source_engine) in allowed
+
+
+def module_catalog():
+    """JSON contract the canvas reads instead of keeping its own port table."""
+    return {
+        "port_types": list(PORT_TYPES),
+        "modules": {
+            kind: {
+                "inputs": [
+                    {
+                        "port": port,
+                        "type": port,
+                        "required": required,
+                        **(
+                            {"accepts": [list(a) for a in ACCEPTS[(kind, port)]]}
+                            if (kind, port) in ACCEPTS
+                            else {}
+                        ),
+                    }
+                    for port, required in spec["inputs"]
+                ],
+                "outputs": [{"port": port, "type": port} for port in spec["outputs"]],
+                "engines": [
+                    {
+                        "id": engine,
+                        "name": NAMES[engine],
+                        "model": MODELS.get(engine),
+                        "local": engine in LOCAL_PORTS,
+                    }
+                    for engine in ENGINES.get(kind, ())
+                ],
+                "debug": "records" if kind in DEBUG_RECORDS else "status",
+                "task": kind in TASK_KINDS,
+            }
+            for kind, spec in CONTRACT.items()
+        },
+        "peers": [
+            {
+                "id": engine,
+                "kind": kind,
+                "layer": LAYERS[kind],
+                "name": NAMES[engine],
+                "model": MODELS.get(engine),
+                "local_port": LOCAL_PORTS.get(engine),
+                "output_contract": OUTPUT_CONTRACTS[engine],
+            }
+            for kind in ("tracking", "events")
+            for engine in ENGINES[kind]
+        ],
+    }

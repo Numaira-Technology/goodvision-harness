@@ -22,6 +22,7 @@ from .privacy import (
     PUBLIC_MISSING_API_KEY_ERROR,
     public_safe_value,
 )
+from .workflow_modules import NATIVE_EVENT_ENGINES
 
 
 class WorkflowRuntimeMixin:
@@ -242,7 +243,7 @@ class WorkflowRuntimeMixin:
                 # Native safety inference remains available with tracking off.
                 scene_mode = "disabled"
         runtime = replace(configuration.runtime, scene_mode=scene_mode)
-        if (plan or {}).get("events_engine") in {"system1", "neural"}:
+        if (plan or {}).get("events_engine") in NATIVE_EVENT_ENGINES:
             runtime = replace(
                 runtime,
                 scene_mode="active",
@@ -280,7 +281,7 @@ class WorkflowRuntimeMixin:
                 ),
             )
         selected = (plan or {}).get("events_engine", "vlm")
-        if selected in {"system1", "neural"}:
+        if selected in NATIVE_EVENT_ENGINES:
             if not plan.get("events_service_url"):
                 raise ValueError(
                     "Configure the recognition service URL before starting."
@@ -308,7 +309,7 @@ class WorkflowRuntimeMixin:
             raise
         self._workflow_tracking_baseline = baseline if plan is not None else None
         self._workflow_event_baseline = (
-            event_baseline if selected in {"system1", "neural"} else None
+            event_baseline if selected in NATIVE_EVENT_ENGINES else None
         )
 
     def configure_workflow(self, payload):
@@ -549,6 +550,8 @@ class WorkflowRuntimeMixin:
             ObjectPresenceManager,
             latest_frame,
             recent_frames,
+            rich_label_boxes,
+            synthetic_boxes,
         )
         from .workflow_modules import native_endpoints
 
@@ -562,12 +565,21 @@ class WorkflowRuntimeMixin:
         endpoint = plan.get("objects_service_url")
         if not endpoint:
             raise ValueError("Configure the object recognition service URL first.")
+        session = session_id or uuid4().hex
+        boxes = None
+        if plan["objects"].get("focus") == "person_crop":
+            # Bbox person boxes from this camera's own session, aligned to each
+            # window frame by source time. Test mode uses one synthetic box.
+            boxes = synthetic_boxes if self.dry_run else rich_label_boxes(
+                lambda: self._rich_labels, session
+            )
         manager = ObjectPresenceManager(
             plan["objects"],
+            boxes_provider=boxes,
             frame_provider=lambda: latest_frame(connection),
             history_provider=lambda seconds: recent_frames(connection, seconds),
             post=self._make_object_post(native_endpoints(endpoint)[0]),
-            stream_session_id=session_id or uuid4().hex,
+            stream_session_id=session,
             source_id=self.source_id,
             generation=self._generation,
         )
@@ -596,6 +608,168 @@ class WorkflowRuntimeMixin:
             "status": manager.status() if manager else {"state": "idle"},
             "items": manager.history(limit=limit) if manager else [],
         }
+
+    def workflow_node_debug(self, node_id, *, limit=20):
+        """One debug view for any node: status plus its last N records.
+
+        Records share one shape: source frame, frame times, input and output
+        summaries, latency, error and whether the result was synthetic.
+        """
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("debug limit must be within 1 through 200")
+        if not isinstance(node_id, str) or not node_id:
+            raise ValueError("node id required")
+        with self._control_lock:
+            plan = copy.deepcopy(self._workflow_plan)
+            context = copy.deepcopy(self._workflow_result_context)
+            valid = self._workflow_context_valid(context)
+            summaries = self._workflow_summaries if valid else None
+            objects = self._workflow_objects if valid else None
+        kind = engine = None
+        if plan is not None:
+            if node_id == plan.get("objects_node_id"):
+                kind, engine = "objects", plan.get("objects_engine")
+            elif node_id == plan.get("tracking_node_id"):
+                kind, engine = "tracking", plan.get("tracking_engine", "contour")
+            elif node_id == plan.get("events_node_id"):
+                kind, engine = "events", plan.get("events_engine", "vlm")
+            elif node_id == plan.get("face_node_id"):
+                kind = "face"
+            elif any(s["id"] == node_id for s in plan["summaries"]):
+                kind = "summary"
+        value = {
+            "camera_id": f"camera{self._fleet_camera_index:02d}",
+            "node_id": node_id,
+            "kind": kind,
+            "engine": engine,
+            "synthetic": bool(self.dry_run),
+            "status": {"state": "not_in_plan" if kind is None else "idle",
+                       "last_error": None},
+            "counts": {},
+            "items": [],
+        }
+        if kind == "objects" and objects is not None:
+            status = objects.status()
+            outputs = {
+                record["source_frame_sequence"]: record
+                for record in objects.history(limit=min(1000, limit * 4))
+            }
+            items = []
+            for tick in objects.tick_log(limit=limit):
+                record = (
+                    outputs.get(tick["newest_sequence"]) if tick["eligible"] else None
+                )
+                items.append({
+                    "at": tick["scheduled_at"],
+                    "source_frame_sequence": tick["newest_sequence"],
+                    "frame_times": tick["frame_times"],
+                    "input": {"focus": tick.get("focus")},
+                    "output": {
+                        "objects": [
+                            {k: o.get(k) for k in (
+                                "id", "answer", "present_probability", "detected",
+                                "present",
+                            )}
+                            for o in record["objects"]
+                        ]
+                    } if record else None,
+                    "latency_seconds": (
+                        tick["completed_at"] - tick["sent_at"]
+                        if tick["completed_at"] is not None
+                        and tick["sent_at"] is not None else None
+                    ),
+                    "error": tick["error"],
+                    "reason": tick["reason"],
+                    "synthetic": bool(self.dry_run),
+                })
+            value.update(
+                status={"state": status["state"], "last_error": status["last_error"],
+                        "focus": status.get("focus")},
+                counts={
+                    k: v for k, v in status.items()
+                    if type(v) is int and k != "generation"
+                },
+                items=items,
+            )
+        elif kind == "summary" and summaries is not None:
+            status = summaries.status()
+            component = next(
+                (c for c in status["components"] if c["node_id"] == node_id), {}
+            )
+            value.update(
+                status={"state": component.get("state", status["state"]),
+                        "last_error": component.get("last_error")},
+                counts={k: component[k] for k in (
+                    "requests", "succeeded", "failed", "skipped_busy",
+                ) if k in component},
+                items=[
+                    {
+                        "at": record["created_at"],
+                        "source_frame_sequence": record["source_frame_sequence"],
+                        "frame_times": [record["timestamp_seconds"]],
+                        "input": {},
+                        "output": {"summary": record["summary"]},
+                        "latency_seconds": record["latency_seconds"],
+                        "error": (record["error"] or {}).get("code"),
+                        "reason": record["status"],
+                        "synthetic": record["synthetic"],
+                    }
+                    for record in summaries.history(node_id=node_id, limit=limit)
+                ],
+            )
+        elif kind == "tracking" and valid and engine == "bbox":
+            coordinator = self._rich_labels
+            history = coordinator.history() if coordinator is not None else ()
+            history = [
+                h for h in history if h.stream_session_id == context["session_id"]
+            ][-limit:]
+            value.update(
+                status={"state": "running" if coordinator is not None else "idle",
+                        "last_error": None},
+                counts={"snapshots": len(history)},
+                items=[
+                    {
+                        "at": None,
+                        "source_frame_sequence": h.frame_sequence,
+                        "frame_times": [h.timestamp_seconds],
+                        "input": {},
+                        "output": {
+                            "persons": sum(o.label == "person" for o in h.objects),
+                            "track_ids": [o.track_id for o in h.objects],
+                        },
+                        "latency_seconds": None,
+                        "error": None,
+                        "reason": "valid",
+                        "synthetic": bool(self.dry_run),
+                    }
+                    for h in history
+                ],
+            )
+        elif kind == "events" and valid:
+            records = self._workflow_feature_results(
+                [label for label in plan["features"] if label != "stranger"], context
+            )
+            value.update(
+                status={"state": "running", "last_error": None},
+                items=[
+                    {
+                        "at": r.get("emitted_at"),
+                        "source_frame_sequence": None,
+                        "frame_times": None,
+                        "input": {"frame": r.get("frame")},
+                        "output": {
+                            "event": r["judgments"][0].get("event_label"),
+                            "judgment": r["judgments"][0],
+                        },
+                        "latency_seconds": None,
+                        "error": None,
+                        "reason": "latest",
+                        "synthetic": bool(self.dry_run),
+                    }
+                    for r in records[:limit]
+                ],
+            )
+        return public_safe_value(value)
 
     def _stop_workflow_summaries(self):
         # Stop cannot wait for network work while holding a service lock.
@@ -1072,7 +1246,12 @@ class WorkflowRuntimeMixin:
                     "Configure the recognition service URL before testing."
                 )
             labels = tuple(label for label in plan["features"] if label != "stranger")
-            delta = selected[-1][1] - selected[0][1]
+            # Decision 3 uses the same fixed 2 FPS model input as its live
+            # lane. Preserve the actual source timestamps in the evidence.
+            delta = (
+                0.5 if plan["events_engine"] == "decision3"
+                else selected[-1][1] - selected[0][1]
+            )
             settings = ModelAPISettings(
                 provider="local", endpoint=native_endpoints(endpoint)[0],
                 timeout_seconds=self.config.runtime.scene_timeout_seconds,
@@ -1099,8 +1278,11 @@ class WorkflowRuntimeMixin:
                 frames, event_sensitivities=config.sensitivities,
                 vocabulary=config.vocabulary,
             )
-            cls = (NeuralInspector if plan["events_engine"] == "neural"
-                   else VideoJevInspector)
+            if plan["events_engine"] == "decision3":
+                from .decision3_model import Decision3Inspector as cls
+            else:
+                cls = (NeuralInspector if plan["events_engine"] == "neural"
+                       else VideoJevInspector)
             inspector = cls(config)
             verdicts = inspector.inspect(job)
             result.update(
@@ -1158,7 +1340,7 @@ class WorkflowRuntimeMixin:
             # out of the live connection's presentation history.
             native_preview_frames = (
                 connection.display_frames(after=None, max_age_seconds=2, limit=120)
-                if plan.get("events_engine") in {"system1", "neural"} else ()
+                if plan.get("events_engine") in NATIVE_EVENT_ENGINES else ()
             )
             self._workflow_operation += 1
             operation = self._workflow_operation
@@ -1257,7 +1439,7 @@ class WorkflowRuntimeMixin:
                 if not node_id:
                     continue
                 check_active()
-                if not identity and plan.get("events_engine") in {"system1", "neural"}:
+                if not identity and plan.get("events_engine") in NATIVE_EVENT_ENGINES:
                     results.append(self._workflow_native_event_test(
                         plan, connection, snapshot, context, native_preview_frames,
                     ))

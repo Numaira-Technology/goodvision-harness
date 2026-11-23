@@ -65,6 +65,44 @@ analysis** to persist `dry_run: false` without saving unrelated service drafts o
 starting a model. The next Start uses the configured real services; their usual
 readiness and credential checks still apply.
 
+## Templates, module wiring and debugging
+
+**From template…** starts a new workflow from a wired group of modules. Built-in
+templates cover three project types: **人员 + 事件** (Bbox and System 1 event
+recognition), **物品检查 / 翻包** (Bbox → Object presence with person crop) and
+**纯总结巡检** (Summary only).
+
+**Decision 3 recognition** is its own block beside System 1, VLM and neural
+network recognition, with its own service (local port 8099), readiness and
+Debug section. For local launch, give Decision 3 its own
+[Python environment](workflow-module-deployment.md#本机运行), separate from System 1.
+Enable one event recognition block per camera at a time. Object presence is
+answered by System 1 only; Decision 3 needs its own object request
+and response adapter first.
+
+Template video sources are unbound slots. Creating a workflow from a template
+uses distinct enabled channels with stopped analysis and no workflow assignment.
+A single source can stay unbound; a multi-source template needs enough eligible
+channels before it can be created. **Save as template**
+stores the current graph without camera channels or service addresses; choose
+cameras and services after creating a workflow from it. Saved templates live in
+`workflow-templates.json` beside the workflow document.
+
+Object presence has an optional `tracks` input that accepts only Bbox. When it
+is connected, each judgment crops every frame of its window to one region around
+the detected people (padded union of their boxes) before sending it to VideoJev;
+with no person in the window it sends the full frame. Bbox then runs even if its
+own tracks are not connected to Output. Whether the crop improves recognition
+has not been measured on real video; the object presets remain experimental.
+
+Each analysis block's settings end with **Debug**: choose a camera to load the
+last 20 records of the applied workflow (frame, input, output, latency, error or
+skip reason, synthetic flag) and the block's status and counters. The same data
+is available at `GET /v1/fleet/cameras/{camera_id}/workflow/nodes/{node_id}/debug`.
+Test mode remains a deployment-wide setting; the Debug section offers the
+existing **Use real analysis** action. Design notes:
+[workflow-composable-modules.md](workflow-composable-modules.md).
+
 ## Camera and group switches
 
 Camera groups display the applied graph read-only. Select **All cameras** for
