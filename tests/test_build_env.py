@@ -339,6 +339,12 @@ def test_pack_check_accepts_identical_namespace_files_and_conda_installer(tmp_pa
     report = be.verify_pack(_pack_tar(tmp_path / "ns.tar.gz", members))
     assert report["conda_installer_rewrites"] == 1
     assert report["declared_shared_files"] == {}
-    members[SP + "packaging-26.3.dist-info/INSTALLER"] = b"other\n"
-    with pytest.raises(RuntimeError, match="INSTALLER: bytes differ"):
-        be.verify_pack(_pack_tar(tmp_path / "bad.tar.gz", members))
+    # conda-forge's noarch pip ships INSTALLER as b"conda" without a newline.
+    members[SP + "packaging-26.3.dist-info/INSTALLER"] = b"conda"
+    report = be.verify_pack(_pack_tar(tmp_path / "nonl.tar.gz", members))
+    assert report["conda_installer_rewrites"] == 1
+    for other in (b"other\n", b"conda \n", b"CONDA\n"):
+        members[SP + "packaging-26.3.dist-info/INSTALLER"] = other
+        with pytest.raises(RuntimeError, match="INSTALLER: bytes differ"):
+            bad = tmp_path / f"bad-{len(other)}-{other[:1].decode()}.tar.gz"
+            be.verify_pack(_pack_tar(bad, members))

@@ -195,7 +195,12 @@ def _record_digest(data: bytes) -> str:
     return base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
 
 
-_CONDA_INSTALLER = _record_digest(b"conda\n")
+# conda writes "conda" into INSTALLER over pip's "pip\n". conda-forge's noarch
+# pip package ships it as exactly b"conda" (no newline; seen with
+# pip-26.2.2-pyh145f28c_2); other paths write b"conda\n". Only these bytes.
+_CONDA_INSTALLER = frozenset(
+    {_record_digest(b"conda\n"), _record_digest(b"conda")}
+)
 
 
 def verify_pack(tarball):
@@ -311,7 +316,8 @@ def verify_pack(tarball):
         if any(matches):
             placeholder += bool(has_placeholder)
             continue
-        if path.endswith(".dist-info/INSTALLER") and got["sha256"] == _CONDA_INSTALLER:
+        installer = path.endswith(".dist-info/INSTALLER")
+        if installer and got["sha256"] in _CONDA_INSTALLER:
             conda_installer += 1
             continue
         problems.append(f"{path}: bytes differ from {sorted(names)} RECORD")
