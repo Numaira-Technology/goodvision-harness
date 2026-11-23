@@ -67,7 +67,9 @@ def test_upload_failure_names_the_error_code_but_not_its_message(upload):
     env, tar, client = upload
 
     class AccessDenied(Exception):
-        response = {"Error": {"Code": "AccessDenied", "Message": "SECRET detail"}}
+        def __init__(self, message):
+            super().__init__(message)
+            self.response = {"Error": {"Code": "AccessDenied", "Message": "SECRET"}}
 
     def deny(**kw):
         raise AccessDenied("SECRET in SDK error")
