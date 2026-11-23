@@ -460,7 +460,10 @@ def test_unpack_executes_script_with_stale_shebang(tmp_path):
         ("Linux", "x86_64", "8.9\n9.0", "CUDA Version: 12.8", False),
         ("Linux", "x86_64", "", "CUDA Version: 12.8", False),
         ("Linux", "x86_64", "8.9", "CUDA Version: 12.7", False),
-        ("Linux", "x86_64", "8.9", "KMD Version: 615.78.08     CUDA UMD Version: 13.4", True),
+        (
+            "Linux", "x86_64", "8.9",
+            "KMD Version: 615.78.08     CUDA UMD Version: 13.4", True,
+        ),
         ("Linux", "x86_64", "8.9", "CUDA UMD Version: 12.6", False),
         ("Linux", "x86_64", "8.9", "KMD Version: 615.78.08", False),
         ("Linux", "x86_64", "8.9", "no CUDA info", False),

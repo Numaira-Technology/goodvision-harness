@@ -20,6 +20,7 @@ import sys
 import tarfile
 import tempfile
 import time
+from collections.abc import Mapping
 from email.parser import Parser
 from pathlib import Path
 
@@ -436,6 +437,31 @@ def _pack(conda, prefix, out):
     _run([base_python, "-I", "-m", "conda_pack.cli", "-p", str(prefix), "-o", str(out)])
 
 
+def _upload_failure_category(error):
+    """Return a fixed safe label; never format arbitrary SDK fields or types."""
+    categories = {
+        "AccessDenied": "AccessDenied",
+        "InvalidAccessKeyId": "InvalidAccessKeyId",
+        "SignatureDoesNotMatch": "SignatureDoesNotMatch",
+        "PreconditionFailed": "PreconditionFailed",
+        "ConditionalRequestConflict": "ConditionalRequestConflict",
+        "RequestTimeout": "RequestTimeout",
+        "SlowDown": "SlowDown",
+        "InternalError": "InternalError",
+        "ServiceUnavailable": "ServiceUnavailable",
+    }
+    try:
+        response = getattr(error, "response", None)
+        detail = response.get("Error") if isinstance(response, Mapping) else None
+        code = detail.get("Code") if isinstance(detail, Mapping) else None
+        if type(code) is str:
+            return categories.get(code, "unclassified error")
+    except Exception:
+        # A malformed SDK exception must not mask the uncertain write outcome.
+        pass
+    return "unclassified error"
+
+
 def _upload(env_spec, name, tarball, compat, repo_rev):
     """Create content-addressed objects conditionally; never delete after a timeout.
 
@@ -488,12 +514,10 @@ def _upload(env_spec, name, tarball, compat, repo_rev):
             Body=json.dumps(manifest, indent=2).encode(),
         )
     except Exception as error:
-        # Name the failure (e.g. AccessDenied from a read-only key) without
-        # echoing request details or credentials.
-        code = getattr(error, "response", {}).get("Error", {}).get("Code", "")
+        category = _upload_failure_category(error)
         raise RuntimeError(
             f"create-only upload failed or is uncertain "
-            f"({type(error).__name__}{': ' + code if code else ''}); inspect {key} "
+            f"({category}); inspect {key} "
             f"and {manifest_key}; "
             "existing objects were not deleted or overwritten"
         ) from None

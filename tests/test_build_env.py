@@ -5,6 +5,8 @@ import io
 import json
 import os
 import tarfile
+import traceback
+from collections import UserDict
 
 import pytest
 
@@ -75,9 +77,133 @@ def test_upload_failure_names_the_error_code_but_not_its_message(upload):
         raise AccessDenied("SECRET in SDK error")
 
     client.put_object = deny
-    with pytest.raises(RuntimeError, match="AccessDenied: AccessDenied") as exc:
+    with pytest.raises(RuntimeError, match=r"uncertain \(AccessDenied\)") as exc:
         be._upload(env, "videojev", tar, env["compat"], "a/b@revision")
     assert "SECRET" not in str(exc.value)
+
+
+@pytest.mark.parametrize("fail_at", [1, 2])
+@pytest.mark.parametrize(
+    "response",
+    [
+        None, [], "SECRET response", {}, {"Error": None}, {"Error": []},
+        {"Error": "SECRET detail"}, {"Error": {}},
+        {"Error": {"Code": None}}, {"Error": {"Code": 123}},
+        {"Error": {"Code": []}}, {"Error": {"Code": {"SECRET": True}}},
+        {"Error": {"Code": "SECRET arbitrary code"}},
+        {"Error": {"Code": "AccessDenied\nSECRET"}},
+    ],
+)
+def test_upload_normalizes_malformed_sdk_errors(upload, fail_at, response):
+    env, tar, client = upload
+    error = type("SECRETExceptionClass", (Exception,), {})("SECRET SDK message")
+    error.response = response
+    original = client.put_object
+
+    def fail(**kw):
+        original(**kw)
+        if len(client.calls) == fail_at:
+            raise error
+
+    client.put_object = fail
+    with pytest.raises(RuntimeError, match=r"uncertain \(unclassified error\)") as exc:
+        be._upload(env, "videojev", tar, env["compat"], "a/b@revision")
+    assert len(client.calls) == fail_at  # no retry, rollback or extra write
+    assert exc.value.__suppress_context__
+    assert "SECRET" not in "".join(traceback.format_exception(exc.value))
+    assert "existing objects were not deleted or overwritten" in str(exc.value)
+
+
+@pytest.mark.parametrize("code", ["PreconditionFailed", "RequestTimeout"])
+def test_upload_accepts_known_codes_from_mapping_responses(upload, code):
+    env, tar, client = upload
+    error = RuntimeError("SECRET")
+    error.response = UserDict(Error=UserDict(Code=code, Message="SECRET"))
+
+    def fail(**kw):
+        raise error
+
+    client.put_object = fail
+    with pytest.raises(RuntimeError, match=rf"uncertain \({code}\)") as exc:
+        be._upload(env, "videojev", tar, env["compat"], "a/b@revision")
+    assert "SECRET" not in "".join(traceback.format_exception(exc.value))
+
+
+@pytest.mark.parametrize("broken", ["attribute", "response", "detail", "code"])
+def test_upload_normalizes_sdk_accessors_without_echoing_secondary_errors(
+    upload, broken
+):
+    env, tar, client = upload
+
+    class BrokenMapping(UserDict):
+        def get(self, *args):
+            raise ValueError("SECRET secondary error")
+
+    class Code(str):
+        def __hash__(self):
+            raise ValueError("SECRET code hash")
+
+    class SDKError(Exception):
+        @property
+        def response(self):
+            if broken == "attribute":
+                raise ValueError("SECRET response property")
+            if broken == "response":
+                return BrokenMapping()
+            if broken == "detail":
+                return {"Error": BrokenMapping()}
+            return {"Error": {"Code": Code("AccessDenied")}}
+
+    def fail(**kw):
+        raise SDKError("SECRET original error")
+
+    client.put_object = fail
+    with pytest.raises(RuntimeError, match=r"uncertain \(unclassified error\)") as exc:
+        be._upload(env, "videojev", tar, env["compat"], "a/b@revision")
+    assert "SECRET" not in "".join(traceback.format_exception(exc.value))
+
+
+@pytest.mark.parametrize("response", [None, {"Error": {"Code": "SECRET"}}])
+def test_main_preserves_pack_after_uncertain_manifest_upload(
+    tmp_path, monkeypatch, capsys, response
+):
+    env = copy.deepcopy(registry.env_of("videojev"))
+    env["unpack_to"] = str(tmp_path / "prefix")
+    out = tmp_path / "new.tar.gz"
+    client, stored = FakeR2(), {}
+    error = RuntimeError("SECRET SDK message")
+    error.response = response
+    original = client.put_object
+
+    def put(**kw):
+        if hasattr(kw["Body"], "read"):
+            stored[kw["Key"]] = kw["Body"].read()
+        original(**kw)
+        if len(client.calls) == 2:
+            raise error
+
+    client.put_object = put
+    monkeypatch.setattr(be.registry, "env_of", lambda name: env)
+    monkeypatch.setattr(be.env_source, "check_compatibility", lambda env: None)
+    monkeypatch.setattr(be, "_ensure_miniconda", lambda *a: tmp_path / "conda")
+    monkeypatch.setattr(be, "_build_prefix", lambda *a, **k: _conda_prefix(tmp_path))
+    monkeypatch.setattr(
+        be, "_pack", lambda conda, prefix, tar: _pack_tar(
+            tar, _dist("pip", "26.2.2", {"pip/__init__.py": b"# synthetic"})
+        )
+    )
+    monkeypatch.setattr(
+        be, "_run", lambda *a, **k: pytest.fail("external process executed")
+    )
+    monkeypatch.setattr(be.model_source, "r2_client", lambda: client)
+    monkeypatch.setenv("R2_BUCKET", "synthetic")
+    with pytest.raises(RuntimeError, match=r"uncertain \(unclassified error\)") as exc:
+        be.main(["--model", "videojev", "--out", str(out)])
+    assert "SECRET" not in "".join(traceback.format_exception(exc.value))
+    assert not capsys.readouterr().out  # no successful publication reported
+    assert out.is_file() and (tmp_path / "prefix").is_dir()
+    assert len(client.calls) == 2
+    assert stored == {f"envs/videojev/{be._sha256(out)}.tar.gz": out.read_bytes()}
 
 
 def test_large_pack_fails_before_upload(upload, monkeypatch):
