@@ -142,13 +142,24 @@ def template(value: Any, vocabulary: EventVocabulary | None = None) -> dict:
         or any(ord(c) < 32 and c not in "\n\t" for c in description)
     ):
         _fail(f"template description must be text under {MAX_DESCRIPTION + 1} chars")
+    graph = strip_deployment(value.get("graph", {}))
+    # Video sources are unbound slots: the canvas binds each to a distinct camera
+    # when a workflow is created. Validate as if bound, so several sources pass
+    # the one-channel-per-source rule, then store them unbound again.
+    bound = copy.deepcopy(graph)
+    sources = [
+        n for n in bound.get("nodes", []) if isinstance(n, dict)
+        and n.get("type") == "source"
+    ]
+    for index, node in enumerate(sources, 1):
+        if not isinstance(node.get("config", {}), dict):
+            _fail("invalid component configuration")
+        node.setdefault("config", {})["camera_id"] = f"camera{index:02d}"
     return {
         "id": _identifier(value.get("id"), "template id"),
         "name": _name(value.get("name"), "template name"),
         "description": description.strip(),
-        "graph": validate_graph(
-            strip_deployment(value.get("graph", {})), vocabulary=vocabulary
-        ),
+        "graph": strip_deployment(validate_graph(bound, vocabulary=vocabulary)),
     }
 
 

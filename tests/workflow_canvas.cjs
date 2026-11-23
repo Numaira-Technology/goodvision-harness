@@ -879,7 +879,7 @@ test('templates start a new workflow and the current graph saves as a template',
  assert.match(app.renderDialog(),/use-template/);assert.doesNotMatch(app.renderDialog(),/delete-template/);
  await app.handleAction('use-template',{dataset:{id:template.id}});
  assert.equal(app.dialog.kind,'new-workflow');assert.equal(app.dialog.name,template.name);
- assert.deepEqual(app.dialog.graph,template.graph);assert.notEqual(app.dialog.graph,template.graph);
+ assert.equal(app.dialog.graph.nodes[0].config.camera_id,'camera01');assert.equal(template.graph.nodes[0].config.camera_id,undefined);
  app.dialog=null;
  await app.handleAction('save-template',{dataset:{}});
  assert.equal(app.dialog.kind,'save-template');app.dialog.name='Store';
@@ -900,8 +900,8 @@ test('System 1 and Decision 3 are peer blocks; only object presence picks its re
  app.graph.nodes.push(events,objects);
  app.graph.edges.push({id:'in-o',from_node:'input',from_port:'frames',to_node:'objects',to_port:'frames'},{id:'out-o',from_node:'objects',from_port:'objects',to_node:'out',to_port:'objects'});
  app.selected='events';assert.doesNotMatch(app.renderInspector(),/data-wc-engine/);
- app.selected='objects';const html=app.renderInspector();
- assert.match(html,/data-wc-engine/);assert.match(html,/value="decision3"/);assert.match(html,/value="system1" selected/);
+ // Object presence has one recognizer today (Decision 3 needs its own adapter).
+ app.selected='objects';assert.doesNotMatch(app.renderInspector(),/data-wc-engine/);
  const edges=clone(app.graph.edges);
  switchEngine(objects,'decision3');
  assert.equal(objects.config.engine,'decision3');assert.equal(objects.config.name,'Object presence');
@@ -929,4 +929,21 @@ test('benchmark-recipe presets: argmax, fixed question, no mixing with custom ob
  assert.ok(!validateGraph(graph).includes('An object block cannot mix benchmark-recipe and custom objects.'));
  graph.nodes[1].config.objects[0].gate=0.9;
  assert.ok(validateGraph(graph).includes('Benchmark-recipe objects decide by argmax; leave the gate empty.'));
+});
+
+test('template sources bind to distinct cameras and template delete accepts 204',async()=>{
+ const app=appFixture();
+ app.data.cameras=[{id:'camera01',enabled:true},{id:'camera02',enabled:true},{id:'camera03',enabled:false}];
+ app.data.document.workflows[0].graph.nodes[0].config.camera_id='camera01';
+ const two={nodes:[node('a','source'),node('b','source'),node('out','output')],edges:[]};
+ const bound=app.bindTemplate(two);
+ assert.deepEqual(bound.nodes.filter(n=>n.type==='source').map(n=>n.config.camera_id),['camera02','camera01']);
+ assert.equal(two.nodes[0].config.camera_id,undefined);
+ app.data.cameras=[{id:'camera01',enabled:true}];
+ assert.equal(app.bindTemplate(two),null);
+ const one=app.bindTemplate({nodes:[node('a','source')],edges:[]});assert.equal(one.nodes[0].config.camera_id,'camera01');
+ app.data.cameras=[];assert.equal(app.bindTemplate({nodes:[node('a','source')],edges:[]}).nodes[0].config.camera_id,undefined);
+ const real=Object.create(WorkflowCanvas.prototype);
+ real.fetch=async()=>({ok:true,status:204,json:async()=>{throw new Error('no body');}});
+ assert.equal(await real.request('/v1/workflow-templates/x',{method:'DELETE'}),null);
 });

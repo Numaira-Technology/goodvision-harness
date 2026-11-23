@@ -513,6 +513,24 @@ def compile_graph(
             for e in graph["edges"]
             if e["from_node"] in reachable and e["to_node"] in active
         )
+    # A node runs for this camera only while each required input comes from a
+    # node that runs for this camera: an optional input (e.g. Bbox tracks from
+    # another camera's source) never stands in for the frames connection.
+    changed = True
+    while changed:
+        changed = False
+        for nid in sorted(reachable):
+            if any(
+                not any(
+                    e["to_node"] == nid
+                    and e["to_port"] == port
+                    and e["from_node"] in reachable
+                    for e in graph["edges"]
+                )
+                for port in required_inputs(nodes[nid]["type"])
+            ):
+                reachable.discard(nid)
+                changed = True
     outputs, consumed = [], set()
     for nid, node in nodes.items():
         if node["type"] != "output" or nid not in reachable:
