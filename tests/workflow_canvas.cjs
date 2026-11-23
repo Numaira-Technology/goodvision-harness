@@ -891,23 +891,21 @@ test('templates start a new workflow and the current graph saves as a template',
  }finally{if(previous===undefined)delete globalThis.requestAnimationFrame;else globalThis.requestAnimationFrame=previous;}
 });
 
-test('engine dropdown switches System 1 to Decision 3 in place and keeps connections',()=>{
+test('System 1 and Decision 3 are peer blocks; only object presence picks its recognizer in the node',()=>{
  const {switchEngine,palette}=require('../src/goodvision_harness/assets/workflow_canvas.js');
- assert.equal(palette.decision3.engine,'decision3');
+ assert.equal(palette.decision3.engine,'decision3');assert.equal(palette.system1.engine,'system1');
  const app=appFixture();
- const events={id:'events',type:'events',x:0,y:0,enabled:true,config:{name:'System 1 recognition',engine:'system1',execution_mode:'server',service_url:'http://gpu:8097',features:['smoking','fight'],event_sensitivities:{smoking:'standard'}}};
- app.graph.nodes.push(events);app.graph.edges.push({id:'in',from_node:'input',from_port:'frames',to_node:'events',to_port:'frames'},{id:'out-e',from_node:'events',from_port:'events',to_node:'out',to_port:'events'});
- app.selected='events';
- const html=app.renderInspector();
+ const events={id:'events',type:'events',x:0,y:0,enabled:true,config:{name:'System 1 recognition',engine:'system1',features:['smoking']}};
+ const objects={id:'objects',type:'objects',x:0,y:0,enabled:true,config:{name:'Object presence',engine:'system1',execution_mode:'server',service_url:'http://gpu:8097',objects:[{id:'knife',name:'knife',criterion:'A knife.',gate:0.95}]}};
+ app.graph.nodes.push(events,objects);
+ app.graph.edges.push({id:'in-o',from_node:'input',from_port:'frames',to_node:'objects',to_port:'frames'},{id:'out-o',from_node:'objects',from_port:'objects',to_node:'out',to_port:'objects'});
+ app.selected='events';assert.doesNotMatch(app.renderInspector(),/data-wc-engine/);
+ app.selected='objects';const html=app.renderInspector();
  assert.match(html,/data-wc-engine/);assert.match(html,/value="decision3"/);assert.match(html,/value="system1" selected/);
  const edges=clone(app.graph.edges);
- switchEngine(events,'decision3',[]);
- assert.equal(events.config.engine,'decision3');assert.equal(events.config.name,'Decision 3 recognition');
- assert.equal(events.config.service_url,undefined);assert.equal(events.config.execution_mode,undefined);
- assert.deepEqual(events.config.features,['smoking','fight']);
+ switchEngine(objects,'decision3');
+ assert.equal(objects.config.engine,'decision3');assert.equal(objects.config.name,'Object presence');
+ assert.equal(objects.config.service_url,undefined);assert.equal(objects.config.execution_mode,undefined);
  assert.deepEqual(app.graph.edges,edges);
- events.config.name='Gate camera';switchEngine(events,'system1',[]);assert.equal(events.config.name,'Gate camera');
- const objects={id:'objects',type:'objects',config:{name:'Object presence',engine:'system1'}};
- switchEngine(objects,'decision3');assert.equal(objects.config.name,'Object presence');
- const summary=appFixture();summary.selected='summary';assert.doesNotMatch(summary.renderInspector(),/data-wc-engine/);
+ app.add('decision3');assert.equal(app.graph.nodes.at(-1).config.engine,'decision3');assert.equal(app.graph.nodes.at(-1).type,'events');
 });

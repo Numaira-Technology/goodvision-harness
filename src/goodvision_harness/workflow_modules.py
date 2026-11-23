@@ -133,6 +133,20 @@ CONTRACT = {
     },
 }
 ACCEPTS = {("objects", "tracks"): (("tracking", "bbox"),)}
+# Task modules (object presence, summary) ask a task of a recognizer chosen in
+# the node. Every recognizer is its own peer module with its own block, service,
+# health check and debug entry; System 1 and Decision 3 only share transport code.
+TASK_KINDS = ("objects", "summary")
+# How each peer module reports, so a later decision node can consume them alike.
+OUTPUT_CONTRACTS = {
+    "contour": "person_contours",
+    "bbox": "person_boxes",
+    "system1": "native_option_probabilities",
+    "decision3": "native_option_probabilities",
+    "neural": "embedding_margin",
+    "vlm": "generative_json",
+}
+LAYERS = {"tracking": "perception", "face": "perception", "events": "understanding"}
 # Nodes whose debug entry has a per-request record, not only a status line.
 DEBUG_RECORDS = {"objects", "summary", "tracking", "events"}
 
@@ -185,7 +199,21 @@ def module_catalog():
                     for engine in ENGINES.get(kind, ())
                 ],
                 "debug": "records" if kind in DEBUG_RECORDS else "status",
+                "task": kind in TASK_KINDS,
             }
             for kind, spec in CONTRACT.items()
         },
+        "peers": [
+            {
+                "id": engine,
+                "kind": kind,
+                "layer": LAYERS[kind],
+                "name": NAMES[engine],
+                "model": MODELS.get(engine),
+                "local_port": LOCAL_PORTS.get(engine),
+                "output_contract": OUTPUT_CONTRACTS[engine],
+            }
+            for kind in ("tracking", "events")
+            for engine in ENGINES[kind]
+        ],
     }

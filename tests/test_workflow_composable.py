@@ -450,9 +450,33 @@ def test_catalog_lists_switchable_engines_per_slot():
     }
     assert [e["id"] for e in modules["objects"]["engines"]] == ["system1", "decision3"]
     assert modules["summary"]["engines"] == []
+    assert modules["objects"]["task"] is True and modules["events"]["task"] is False
 
 
-def test_switching_system1_to_decision3_keeps_the_same_wiring():
+def test_system1_and_decision3_are_separate_peer_modules():
+    peers = {p["id"]: p for p in module_catalog()["peers"]}
+    assert list(peers) == ["contour", "bbox", "vlm", "system1", "decision3", "neural"]
+    assert peers["system1"]["model"] == "ZhuYuhan/VideoJev-4B"
+    assert peers["decision3"]["model"] == "vllm-sr/d3-nano"
+    assert (peers["system1"]["local_port"], peers["decision3"]["local_port"]) == (
+        8097, 8099,
+    )
+    assert peers["decision3"]["output_contract"] == "native_option_probabilities"
+    assert peers["neural"]["output_contract"] == "embedding_margin"
+    assert peers["vlm"]["output_contract"] == "generative_json"
+    assert peers["bbox"]["layer"] == "perception"
+    # Both may sit on one canvas as separate blocks; Apply still runs one
+    # enabled event module per camera (single native event lane).
+    value = _events_graph("system1")
+    value["nodes"].append({"id": "d3", "type": "events", "config": {
+        "engine": "decision3", "features": ["smoking"]}})
+    value["edges"] += [edge("source", "frames", "d3"), edge("d3", "events", "out")]
+    validate_graph(value)
+    with pytest.raises(WorkflowValidationError, match="only one events"):
+        validate_graph(value, for_apply=True)
+
+
+def test_decision3_module_compiles_like_system1_on_its_own_service():
     system1 = compile_graph(_events_graph("system1"), camera_id="camera01")
     decision3 = compile_graph(_events_graph("decision3"), camera_id="camera01")
     assert decision3["events_engine"] == "decision3"

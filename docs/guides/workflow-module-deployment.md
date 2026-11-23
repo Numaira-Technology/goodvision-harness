@@ -105,7 +105,7 @@ python -m goodvision_harness.module_service neural --host 0.0.0.0 --port 8098
 python -m goodvision_harness.module_service decision3 --host 0.0.0.0 --port 8099
 ```
 
-Decision 3 和 System 1 是同一个原生服务的两种运行时，共用 System 1 的 Python 环境（`.venv-module-system1`，或用 `GOODVISION_DECISION3_PYTHON` 指定）。画布上事件节点和物体存在节点都可以在节点内把引擎切到 Decision 3，连线不变。`compose.modules.yaml` 暂未包含 Decision 3。Decision 3 用来判断物体存在没有验证过，标为实验性。
+Decision 3 和 System 1 是同一个原生服务的两种运行时，共用 System 1 的 Python 环境（`.venv-module-system1`，或用 `GOODVISION_DECISION3_PYTHON` 指定）。画布上 Decision 3 是和 System 1 平级的独立方块；物体存在节点可以在节点内选 Decision 3 回答。`compose.modules.yaml` 暂未包含 Decision 3。Decision 3 用来判断物体存在没有验证过，标为实验性。
 
 每条命令为独立常驻进程，分别使用对应 Python 环境。未安装项目时设置 `PYTHONPATH=src`。
 默认仅监听 `127.0.0.1`，上例显式监听服务器网络接口。通过内网或已有访问代理连接。

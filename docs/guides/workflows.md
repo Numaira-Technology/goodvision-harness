@@ -72,10 +72,12 @@ templates cover three project types: **人员 + 事件** (Bbox and System 1 even
 recognition), **物品检查 / 翻包** (Bbox → Object presence with person crop) and
 **纯总结巡检** (Summary only).
 
-Tracking, event and object blocks have an **Engine** selector. Switching it (for
-example System 1 ↔ Decision 3) keeps the block's connections and clears its
-service address, because each engine runs its own service. Decision 3 uses the
-same native protocol as System 1 on its own local port 8099. **Save as template**
+**Decision 3 recognition** is its own block beside System 1, VLM and neural
+network recognition, with its own service (local port 8099), readiness and
+Debug section. Enable one event recognition block per camera at a time. The
+Object presence block has a **Recognizer** selector (System 1 or Decision 3);
+switching it keeps connections and clears the service address. Decision 3
+answering object questions is experimental and unmeasured. **Save as template**
 stores the current graph without camera channels or service addresses; choose
 cameras and services after creating a workflow from it. Saved templates live in
 `workflow-templates.json` beside the workflow document.

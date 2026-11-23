@@ -55,8 +55,9 @@ BUILTIN = (
         "id": "builtin-person-events",
         "name": "人员 + 事件",
         "description": (
-            "视频源 → YOLO 人框（Bbox）→ 输出；视频源 → 事件识别（System 1，"
-            "可在节点内切换为 Decision 3）→ 输出。需要身份时再加人脸识别。"
+            "视频源 → YOLO 人框（Bbox）→ 输出；视频源 → System 1（VideoJev）"
+            "事件识别 → 输出。可换成同级的 Decision 3、VLM 或 CLIP 模块；"
+            "需要身份时再加人脸识别。"
         ),
         "graph": {
             "nodes": [
