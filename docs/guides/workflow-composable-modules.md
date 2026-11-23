@@ -124,7 +124,7 @@ VideoJev 在 Harness 里有两个入口，处理方式不同：
   - 第二期有了决策节点后，前两个模板改成经过决策节点再到输出（例如「有人 + 有刀 = 告警」）。
 - 第一版里已写好的「VideoJev + YOLO 基础盘」并入「物品检查 / 翻包」，不再单列。
 - **自定义模板**：给客户配好的图可以在画布上「另存为模板」，存在数据目录的 `workflow-templates.json`，单独文件、带上限（64 个、单个 2 MiB），**不进**工作流文档，因此不改 `schema_version`，旧版本读文档不受影响。
-- **视频源是可重新绑定的占位**：模板里的视频源不带通道号，多路模板保存时按占位校验。从模板新建时，画布给每个视频源分配一路不同的已启用通道（优先没被其他工作流用的）；通道不够就提示，不创建。
+- **视频源是可重新绑定的占位**：模板里的视频源不带通道号，多路模板保存时按占位校验。从模板新建时，画布给每个视频源分配一路已启用、已停止分析且未分配给其他工作流的通道。单路没有合适通道时可先留空；多路通道不够就提示，不创建。
 - **从模板新建**：生成新的工作流，名字可改。新建后和手工搭的图一样，需要自己选摄像头、填服务地址、Apply。
 - 模板保存和实例化都走现有的 `validate_graph`，不合法的模板存不进去。
 
@@ -199,7 +199,7 @@ VideoJev 在 Harness 里有两个入口，处理方式不同：
 | 人框来源：真实运行按源帧时间从 Bbox 取框；测试模式用一个固定的模拟人框 | `workflow_runtime._start_workflow_objects` |
 | 模板：内置「人员 + 事件」「物品检查 / 翻包」「纯总结巡检」、另存 / 删除、去掉摄像头和服务地址 | `workflow_templates.py`、`workflow_routes.py` |
 | Decision 3 独立模块：模型 `vllm-sr/d3-nano`，本地端口 8099，复用 System 1 的 Python 环境；原生事件通道和单帧测试使用 `Decision3Inspector`；目录 `peers` 列出所有识别模块及其输出形式 | `workflow_modules.py`、`module_service.py`、`module_services.py`、`workflow_runtime.py` |
-| 画布：模块库新增 Decision 3 方块（和 System 1 平级）；任务模块有多个识别模型可选时才出现「识别模型」下拉（物体存在目前只有 System 1）；从模板新建时给每个视频源分配一路不同的视频通道 | `assets/workflow_canvas.js` |
+| 画布：模块库新增 Decision 3 方块（和 System 1 平级）；任务模块有多个识别模型可选时才出现「识别模型」下拉（物体存在目前只有 System 1）；从模板新建时只绑定可用的独立视频通道 | `assets/workflow_canvas.js` |
 | 按摄像头编译：一个模块只有在必需的 `frames` 来自本摄像头时才运行，可选的人框输入不能代替它 | `workflows.compile_graph` |
 | 调试接口：`GET /v1/workflow/nodes/{node_id}/debug?limit=`（1–200，默认 20），fleet 按摄像头转发 | `workflow_runtime.workflow_node_debug`、`service.py`、`fleet_outputs.py` |
 | 画布：端口表改读服务端目录；物体节点的 `tracks` 输入只列 Bbox；「从模板新建…」「另存为模板」；模块侧栏「调试」分区 | `assets/workflow_canvas.js` |

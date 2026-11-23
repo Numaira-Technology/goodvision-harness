@@ -555,3 +555,110 @@ def test_local_decision3_module_runs_the_videojev_service_runtime(
     assert argv[1:3] == ["--runtime", "decision3"]
     assert argv[argv.index("--port") + 1] == "8099"
     assert argv[argv.index("--result-log") + 1].endswith("decision3-results.jsonl")
+
+
+def test_decision3_native_preview_preserves_irregular_source_times_at_fixed_model_fps(
+    monkeypatch, tmp_path,
+):
+    from types import SimpleNamespace
+
+    import httpx
+
+    from goodvision_harness import decision3_runtime, videojev_model, videojev_service
+    from goodvision_harness.event_registry import BUILTIN_VOCABULARY
+    from goodvision_harness.workflow_runtime import WorkflowRuntimeMixin
+
+    class CpuContractRuntime:
+        prepare = decision3_runtime.Decision3Runtime.prepare
+        validate_response = decision3_runtime.Decision3Runtime.validate_response
+
+        def __init__(self):
+            self.metadata = {
+                "model": decision3_runtime.MODEL,
+                "revision": decision3_runtime.REVISION,
+            }
+
+        def _bind(self, prepared, *_):
+            return prepared
+
+        def predict_prepared(self, _prepared, *, question_template, **_):
+            answers = {}
+            for row in question_template.rows:
+                options = row["options"]
+                answers[row["id"]] = {
+                    "type": "choice", "choice": options[0], "confidence": 1.0,
+                    "probabilities": {
+                        option: float(i == 0) for i, option in enumerate(options)
+                    },
+                }
+            return {"answers": answers}, {}
+
+    scorer = videojev_service.Scorer(
+        CpuContractRuntime, tmp_path / "preview.jsonl",
+        max_pixels=decision3_runtime.MAX_PIXELS,
+    )
+    seen = []
+
+    def route(request):
+        body = json.loads(request.content)
+        seen.append((body["fps"], body["frame_times"]))
+        try:
+            value = scorer.submit(body).result(timeout=3)
+        except videojev_service.WindowError as error:
+            return httpx.Response(500, json={"error": error.code})
+        return httpx.Response(200, json=value)
+
+    monkeypatch.setattr(
+        videojev_model, "create_vlm_http_client",
+        lambda **_: httpx.AsyncClient(transport=httpx.MockTransport(route)),
+    )
+    runtime = WorkflowRuntimeMixin()
+    runtime.dry_run = False
+    runtime.source_id = "source"
+    runtime._generation = 1
+    runtime._workflow_operation = 1
+    runtime.config = SimpleNamespace(runtime=SimpleNamespace(scene_timeout_seconds=4))
+    runtime._event_vocabulary = lambda: BUILTIN_VOCABULARY
+    runtime._workflow_prepare_modules = lambda _: None
+    connection = SimpleNamespace(
+        status=lambda: {"connected": True, "connection_id": "c"},
+    )
+    jpeg = _jpeg(32, 32)
+    snapshot = SimpleNamespace(
+        connection_id="c", timestamp_seconds=1.0,
+        source_frame_sequence=2, jpeg_bytes=jpeg,
+    )
+    plan = {
+        "events_node_id": "events", "events_engine": "decision3",
+        "events_service_url": "http://test.invalid:8099",
+        "features": ["smoking"], "event_sensitivities": {},
+    }
+    try:
+        scorer.wait_ready()
+        result = runtime._workflow_native_event_test(
+            plan, connection, snapshot, {"stream_session_id": "s"},
+            [(1, 0.52, 32, 32, jpeg)],
+        )
+    finally:
+        scorer.shutdown()
+    assert result["state"] == "completed"
+    assert result["observations"] == [
+        {"event_label": "smoking", "detected": True, "confidence": 1.0}
+    ]
+    assert seen == [(2.0, [0.52, 1.0])]
+
+
+@pytest.mark.parametrize("graph", [None, [], {"nodes": [None]}, {"nodes": None}])
+def test_malformed_template_graph_returns_a_validation_error(
+    monkeypatch, tmp_path, graph,
+):
+    from fastapi.testclient import TestClient
+    from test_workflow_routes import workflow_app
+
+    app = workflow_app(monkeypatch, tmp_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        value = client.post(
+            "/v1/workflow-templates", json={"name": "invalid", "graph": graph},
+        )
+        assert value.status_code == 400
+        assert len(client.get("/v1/workflow-templates").json()["templates"]) == 3

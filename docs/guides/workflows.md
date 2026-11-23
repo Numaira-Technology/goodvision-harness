@@ -79,8 +79,9 @@ presence is answered by System 1 only; Decision 3 needs its own object request
 and response adapter first.
 
 Template video sources are unbound slots. Creating a workflow from a template
-binds each source to a distinct enabled camera channel, preferring channels no
-workflow uses; a multi-source template needs that many channels. **Save as template**
+uses distinct enabled channels with stopped analysis and no workflow assignment.
+A single source can stay unbound; a multi-source template needs enough eligible
+channels before it can be created. **Save as template**
 stores the current graph without camera channels or service addresses; choose
 cameras and services after creating a workflow from it. Saved templates live in
 `workflow-templates.json` beside the workflow document.

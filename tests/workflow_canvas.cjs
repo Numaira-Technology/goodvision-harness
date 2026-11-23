@@ -869,6 +869,7 @@ test('templates start a new workflow and the current graph saves as a template',
  const previous=globalThis.requestAnimationFrame;globalThis.requestAnimationFrame=callback=>{callback();return 0;};
  try{
  const app=appFixture();app.el.querySelector=()=>null;
+ app.data.cameras.push({id:'camera02',enabled:true,status:{analysis_state:'idle'}});
  const template={id:'builtin-videojev-yolo',name:'VideoJev + YOLO 基础盘',description:'d',builtin:true,graph:{nodes:[node('source','source')],edges:[]}};
  const calls=[];
  app.request=async(url,options={})=>{calls.push([url,options.method||'GET',options.body&&JSON.parse(options.body)]);return url==='/v1/workflow-templates'&&!options.method?{templates:[template]}:{};};
@@ -879,7 +880,7 @@ test('templates start a new workflow and the current graph saves as a template',
  assert.match(app.renderDialog(),/use-template/);assert.doesNotMatch(app.renderDialog(),/delete-template/);
  await app.handleAction('use-template',{dataset:{id:template.id}});
  assert.equal(app.dialog.kind,'new-workflow');assert.equal(app.dialog.name,template.name);
- assert.equal(app.dialog.graph.nodes[0].config.camera_id,'camera01');assert.equal(template.graph.nodes[0].config.camera_id,undefined);
+ assert.equal(app.dialog.graph.nodes[0].config.camera_id,'camera02');assert.equal(template.graph.nodes[0].config.camera_id,undefined);
  app.dialog=null;
  await app.handleAction('save-template',{dataset:{}});
  assert.equal(app.dialog.kind,'save-template');app.dialog.name='Store';
@@ -933,17 +934,72 @@ test('benchmark-recipe presets: argmax, fixed question, no mixing with custom ob
 
 test('template sources bind to distinct cameras and template delete accepts 204',async()=>{
  const app=appFixture();
- app.data.cameras=[{id:'camera01',enabled:true},{id:'camera02',enabled:true},{id:'camera03',enabled:false}];
+ const camera=(id,enabled=true)=>({id,enabled,status:{analysis_state:'idle'}});
+ app.data.cameras=[camera('camera01'),camera('camera02'),camera('camera03',false)];
+ app.data.document.groups=[];
  app.data.document.workflows[0].graph.nodes[0].config.camera_id='camera01';
  const two={nodes:[node('a','source'),node('b','source'),node('out','output')],edges:[]};
  const bound=app.bindTemplate(two);
  assert.deepEqual(bound.nodes.filter(n=>n.type==='source').map(n=>n.config.camera_id),['camera02','camera01']);
  assert.equal(two.nodes[0].config.camera_id,undefined);
- app.data.cameras=[{id:'camera01',enabled:true}];
+ app.data.cameras=[camera('camera01')];
  assert.equal(app.bindTemplate(two),null);
  const one=app.bindTemplate({nodes:[node('a','source')],edges:[]});assert.equal(one.nodes[0].config.camera_id,'camera01');
  app.data.cameras=[];assert.equal(app.bindTemplate({nodes:[node('a','source')],edges:[]}).nodes[0].config.camera_id,undefined);
  const real=Object.create(WorkflowCanvas.prototype);
  real.fetch=async()=>({ok:true,status:204,json:async()=>{throw new Error('no body');}});
  assert.equal(await real.request('/v1/workflow-templates/x',{method:'DELETE'}),null);
+});
+
+test('a single-source template stays editable when the only camera is in active use',async()=>{
+ const app=appFixture();app.el.querySelector=()=>null;app.fit=()=>{};
+ const previous=globalThis.requestAnimationFrame;globalThis.requestAnimationFrame=callback=>{callback();return 0;};
+ try{
+  app.data.cameras[0].status={analysis_state:'running'};
+  const template={id:'single',name:'Single',graph:{nodes:[node('a','source')],edges:[]}};
+  app.dialog={kind:'templates',items:[template]};
+  const calls=[];
+  app.request=async(url,options)=>{
+   assert.equal(url,'/v1/workflows/command');
+   const request=JSON.parse(options.body);calls.push(request);
+   const data=clone(app.data);data.document.workflows.push({id:'created',name:request.name,graph:request.graph});return data;
+  };
+  await app.handleAction('use-template',{dataset:{id:template.id}});
+  assert.equal(app.dialog.kind,'new-workflow');
+  await app.handleAction('confirm-new-workflow',{});
+  assert.equal(calls.length,1);assert.equal(calls[0].action,'create_workflow');
+  assert.equal(calls[0].graph.nodes[0].config.camera_id,undefined);
+  assert.equal(app.workflowId,'created');assert.equal(app.editLocked(),false);
+  assert.deepEqual(app.group.camera_ids,['camera01']);assert.equal(app.group.workflow_id,'workflow-1');
+ }finally{if(previous===undefined)delete globalThis.requestAnimationFrame;else globalThis.requestAnimationFrame=previous;}
+});
+
+test('multi-source template uses idle unassigned channels and rechecks before save',async()=>{
+ const app=appFixture();app.el.querySelector=()=>null;app.fit=()=>{};
+ const previous=globalThis.requestAnimationFrame;globalThis.requestAnimationFrame=callback=>{callback();return 0;};
+ try{
+  const camera=(id,status={analysis_state:'idle'},enabled=true)=>({id,status,enabled});
+  app.data.cameras=[camera('camera01'),camera('camera02',{analysis_state:'running'}),camera('camera03',null),camera('camera04',undefined,false),camera('camera05'),camera('camera06')];
+  const template={id:'multi',name:'Multi',graph:{nodes:[node('a','source'),node('b','source')],edges:[]}};
+  app.dialog={kind:'templates',items:[template]};
+  const calls=[];
+  app.request=async(url,options)=>{
+   assert.equal(url,'/v1/workflows/command');
+   const request=JSON.parse(options.body);calls.push(request);
+   const data=clone(app.data);data.document.workflows.push({id:'created',name:request.name,graph:request.graph});return data;
+  };
+  await app.handleAction('use-template',{dataset:{id:template.id}});
+  assert.equal(app.dialog.kind,'new-workflow');
+  assert.deepEqual(app.dialog.graph.nodes.map(n=>n.config.camera_id),['camera05','camera06']);
+  app.data.cameras[5].status={analysis_state:'idle',session_start_pending:true};
+  await app.handleAction('confirm-new-workflow',{});
+  assert.equal(calls.length,0);assert.equal(app.error,true);
+  assert.match(app.notice,/distinct enabled, stopped, unassigned/);
+  assert.equal(app.dialog.kind,'new-workflow');
+  app.data.cameras.push(camera('camera07'));
+  await app.handleAction('confirm-new-workflow',{});
+  assert.equal(calls.length,1);
+  assert.deepEqual(calls[0].graph.nodes.map(n=>n.config.camera_id),['camera05','camera07']);
+  assert.equal(app.editLocked(),false);
+ }finally{if(previous===undefined)delete globalThis.requestAnimationFrame;else globalThis.requestAnimationFrame=previous;}
 });
