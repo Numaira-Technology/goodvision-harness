@@ -21,10 +21,12 @@ from . import object_presence
 from .event_registry import EventVocabulary
 from .workflows import (
     MAX_DOCUMENT_BYTES,
+    MAX_NODES,
     WorkflowStorageError,
     _bytes,
     _fail,
     _identifier,
+    _list,
     _name,
     _object,
     validate_graph,
@@ -119,10 +121,17 @@ BUILTIN = (
 )
 
 
-def strip_deployment(graph: dict) -> dict:
-    """Remove camera channels and service addresses; keep engines and modes."""
-    graph = copy.deepcopy(graph)
+def strip_deployment(graph: Any) -> dict:
+    """Remove camera channels and service addresses without mutating the input."""
+    graph = _object(graph, {"nodes", "edges"}, "graph")
+    _list(graph.get("nodes", []), MAX_NODES, "nodes")
+    try:
+        graph = copy.deepcopy(graph)
+    except RecursionError:
+        _fail("template graph nesting is too deep")
     for node in graph.get("nodes", []):
+        if not isinstance(node, dict):
+            _fail("invalid node fields")
         config = node.get("config")
         if isinstance(config, dict):
             for key in _DEPLOYMENT_KEYS:
@@ -142,11 +151,10 @@ def template(value: Any, vocabulary: EventVocabulary | None = None) -> dict:
         or any(ord(c) < 32 and c not in "\n\t" for c in description)
     ):
         _fail(f"template description must be text under {MAX_DESCRIPTION + 1} chars")
-    graph = strip_deployment(value.get("graph", {}))
+    bound = strip_deployment(value.get("graph", {}))
     # Video sources are unbound slots: the canvas binds each to a distinct camera
     # when a workflow is created. Validate as if bound, so several sources pass
     # the one-channel-per-source rule, then store them unbound again.
-    bound = copy.deepcopy(graph)
     sources = [
         n for n in bound.get("nodes", []) if isinstance(n, dict)
         and n.get("type") == "source"

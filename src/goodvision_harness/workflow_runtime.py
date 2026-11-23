@@ -1246,7 +1246,12 @@ class WorkflowRuntimeMixin:
                     "Configure the recognition service URL before testing."
                 )
             labels = tuple(label for label in plan["features"] if label != "stranger")
-            delta = selected[-1][1] - selected[0][1]
+            # Decision 3 uses the same fixed 2 FPS model input as its live
+            # lane. Preserve the actual source timestamps in the evidence.
+            delta = (
+                0.5 if plan["events_engine"] == "decision3"
+                else selected[-1][1] - selected[0][1]
+            )
             settings = ModelAPISettings(
                 provider="local", endpoint=native_endpoints(endpoint)[0],
                 timeout_seconds=self.config.runtime.scene_timeout_seconds,
