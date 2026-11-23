@@ -138,17 +138,48 @@ def build(frozen, media, output, step=0.5, split="test"):
     return manifest
 
 
-def verify(bundle):
-    """Check every file against the manifest; return (digest, step)."""
+def verify(bundle, *, split=None):
+    """Verify the sealed plan, config and frames before any service request."""
     bundle = Path(bundle)
     manifest = json.loads((bundle / "live-manifest.json").read_text())
     if manifest.get("kind") != KIND:
         raise ValueError("not a live-spacing bundle")
-    for rel, expected in manifest["files"].items():
+    recorded_split = manifest.get("split")
+    step = manifest.get("step_seconds")
+    if (recorded_split not in ("validation", "test")
+            or (split is not None and split != recorded_split)
+            or type(step) not in (int, float) or not math.isfinite(step) or not 0 < step <= 1):
+        raise ValueError("live bundle split or step differs")
+    files = manifest.get("files")
+    config_name, plan_name = "configs/videojev.json", f"plans/videojev-{recorded_split}.json"
+    if not isinstance(files, dict) or not {config_name, plan_name} <= set(files):
+        raise ValueError("live bundle is missing sealed plan/config")
+    for rel, expected in files.items():
         path = (bundle / rel).resolve()
         if not path.is_relative_to(bundle.resolve()) or file_hash(path) != expected:
             raise ValueError("live bundle file differs: " + rel)
-    return file_hash(bundle / "live-manifest.json"), manifest["step_seconds"]
+    for directory, expected in (("configs", {config_name}), ("plans", {plan_name})):
+        actual = {p.relative_to(bundle).as_posix() for p in (bundle / directory).glob("*.json")}
+        if actual != expected:
+            raise ValueError("live bundle has unrecorded or missing " + directory)
+    plan = json.loads((bundle / plan_name).read_text())
+    config = json.loads((bundle / config_name).read_text())
+    if (plan.get("protocol") != KIND or plan.get("split") != recorded_split
+            or plan.get("step_seconds") != step or plan.get("config_sha256") != digest(config)
+            or manifest.get("units") != len(plan["units"])
+            or manifest.get("questions") != len(plan["questions"])):
+        raise ValueError("live bundle plan identity differs")
+    for fingerprint in (manifest.get("parent_bundle_sha256"), plan.get("parent_plan_sha256")):
+        if (not isinstance(fingerprint, str) or len(fingerprint) != 64
+                or any(c not in "0123456789abcdef" for c in fingerprint)):
+            raise ValueError("live bundle is missing parent fingerprints")
+    for unit in plan["units"]:
+        for frame in unit["frames"]:
+            if files.get(frame["path"]) != frame["sha256"]:
+                raise ValueError("unsealed live bundle frame: " + frame["path"])
+        if digest(request_body(config, unit, bundle, step)) != unit["request_sha256"]:
+            raise ValueError("live bundle request differs: " + unit["id"])
+    return file_hash(bundle / "live-manifest.json"), step
 
 
 def main(argv=None):

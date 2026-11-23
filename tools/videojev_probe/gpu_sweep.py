@@ -284,7 +284,7 @@ def run(args):
     else:
         from tools.videojev_probe.live_bundle import verify as verify_live
 
-        bundle_digest, step = verify_live(bundle)
+        bundle_digest, step = verify_live(bundle, split=args.split)
     plan = json.loads((bundle / "plans" / f"videojev-{args.split}.json").read_text())
     config = json.loads((bundle / "configs" / "videojev.json").read_text())
     health = http_health(url)

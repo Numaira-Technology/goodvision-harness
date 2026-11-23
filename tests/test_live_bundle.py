@@ -88,7 +88,9 @@ def write_live_bundle(tmp_path):
         if path.is_file():
             files[path.relative_to(tmp_path).as_posix()] = file_hash(path)
     (tmp_path / "live-manifest.json").write_text(json.dumps(
-        {"kind": live_bundle.KIND, "step_seconds": 0.5, "files": files}))
+        {"kind": live_bundle.KIND, "step_seconds": 0.5, "split": "test",
+         "parent_bundle_sha256": digest(frozen_plan()), "units": len(plan["units"]),
+         "questions": len(plan["questions"]), "files": files}))
     return plan
 
 
@@ -109,3 +111,68 @@ def test_sweep_sends_live_bodies_for_a_live_bundle(tmp_path):
     tampered = dict(plan["units"][0], request_sha256="0" * 64)
     with pytest.raises(ValueError, match="differs"):
         gpu_sweep.checked_body(CONFIG, tampered, tmp_path)
+
+
+@pytest.mark.parametrize("damage", ["plan", "config", "frame", "extra-plan", "split", "count", "request", "parent"])
+def test_run_rejects_unsealed_live_inputs_before_contacting_service(tmp_path, monkeypatch, damage):
+    plan = write_live_bundle(tmp_path)
+    path = tmp_path / "live-manifest.json"
+    manifest = json.loads(path.read_text())
+    if damage in ("plan", "config"):
+        name = "plans/videojev-test.json" if damage == "plan" else "configs/videojev.json"
+        manifest["files"].pop(name)
+        if damage == "plan":
+            # Reference edits do not change any request fingerprint.
+            plan["questions"][0]["reference"] = "no"
+            (tmp_path / name).write_text(json.dumps(plan))
+    elif damage == "frame":
+        manifest["files"].pop(plan["units"][0]["frames"][0]["path"])
+    elif damage == "extra-plan":
+        (tmp_path / "plans/videojev-validation.json").write_text(json.dumps(plan))
+    elif damage == "split":
+        manifest["split"] = "validation"
+    elif damage == "count":
+        manifest["questions"] += 1
+    elif damage == "parent":
+        manifest.pop("parent_bundle_sha256")
+    else:
+        plan["units"][-1]["request_sha256"] = "0" * 64
+        name = "plans/videojev-test.json"
+        (tmp_path / name).write_text(json.dumps(plan))
+        manifest["files"][name] = file_hash(tmp_path / name)
+    path.write_text(json.dumps(manifest))
+
+    def never(*args):
+        pytest.fail("invalid bundle reached service boundary")
+
+    monkeypatch.setattr(gpu_sweep, "http_health", never)
+    monkeypatch.setattr(gpu_sweep, "http_post", never)
+    with pytest.raises(ValueError):
+        gpu_sweep.main(["run", "--bundle", str(tmp_path), "--label", "invalid-live",
+                        "--output", str(tmp_path / "run")])
+    assert not (tmp_path / "run").exists()
+
+
+def test_run_accepts_a_sealed_live_bundle(tmp_path, monkeypatch):
+    from test_gpu_sweep import health, raw_row, YES, NO
+
+    plan = write_live_bundle(tmp_path)
+    calls = []
+    monkeypatch.setattr(gpu_sweep, "http_health", lambda url: health("RTX 4090", "bf16"))
+
+    def post(url, body):
+        calls.append(body)
+        probs = YES if body["session"] == "test/a" else NO
+        return 200, {"model": CONFIG["model"], "revision": CONFIG["revision"],
+                     "request_id": body["request_id"], "raw": [raw_row("fight", probs)],
+                     "timings": {"server_elapsed_seconds": 0.1}}
+
+    monkeypatch.setattr(gpu_sweep, "http_post", post)
+    gpu_sweep.main(["run", "--bundle", str(tmp_path), "--label", "sealed-live",
+                    "--output", str(tmp_path / "run"), "--warmup", "0"])
+    assert {body["request_id"]: digest(body) for body in calls} == {
+        unit["id"]: unit["request_sha256"] for unit in plan["units"]}
+    assert all(body["fps"] == 2.0 for body in calls)
+    result, rows = gpu_sweep.read_run(tmp_path / "run")
+    assert result["window_step_seconds"] == 0.5
+    assert result["summary"]["accuracy"] == 1.0 and len(rows) == len(plan["units"])

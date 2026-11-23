@@ -76,10 +76,11 @@ def sweep_script(tag):
         "--port 8093 --host 127.0.0.1"
     )
     lines = [f"""set -uo pipefail
-cd {REPO}
-mkdir -p {ROUT}
+failed=0
+cd {REPO} || exit 1
+mkdir -p {ROUT} || exit 1
 one() {{
-  name=$1; q=$2; c=$3; b=$4
+  name=$1; q=$2; c=$3; b=$4; result=0
   echo "=== {tag} $name: starting service"
   {service} --quantization $q --compile $c --gpu-batch-size $b --ready-capacity $b \
     --result-log {ROUT}/service-$name.jsonl > {ROUT}/service-$name.log 2>&1 &
@@ -94,9 +95,9 @@ one() {{
     echo "=== {tag} $name: ready after $((i*3))s; running sweep"
     PYTHONPATH=src:. {BASE}/env/bin/python -m tools.videojev_probe.gpu_sweep run \
       --bundle {RBUNDLE} --url http://127.0.0.1:8093 --label {tag}-$name --output {ROUT}/{tag}-$name --warmup 10 \
-      || echo "=== {tag} $name: sweep failed"
+      || {{ echo "=== {tag} $name: sweep failed"; result=1; }}
   else
-    echo "=== {tag} $name: service not ready"; tail -30 {ROUT}/service-$name.log
+    echo "=== {tag} $name: service not ready"; tail -30 {ROUT}/service-$name.log; result=1
   fi
   # Background jobs of a non-interactive bash ignore SIGINT; stop with TERM, then KILL.
   kill -TERM $pid 2>/dev/null || true
@@ -104,11 +105,13 @@ one() {{
   kill -KILL $pid 2>/dev/null || true
   wait $pid 2>/dev/null || true
   sleep 5
+  return "$result"
 }}
 """]
     for name, q, c, b in CONFIGS:
-        lines.append(f"one {name} {q} {c} {b}")
+        lines.append(f"one {name} {q} {c} {b} || failed=1")
     lines.append(f'echo "=== {tag}: done"')
+    lines.append('exit "$failed"')
     return "\n".join(lines) + "\n"
 
 
