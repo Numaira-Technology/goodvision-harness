@@ -71,7 +71,22 @@ python -m tools.videojev_probe.gpu_sweep compare --baseline <runs>/4090-bf16 --c
 - 默认值在核心类、运行时和服务命令行三处都是 `bf16`。
 - `gpu_sweep`：用合成 bundle 和假服务测试了计分、失败计入分母、请求指纹核对、和 baseline 的比较（答案翻转、延迟比值），以及拒绝不合格 baseline 和不同的服务设置。见 `tests/test_gpu_sweep.py`。
 
-## 还没验证（要上 GPU）
-- FP8 能不能在 4090 上正常加载和推理，包括和 flash-linear-attention、autocast 能否一起工作。
-- 速度。没有 `torch.compile` 时，动态 FP8 每次调用都要额外量化一次激活值，速度可能不升反降。要在同一台机器上先跑 BF16 再跑 FP8，对比结果说了算。
-- 概率漂移。三选一的结果要逐题比较 FP8 和 BF16 的概率。物体节点有 0.95 的门限，FP8 对它的影响也要单独比较。
+## torch.compile 和批量大小（实验开关）
+- **`--compile`：** 可选 `off`（默认，生产）、`mlp` 和 `layers`。
+  - `mlp`：只编译每层的 MLP。31 个模块，序列长度按动态处理。
+  - `layers`：编译整个解码层，共 32 个。遇到 flash-attention 和 Gated DeltaNet 的算子时，dynamo 可能会在那里断图。
+  - 编译在 FP8 量化之后进行，所以也可以和 `--quantization fp8` 一起用。编译模式会写进服务元数据的 `compile` 字段。
+- **批量大小：** 继续用现有的 `--gpu-batch-size` / `--ready-capacity`。
+- **对比规则：**
+  - 编译过的运行不能当默认 baseline。
+  - 批量设置不同的两次运行，只有在 `compare` 时用 `--vary gpu_batch_size ready_capacity` 显式声明后才能比较，声明的差异会写进结果。
+
+## 实测结论（2026-11-22，第一轮）
+**单开 FP8（不编译）不值得用。** 同机对比 BF16：4090 吞吐量 +3%，L40S 反而 −11%；准确率差在 ±3 题以内，属于噪声；显存省 2.5 GB。换卡（4090 → L40S）的提速约 1.1–1.3 倍，而同型号 4090 在不同主机上就差了 19%。各请求的时间主要花在 GPU 满载时的排队，以及语言模型的决策阶段。详细数据见 `docs/validation/evidence/videojev-gpu-sweep-20261122/`。
+
+## 实测结论（2026-11-22，第二轮：compile 和批量）
+同一台 4090 上，和 BF16 b4（不编译）比：**只有 FP8 + `--compile mlp` 有效**，吞吐量 +14%，决策阶段 −21%，请求 P50 −10%，准确率 +1 题。BF16 开 compile（`mlp` 或 `layers`）没有变化；`layers` 模式撞到 dynamo 的重新编译上限，退回 eager 执行。批量 8 反而慢了 4%。在第二台 4090 上复测：吞吐量 +13%，单开 FP8 仍是 ±0%，两台结果一致。用线上 0.5 秒间隔再测：吞吐量 +11%，准确率 +1 题。详见 `docs/validation/evidence/videojev-compile-batch-20261122/`。
+
+## 还没验证
+- 带 torchao 的新环境包；单独测一次启动时间；真实多路实时流；`layers` 模式真正编译成功（需要先处理重新编译问题）。
+- H100 和 A100（需要另打环境包）。

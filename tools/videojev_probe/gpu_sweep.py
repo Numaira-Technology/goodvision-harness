@@ -54,6 +54,8 @@ FIXED_RUNTIME = (
     "torch_interop_threads",
 )
 BASELINE_GPUS = {"RTX 4090", "NVIDIA RTX 4090", "NVIDIA GeForce RTX 4090"}
+# Settings a comparison may vary only when the caller names them (--vary).
+VARIABLE_SETTINGS = ("gpu_batch_size", "ready_capacity")
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -108,6 +110,7 @@ def describe(health):
         "gpu": runtime["gpu"],
         "gpu_total_bytes": runtime.get("gpu_total_bytes"),
         "quantization": runtime["quantization"]["mode"],
+        "compile": (runtime.get("compile") or {"mode": "off"})["mode"],
         "settings": {k: health[k] for k in FIXED_SETTINGS},
         "runtime": {k: runtime[k] for k in FIXED_RUNTIME},
         "versions": runtime["versions"],
@@ -141,8 +144,22 @@ def validate_health(config, health):
     return describe(health)
 
 
+def live_step(bundle):
+    """The window spacing of a live-spacing bundle, or None for a frozen bundle."""
+    manifest = Path(bundle) / "live-manifest.json"
+    if not manifest.is_file():
+        return None
+    return json.loads(manifest.read_text())["step_seconds"]
+
+
 def checked_body(config, unit, bundle):
-    body = request_body(config, unit, bundle)[1]
+    step = live_step(bundle)
+    if step is None:
+        body = request_body(config, unit, bundle)[1]
+    else:
+        from tools.videojev_probe.live_bundle import request_body as live_request_body
+
+        body = live_request_body(config, unit, bundle, step)
     if digest(body) != unit["request_sha256"]:
         raise ValueError("frozen request differs: " + unit["id"])
     return body
@@ -262,7 +279,12 @@ def summarize(plan, config, records, wall_seconds):
 def run(args):
     url = local_url(args.url)
     bundle = Path(args.bundle)
-    bundle_digest = verify_bundle(bundle)
+    if live_step(bundle) is None:
+        bundle_digest, step = verify_bundle(bundle), None
+    else:
+        from tools.videojev_probe.live_bundle import verify as verify_live
+
+        bundle_digest, step = verify_live(bundle, split=args.split)
     plan = json.loads((bundle / "plans" / f"videojev-{args.split}.json").read_text())
     config = json.loads((bundle / "configs" / "videojev.json").read_text())
     health = http_health(url)
@@ -282,6 +304,7 @@ def run(args):
     result = {
         "kind": "videojev-gpu-sweep", "label": args.label, "at": stamp(),
         "bundle_sha256": bundle_digest, "split": args.split,
+        "window_step_seconds": step or 1.0,
         "plan_sha256": digest(plan), "config_sha256": digest(config),
         "sweep_sha256": file_hash(__file__), "service": service, "health": health,
         "warmup_seconds": warmup_seconds,
@@ -295,17 +318,32 @@ def run(args):
 
 
 def is_baseline(service):
-    return service.get("gpu") in BASELINE_GPUS and service.get("quantization") == "bf16"
+    return (
+        service.get("gpu") in BASELINE_GPUS
+        and service.get("quantization") == "bf16"
+        and service.get("compile", "off") == "off"
+    )
 
 
-def compare_runs(baseline, candidate, base_units, cand_units, *, allow_other_baseline=False):
+def compare_runs(
+    baseline, candidate, base_units, cand_units, *,
+    allow_other_baseline=False, vary=(),
+):
+    if set(vary) - set(VARIABLE_SETTINGS):
+        raise ValueError(f"only {VARIABLE_SETTINGS} may be varied")
     for key in ("bundle_sha256", "split", "plan_sha256", "config_sha256", "sweep_sha256"):
         if baseline.get(key) is None or baseline.get(key) != candidate.get(key):
             raise ValueError(f"baseline and candidate differ in {key}")
     if len(baseline["warmup_seconds"]) != len(candidate["warmup_seconds"]):
         raise ValueError("baseline and candidate warm-up counts differ")
     b, c = baseline["service"], candidate["service"]
-    for key in ("settings", "runtime", "cuda_runtime"):
+
+    def held(service):
+        return {k: v for k, v in service["settings"].items() if k not in vary}
+
+    if held(b) != held(c):
+        raise ValueError("baseline and candidate service settings differ")
+    for key in ("runtime", "cuda_runtime"):
         if b[key] != c[key]:
             raise ValueError(f"baseline and candidate service {key} differ")
     b_versions, c_versions = ({k: v for k, v in run["versions"].items() if k != "torchao"}
@@ -352,8 +390,14 @@ def compare_runs(baseline, candidate, base_units, cand_units, *, allow_other_bas
                          "p50_ratio": ratio(sb, sc, "p50"), "p95_ratio": ratio(sb, sc, "p95")}
     return {
         "baseline": {"label": baseline["label"], "gpu": b["gpu"], "quantization": b["quantization"],
+                     "compile": b.get("compile", "off"), "settings": b["settings"],
                      "is_default_baseline": is_baseline(b)},
-        "candidate": {"label": candidate["label"], "gpu": c["gpu"], "quantization": c["quantization"]},
+        "candidate": {
+            "label": candidate["label"], "gpu": c["gpu"],
+            "quantization": c["quantization"], "compile": c.get("compile", "off"),
+            "settings": c["settings"],
+        },
+        "declared_variations": sorted(vary),
         "accuracy": {"baseline": bs["accuracy"], "candidate": cs["accuracy"],
                      "correct_delta": cs["correct"] - bs["correct"],
                      "questions_with_changed_prediction": len(flipped), "changed": flipped},
@@ -383,7 +427,8 @@ def compare(args):
     baseline, base_units = read_run(args.baseline)
     candidate, cand_units = read_run(args.candidate)
     result = compare_runs(baseline, candidate, base_units, cand_units,
-                          allow_other_baseline=args.allow_other_baseline)
+                          allow_other_baseline=args.allow_other_baseline,
+                          vary=tuple(args.vary or ()))
     write_new(Path(args.output), result)
     print(json.dumps({k: result[k] for k in ("baseline", "candidate", "accuracy")}, default=str)[:2000])
 
@@ -404,6 +449,10 @@ def main(argv=None):
     c.add_argument("--candidate", required=True)
     c.add_argument("--output", required=True, help="new JSON file")
     c.add_argument("--allow-other-baseline", action="store_true")
+    c.add_argument(
+        "--vary", nargs="+", choices=VARIABLE_SETTINGS,
+        help="service settings the candidate may change (recorded in the output)",
+    )
     args = parser.parse_args(argv)
     if args.command == "run" and not 0 <= args.warmup <= MAX_WARMUP:
         parser.error(f"--warmup must be between 0 and {MAX_WARMUP}")

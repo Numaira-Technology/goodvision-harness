@@ -1,0 +1,1352 @@
+{
+ "kind": "videojev-gpu-sweep-summary",
+ "date": "2026-11-22",
+ "note": "aggregates only; per-unit answers, per-question rows and the bundle stay on the private evaluation machine",
+ "runs": [
+  {
+   "label": "4090-bf16",
+   "host": "Vast RTX 4090, United Kingdom, datacenter, $0.526/h, instance 62046802",
+   "gpu": "NVIDIA GeForce RTX 4090",
+   "quantization": "bf16",
+   "versions": {
+    "accelerate": "1.10.1",
+    "causal-conv1d": "1.7.0",
+    "fla-core": "0.4.2",
+    "flash-attn": "2.8.3.post2",
+    "flash-linear-attention": "0.4.2",
+    "torch": "2.8.0+cu128",
+    "transformers": "5.14.1"
+   },
+   "settings": {
+    "context": 32768,
+    "gpu_batch_size": 4,
+    "max_pixels": 409600,
+    "queue_policy": "latest-per-stream"
+   },
+   "gpu_allocated_bytes_after_load": 9616089088,
+   "accuracy": 0.806930693069307,
+   "correct": 163,
+   "planned_questions": 202,
+   "incomplete_questions": 0,
+   "unknown_questions": 0,
+   "units": 2037,
+   "failed_units": 0,
+   "wall_seconds": 226.86192678799853,
+   "units_per_second": 8.979029795085747,
+   "warmup_seconds": [
+    0.5210398199997144,
+    0.1598758469990571,
+    0.16121156600274844
+   ],
+   "client_seconds": {
+    "mean": 1.3118332498335437,
+    "n": 2037,
+    "p50": 1.3234959789988352,
+    "p95": 1.4295088520011632
+   },
+   "stages": {
+    "cpu_queue_seconds": {
+     "mean": 0.5018308226091697,
+     "n": 2037,
+     "p50": 0.5101377829996636,
+     "p95": 0.5787919059948763
+    },
+    "decision_seconds": {
+     "mean": 0.2743487690306164,
+     "n": 2037,
+     "p50": 0.28420293800445506,
+     "p95": 0.29283550200489117
+    },
+    "gpu_queue_seconds": {
+     "mean": 0.35642984391755445,
+     "n": 2037,
+     "p50": 0.35682032899785554,
+     "p95": 0.43281276199559215
+    },
+    "ppe_seconds": {
+     "mean": null,
+     "n": 0,
+     "p50": null,
+     "p95": null
+    },
+    "server_elapsed_seconds": {
+     "mean": 1.2753243983878273,
+     "n": 2037,
+     "p50": 1.2883381430001464,
+     "p95": 1.3946860680007376
+    },
+    "server_gpu_seconds": {
+     "mean": 0.38516996715058566,
+     "n": 2037,
+     "p50": 0.38595985299616586,
+     "p95": 0.44907920400146395
+    },
+    "server_preprocess_seconds": {
+     "mean": 0.031741370483124046,
+     "n": 2037,
+     "p50": 0.030814536999969278,
+     "p95": 0.041881270000885706
+    },
+    "visual_encode_seconds": {
+     "mean": 0.07599977928437134,
+     "n": 2037,
+     "p50": 0.06929838500218466,
+     "p95": 0.09623168000689475
+    }
+   },
+   "bundle_sha256": "b94d762e1847001bfd4ee693262cc1e3204561db9dbe752a6bc20fa98959c541",
+   "plan_sha256": "d32109ed12f88e18f1dd00e9958af4497f6025cb8acaefa4abdeca4ca791d1cc",
+   "config_sha256": "8706677d701c29c4c17316974c4edf7e8f654fc5afe68fe060c2dc2f152b0365",
+   "units_sha256": "e3e11a7d50c344b351f76bfc40bd5a5421a5b0a59fc536acd68900dfad8804ef"
+  },
+  {
+   "label": "4090-fp8",
+   "host": "Vast RTX 4090, United Kingdom, datacenter, $0.526/h, instance 62046802",
+   "gpu": "NVIDIA GeForce RTX 4090",
+   "quantization": "fp8",
+   "versions": {
+    "accelerate": "1.10.1",
+    "causal-conv1d": "1.7.0",
+    "fla-core": "0.4.2",
+    "flash-attn": "2.8.3.post2",
+    "flash-linear-attention": "0.4.2",
+    "torch": "2.8.0+cu128",
+    "torchao": "0.13.0",
+    "transformers": "5.14.1"
+   },
+   "settings": {
+    "context": 32768,
+    "gpu_batch_size": 4,
+    "max_pixels": 409600,
+    "queue_policy": "latest-per-stream"
+   },
+   "gpu_allocated_bytes_after_load": 7130503680,
+   "accuracy": 0.8217821782178217,
+   "correct": 166,
+   "planned_questions": 202,
+   "incomplete_questions": 0,
+   "unknown_questions": 0,
+   "units": 2037,
+   "failed_units": 0,
+   "wall_seconds": 220.7547530209995,
+   "units_per_second": 9.227434390987852,
+   "warmup_seconds": [
+    0.6161153790017124,
+    0.21802817500429228,
+    0.21437398200214375
+   ],
+   "client_seconds": {
+    "mean": 1.2701696360415835,
+    "n": 2037,
+    "p50": 1.2932616100006271,
+    "p95": 1.3777172699992661
+   },
+   "stages": {
+    "cpu_queue_seconds": {
+     "mean": 0.4879880305984959,
+     "n": 2037,
+     "p50": 0.4941168570003356,
+     "p95": 0.5617570970061934
+    },
+    "decision_seconds": {
+     "mean": 0.26045869740308936,
+     "n": 2037,
+     "p50": 0.2690737189986976,
+     "p95": 0.2776190079966909
+    },
+    "gpu_queue_seconds": {
+     "mean": 0.3426389480108009,
+     "n": 2037,
+     "p50": 0.34075937200395856,
+     "p95": 0.413361580001947
+    },
+    "ppe_seconds": {
+     "mean": null,
+     "n": 0,
+     "p50": null,
+     "p95": null
+    },
+    "server_elapsed_seconds": {
+     "mean": 1.2334948191915915,
+     "n": 2037,
+     "p50": 1.2587587040034123,
+     "p95": 1.3439701890019933
+    },
+    "server_gpu_seconds": {
+     "mean": 0.3710947337471637,
+     "n": 2037,
+     "p50": 0.37044075100129703,
+     "p95": 0.43225194799742894
+    },
+    "server_preprocess_seconds": {
+     "mean": 0.031622974829705185,
+     "n": 2037,
+     "p50": 0.02991393300180789,
+     "p95": 0.04318921200319892
+    },
+    "visual_encode_seconds": {
+     "mean": 0.07664790156738986,
+     "n": 2037,
+     "p50": 0.07159080099518178,
+     "p95": 0.09612750799715286
+    }
+   },
+   "bundle_sha256": "b94d762e1847001bfd4ee693262cc1e3204561db9dbe752a6bc20fa98959c541",
+   "plan_sha256": "d32109ed12f88e18f1dd00e9958af4497f6025cb8acaefa4abdeca4ca791d1cc",
+   "config_sha256": "8706677d701c29c4c17316974c4edf7e8f654fc5afe68fe060c2dc2f152b0365",
+   "units_sha256": "25ba1e750e5506c13cf0dca4007dc3091a295521db9f2e31280cb6cce23db94f"
+  },
+  {
+   "label": "l40s-bf16",
+   "host": "Vast L40S, Virginia US, non-datacenter host, $0.489/h, instance 62046803",
+   "gpu": "NVIDIA L40S",
+   "quantization": "bf16",
+   "versions": {
+    "accelerate": "1.10.1",
+    "causal-conv1d": "1.7.0",
+    "fla-core": "0.4.2",
+    "flash-attn": "2.8.3.post2",
+    "flash-linear-attention": "0.4.2",
+    "torch": "2.8.0+cu128",
+    "transformers": "5.14.1"
+   },
+   "settings": {
+    "context": 32768,
+    "gpu_batch_size": 4,
+    "max_pixels": 409600,
+    "queue_policy": "latest-per-stream"
+   },
+   "gpu_allocated_bytes_after_load": 9616089088,
+   "accuracy": 0.801980198019802,
+   "correct": 162,
+   "planned_questions": 202,
+   "incomplete_questions": 0,
+   "unknown_questions": 0,
+   "units": 2037,
+   "failed_units": 0,
+   "wall_seconds": 175.63540822803043,
+   "units_per_second": 11.597889175941837,
+   "warmup_seconds": [
+    0.2620450670365244,
+    0.10805372218601406,
+    0.10600308002904058
+   ],
+   "client_seconds": {
+    "mean": 1.0172634732384402,
+    "n": 2037,
+    "p50": 1.0379558210261166,
+    "p95": 1.124419755069539
+   },
+   "stages": {
+    "cpu_queue_seconds": {
+     "mean": 0.36605453228364915,
+     "n": 2037,
+     "p50": 0.37858218094334006,
+     "p95": 0.4106722390279174
+    },
+    "decision_seconds": {
+     "mean": 0.21301804235201396,
+     "n": 2037,
+     "p50": 0.22446946403943002,
+     "p95": 0.2328279500361532
+    },
+    "gpu_queue_seconds": {
+     "mean": 0.3100984366609503,
+     "n": 2037,
+     "p50": 0.3165800410788506,
+     "p95": 0.35695489100180566
+    },
+    "ppe_seconds": {
+     "mean": null,
+     "n": 0,
+     "p50": null,
+     "p95": null
+    },
+    "server_elapsed_seconds": {
+     "mean": 0.9905053840735932,
+     "n": 2037,
+     "p50": 1.0095174929592758,
+     "p95": 1.0999299001414329
+    },
+    "server_gpu_seconds": {
+     "mean": 0.30238933147824604,
+     "n": 2037,
+     "p50": 0.3077661548741162,
+     "p95": 0.355657379841432
+    },
+    "server_preprocess_seconds": {
+     "mean": 0.011839024789213483,
+     "n": 2037,
+     "p50": 0.011084873927757144,
+     "p95": 0.015867484034970403
+    },
+    "visual_encode_seconds": {
+     "mean": 0.06545307430601918,
+     "n": 2037,
+     "p50": 0.06104110204614699,
+     "p95": 0.08155223890207708
+    }
+   },
+   "bundle_sha256": "b94d762e1847001bfd4ee693262cc1e3204561db9dbe752a6bc20fa98959c541",
+   "plan_sha256": "d32109ed12f88e18f1dd00e9958af4497f6025cb8acaefa4abdeca4ca791d1cc",
+   "config_sha256": "8706677d701c29c4c17316974c4edf7e8f654fc5afe68fe060c2dc2f152b0365",
+   "units_sha256": "bff01fea41763e3a95755c05beac330c8694c61c596bd7122c22a0cd6d6e3ff5"
+  },
+  {
+   "label": "l40s-fp8",
+   "host": "Vast L40S, Virginia US, non-datacenter host, $0.489/h, instance 62046803",
+   "gpu": "NVIDIA L40S",
+   "quantization": "fp8",
+   "versions": {
+    "accelerate": "1.10.1",
+    "causal-conv1d": "1.7.0",
+    "fla-core": "0.4.2",
+    "flash-attn": "2.8.3.post2",
+    "flash-linear-attention": "0.4.2",
+    "torch": "2.8.0+cu128",
+    "torchao": "0.13.0",
+    "transformers": "5.14.1"
+   },
+   "settings": {
+    "context": 32768,
+    "gpu_batch_size": 4,
+    "max_pixels": 409600,
+    "queue_policy": "latest-per-stream"
+   },
+   "gpu_allocated_bytes_after_load": 7129455104,
+   "accuracy": 0.806930693069307,
+   "correct": 163,
+   "planned_questions": 202,
+   "incomplete_questions": 0,
+   "unknown_questions": 0,
+   "units": 2037,
+   "failed_units": 0,
+   "wall_seconds": 198.02354434598237,
+   "units_per_second": 10.28665559303897,
+   "warmup_seconds": [
+    0.35456368303857744,
+    0.15581964189186692,
+    0.15415184199810028
+   ],
+   "client_seconds": {
+    "mean": 1.1461433193076696,
+    "n": 2037,
+    "p50": 1.136657897150144,
+    "p95": 1.2951415569987148
+   },
+   "stages": {
+    "cpu_queue_seconds": {
+     "mean": 0.4091956314392375,
+     "n": 2037,
+     "p50": 0.40952786803245544,
+     "p95": 0.46469480195082724
+    },
+    "decision_seconds": {
+     "mean": 0.25569606606519807,
+     "n": 2037,
+     "p50": 0.25812182598747313,
+     "p95": 0.28688827506266534
+    },
+    "gpu_queue_seconds": {
+     "mean": 0.3526461497233805,
+     "n": 2037,
+     "p50": 0.3518516158219427,
+     "p95": 0.4041220280341804
+    },
+    "ppe_seconds": {
+     "mean": null,
+     "n": 0,
+     "p50": null,
+     "p95": null
+    },
+    "server_elapsed_seconds": {
+     "mean": 1.1198096145023297,
+     "n": 2037,
+     "p50": 1.1117975320667028,
+     "p95": 1.2677162929903716
+    },
+    "server_gpu_seconds": {
+     "mean": 0.34569382418525874,
+     "n": 2037,
+     "p50": 0.34490075008943677,
+     "p95": 0.39988102205097675
+    },
+    "server_preprocess_seconds": {
+     "mean": 0.012151749910001274,
+     "n": 2037,
+     "p50": 0.01130509003996849,
+     "p95": 0.016147742047905922
+    },
+    "visual_encode_seconds": {
+     "mean": 0.066726616395054,
+     "n": 2037,
+     "p50": 0.06101498496718705,
+     "p95": 0.08318494306877255
+    }
+   },
+   "bundle_sha256": "b94d762e1847001bfd4ee693262cc1e3204561db9dbe752a6bc20fa98959c541",
+   "plan_sha256": "d32109ed12f88e18f1dd00e9958af4497f6025cb8acaefa4abdeca4ca791d1cc",
+   "config_sha256": "8706677d701c29c4c17316974c4edf7e8f654fc5afe68fe060c2dc2f152b0365",
+   "units_sha256": "b993672519a08f3febb63b2d4ae14414199448b0afed5bda8f84d69965806825"
+  },
+  {
+   "label": "4090-bf16-try2",
+   "host": "Vast RTX 4090, Maryland US, datacenter, $0.837/h, instance 62027014 (BF16 only)",
+   "gpu": "NVIDIA GeForce RTX 4090",
+   "quantization": "bf16",
+   "versions": {
+    "accelerate": "1.10.1",
+    "causal-conv1d": "1.7.0",
+    "fla-core": "0.4.2",
+    "flash-attn": "2.8.3.post2",
+    "flash-linear-attention": "0.4.2",
+    "torch": "2.8.0+cu128",
+    "transformers": "5.14.1"
+   },
+   "settings": {
+    "context": 32768,
+    "gpu_batch_size": 4,
+    "max_pixels": 409600,
+    "queue_policy": "latest-per-stream"
+   },
+   "gpu_allocated_bytes_after_load": 9616089088,
+   "accuracy": 0.8118811881188119,
+   "correct": 164,
+   "planned_questions": 202,
+   "incomplete_questions": 0,
+   "unknown_questions": 0,
+   "units": 2037,
+   "failed_units": 0,
+   "wall_seconds": 184.453817717731,
+   "units_per_second": 11.043414688858398,
+   "warmup_seconds": [
+    0.3023841083049774,
+    0.11006087809801102,
+    0.11156463623046875
+   ],
+   "client_seconds": {
+    "mean": 1.069014203050263,
+    "n": 2037,
+    "p50": 1.077246017754078,
+    "p95": 1.1732660457491875
+   },
+   "stages": {
+    "cpu_queue_seconds": {
+     "mean": 0.38731544136371926,
+     "n": 2037,
+     "p50": 0.39737728238105774,
+     "p95": 0.4448728859424591
+    },
+    "decision_seconds": {
+     "mean": 0.23680253162665524,
+     "n": 2037,
+     "p50": 0.24538832902908325,
+     "p95": 0.2524237781763077
+    },
+    "gpu_queue_seconds": {
+     "mean": 0.3194101943388018,
+     "n": 2037,
+     "p50": 0.3186985179781914,
+     "p95": 0.37045371532440186
+    },
+    "ppe_seconds": {
+     "mean": null,
+     "n": 0,
+     "p50": null,
+     "p95": null
+    },
+    "server_elapsed_seconds": {
+     "mean": 1.0444048790880203,
+     "n": 2037,
+     "p50": 1.0550525709986687,
+     "p95": 1.1506949365139008
+    },
+    "server_gpu_seconds": {
+     "mean": 0.32219656618292797,
+     "n": 2037,
+     "p50": 0.3275207504630089,
+     "p95": 0.3736029267311096
+    },
+    "server_preprocess_seconds": {
+     "mean": 0.015308017041909093,
+     "n": 2037,
+     "p50": 0.01354508101940155,
+     "p95": 0.022162459790706635
+    },
+    "visual_encode_seconds": {
+     "mean": 0.0636220077198103,
+     "n": 2037,
+     "p50": 0.05694877356290817,
+     "p95": 0.0824502557516098
+    }
+   },
+   "bundle_sha256": "b94d762e1847001bfd4ee693262cc1e3204561db9dbe752a6bc20fa98959c541",
+   "plan_sha256": "d32109ed12f88e18f1dd00e9958af4497f6025cb8acaefa4abdeca4ca791d1cc",
+   "config_sha256": "8706677d701c29c4c17316974c4edf7e8f654fc5afe68fe060c2dc2f152b0365",
+   "units_sha256": "46285c5a772187a721152542c14162e959deb61f1191fc4af3013edb1ef648f5"
+  },
+  {
+   "label": "l40s-bf16-try2",
+   "host": "Vast L40S, New York US, non-datacenter host, $0.462/h, instance 62027099 (BF16 only)",
+   "gpu": "NVIDIA L40S",
+   "quantization": "bf16",
+   "versions": {
+    "accelerate": "1.10.1",
+    "causal-conv1d": "1.7.0",
+    "fla-core": "0.4.2",
+    "flash-attn": "2.8.3.post2",
+    "flash-linear-attention": "0.4.2",
+    "torch": "2.8.0+cu128",
+    "transformers": "5.14.1"
+   },
+   "settings": {
+    "context": 32768,
+    "gpu_batch_size": 4,
+    "max_pixels": 409600,
+    "queue_policy": "latest-per-stream"
+   },
+   "gpu_allocated_bytes_after_load": 9616089088,
+   "accuracy": 0.7970297029702971,
+   "correct": 161,
+   "planned_questions": 202,
+   "incomplete_questions": 0,
+   "unknown_questions": 0,
+   "units": 2037,
+   "failed_units": 0,
+   "wall_seconds": 172.87426277715713,
+   "units_per_second": 11.783130509286895,
+   "warmup_seconds": [
+    0.27120101172477007,
+    0.1064569759182632,
+    0.10425899922847748
+   ],
+   "client_seconds": {
+    "mean": 1.0024211972203905,
+    "n": 2037,
+    "p50": 1.0210108398459852,
+    "p95": 1.107081102207303
+   },
+   "stages": {
+    "cpu_queue_seconds": {
+     "mean": 0.36266859982548594,
+     "n": 2037,
+     "p50": 0.3754354603588581,
+     "p95": 0.4069604999385774
+    },
+    "decision_seconds": {
+     "mean": 0.20955383438328037,
+     "n": 2037,
+     "p50": 0.22026888700202107,
+     "p95": 0.22708479408174753
+    },
+    "gpu_queue_seconds": {
+     "mean": 0.30376703555686113,
+     "n": 2037,
+     "p50": 0.3084958200342953,
+     "p95": 0.34854610869660974
+    },
+    "ppe_seconds": {
+     "mean": null,
+     "n": 0,
+     "p50": null,
+     "p95": null
+    },
+    "server_elapsed_seconds": {
+     "mean": 0.9746421229020658,
+     "n": 2037,
+     "p50": 0.9922112617641687,
+     "p95": 1.0791548788547516
+    },
+    "server_gpu_seconds": {
+     "mean": 0.2955864093291116,
+     "n": 2037,
+     "p50": 0.2982769082300365,
+     "p95": 0.34646668611094356
+    },
+    "server_preprocess_seconds": {
+     "mean": 0.012451823694731128,
+     "n": 2037,
+     "p50": 0.012335505802184343,
+     "p95": 0.017463142052292824
+    },
+    "visual_encode_seconds": {
+     "mean": 0.061228766293065125,
+     "n": 2037,
+     "p50": 0.05743732675909996,
+     "p95": 0.07690989691764116
+    }
+   },
+   "bundle_sha256": "b94d762e1847001bfd4ee693262cc1e3204561db9dbe752a6bc20fa98959c541",
+   "plan_sha256": "d32109ed12f88e18f1dd00e9958af4497f6025cb8acaefa4abdeca4ca791d1cc",
+   "config_sha256": "8706677d701c29c4c17316974c4edf7e8f654fc5afe68fe060c2dc2f152b0365",
+   "units_sha256": "13d4a683e7453f6b4624083f12b0a84bc86f24a5caa4645a8db75dd6268757de"
+  }
+ ],
+ "comparisons": [
+  {
+   "name": "4090-fp8-vs-4090-bf16",
+   "accuracy": {
+    "baseline": 0.806930693069307,
+    "candidate": 0.8217821782178217,
+    "correct_delta": 3,
+    "questions_with_changed_prediction": 3
+   },
+   "answers": {
+    "baseline_close_calls_top2_gap_lt_0.1": 79,
+    "max_probability_drift": {
+     "mean": 0.021509060187472926,
+     "n": 2099,
+     "p50": 0.017705395817756653,
+     "p95": 0.05550295114517212
+    },
+    "unit_answers_changed": 19
+   },
+   "baseline": {
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "is_default_baseline": true,
+    "label": "4090-bf16",
+    "quantization": "bf16"
+   },
+   "candidate": {
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "label": "4090-fp8",
+    "quantization": "fp8"
+   },
+   "failed_units": {
+    "baseline": 0,
+    "candidate": 0
+   },
+   "latency": {
+    "client_seconds": {
+     "baseline": {
+      "p50": 1.3234959789988352,
+      "p95": 1.4295088520011632
+     },
+     "candidate": {
+      "p50": 1.2932616100006271,
+      "p95": 1.3777172699992661
+     },
+     "p50_ratio": 0.9771556774799731,
+     "p95_ratio": 0.9637696668129098
+    },
+    "cpu_queue_seconds": {
+     "baseline": {
+      "p50": 0.5101377829996636,
+      "p95": 0.5787919059948763
+     },
+     "candidate": {
+      "p50": 0.4941168570003356,
+      "p95": 0.5617570970061934
+     },
+     "p50_ratio": 0.9685949040960595,
+     "p95_ratio": 0.9705683358522402
+    },
+    "decision_seconds": {
+     "baseline": {
+      "p50": 0.28420293800445506,
+      "p95": 0.29283550200489117
+     },
+     "candidate": {
+      "p50": 0.2690737189986976,
+      "p95": 0.2776190079966909
+     },
+     "p50_ratio": 0.946766141434047,
+     "p95_ratio": 0.9480374001648677
+    },
+    "gpu_queue_seconds": {
+     "baseline": {
+      "p50": 0.35682032899785554,
+      "p95": 0.43281276199559215
+     },
+     "candidate": {
+      "p50": 0.34075937200395856,
+      "p95": 0.413361580001947
+     },
+     "p50_ratio": 0.9549886716404168,
+     "p95_ratio": 0.9550586680855699
+    },
+    "ppe_seconds": {
+     "baseline": {
+      "p50": null,
+      "p95": null
+     },
+     "candidate": {
+      "p50": null,
+      "p95": null
+     },
+     "p50_ratio": null,
+     "p95_ratio": null
+    },
+    "server_elapsed_seconds": {
+     "baseline": {
+      "p50": 1.2883381430001464,
+      "p95": 1.3946860680007376
+     },
+     "candidate": {
+      "p50": 1.2587587040034123,
+      "p95": 1.3439701890019933
+     },
+     "p50_ratio": 0.9770406246547567,
+     "p95_ratio": 0.9636363478761606
+    },
+    "server_gpu_seconds": {
+     "baseline": {
+      "p50": 0.38595985299616586,
+      "p95": 0.44907920400146395
+     },
+     "candidate": {
+      "p50": 0.37044075100129703,
+      "p95": 0.43225194799742894
+     },
+     "p50_ratio": 0.959790890491859,
+     "p95_ratio": 0.9625294249787167
+    },
+    "server_preprocess_seconds": {
+     "baseline": {
+      "p50": 0.030814536999969278,
+      "p95": 0.041881270000885706
+     },
+     "candidate": {
+      "p50": 0.02991393300180789,
+      "p95": 0.04318921200319892
+     },
+     "p50_ratio": 0.9707734048328461,
+     "p95_ratio": 1.0312297598015903
+    },
+    "visual_encode_seconds": {
+     "baseline": {
+      "p50": 0.06929838500218466,
+      "p95": 0.09623168000689475
+     },
+     "candidate": {
+      "p50": 0.07159080099518178,
+      "p95": 0.09612750799715286
+     },
+     "p50_ratio": 1.033080366778026,
+     "p95_ratio": 0.9989174873624318
+    }
+   },
+   "memory_after_load_bytes": {
+    "baseline": 9616089088,
+    "candidate": 7130503680
+   },
+   "ratio_meaning": "candidate / baseline; below 1 is faster",
+   "throughput_units_per_second": {
+    "baseline": 8.979029795085747,
+    "candidate": 9.227434390987852
+   }
+  },
+  {
+   "name": "l40s-bf16-vs-4090-bf16",
+   "accuracy": {
+    "baseline": 0.806930693069307,
+    "candidate": 0.801980198019802,
+    "correct_delta": -1,
+    "questions_with_changed_prediction": 3
+   },
+   "answers": {
+    "baseline_close_calls_top2_gap_lt_0.1": 79,
+    "max_probability_drift": {
+     "mean": 0.008548228247397326,
+     "n": 2099,
+     "p50": 0.0056383609771728516,
+     "p95": 0.02600198984146118
+    },
+    "unit_answers_changed": 10
+   },
+   "baseline": {
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "is_default_baseline": true,
+    "label": "4090-bf16",
+    "quantization": "bf16"
+   },
+   "candidate": {
+    "gpu": "NVIDIA L40S",
+    "label": "l40s-bf16",
+    "quantization": "bf16"
+   },
+   "failed_units": {
+    "baseline": 0,
+    "candidate": 0
+   },
+   "latency": {
+    "client_seconds": {
+     "baseline": {
+      "p50": 1.3234959789988352,
+      "p95": 1.4295088520011632
+     },
+     "candidate": {
+      "p50": 1.0379558210261166,
+      "p95": 1.124419755069539
+     },
+     "p50_ratio": 0.7842530974754326,
+     "p95_ratio": 0.7865776791066866
+    },
+    "cpu_queue_seconds": {
+     "baseline": {
+      "p50": 0.5101377829996636,
+      "p95": 0.5787919059948763
+     },
+     "candidate": {
+      "p50": 0.37858218094334006,
+      "p95": 0.4106722390279174
+     },
+     "p50_ratio": 0.7421175093466654,
+     "p95_ratio": 0.7095334865162278
+    },
+    "decision_seconds": {
+     "baseline": {
+      "p50": 0.28420293800445506,
+      "p95": 0.29283550200489117
+     },
+     "candidate": {
+      "p50": 0.22446946403943002,
+      "p95": 0.2328279500361532
+     },
+     "p50_ratio": 0.7898210539818956,
+     "p95_ratio": 0.7950810213997356
+    },
+    "gpu_queue_seconds": {
+     "baseline": {
+      "p50": 0.35682032899785554,
+      "p95": 0.43281276199559215
+     },
+     "candidate": {
+      "p50": 0.3165800410788506,
+      "p95": 0.35695489100180566
+     },
+     "p50_ratio": 0.8872253494300019,
+     "p95_ratio": 0.8247328229324277
+    },
+    "ppe_seconds": {
+     "baseline": {
+      "p50": null,
+      "p95": null
+     },
+     "candidate": {
+      "p50": null,
+      "p95": null
+     },
+     "p50_ratio": null,
+     "p95_ratio": null
+    },
+    "server_elapsed_seconds": {
+     "baseline": {
+      "p50": 1.2883381430001464,
+      "p95": 1.3946860680007376
+     },
+     "candidate": {
+      "p50": 1.0095174929592758,
+      "p95": 1.0999299001414329
+     },
+     "p50_ratio": 0.7835811572018023,
+     "p95_ratio": 0.7886576953609112
+    },
+    "server_gpu_seconds": {
+     "baseline": {
+      "p50": 0.38595985299616586,
+      "p95": 0.44907920400146395
+     },
+     "candidate": {
+      "p50": 0.3077661548741162,
+      "p95": 0.355657379841432
+     },
+     "p50_ratio": 0.7974045810333893,
+     "p95_ratio": 0.7919702731108265
+    },
+    "server_preprocess_seconds": {
+     "baseline": {
+      "p50": 0.030814536999969278,
+      "p95": 0.041881270000885706
+     },
+     "candidate": {
+      "p50": 0.011084873927757144,
+      "p95": 0.015867484034970403
+     },
+     "p50_ratio": 0.3597287192005577,
+     "p95_ratio": 0.3788682634178676
+    },
+    "visual_encode_seconds": {
+     "baseline": {
+      "p50": 0.06929838500218466,
+      "p95": 0.09623168000689475
+     },
+     "candidate": {
+      "p50": 0.06104110204614699,
+      "p95": 0.08155223890207708
+     },
+     "p50_ratio": 0.8808445109395067,
+     "p95_ratio": 0.8474572915721109
+    }
+   },
+   "memory_after_load_bytes": {
+    "baseline": 9616089088,
+    "candidate": 9616089088
+   },
+   "ratio_meaning": "candidate / baseline; below 1 is faster",
+   "throughput_units_per_second": {
+    "baseline": 8.979029795085747,
+    "candidate": 11.597889175941837
+   }
+  },
+  {
+   "name": "l40s-fp8-vs-4090-bf16",
+   "accuracy": {
+    "baseline": 0.806930693069307,
+    "candidate": 0.806930693069307,
+    "correct_delta": 0,
+    "questions_with_changed_prediction": 4
+   },
+   "answers": {
+    "baseline_close_calls_top2_gap_lt_0.1": 79,
+    "max_probability_drift": {
+     "mean": 0.022892871638482658,
+     "n": 2099,
+     "p50": 0.018409669399261475,
+     "p95": 0.057762742042541504
+    },
+    "unit_answers_changed": 23
+   },
+   "baseline": {
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "is_default_baseline": true,
+    "label": "4090-bf16",
+    "quantization": "bf16"
+   },
+   "candidate": {
+    "gpu": "NVIDIA L40S",
+    "label": "l40s-fp8",
+    "quantization": "fp8"
+   },
+   "failed_units": {
+    "baseline": 0,
+    "candidate": 0
+   },
+   "latency": {
+    "client_seconds": {
+     "baseline": {
+      "p50": 1.3234959789988352,
+      "p95": 1.4295088520011632
+     },
+     "candidate": {
+      "p50": 1.136657897150144,
+      "p95": 1.2951415569987148
+     },
+     "p50_ratio": 0.8588298832686853,
+     "p95_ratio": 0.9060045729592033
+    },
+    "cpu_queue_seconds": {
+     "baseline": {
+      "p50": 0.5101377829996636,
+      "p95": 0.5787919059948763
+     },
+     "candidate": {
+      "p50": 0.40952786803245544,
+      "p95": 0.46469480195082724
+     },
+     "p50_ratio": 0.8027789387102219,
+     "p95_ratio": 0.8028702494587768
+    },
+    "decision_seconds": {
+     "baseline": {
+      "p50": 0.28420293800445506,
+      "p95": 0.29283550200489117
+     },
+     "candidate": {
+      "p50": 0.25812182598747313,
+      "p95": 0.28688827506266534
+     },
+     "p50_ratio": 0.908230674179121,
+     "p95_ratio": 0.9796908950536793
+    },
+    "gpu_queue_seconds": {
+     "baseline": {
+      "p50": 0.35682032899785554,
+      "p95": 0.43281276199559215
+     },
+     "candidate": {
+      "p50": 0.3518516158219427,
+      "p95": 0.4041220280341804
+     },
+     "p50_ratio": 0.98607502776014,
+     "p95_ratio": 0.9337109797106585
+    },
+    "ppe_seconds": {
+     "baseline": {
+      "p50": null,
+      "p95": null
+     },
+     "candidate": {
+      "p50": null,
+      "p95": null
+     },
+     "p50_ratio": null,
+     "p95_ratio": null
+    },
+    "server_elapsed_seconds": {
+     "baseline": {
+      "p50": 1.2883381430001464,
+      "p95": 1.3946860680007376
+     },
+     "candidate": {
+      "p50": 1.1117975320667028,
+      "p95": 1.2677162929903716
+     },
+     "p50_ratio": 0.8629702831569247,
+     "p95_ratio": 0.9089617528105265
+    },
+    "server_gpu_seconds": {
+     "baseline": {
+      "p50": 0.38595985299616586,
+      "p95": 0.44907920400146395
+     },
+     "candidate": {
+      "p50": 0.34490075008943677,
+      "p95": 0.39988102205097675
+     },
+     "p50_ratio": 0.8936182025462193,
+     "p95_ratio": 0.8904465370203898
+    },
+    "server_preprocess_seconds": {
+     "baseline": {
+      "p50": 0.030814536999969278,
+      "p95": 0.041881270000885706
+     },
+     "candidate": {
+      "p50": 0.01130509003996849,
+      "p95": 0.016147742047905922
+     },
+     "p50_ratio": 0.36687521996451744,
+     "p95_ratio": 0.3855599901236144
+    },
+    "visual_encode_seconds": {
+     "baseline": {
+      "p50": 0.06929838500218466,
+      "p95": 0.09623168000689475
+     },
+     "candidate": {
+      "p50": 0.06101498496718705,
+      "p95": 0.08318494306877255
+     },
+     "p50_ratio": 0.8804676323302992,
+     "p95_ratio": 0.8644236810872736
+    }
+   },
+   "memory_after_load_bytes": {
+    "baseline": 9616089088,
+    "candidate": 7129455104
+   },
+   "ratio_meaning": "candidate / baseline; below 1 is faster",
+   "throughput_units_per_second": {
+    "baseline": 8.979029795085747,
+    "candidate": 10.28665559303897
+   }
+  },
+  {
+   "name": "l40s-fp8-vs-l40s-bf16",
+   "accuracy": {
+    "baseline": 0.801980198019802,
+    "candidate": 0.806930693069307,
+    "correct_delta": 1,
+    "questions_with_changed_prediction": 1
+   },
+   "answers": {
+    "baseline_close_calls_top2_gap_lt_0.1": 71,
+    "max_probability_drift": {
+     "mean": 0.021568679717214528,
+     "n": 2099,
+     "p50": 0.017234813421964645,
+     "p95": 0.0547214150428772
+    },
+    "unit_answers_changed": 21
+   },
+   "baseline": {
+    "gpu": "NVIDIA L40S",
+    "is_default_baseline": false,
+    "label": "l40s-bf16",
+    "quantization": "bf16"
+   },
+   "candidate": {
+    "gpu": "NVIDIA L40S",
+    "label": "l40s-fp8",
+    "quantization": "fp8"
+   },
+   "failed_units": {
+    "baseline": 0,
+    "candidate": 0
+   },
+   "latency": {
+    "client_seconds": {
+     "baseline": {
+      "p50": 1.0379558210261166,
+      "p95": 1.124419755069539
+     },
+     "candidate": {
+      "p50": 1.136657897150144,
+      "p95": 1.2951415569987148
+     },
+     "p50_ratio": 1.09509275262453,
+     "p95_ratio": 1.1518310232094933
+    },
+    "cpu_queue_seconds": {
+     "baseline": {
+      "p50": 0.37858218094334006,
+      "p95": 0.4106722390279174
+     },
+     "candidate": {
+      "p50": 0.40952786803245544,
+      "p95": 0.46469480195082724
+     },
+     "p50_ratio": 1.081741002738179,
+     "p95_ratio": 1.1315466637111484
+    },
+    "decision_seconds": {
+     "baseline": {
+      "p50": 0.22446946403943002,
+      "p95": 0.2328279500361532
+     },
+     "candidate": {
+      "p50": 0.25812182598747313,
+      "p95": 0.28688827506266534
+     },
+     "p50_ratio": 1.149919554056278,
+     "p95_ratio": 1.2321900142062743
+    },
+    "gpu_queue_seconds": {
+     "baseline": {
+      "p50": 0.3165800410788506,
+      "p95": 0.35695489100180566
+     },
+     "candidate": {
+      "p50": 0.3518516158219427,
+      "p95": 0.4041220280341804
+     },
+     "p50_ratio": 1.1114143981499673,
+     "p95_ratio": 1.1321375283582713
+    },
+    "ppe_seconds": {
+     "baseline": {
+      "p50": null,
+      "p95": null
+     },
+     "candidate": {
+      "p50": null,
+      "p95": null
+     },
+     "p50_ratio": null,
+     "p95_ratio": null
+    },
+    "server_elapsed_seconds": {
+     "baseline": {
+      "p50": 1.0095174929592758,
+      "p95": 1.0999299001414329
+     },
+     "candidate": {
+      "p50": 1.1117975320667028,
+      "p95": 1.2677162929903716
+     },
+     "p50_ratio": 1.1013157670082623,
+     "p95_ratio": 1.1525428055254832
+    },
+    "server_gpu_seconds": {
+     "baseline": {
+      "p50": 0.3077661548741162,
+      "p95": 0.355657379841432
+     },
+     "candidate": {
+      "p50": 0.34490075008943677,
+      "p95": 0.39988102205097675
+     },
+     "p50_ratio": 1.1206584760124436,
+     "p95_ratio": 1.1243433841560146
+    },
+    "server_preprocess_seconds": {
+     "baseline": {
+      "p50": 0.011084873927757144,
+      "p95": 0.015867484034970403
+     },
+     "candidate": {
+      "p50": 0.01130509003996849,
+      "p95": 0.016147742047905922
+     },
+     "p50_ratio": 1.0198663614621646,
+     "p95_ratio": 1.0176624102673024
+    },
+    "visual_encode_seconds": {
+     "baseline": {
+      "p50": 0.06104110204614699,
+      "p95": 0.08155223890207708
+     },
+     "candidate": {
+      "p50": 0.06101498496718705,
+      "p95": 0.08318494306877255
+     },
+     "p50_ratio": 0.9995721394587503,
+     "p95_ratio": 1.0200203475548468
+    }
+   },
+   "memory_after_load_bytes": {
+    "baseline": 9616089088,
+    "candidate": 7129455104
+   },
+   "ratio_meaning": "candidate / baseline; below 1 is faster",
+   "throughput_units_per_second": {
+    "baseline": 11.597889175941837,
+    "candidate": 10.28665559303897
+   }
+  },
+  {
+   "name": "try2: l40s-bf16-vs-4090-bf16",
+   "accuracy": {
+    "baseline": 0.8118811881188119,
+    "candidate": 0.7970297029702971,
+    "correct_delta": -3,
+    "questions_with_changed_prediction": 3
+   },
+   "answers": {
+    "baseline_close_calls_top2_gap_lt_0.1": 74,
+    "max_probability_drift": {
+     "mean": 0.008495750337645673,
+     "n": 2099,
+     "p50": 0.0054087042808532715,
+     "p95": 0.026838839054107666
+    },
+    "unit_answers_changed": 9
+   },
+   "baseline": {
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "is_default_baseline": true,
+    "label": "4090-bf16",
+    "quantization": "bf16"
+   },
+   "candidate": {
+    "gpu": "NVIDIA L40S",
+    "label": "l40s-bf16",
+    "quantization": "bf16"
+   },
+   "failed_units": {
+    "baseline": 0,
+    "candidate": 0
+   },
+   "latency": {
+    "client_seconds": {
+     "baseline": {
+      "p50": 1.077246017754078,
+      "p95": 1.1732660457491875
+     },
+     "candidate": {
+      "p50": 1.0210108398459852,
+      "p95": 1.107081102207303
+     },
+     "p50_ratio": 0.9477972747345718,
+     "p95_ratio": 0.9435891426486973
+    },
+    "cpu_queue_seconds": {
+     "baseline": {
+      "p50": 0.39737728238105774,
+      "p95": 0.4448728859424591
+     },
+     "candidate": {
+      "p50": 0.3754354603588581,
+      "p95": 0.4069604999385774
+     },
+     "p50_ratio": 0.9447834010773698,
+     "p95_ratio": 0.9147792836968145
+    },
+    "decision_seconds": {
+     "baseline": {
+      "p50": 0.24538832902908325,
+      "p95": 0.2524237781763077
+     },
+     "candidate": {
+      "p50": 0.22026888700202107,
+      "p95": 0.22708479408174753
+     },
+     "p50_ratio": 0.8976339171204633,
+     "p95_ratio": 0.8996172853539103
+    },
+    "gpu_queue_seconds": {
+     "baseline": {
+      "p50": 0.3186985179781914,
+      "p95": 0.37045371532440186
+     },
+     "candidate": {
+      "p50": 0.3084958200342953,
+      "p95": 0.34854610869660974
+     },
+     "p50_ratio": 0.9679863652689021,
+     "p95_ratio": 0.9408627698372308
+    },
+    "ppe_seconds": {
+     "baseline": {
+      "p50": null,
+      "p95": null
+     },
+     "candidate": {
+      "p50": null,
+      "p95": null
+     },
+     "p50_ratio": null,
+     "p95_ratio": null
+    },
+    "server_elapsed_seconds": {
+     "baseline": {
+      "p50": 1.0550525709986687,
+      "p95": 1.1506949365139008
+     },
+     "candidate": {
+      "p50": 0.9922112617641687,
+      "p95": 1.0791548788547516
+     },
+     "p50_ratio": 0.9404377459835798,
+     "p95_ratio": 0.9378288237924431
+    },
+    "server_gpu_seconds": {
+     "baseline": {
+      "p50": 0.3275207504630089,
+      "p95": 0.3736029267311096
+     },
+     "candidate": {
+      "p50": 0.2982769082300365,
+      "p95": 0.34646668611094356
+     },
+     "p50_ratio": 0.9107114825804746,
+     "p95_ratio": 0.927366091969358
+    },
+    "server_preprocess_seconds": {
+     "baseline": {
+      "p50": 0.01354508101940155,
+      "p95": 0.022162459790706635
+     },
+     "candidate": {
+      "p50": 0.012335505802184343,
+      "p95": 0.017463142052292824
+     },
+     "p50_ratio": 0.9107000382290331,
+     "p95_ratio": 0.7879604618443855
+    },
+    "visual_encode_seconds": {
+     "baseline": {
+      "p50": 0.05694877356290817,
+      "p95": 0.0824502557516098
+     },
+     "candidate": {
+      "p50": 0.05743732675909996,
+      "p95": 0.07690989691764116
+     },
+     "p50_ratio": 1.0085788185702034,
+     "p95_ratio": 0.9328036185762776
+    }
+   },
+   "memory_after_load_bytes": {
+    "baseline": 9616089088,
+    "candidate": 9616089088
+   },
+   "ratio_meaning": "candidate / baseline; below 1 is faster",
+   "throughput_units_per_second": {
+    "baseline": 11.043414688858398,
+    "candidate": 11.783130509286895
+   }
+  }
+ ]
+}
