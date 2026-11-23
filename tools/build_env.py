@@ -20,11 +20,11 @@ import sys
 import tarfile
 import tempfile
 import time
-from collections.abc import Mapping
 from email.parser import Parser
 from pathlib import Path
 
 from tools import env_source, model_source, registry, wheel_cache
+from tools.artifact_errors import upload_failure_category as _upload_failure_category
 
 # R2 documents create-once PutObject; do not assume multipart completion supports it.
 # https://developers.cloudflare.com/r2/api/s3/extensions/#conditional-operations-in-putobject
@@ -340,7 +340,7 @@ def verify_pack(tarball):
 
 
 def _build_prefix(conda, prefix, requirements, python_ver, arch, *, flash_attn=True,
-                  wheel_dir=None, prebuilt=None):
+                  wheel_dir=None, prebuilt=None, compat=None):
     """Use argv throughout: paths containing shell syntax remain literal paths."""
     _run(
         [
@@ -361,16 +361,22 @@ def _build_prefix(conda, prefix, requirements, python_ver, arch, *, flash_attn=T
         _write_constraints(prefix, constraints)
         return _install_python_packages(
             prefix, requirements, arch, constraints, flash_attn,
-            wheel_dir=wheel_dir, prebuilt=prebuilt,
+            wheel_dir=wheel_dir, prebuilt=prebuilt, compat=compat or {
+                "python": python_ver, "torch": "2.8.0", "cuda": "12.8",
+                "gpu_family": next(
+                    name for name, arches in registry.GPU_ARCHES.items()
+                    if ";".join(arches) == arch
+                ),
+            },
         )
 
 
 def _install_python_packages(prefix, requirements, arch, constraints, flash_attn,
-                             *, wheel_dir=None, prebuilt=None):
+                             *, compat, wheel_dir=None, prebuilt=None):
     """Install the env; return the CUDA extension wheels used (compiled or pinned).
 
     Compiled wheels are written to ``wheel_dir`` (kept, for tools.wheel_cache);
-    ``prebuilt`` is a list of already verified wheel files to install instead.
+    ``prebuilt`` binds each fetched path to the trusted pin, rechecked before use.
     """
     python = str(Path(prefix) / "bin/python")
     pip = [
@@ -396,15 +402,26 @@ def _install_python_packages(prefix, requirements, arch, constraints, flash_attn
     _run([*pip, "-r", str(requirements)])
     used = []
     if flash_attn and prebuilt:
-        _run([*pip, *map(str, prebuilt)])
-        used = [{"path": str(w), "source": "pinned"} for w in prebuilt]
+        selected = [(w["path"], w["pin"]) for w in prebuilt]
+        if len(selected) != len(wheel_cache.COMPILED) or {
+            (pin["name"], pin["version"]) for _, pin in selected
+        } != set(wheel_cache.COMPILED):
+            raise ValueError("prebuilt wheels must match the exact extension set")
+        if any(pin["compat"] != compat for _, pin in selected):
+            raise ValueError("prebuilt wheel compatibility differs from this build")
+        source = "pinned"
     elif flash_attn:
-        wheel_dir = Path(wheel_dir or tempfile.mkdtemp(prefix="cuda-wheels-"))
-        wheel_dir.mkdir(parents=True, exist_ok=True)
+        wheel_dir = (
+            Path(wheel_dir) if wheel_dir is not None else
+            Path(tempfile.mkdtemp(prefix="cuda-wheels-")) / "compiled"
+        )
+        wheel_dir.mkdir(parents=True, exist_ok=False)
         _run(
             [
                 python, "-I", "-m", "pip", "wheel", "--no-cache-dir",
-                "--no-build-isolation", "--no-deps", "-w", str(wheel_dir),
+                "--no-build-isolation", "--no-deps",
+                "--no-binary=flash-attn,causal-conv1d",
+                "--constraint", str(constraints), "-w", str(wheel_dir),
                 *(f"{name}=={version}" for name, version in wheel_cache.COMPILED),
             ],
             env={
@@ -416,12 +433,29 @@ def _install_python_packages(prefix, requirements, arch, constraints, flash_attn
         )
         built = sorted(wheel_dir.glob("*.whl"))
         names = {wheel_cache.name_version(w) for w in built}
-        if names != set(wheel_cache.COMPILED):
+        if (
+            len(built) != len(wheel_cache.COMPILED)
+            or names != set(wheel_cache.COMPILED)
+        ):
             raise RuntimeError(
                 f"compiled wheels differ from the expected set: {sorted(names)}"
             )
-        _run([*pip, *map(str, built)])
-        used = [{"path": str(w), "source": "compiled"} for w in built]
+        selected = [(w, wheel_cache.pin_for_file(w, compat)) for w in built]
+        source = "compiled"
+    if flash_attn:
+        for path, pin in selected:
+            wheel_cache.verify_file(path, pin)
+            used.append({
+                "path": str(path), "source": source,
+                "sha256": pin["sha256"], "size": pin["size"],
+            })
+        # Install these exact artifacts even if requirements installed the same
+        # version already. Dependencies must come from the constrained recipe.
+        _run([
+            *pip, "--no-index", "--no-deps", "--force-reinstall",
+            *(str(path) for path, _ in selected),
+        ])
+    _run([python, "-I", "-m", "pip", "check"])
     checks = [
         "import sys, torch",
         "assert sys.version_info[:2] == (3, 12), 'unexpected Python'",
@@ -459,31 +493,6 @@ def _pack(conda, prefix, out):
         ]
     )
     _run([base_python, "-I", "-m", "conda_pack.cli", "-p", str(prefix), "-o", str(out)])
-
-
-def _upload_failure_category(error):
-    """Return a fixed safe label; never format arbitrary SDK fields or types."""
-    categories = {
-        "AccessDenied": "AccessDenied",
-        "InvalidAccessKeyId": "InvalidAccessKeyId",
-        "SignatureDoesNotMatch": "SignatureDoesNotMatch",
-        "PreconditionFailed": "PreconditionFailed",
-        "ConditionalRequestConflict": "ConditionalRequestConflict",
-        "RequestTimeout": "RequestTimeout",
-        "SlowDown": "SlowDown",
-        "InternalError": "InternalError",
-        "ServiceUnavailable": "ServiceUnavailable",
-    }
-    try:
-        response = getattr(error, "response", None)
-        detail = response.get("Error") if isinstance(response, Mapping) else None
-        code = detail.get("Code") if isinstance(detail, Mapping) else None
-        if type(code) is str:
-            return categories.get(code, "unclassified error")
-    except Exception:
-        # A malformed SDK exception must not mask the uncertain write outcome.
-        pass
-    return "unclassified error"
 
 
 def _upload(env_spec, name, tarball, compat, repo_rev):
@@ -592,37 +601,42 @@ def main(argv=None):
     out = args.out.absolute()
     if out.exists() or out.is_symlink():
         ap.error("output already exists; choose a new path")
+    out = out.resolve()
     if not args.requirements.is_file():
         ap.error("requirements file does not exist")
-    if out.is_relative_to(prefix):
+    if out.is_relative_to(prefix.resolve()):
         ap.error("output must be outside the environment prefix")
     arch = ";".join(registry.GPU_ARCHES[compat["gpu_family"]])
     flash_attn = build.get("flash_attn", True)
-    wheel_dir = (args.wheel_dir or out.with_name(out.name + ".wheels")).absolute()
-    if wheel_dir.is_relative_to(prefix):
+    wheel_dir = (args.wheel_dir or out.with_name(out.name + ".wheels")).resolve()
+    if wheel_dir.is_relative_to(prefix.resolve()):
         ap.error("wheel dir must be outside the environment prefix")
     prebuilt, wheel_note = None, "not used"
-    if flash_attn:
-        pins = wheel_cache.pins_for(compat)
-        if args.compile_wheels:
-            wheel_note = "compile forced"
-        elif set(pins) != {name for name, _ in wheel_cache.COMPILED}:
-            wheel_note = "no complete pin set for this compat; compiling"
-        else:
-            try:
-                prebuilt = [
-                    wheel_cache.fetch(pins[name], wheel_dir / "pinned")
-                    for name, _ in wheel_cache.COMPILED
-                ]
-                wheel_note = "pinned wheels fetched and verified"
-            except Exception as error:  # fall back to compiling; never trust a mismatch
-                prebuilt = None
-                failure = type(error).__name__
-                wheel_note = f"pinned wheel fetch failed ({failure}); compiling"
-        _log(f"CUDA extension wheels: {wheel_note}")
     with env_source.prefix_lock(prefix), env_source.interruptible():
         if prefix.exists():
             ap.error("preserving existing environment; inspect and move it aside first")
+        if flash_attn:
+            pins = {} if args.compile_wheels else wheel_cache.pins_for(compat)
+            if args.compile_wheels:
+                wheel_note = "compile forced"
+            elif set(pins) != {name for name, _ in wheel_cache.COMPILED}:
+                wheel_note = "no complete pin set for this compat; compiling"
+            else:
+                try:
+                    prebuilt = [
+                        {"path": wheel_cache.fetch(pins[name], wheel_dir / "pinned"),
+                         "pin": pins[name]}
+                        for name, _ in wheel_cache.COMPILED
+                    ]
+                    wheel_note = "pinned wheels fetched and verified"
+                except Exception as error:
+                    prebuilt = None
+                    failure = _upload_failure_category(error)
+                    wheel_note = f"pinned wheel fetch failed ({failure}); compiling"
+            compiled = wheel_dir / "compiled"
+            if prebuilt is None and (compiled.exists() or compiled.is_symlink()):
+                ap.error("preserving existing compiled wheels; choose a new wheel dir")
+            _log(f"CUDA extension wheels: {wheel_note}")
         conda = _ensure_miniconda(
             args.conda_home, args.miniforge_installer, args.miniforge_sha256
         )
@@ -635,6 +649,7 @@ def main(argv=None):
             flash_attn=flash_attn,
             wheel_dir=wheel_dir / "compiled",
             prebuilt=prebuilt,
+            compat=compat,
         )
         check_conda_ownership(prefix)
         _pack(conda, prefix, out)
@@ -650,11 +665,7 @@ def main(argv=None):
         "uploaded": False,
         "cuda_extension_wheels": {
             "note": wheel_note,
-            "wheels": [
-                {**w, "sha256": _sha256(w["path"]),
-                 "size": Path(w["path"]).stat().st_size}
-                for w in (used_wheels if isinstance(used_wheels, list) else [])
-            ],
+            "wheels": used_wheels if isinstance(used_wheels, list) else [],
         },
     }
     if not args.skip_upload:

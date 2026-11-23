@@ -1,7 +1,6 @@
 """Pinned, prebuilt CUDA extension wheels (flash-attn, causal-conv1d) in R2.
 
-Compiling flash-attn and causal-conv1d takes most of an env build (~70 min of
-~80 on an RTX 4090). ``build_env`` keeps the wheels it compiles; this module
+``build_env`` keeps the wheels it compiles; this module
 uploads them create-only to content-addressed keys and, on the next build,
 fetches the ones pinned in ``tools/models.yaml`` (``wheels:``) for the same
 Python / CUDA / torch / GPU family, verifying SHA-256 and size before pip sees
@@ -20,15 +19,22 @@ import re
 import sys
 import tempfile
 import time
+import zipfile
+from email.parser import Parser
 from pathlib import Path
 
 from tools import model_source, registry
+from tools.artifact_errors import upload_failure_category
 
 # The CUDA extensions build_env compiles, in install order.
 COMPILED = (("flash-attn", "2.8.3.post2"), ("causal-conv1d", "1.7.0"))
-_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
-_FILENAME = re.compile(r"[A-Za-z0-9_.+-]+-[^-]+-cp\d+-cp\d+[a-z]*-linux_x86_64\.whl")
+_FILENAME = re.compile(
+    r"(?P<name>flash_attn|causal_conv1d)-"
+    r"(?P<version>\d+(?:\.\d+)+(?:\.post\d+)?)-"
+    r"(?P<python>cp3\d+)-(?P<abi>cp3\d+)-linux_x86_64\.whl", re.ASCII
+)
 COMPAT_KEYS = ("python", "cuda", "torch", "gpu_family")
+MAX_WHEEL_SIZE = 5 * 1024**3 - 5 * 1024**2  # single create-only PUT, no multipart
 
 
 def _sha256(path):
@@ -42,16 +48,18 @@ def _sha256(path):
 def validate_pin(pin):
     if not isinstance(pin, dict):
         raise registry.RegistryError("wheel pin must be a mapping")
-    if not isinstance(pin.get("name"), str) or not _NAME.fullmatch(pin["name"]):
-        raise registry.RegistryError("wheel pin name must be a lowercase project name")
-    if not isinstance(pin.get("version"), str) or not pin["version"]:
-        raise registry.RegistryError("wheel pin needs a version")
-    if not isinstance(pin.get("filename"), str) or not _FILENAME.fullmatch(
-        pin["filename"]
-    ):
+    match = (
+        _FILENAME.fullmatch(pin["filename"])
+        if isinstance(pin.get("filename"), str) else None
+    )
+    if not match:
         raise registry.RegistryError(
-            "wheel pin filename must be a linux_x86_64 CPython wheel"
+            "wheel filename must be a supported native CPython Linux basename"
         )
+    if (pin.get("name"), pin.get("version")) != (
+        match["name"].replace("_", "-"), match["version"]
+    ):
+        raise registry.RegistryError("wheel filename and pin identity differ")
     sha = pin.get("sha256")
     if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
         raise registry.RegistryError("wheel pin sha256 must be a 64-character digest")
@@ -59,19 +67,101 @@ def validate_pin(pin):
         raise registry.RegistryError(
             "wheel pin r2_key must be wheels/<name>/<sha256>.whl"
         )
-    if type(pin.get("size")) is not int or pin["size"] <= 0:
-        raise registry.RegistryError("wheel pin size must be a positive integer")
+    if type(pin.get("size")) is not int or not 0 < pin["size"] <= MAX_WHEEL_SIZE:
+        raise registry.RegistryError("wheel size must fit one create-only PUT")
     compat = pin.get("compat")
     if not isinstance(compat, dict) or set(compat) != set(COMPAT_KEYS):
         raise registry.RegistryError(
             f"wheel pin compat must have exactly {COMPAT_KEYS}"
         )
+    for key in ("python", "cuda", "torch"):
+        if not isinstance(compat[key], str) or not re.fullmatch(
+            r"\d+\.\d+(?:\.\d+)?", compat[key], re.ASCII
+        ):
+            raise registry.RegistryError("wheel compatibility versions must be numeric")
+    if not re.fullmatch(r"3\.\d+", compat["python"]):
+        raise registry.RegistryError("wheel Python must be a CPython 3 major.minor")
+    if (
+        not isinstance(compat["gpu_family"], str)
+        or compat["gpu_family"] not in registry.GPU_ARCHES
+    ):
+        raise registry.RegistryError("unsupported wheel GPU family")
+    tag = "cp" + compat["python"].replace(".", "")
+    if match["python"] != tag or match["abi"] != tag:
+        raise registry.RegistryError("wheel Python/ABI tags differ from compatibility")
     return pin
+
+
+def inspect_wheel(path, filename):
+    """Check bounded wheel metadata without importing or executing wheel code.
+
+    Tags establish Python/platform identity only. CUDA, torch ABI and GPU-family
+    values remain producer declarations requiring separate runtime evidence.
+    """
+    match = _FILENAME.fullmatch(filename)
+    if not match:
+        raise registry.RegistryError("unsupported wheel filename")
+    info = f"{match['name']}-{match['version']}.dist-info/"
+    with zipfile.ZipFile(path) as archive:
+        names = archive.namelist()
+        identities = {n.split("/", 1)[0] for n in names if ".dist-info/" in n}
+        if len(names) != len(set(names)) or identities != {info[:-1]}:
+            raise ValueError("wheel must contain one matching distribution identity")
+
+        def metadata(name):
+            member = archive.getinfo(info + name)
+            if member.file_size > 65536:
+                raise ValueError("wheel metadata exceeds 64 KiB")
+            with archive.open(member) as stream:
+                raw = stream.read(65537)
+            if len(raw) > 65536:
+                raise ValueError("wheel metadata exceeds 64 KiB")
+            return Parser().parsestr(raw.decode("utf-8"), headersonly=True)
+
+        package, wheel = metadata("METADATA"), metadata("WHEEL")
+        expected_name = match["name"].replace("_", "-")
+        if (
+            package.get_all("Name") is None
+            or len(package.get_all("Name")) != 1
+            or re.sub(r"[-_.]+", "-", package["Name"]).lower() != expected_name
+            or package.get_all("Version") != [match["version"]]
+        ):
+            raise ValueError("wheel METADATA differs from filename identity")
+        expected_tag = f"{match['python']}-{match['abi']}-linux_x86_64"
+        if (
+            wheel.get_all("Wheel-Version") != ["1.0"]
+            or wheel.get_all("Root-Is-Purelib") != ["false"]
+            or wheel.get_all("Tag") != [expected_tag]
+        ):
+            raise ValueError("wheel WHEEL metadata differs from native filename tags")
+
+
+def verify_file(path, pin):
+    """Recheck the pinned bytes immediately before installation or cache reuse."""
+    validate_pin(pin)
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("wheel must be a regular, non-symlink file")
+    if path.stat().st_size != pin["size"] or _sha256(path) != pin["sha256"]:
+        raise ValueError("wheel size or SHA-256 differs from the pin")
+    inspect_wheel(path, pin["filename"])
+    return path
+
+
+def pin_for_file(path, compat):
+    path = Path(path)
+    name, version = name_version(path)
+    sha = _sha256(path)
+    return validate_pin({
+        "name": name, "version": version, "filename": path.name,
+        "compat": dict(compat), "sha256": sha, "size": path.stat().st_size,
+        "r2_key": f"wheels/{name}/{sha}.whl",
+    })
 
 
 def pins_for(compat, path=None):
     """Pinned wheels for exactly this compat, keyed by project name."""
-    wheels = registry._load(path).get("wheels") or []
+    wheels = registry._load(path).get("wheels", [])
     if not isinstance(wheels, list):
         raise registry.RegistryError("registry 'wheels' must be a list")
     wanted = {k: compat[k] for k in COMPAT_KEYS}
@@ -85,18 +175,23 @@ def pins_for(compat, path=None):
 
 
 def fetch(pin, dest_dir, *, client=None, bucket=None):
-    """Download one pinned wheel into dest_dir; refuse any size or hash mismatch."""
+    """Publish verified bytes by digest without replacing an existing cache entry."""
     validate_pin(pin)
     client = client if client is not None else model_source.r2_client()
     if client is None:
         raise RuntimeError("R2 credentials not configured")
     bucket = bucket or os.environ["R2_BUCKET"]
-    dest_dir = Path(dest_dir)
+    dest_dir = Path(dest_dir) / pin["sha256"]
     dest_dir.mkdir(parents=True, exist_ok=True)
     final = dest_dir / pin["filename"]
-    with tempfile.NamedTemporaryFile(dir=dest_dir, delete=False, suffix=".part") as tmp:
-        part = Path(tmp.name)
-        try:
+    if final.exists() or final.is_symlink():
+        return verify_file(final, pin)
+    part = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=dest_dir, delete=False, suffix=".part"
+        ) as tmp:
+            part = Path(tmp.name)
             body = client.get_object(Bucket=bucket, Key=pin["r2_key"])["Body"]
             digest, size = hashlib.sha256(), 0
             try:
@@ -112,18 +207,50 @@ def fetch(pin, dest_dir, *, client=None, bucket=None):
                 raise RuntimeError(
                     f"{pin['filename']}: size or SHA-256 differs from the pin"
                 )
-        except BaseException:
+        verify_file(part, pin)
+        try:
+            os.link(part, final)  # atomic no-replace; never ordinary replace/rename
+        except FileExistsError:
+            verify_file(final, pin)
+        return final
+    except Exception as error:
+        raise RuntimeError(
+            f"pinned wheel fetch failed ({upload_failure_category(error)})"
+        ) from None
+    finally:
+        # The temporary handle is closed first, including on Windows/signals.
+        if part is not None:
             part.unlink(missing_ok=True)
-            raise
-    part.replace(final)
-    return final
+
+
+def _verify_remote(client, bucket, key, pin, *, sidecar=False):
+    body = client.get_object(Bucket=bucket, Key=key)["Body"]
+    try:
+        if sidecar:
+            raw = body.read(65537)
+            if len(raw) > 65536:
+                raise ValueError("wheel sidecar exceeds 64 KiB")
+            stored = validate_pin(json.loads(raw))
+            if any(stored.get(k) != v for k, v in pin.items()):
+                raise ValueError("immutable wheel sidecar identity differs")
+        else:
+            digest, size = hashlib.sha256(), 0
+            for chunk in iter(lambda: body.read(1 << 20), b""):
+                size += len(chunk)
+                if size > pin["size"]:
+                    raise ValueError("immutable wheel is larger than pinned")
+                digest.update(chunk)
+            if size != pin["size"] or digest.hexdigest() != pin["sha256"]:
+                raise ValueError("immutable wheel bytes differ")
+    finally:
+        body.close()
 
 
 def upload(wheel, name, version, compat, *, client=None, bucket=None):
     """Create-only upload to wheels/<name>/<sha256>.whl (+ .json); returns the pin.
 
-    An identical object already at the content-addressed key (same size) counts
-    as present; nothing is ever overwritten or deleted.
+    Existing objects count as present only after full byte/sidecar verification;
+    neither a content-addressed name nor equal length alone establishes identity.
     """
     wheel = Path(wheel)
     if (name, version) not in COMPILED:
@@ -140,6 +267,7 @@ def upload(wheel, name, version, compat, *, client=None, bucket=None):
             "size": size,
         }
     )
+    verify_file(wheel, pin)
     client = client if client is not None else model_source.r2_client()
     if client is None:
         raise RuntimeError("R2 credentials not configured")
@@ -147,46 +275,50 @@ def upload(wheel, name, version, compat, *, client=None, bucket=None):
     sidecar = {
         **pin,
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "built_by": "goodvision-harness build_env",
+        "uploaded_by": "goodvision-harness wheel_cache",
+        "compatibility_evidence": "producer-declared; requires runtime validation",
     }
     for key, body in ((pin["r2_key"], None), (pin["r2_key"][:-4] + ".json", sidecar)):
         try:
-            if body is None:
-                with wheel.open("rb") as f:
+            try:
+                if body is None:
+                    # Check the same open descriptor that supplies the upload.
+                    with wheel.open("rb") as f:
+                        digest, read = hashlib.sha256(), 0
+                        for chunk in iter(lambda: f.read(1 << 20), b""):
+                            digest.update(chunk)
+                            read += len(chunk)
+                        if read != size or digest.hexdigest() != sha:
+                            raise ValueError("wheel changed before upload")
+                        f.seek(0)
+                        client.put_object(
+                            Bucket=bucket, Key=key, Body=f,
+                            ContentLength=size, IfNoneMatch="*",
+                        )
+                else:
                     client.put_object(
-                        Bucket=bucket,
-                        Key=key,
-                        Body=f,
-                        ContentLength=size,
-                        IfNoneMatch="*",
+                        Bucket=bucket, Key=key, IfNoneMatch="*",
+                        Body=json.dumps(body, indent=2).encode(),
                     )
-            else:
-                client.put_object(
-                    Bucket=bucket,
-                    Key=key,
-                    IfNoneMatch="*",
-                    Body=json.dumps(body, indent=2).encode(),
-                )
+            except Exception as error:
+                if upload_failure_category(error) != "PreconditionFailed":
+                    raise
+                _verify_remote(client, bucket, key, pin, sidecar=body is not None)
         except Exception as error:
-            code = getattr(error, "response", {}).get("Error", {}).get("Code", "")
-            if code == "PreconditionFailed" and body is None:
-                head = client.head_object(Bucket=bucket, Key=key)
-                if head.get("ContentLength") == size:
-                    continue  # content-addressed and same size: already present
-            if code == "PreconditionFailed" and body is not None:
-                continue
             raise RuntimeError(
-                f"create-only wheel upload failed ({type(error).__name__}"
-                f"{': ' + code if code else ''}); inspect {key}; "
-                "nothing was overwritten"
+                "create-only wheel upload failed or is uncertain "
+                f"({upload_failure_category(error)}); inspect {key}; "
+                "existing objects were not deleted or overwritten"
             ) from None
     return pin
 
 
 def name_version(wheel):
     """(project name, version) from a wheel filename."""
-    dist, version = Path(wheel).name.split("-")[:2]
-    return dist.replace("_", "-").lower(), version
+    match = _FILENAME.fullmatch(Path(wheel).name)
+    if not match:
+        raise registry.RegistryError("unsupported CUDA wheel filename")
+    return match["name"].replace("_", "-"), match["version"]
 
 
 def main(argv=None):

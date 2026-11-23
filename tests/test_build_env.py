@@ -10,6 +10,7 @@ from collections import UserDict
 from pathlib import Path
 
 import pytest
+from wheel_fixtures import wheel_bytes
 
 from tools import build_env as be
 from tools import registry
@@ -262,7 +263,7 @@ def recording_run(calls, *, keep_kw=False):
             out = Path(argv[argv.index("-w") + 1])
             out.mkdir(parents=True, exist_ok=True)
             for name in WHEELS:
-                (out / name).write_bytes(b"synthetic wheel " + name.encode())
+                (out / name).write_bytes(wheel_bytes(name))
     return run
 
 

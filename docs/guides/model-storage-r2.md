@@ -268,12 +268,13 @@ RECORD 条目和 site-packages 以外的 launcher 条目单独计数，不宣称
 
 ### 预编译的 CUDA 扩展 wheel（flash-attn、causal-conv1d）
 
-在 RTX 4090 上，打一个环境包大约 80 分钟，其中约 70 分钟花在从源码编译 flash-attn 和 causal-conv1d。为了省掉这部分：
+CUDA 扩展的重复编译可以通过已审查的 wheel 缓存减少；具体耗时仍需对应构建日志，不能把作者的历史计时当作本次验证结果。
 
-- **构建时保留：** `build_env` 先用 `pip wheel` 把它们编译到 `<out>.wheels/compiled/`，再从这些 wheel 安装。构建输出的 `cuda_extension_wheels` 会记下每个文件的 SHA-256、大小，以及它是现编的还是从 R2 取的。
-- **上传：** 用读写 key 运行 `python -m tools.wheel_cache upload --model <名字> <wheel...>`。文件按内容寻址，存到 `wheels/<包名>/<sha256>.whl`（另附一个 `.json` 说明文件），只新建、不覆盖。脚本会输出对应的 pin。
+- **构建时保留：** `build_env` 用 `pip wheel --no-binary=flash-attn,causal-conv1d` 编译到全新的 `<out>.wheels/compiled/`；已有编译目录保留并拒绝复用。安装前再次核对身份和哈希，只从选定的本地文件安装，不解析额外依赖，并用 `pip check` 验证依赖。构建输出记录安装前的 SHA-256、大小和来源。
+- **上传：** 用已有授权的读写 key 运行 `python -m tools.wheel_cache upload --model <名字> <wheel...>`。文件按内容寻址，存到 `wheels/<包名>/<sha256>.whl`（另附 `.json`），只新建、不覆盖。若对象已存在，必须完整读取并核对字节哈希和说明文件身份后才算成功；大小相同不能证明相同。脚本输出待审查的 pin。
 - **登记：** pin 经审查后写进 `tools/models.yaml` 的 `wheels:` 列表。每条 pin 写明包名、版本、文件名、Python / CUDA / torch / GPU 家族、`r2_key`、SHA-256 和大小。可信的哈希以仓库里的 pin 为准，不信远端的说明文件。
 - **下次构建：** 如果 Python、CUDA、torch 和 GPU 家族都完全一致，并且两个包都有 pin，就从 R2 下载，先核对大小和 SHA-256 再安装，跳过编译。下载失败或哈希不符时，会退回现场编译，并在输出里写明原因。加 `--compile-wheels` 可以强制编译。
+- **缓存与验收边界：** 下载按哈希分目录保存，不替换已有缓存文件。仅支持这两个扩展的原生 `cp3xx-cp3xx-linux_x86_64` wheel；文件名、包内 `METADATA` / `WHEEL` 和 pin 必须一致。Python/platform 标签不证明 CUDA、torch C++ ABI、glibc 或 GPU 内核兼容。后几项仍是生产者声明，需要来源/构建记录和兼容主机执行证据；上传工具只声明 `uploaded_by`，不冒称自己构建了文件。新增 wheel pin 也不能替代环境包本身的不可变制品和还原验收。
 
 ### 每次使用：在远端恢复，再用包内解释器启动
 
