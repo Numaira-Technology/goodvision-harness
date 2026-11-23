@@ -2493,7 +2493,8 @@ function renderObjectPresence(payload,context=objectPresenceContext()){
   else{
     list.replaceChildren(...latest.objects.map(item=>{
       const row=document.createElement("div");
-      const label=(!english&&item.zh_name)||item.name||item.id;
+      const label=((!english&&item.zh_name)||item.name||item.id)+
+        (item.experimental?(english?" [experimental · not validated]":"【实验性 · 未验证】"):"");
       const p=Number.isFinite(item.present_probability)?(item.present_probability*100).toFixed(0)+"%":"-";
       const answer=item.answer===true?(english?"present":"在"):item.answer===false?(english?"absent":"不在"):(english?"unclear":"看不清");
       row.textContent=(item.present?"● ":"○ ")+label+" · "+(item.present?(english?"PRESENT":"在画面中"):(english?"not present":"未检出"))+
@@ -2503,6 +2504,7 @@ function renderObjectPresence(payload,context=objectPresenceContext()){
     }));
   }
   const parts=["Canvas 物体存在 · VideoJev"];
+  if(latest?.objects?.some(item=>item.experimental))parts.push(english?"experimental presets, not validated":"实验性预设，未经验证");
   if(latest&&Number.isFinite(Number(latest.timestamp_seconds)))parts.push("视频 "+Number(latest.timestamp_seconds).toFixed(1)+" 秒");
   if(latest?.error||status.last_error)parts.push("判断失败："+(latest?.error||status.last_error));
   meta.textContent=parts.join(" · ");

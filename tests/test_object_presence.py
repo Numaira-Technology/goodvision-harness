@@ -10,6 +10,7 @@ import copy
 import io
 import itertools
 import json
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -200,6 +201,7 @@ def test_manager_sends_template_once_and_publishes_latched_results():
     assert "question_template" not in fake.bodies[1]
     knife = first["objects"][0]
     assert knife["detected"] and knife["present"] and knife["changed"]
+    assert knife["experimental"] is True  # shipped preset, not validated
     assert first["source_id"] == "cam" and first["generation"] == 4
     held = second["objects"][0]
     assert held["detected"] is False and held["present"] is True  # 1 of 2 misses
@@ -736,3 +738,57 @@ def test_slow_log_callback_cannot_push_a_tick_far_past_its_time():
     ]
     # The 4.0 s tick is not sent at 5.1 s; 5.0 s goes out within tolerance.
     assert calls == [1.0, 5.1]
+
+
+# --- experimental preset marking ------------------------------------------
+
+
+def test_every_shipped_preset_is_marked_experimental_and_not_validated():
+    assert set(op.PRESET_STATUS) == set(op.PRESETS)
+    for oid in op.PRESETS:
+        status = op.preset_status(oid)
+        assert status["status"] == "experimental"
+        assert status["validated"] is False
+        assert "not validated" in status["note"]
+        assert op.is_experimental(oid)
+    assert op.preset_status("forklift") is None
+    assert op.is_experimental("forklift") is False
+
+
+def test_preset_status_is_not_part_of_the_object_spec():
+    # The marker lives beside the preset, so a preset copied into a graph still
+    # validates and a client cannot smuggle a "validated" flag into one.
+    assert op.object_spec(KNIFE) == KNIFE
+    with pytest.raises(ValueError):
+        op.object_spec({**KNIFE, "validated": True})
+
+
+def test_custom_objects_are_not_badged_as_presets():
+    custom = {"id": "forklift", "name": "forklift", "criterion": "A forklift."}
+    fake = FakeVideoJev([[row("object/forklift", [0.97, 0.02, 0.01])]])
+    manager = op.ObjectPresenceManager(
+        {"id": "objects", "objects": [op.object_spec(custom)]},
+        frame_provider=frames(2), post=fake, stream_session_id="s",
+        source_id="cam", generation=1,
+    )
+    assert manager.tick() is None
+    assert manager.tick()["objects"][0]["experimental"] is False
+
+
+def test_canvas_preset_status_mirrors_python():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/goodvision_harness/assets/workflow_canvas.js"
+    ).read_text(encoding="utf-8")
+    for oid in op.PRESETS:
+        assert f"{oid}:{{status:'experimental',validated:false}}" in source
+
+
+def test_object_presence_is_opt_in_nothing_ships_it_by_default():
+    from goodvision_harness import workflows
+
+    assert workflows.empty_document()["workflows"] == []
+    root = Path(__file__).resolve().parents[1]
+    for name in ("config.yaml", "config.delivery.yaml", "config.vlm-rich.yaml"):
+        text = (root / name).read_text(encoding="utf-8")
+        assert "object_presence" not in text and "type: objects" not in text

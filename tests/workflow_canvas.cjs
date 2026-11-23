@@ -790,3 +790,23 @@ test('object block exposes 2 or 4 frames and validates frame spacing',()=>{
  added.config.window_frames=4;
  assert.match(app.renderObjects(added,false),/data-wc-field="frame_step_seconds"/);
 });
+
+test('knife and alcohol presets are badged experimental and not validated',()=>{
+ const {objectPresetStatus,experimentalObject}=require('../src/goodvision_harness/assets/workflow_canvas.js');
+ assert.deepEqual(Object.keys(objectPresetStatus).sort(),['alcohol_bottle','knife']);
+ for(const status of Object.values(objectPresetStatus))assert.deepEqual(status,{status:'experimental',validated:false});
+ assert.equal(experimentalObject('knife'),true);assert.equal(experimentalObject('object_3'),false);
+ const app=appFixture();
+ app.add('objects',{x:300,y:300});const block=app.graph.nodes.at(-1);app.selected=block.id;
+ app.handleAction('object-add',{dataset:{preset:'alcohol_bottle'}});
+ app.handleAction('object-add',{dataset:{preset:''}});
+ // The marker stays out of the saved object, so the server spec still validates it.
+ for(const object of block.config.objects)assert.ok(!('experimental' in object)&&!('validated' in object));
+ const html=app.renderObjects(block,false);
+ assert.match(html,/data-wc-experimental="knife"/);assert.match(html,/data-wc-experimental="alcohol_bottle"/);
+ assert.doesNotMatch(html,/data-wc-experimental="object_3"/);
+ assert.equal((html.match(/Experimental · not validated/g)||[]).length,2);
+ assert.match(html,/Add custom object/);
+ assert.match(html,/opt-in framework/);
+});
+

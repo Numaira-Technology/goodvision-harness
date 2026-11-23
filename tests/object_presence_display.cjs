@@ -92,3 +92,13 @@ test('an in-flight old result cannot paint after workflow replacement or close',
     await view.poll();assert.equal(view.element('object-presence-list').children.length,0);
   }
 });
+test('experimental presets are labelled as not validated in the live panel',async()=>{
+  const view=fixture({items:[record({objects:[
+    {id:'knife',name:'knife',zh_name:'刀具',experimental:true,present:true,answer:true,present_probability:0.97,gate:0.95},
+    {id:'forklift',name:'forklift',experimental:false,present:false,answer:false,present_probability:0.1,gate:0.95}]})]});
+  await view.poll();
+  const rows=view.element('object-presence-list').children;
+  assert.match(rows[0].textContent,/knife \[experimental · not validated\]/);
+  assert.doesNotMatch(rows[1].textContent,/experimental/);
+  assert.match(view.element('object-presence-meta').textContent,/experimental presets, not validated/);
+});

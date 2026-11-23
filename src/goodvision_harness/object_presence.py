@@ -46,6 +46,20 @@ _PREAMBLE = (
 
 # Starting presets from the 翻包 demo. The 0.95 gate was fitted on a 10-clip
 # smoke sample; it is a default, not a calibrated threshold.
+#
+# EXPERIMENTAL, NOT VALIDATED. The object-presence node is a framework; these
+# presets are examples, not a usable detector. On the internal knife check every
+# real knife was missed at gate 0.95, and alcohol bottles need a hosted VLM.
+# Knife validation is separate follow-up work (docs/validation/
+# object-presence-knife-protocol.md). The UI reads PRESET_STATUS to badge them.
+PRESET_NOTE = (
+    "Experimental preset, not validated: no accuracy claim. On the internal "
+    "knife check every real knife was missed at gate 0.95."
+)
+PRESET_STATUS = {
+    "knife": {"status": "experimental", "validated": False},
+    "alcohol_bottle": {"status": "experimental", "validated": False},
+}
 PRESETS = {
     "knife": {
         "id": "knife",
@@ -69,6 +83,17 @@ PRESETS = {
         "gate": DEFAULT_GATE,
     },
 }
+
+
+def preset_status(object_id: str) -> dict | None:
+    """Validation status of a shipped preset id; None for custom objects."""
+    status = PRESET_STATUS.get(object_id)
+    return dict(status, note=PRESET_NOTE) if status else None
+
+
+def is_experimental(object_id: str) -> bool:
+    status = PRESET_STATUS.get(object_id)
+    return bool(status) and not status["validated"]
 
 
 def _text(value: Any, label: str, *, required: bool, limit: int = MAX_TEXT) -> str:
@@ -675,6 +700,7 @@ class ObjectPresenceManager:
                 "id": spec["id"],
                 "name": spec["name"],
                 "zh_name": spec["zh_name"],
+                "experimental": is_experimental(spec["id"]),
                 **(decision or {"answer": None, "present_probability": None,
                                 "gate": spec["gate"], "detected": None}),
                 "present": latch["present"],
