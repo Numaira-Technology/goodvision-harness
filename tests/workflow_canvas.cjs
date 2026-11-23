@@ -800,7 +800,7 @@ test('object block exposes 2 or 4 frames and validates frame spacing',()=>{
 
 test('knife and alcohol presets are badged experimental and not validated',()=>{
  const {objectPresetStatus,experimentalObject}=require('../src/goodvision_harness/assets/workflow_canvas.js');
- assert.deepEqual(Object.keys(objectPresetStatus).sort(),['alcohol_bottle','knife']);
+ assert.deepEqual(Object.keys(objectPresetStatus).sort(),['alcohol_bottle','bag_alcohol_bottle','bag_knife','knife']);
  for(const status of Object.values(objectPresetStatus))assert.deepEqual(status,{status:'experimental',validated:false});
  assert.equal(experimentalObject('knife'),true);assert.equal(experimentalObject('object_3'),false);
  const app=appFixture();
@@ -909,6 +909,27 @@ test('System 1 and Decision 3 are peer blocks; only object presence picks its re
  assert.equal(objects.config.service_url,undefined);assert.equal(objects.config.execution_mode,undefined);
  assert.deepEqual(app.graph.edges,edges);
  app.add('decision3');assert.equal(app.graph.nodes.at(-1).config.engine,'decision3');assert.equal(app.graph.nodes.at(-1).type,'events');
+});
+
+test('benchmark-recipe presets: argmax, fixed question, no mixing with custom objects',()=>{
+ const {objectPresets,validateGraph}=require('../src/goodvision_harness/assets/workflow_canvas.js');
+ assert.equal(objectPresets.bag_knife.recipe,'bench_bag_v1');assert.equal(objectPresets.bag_knife.gate,null);
+ const app=appFixture();app.add('objects',{x:300,y:300});const node=app.graph.nodes.at(-1);
+ // A new node starts with one empty custom object; adding a recipe preset replaces that placeholder.
+ const html=app.renderObjects(node,false);
+ assert.match(html,/data-preset="bag_knife"(?![^>]*disabled)/);
+ node.config.objects=[structuredClone(objectPresets.bag_knife)];
+ const recipeHtml=app.renderObjects(node,false);
+ assert.match(recipeHtml,/data-wc-recipe="bench_bag_v1"/);
+ assert.doesNotMatch(recipeHtml,/data-wc-field="gate"/);
+ assert.match(recipeHtml,/data-preset=""[^>]*disabled/);          // no custom object next to a recipe one
+ assert.match(recipeHtml,/data-preset="knife"[^>]*disabled/);
+ const graph={nodes:[{id:'source',type:'source',config:{name:'Source'}},{id:'objects',type:'objects',config:{name:'Objects',engine:'system1',execution_mode:'local',service_url:'',cloud_service_url:'',objects:[structuredClone(objectPresets.bag_knife),structuredClone(objectPresets.knife)],sample_fps:1,clear_after:3,window_frames:2,frame_step_seconds:0.4}}],edges:[]};
+ assert.ok(validateGraph(graph).includes('An object block cannot mix benchmark-recipe and custom objects.'));
+ graph.nodes[1].config.objects=[structuredClone(objectPresets.bag_knife),structuredClone(objectPresets.bag_alcohol_bottle)];
+ assert.ok(!validateGraph(graph).includes('An object block cannot mix benchmark-recipe and custom objects.'));
+ graph.nodes[1].config.objects[0].gate=0.9;
+ assert.ok(validateGraph(graph).includes('Benchmark-recipe objects decide by argmax; leave the gate empty.'));
 });
 
 test('template sources bind to distinct cameras and template delete accepts 204',async()=>{

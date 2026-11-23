@@ -17,14 +17,14 @@ function record(overrides = {}) {
     source_frame_sequence:12, error:null, objects:[{id:'knife',name:'knife',zh_name:'刀具',
       present:true,answer:true,present_probability:0.97,gate:0.95}], ...overrides};
 }
-function fixture({items = [record()], response} = {}) {
+function fixture({items = [record()], response, language = 'en'} = {}) {
   const {document, element} = createDocument();
   const manager = {state:'running',node_id:'objects',stream_session_id:'objects-session',generation:8};
   const state = {running:true,sessionId:'old-native-session',diagnosticStatus:{source_id:'source-a',
     workflow:{enabled:true,stream_session_id:'objects-session',generation:8,objects:manager}}};
   const requests = [], timers = new Map(); let timer = 0;
   const context = vm.createContext({state, document, $:element, AbortController, sceneView:{closed:false},
-    GoodvisionI18n:{language:()=> 'en'},
+    GoodvisionI18n:{language:()=>language},
     setTimeout(callback,delay){const id=++timer;timers.set(id,{callback,delay});return id;},
     clearTimeout(id){timers.delete(id);},
     async fetch(url){requests.push(url);const payload=response ? await response(state) : {status:manager,items};
@@ -101,4 +101,19 @@ test('experimental presets are labelled as not validated in the live panel',asyn
   assert.match(rows[0].textContent,/knife \[experimental · not validated\]/);
   assert.doesNotMatch(rows[1].textContent,/experimental/);
   assert.match(view.element('object-presence-meta').textContent,/experimental presets, not validated/);
+});
+test('the live panel describes a null recipe gate as argmax and still displays numeric gates',async()=>{
+  const items=[record({objects:[
+    {id:'bag_knife',name:'knife in bag',zh_name:'翻包刀具',experimental:true,present:true,answer:true,present_probability:0.4,gate:null},
+    {id:'forklift',name:'forklift',zh_name:'叉车',experimental:false,present:false,answer:false,present_probability:0.1,gate:0.95}]})];
+  for(const [language,badge,decision,gate] of [
+    ['en','experimental · not validated','40% / argmax (no gate)','10% / gate 95%'],
+    ['zh','实验性 · 未验证','40% / 取最高概率（无门限）','10% / 门限 95%'],
+  ]){
+    const view=fixture({items,language});await view.poll();
+    const rows=view.element('object-presence-list').children;
+    assert.ok(rows[0].textContent.includes(badge));
+    assert.ok(rows[0].textContent.includes(decision));
+    assert.ok(rows[1].textContent.includes(gate));
+  }
 });
