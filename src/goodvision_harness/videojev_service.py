@@ -22,6 +22,7 @@ from .videojev_contract import (
     parse_choices,
     scene_question_template,
 )
+from .videojev_core import QUANTIZATION_MODES
 from .videojev_runtime import VideoJevRuntime
 
 MAX_BODY_BYTES = 64 * 1024 * 1024
@@ -227,6 +228,7 @@ class Scorer:
         self._pipeline = deque()
         self._active_sessions = {}
         self._jobs = {}
+        self._requests_received = 0
         self._recent = OrderedDict()
         self._question_templates = OrderedDict()
         self._last_template = None
@@ -268,7 +270,12 @@ class Scorer:
                 "prepared": sum(work.state == "ready" for work in self._pipeline),
                 "gpu_busy": bool(self._gpu_work),
                 "queue_policy": "latest-per-stream",
-                "context": metadata.get("context", self.context),
+                "requests_received": self._requests_received,
+                "queue_age": self.queue_age,
+                "queue_capacity": self.queue_capacity,
+                "ready_capacity": self.ready_capacity,
+                "request_timeout": self.request_timeout,
+                "context": self.context,
                 "max_pixels": self.max_pixels,
                 "gpu_batch_size": self.gpu_batch_size,
                 "model": metadata.get("model"),
@@ -282,6 +289,7 @@ class Scorer:
         replaced = None
         rejected = False
         with self._condition:
+            self._requests_received += 1
             key = body["session"], body["request_id"]
             existing = self._jobs.get(key)
             if existing is not None:
@@ -804,7 +812,13 @@ def main():
     parser.add_argument("--max-pixels", type=int)
     parser.add_argument("--prefix-cache", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--d3-shared-window-state", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--quantization", choices=QUANTIZATION_MODES, default="bf16",
+        help="language-model weight precision; fp8 is a latency experiment (sm_89+, torchao)",
+    )
     args = parser.parse_args()
+    if args.quantization != "bf16" and args.runtime != "videojev":
+        parser.error("--quantization fp8 is only implemented for --runtime videojev")
     if args.max_pixels is None:
         args.max_pixels = 200704 if args.runtime == "decision3" else 409600
     if args.cpu_threads < 1:
@@ -823,7 +837,9 @@ def main():
 
             runtime = Decision3Runtime(args.cache_dir, shared_window_state=args.d3_shared_window_state)
         else:
-            runtime = VideoJevRuntime(args.cache_dir, prefix_cache=args.prefix_cache)
+            runtime = VideoJevRuntime(
+                args.cache_dir, prefix_cache=args.prefix_cache, quantization=args.quantization,
+            )
         started = time.perf_counter()
         template = QuestionTemplate(scene_question_template(
             labels=tuple(EVENT_SENSITIVITY_DEFAULTS),

@@ -14,6 +14,19 @@ OPTIONS = [
 ]
 VALUES = (True, False, None)
 
+# Weight precision of the language model. "bf16" is the production default and
+# the only mode any benchmark or live result so far was measured with. "fp8"
+# is an experiment: torchao dynamic per-tensor FP8 on selected linear layers.
+QUANTIZATION_MODES = ("bf16", "fp8")
+TORCHAO_VERSION = "0.13.0"  # pairs with torch 2.8.0
+# FP8 tensor cores start at Ada (sm_89); A100 (sm_80) has none.
+FP8_MIN_CAPABILITY = (8, 9)
+_FP8_PREFIX = "backbone.language_model.layers."
+# Inside a decoder layer, only the dense MLP and the full-attention projections.
+# Left alone on purpose: linear_attn (Gated DeltaNet), the vision encoder
+# (prepare_for_inference keeps it FP32), the FP32 decision head, embeddings.
+_FP8_PARTS = (".mlp.", ".self_attn.")
+
 
 def choice_indices(raw, expected):
     """Validate a flat choice group and return each question's selected index."""
@@ -77,17 +90,84 @@ def record_for_grid(processor, grid, frame_count, fps):
     return video_record(processor, grid, frame_count, fps)
 
 
-class NativeVideoJevModel:
-    """Load the native BF16 model shared by live inference and probe tools."""
+def fp8_linear_filter(module, fqn):
+    """Whether ``quantize_`` should turn this module into an FP8 linear.
 
-    def __init__(self, cache_dir):
+    ``fqn`` is the module's dotted name inside VideoJevForVideoUnderstanding.
+    FP8 matmuls need both dimensions divisible by 16. Matches plain
+    ``torch.nn.Linear`` only (not subclasses), checked by name so this module
+    stays importable without torch.
+    """
+    kind = type(module)
+    return (
+        (kind.__module__, kind.__qualname__) == ("torch.nn.modules.linear", "Linear")
+        and fqn.startswith(_FP8_PREFIX)
+        and any(part in fqn for part in _FP8_PARTS)
+        and ".linear_attn." not in fqn
+        and module.in_features % 16 == 0
+        and module.out_features % 16 == 0
+    )
+
+
+def fp8_linear_names(model):
+    """Dotted names of the linears that the FP8 mode would quantize."""
+    return [name for name, module in model.named_modules()
+            if fp8_linear_filter(module, name)]
+
+
+def check_quantization(mode, capability=None):
+    """Refuse an unknown mode, or FP8 on a GPU without FP8 tensor cores."""
+    if mode not in QUANTIZATION_MODES:
+        raise ValueError(f"quantization must be one of {QUANTIZATION_MODES}")
+    if mode == "fp8" and capability is not None and tuple(capability) < FP8_MIN_CAPABILITY:
+        major, minor = capability
+        raise RuntimeError(f"fp8 needs an sm_89+ GPU (Ada, Hopper); this GPU is sm_{major}{minor}")
+
+
+def apply_fp8(model):
+    """Quantize the selected linears in place; return what was quantized."""
+    if importlib.metadata.version("torchao") != TORCHAO_VERSION:
+        raise RuntimeError(f"fp8 needs torchao=={TORCHAO_VERSION}")
+    from torchao.quantization import (
+        Float8DynamicActivationFloat8WeightConfig,
+        quantize_,
+    )
+    from torchao.quantization.granularity import PerTensor
+
+    names = fp8_linear_names(model)
+    if not names:
+        raise RuntimeError("fp8 found no linear layers to quantize")
+    quantize_(
+        model,
+        Float8DynamicActivationFloat8WeightConfig(granularity=PerTensor()),
+        filter_fn=fp8_linear_filter,
+    )
+    return {
+        "mode": "fp8",
+        "scheme": "torchao Float8DynamicActivationFloat8Weight, per-tensor",
+        "quantized_linears": len(names),
+        "scope": "language_model mlp + self_attn linears",
+    }
+
+
+class NativeVideoJevModel:
+    """Load the native model shared by live inference and probe tools.
+
+    BF16 by default. ``quantization="fp8"`` is an opt-in experiment for latency
+    tests; it is never selected implicitly.
+    """
+
+    def __init__(self, cache_dir, *, quantization="bf16"):
         import torch
         from transformers import AutoModel, AutoProcessor
 
+        check_quantization(quantization)
         if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
             raise RuntimeError("requires a CUDA GPU supporting BF16; no CPU fallback")
         if importlib.metadata.version("transformers") != "5.14.1":
             raise RuntimeError("use isolated environment with transformers==5.14.1")
+        # Fail before the 9 GB load, not after it.
+        check_quantization(quantization, torch.cuda.get_device_capability(0))
         self.torch = torch
         started = time.perf_counter()
         shared = dict(
@@ -102,19 +182,22 @@ class NativeVideoJevModel:
             device_map={"": "cuda:0"}, attn_implementation="flash_attention_2",
         )
         self.model.prepare_for_inference()
+        quantized = {"mode": "bf16"}
+        if quantization == "fp8":
+            quantized = apply_fp8(self.model)
         torch.cuda.synchronize()
         props = torch.cuda.get_device_properties(0)
+        packages = ["torch", "transformers", "flash-attn", "flash-linear-attention",
+                    "causal-conv1d", "fla-core", "accelerate"]
+        if quantization == "fp8":
+            packages.append("torchao")
         self.metadata = {
             "model": MODEL, "revision": REVISION,
             "gpu": props.name, "gpu_total_bytes": props.total_memory,
+            "gpu_allocated_bytes_after_load": torch.cuda.memory_allocated(0),
             "model_load_seconds": time.perf_counter() - started,
-            "versions": {
-                n: importlib.metadata.version(n)
-                for n in (
-                    "torch", "transformers", "flash-attn", "flash-linear-attention",
-                    "causal-conv1d", "fla-core", "accelerate",
-                )
-            },
+            "versions": {n: importlib.metadata.version(n) for n in packages},
             "cuda_runtime": torch.version.cuda,
             "attention": "flash_attention_2", "context": CONTEXT,
+            "quantization": quantized,
         }
