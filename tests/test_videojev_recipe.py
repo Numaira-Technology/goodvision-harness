@@ -138,6 +138,69 @@ def test_live_and_recipe_decisions_agree():
         live.close()
 
 
+@pytest.mark.parametrize("detected", [True, False, None])
+def test_benchmark_preserves_derived_ppe_with_invalid_native_scores(detected):
+    from goodvision_harness.ppe import attach_observation
+
+    live = inspector(("ppe_violation", "fall"))
+    try:
+        ids = [row["id"] for row in live._expected]
+        raw = raw_rows(ids, [[0.8, 0.1, 0.1], [0.8, 0.1, 0.1]])
+        # The service intentionally retains invalid PPE diagnostic scores as
+        # JSON-safe raw evidence; the independent derived state owns the answer.
+        raw[0]["probabilities"] = [float("nan"), 0.1, 0.1]
+        attach_observation(raw, {"detected": detected, "frames": []})
+        live_values = {v.event_label: v.detected for v in live._decode(
+            {"raw": raw}, live._expected, live.config.labels
+        )}
+        config = {"backend": "harness_videojev", "recipe": {
+            "labels": list(live.config.labels)}}
+        answers = adapters.parse_response(config, {
+            "id": "req-1", "targets": list(live.config.labels),
+        }, {"request_id": "req-1", "raw": raw})
+        assert {label: row["answer"] for label, row in answers.items()} == {
+            label: {True: "yes", False: "no"}.get(value, "unknown")
+            for label, value in live_values.items()
+        }
+        assert answers["ppe_violation"]["probabilities"] == ["nan", 0.1, 0.1]
+        # This exemption must not weaken ordinary scene-choice validation.
+        raw[1]["probabilities"] = ["nan", 0.1, 0.1]
+        with pytest.raises(ValueError):
+            live.recipe.decode(raw)
+    finally:
+        live.close()
+
+
+@pytest.mark.parametrize("ppe_shape", ["missing", "duplicate", "no_scores"])
+def test_recipe_keeps_live_ppe_missing_evidence_semantics(ppe_shape):
+    live = inspector(("ppe_violation", "fall"))
+    try:
+        raw = raw_rows([row["id"] for row in live._expected],
+                       [[0.8, 0.1, 0.1], [0.8, 0.1, 0.1]])
+        raw[0]["derived"] = {"detected": True}
+        if ppe_shape == "missing":
+            raw = raw[1:]
+        elif ppe_shape == "duplicate":
+            raw.append(dict(raw[0]))
+        else:
+            del raw[0]["probabilities"]
+        expected = {v.event_label: v.detected for v in live._decode(
+            {"raw": raw}, live._expected, live.config.labels
+        )}
+        decoded = live.recipe.decode(raw)
+        assert {label: row["detected"] for label, row in decoded.items()} == expected
+        if ppe_shape != "duplicate":
+            assert decoded["ppe_violation"]["probabilities"] is None
+    finally:
+        live.close()
+
+
+def test_recipe_refuses_gating_derived_ppe_by_unrelated_native_scores():
+    with pytest.raises(ValueError, match="PPE"):
+        recipe_from_json({"labels": ["ppe_violation"],
+                          "gates": {"ppe_violation": 0.9}})
+
+
 # --- benchmark current-workbench track uses the same code path ----------------
 
 

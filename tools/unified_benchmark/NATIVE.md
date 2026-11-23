@@ -297,6 +297,10 @@ production). A unit whose frames do not match the recipe window (count and
 spacing within 1 ms) is refused, so frozen 1 FPS bundles cannot stand in for
 the 0.5 s production window.
 
+PPE uses the live service's independent derived decision. Its native choice
+probabilities are diagnostic only and may be invalid or absent, so a
+`ppe_violation` gate is refused rather than applying unrelated scores.
+
 Not yet done (phase 2): preflight windows at the recipe spacing, and running
 the current `goodvision_harness.videojev_service` instead of the historical
 `private-eval/service.py`. Historical results stay reported separately.

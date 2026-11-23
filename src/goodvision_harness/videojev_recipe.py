@@ -28,7 +28,7 @@ from .event_registry import (
     vocabulary_from_json,
 )
 from .videojev_contract import scene_question_template
-from .videojev_core import MODEL, REVISION, choice_indices
+from .videojev_core import MODEL, REVISION
 
 # Live System 1 windows (service.py passes these to the independent branch).
 PRODUCTION_WINDOW_FRAMES = 2
@@ -88,6 +88,8 @@ class VideoJevRecipe:
         for label, gate in self.gates:
             if label not in self.labels:
                 raise ValueError("recipe gate refers to an unknown label")
+            if label == "ppe_violation":
+                raise ValueError("derived PPE decisions have no gate probability")
             if type(gate) not in (int, float) or not 0.34 <= gate <= 1:
                 raise ValueError("recipe gates must be between 0.34 and 1")
 
@@ -149,6 +151,8 @@ class VideoJevRecipe:
         Answers come from the same parser the live inspector uses (including
         the PPE-derived row). Without a gate, detected equals the answer, as
         in production; with a gate, "present" also needs its probability.
+        PPE probabilities are native diagnostics, not confidence in the derived
+        answer; they may be invalid or missing and cannot gate that answer.
         """
         from .ppe import native_rows, parse_ppe_choices
 
@@ -159,22 +163,24 @@ class VideoJevRecipe:
             for row in native_rows(raw)
             if isinstance(row, dict) and isinstance(row.get("id"), str)
         }
-        choice_indices(
-            [rows[q["id"]] for q in expected if q["id"] in rows], expected
-        )
+        # parse_ppe_choices already validates every ordinary choice. PPE uses
+        # an independent derived state and deliberately tolerates invalid or
+        # missing native diagnostics; revalidating it would break live parity.
         gates = dict(self.gates)
         result = {}
         for label in self.labels:
             qid = "scene/" + label
             answer = values[qid]
-            probabilities = rows[qid]["probabilities"]
+            probabilities = rows.get(qid, {}).get("probabilities")
             gate = gates.get(label)
             detected = answer
             if answer is True and gate is not None:
                 detected = probabilities[0] >= gate
             result[label] = {
                 "answer": answer,
-                "probabilities": list(probabilities),
+                "probabilities": (
+                    list(probabilities) if isinstance(probabilities, list) else None
+                ),
                 "gate": gate,
                 "detected": detected,
             }
