@@ -245,7 +245,9 @@ def check_compatibility(env):
         raise RuntimeError(
             "GPU compute capability does not match env.compat.gpu_family"
         )
-    match = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", driver)
+    # Drivers before R6xx print "CUDA Version: 12.8"; newer ones (e.g. 615.78)
+    # print "CUDA UMD Version: 13.4" in the same header position.
+    match = re.search(r"CUDA (?:UMD )?Version:\s*(\d+)\.(\d+)", driver)
     required = tuple(int(part) for part in env["compat"]["cuda"].split(".")[:2])
     if not match or tuple(map(int, match.groups())) < required:
         raise RuntimeError("NVIDIA driver CUDA support is below env.compat.cuda")
