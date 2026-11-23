@@ -144,8 +144,22 @@ def validate_health(config, health):
     return describe(health)
 
 
+def live_step(bundle):
+    """The window spacing of a live-spacing bundle, or None for a frozen bundle."""
+    manifest = Path(bundle) / "live-manifest.json"
+    if not manifest.is_file():
+        return None
+    return json.loads(manifest.read_text())["step_seconds"]
+
+
 def checked_body(config, unit, bundle):
-    body = request_body(config, unit, bundle)[1]
+    step = live_step(bundle)
+    if step is None:
+        body = request_body(config, unit, bundle)[1]
+    else:
+        from tools.videojev_probe.live_bundle import request_body as live_request_body
+
+        body = live_request_body(config, unit, bundle, step)
     if digest(body) != unit["request_sha256"]:
         raise ValueError("frozen request differs: " + unit["id"])
     return body
@@ -265,7 +279,12 @@ def summarize(plan, config, records, wall_seconds):
 def run(args):
     url = local_url(args.url)
     bundle = Path(args.bundle)
-    bundle_digest = verify_bundle(bundle)
+    if live_step(bundle) is None:
+        bundle_digest, step = verify_bundle(bundle), None
+    else:
+        from tools.videojev_probe.live_bundle import verify as verify_live
+
+        bundle_digest, step = verify_live(bundle)
     plan = json.loads((bundle / "plans" / f"videojev-{args.split}.json").read_text())
     config = json.loads((bundle / "configs" / "videojev.json").read_text())
     health = http_health(url)
@@ -284,7 +303,7 @@ def run(args):
             f.write(json.dumps(record) + "\n")
     result = {
         "kind": "videojev-gpu-sweep", "label": args.label, "at": stamp(),
-        "bundle_sha256": bundle_digest, "split": args.split,
+        "bundle_sha256": bundle_digest, "split": args.split, "window_step_seconds": step or 1.0,
         "plan_sha256": digest(plan), "config_sha256": digest(config),
         "sweep_sha256": file_hash(__file__), "service": service, "health": health,
         "warmup_seconds": warmup_seconds,
