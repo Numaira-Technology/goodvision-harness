@@ -187,7 +187,9 @@ class LocalModuleServices:
             directory = module_directory()
             directory.mkdir(parents=True, exist_ok=True)
             root = Path(__file__).resolve().parents[2]
-            isolated = root / f".venv-module-{engine}" / (
+            # Decision 3 shares the System 1 (VideoJev) environment.
+            venv = {"decision3": "system1"}.get(engine, engine)
+            isolated = root / f".venv-module-{venv}" / (
                 "Scripts/python.exe" if os.name == "nt" else "bin/python"
             )
             python = os.environ.get(

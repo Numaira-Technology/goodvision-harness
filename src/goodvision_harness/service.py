@@ -200,6 +200,7 @@ from .vlm_admission import AdmissionSettings
 from .vlm_fusion import VLMFusion
 from .vlm_independent import IndependentVLMBranch, VLMProcessConfig
 from .vlm_rich_labeling import RICH_ANNOTATION_CAPABILITY, VLMRichLabelClient
+from .workflow_modules import NATIVE_EVENT_ENGINES
 from .workflow_runtime import WorkflowRuntimeMixin
 
 LOGGER = logging.getLogger(__name__)
@@ -2257,7 +2258,7 @@ class HarnessRuntime(WorkflowRuntimeMixin):
         ):
             self._workflow_bbox_probe(self._workflow_plan.get("tracking_service_url"))
         if (self._workflow_plan and not self.dry_run
-                and self._workflow_plan.get("events_engine") in {"system1", "neural"}):
+                and self._workflow_plan.get("events_engine") in NATIVE_EVENT_ENGINES):
             self._workflow_event_probe(self._workflow_plan)
         if (tracking and not bbox) or (
             features and self._workflow_plan is None and not independent_events

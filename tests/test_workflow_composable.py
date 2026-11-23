@@ -6,11 +6,12 @@ import base64
 import copy
 import io
 import json
+from pathlib import Path
 
 import pytest
 from PIL import Image
 
-from goodvision_harness import object_presence
+from goodvision_harness import object_presence, vlm_independent
 from goodvision_harness.object_presence import (
     PRESETS,
     ObjectPresenceManager,
@@ -250,17 +251,31 @@ def test_rich_label_boxes_aligns_by_source_frame():
 
 
 # -- templates ---------------------------------------------------------------
-def test_builtin_foundation_template_is_valid_and_compiles_once_bound():
-    (template,) = builtin_templates()
-    assert template["builtin"] is True
-    assert "实验性" in template["description"]
+BUILTIN_IDS = [
+    "builtin-person-events", "builtin-item-check", "builtin-summary-patrol",
+]
+
+
+def _bound(template):
     graph = copy.deepcopy(template["graph"])
     assert all("camera_id" not in n["config"] for n in graph["nodes"])
     graph["nodes"][0]["config"]["camera_id"] = "camera01"
-    plan = compile_graph(graph, camera_id="camera01")
-    assert plan["tracking_engine"] == "bbox"
-    assert plan["events_engine"] == "system1"
-    assert plan["objects"]["focus"] == "person_crop"
+    return compile_graph(graph, camera_id="camera01")
+
+
+def test_builtin_templates_cover_project_types_and_compile_once_bound():
+    templates = {t["id"]: t for t in builtin_templates()}
+    assert list(templates) == BUILTIN_IDS
+    assert all(t["builtin"] for t in templates.values())
+    people = _bound(templates["builtin-person-events"])
+    assert (people["tracking_engine"], people["events_engine"]) == ("bbox", "system1")
+    assert "objects" not in people
+    items = _bound(templates["builtin-item-check"])
+    assert items["objects"]["focus"] == "person_crop"
+    assert items["tracking_engine"] == "bbox" and "events_engine" not in items
+    assert "实验性" in templates["builtin-item-check"]["description"]
+    patrol = _bound(templates["builtin-summary-patrol"])
+    assert len(patrol["summaries"]) == 1 and not patrol["tracking_enabled"]
 
 
 def test_strip_deployment_removes_cameras_and_addresses():
@@ -281,13 +296,13 @@ def test_saved_templates_persist_separately_and_builtins_are_protected(tmp_path)
     assert saved["name"] == "我的基础盘" and saved["builtin"] is False
     assert "camera_id" not in saved["graph"]["nodes"][0]["config"]
     again = TemplateStore(path)
-    assert [t["id"] for t in again.list()] == ["builtin-videojev-yolo", saved["id"]]
+    assert [t["id"] for t in again.list()] == [*BUILTIN_IDS, saved["id"]]
     with pytest.raises(WorkflowValidationError, match="built-in"):
-        again.delete("builtin-videojev-yolo")
+        again.delete("builtin-item-check")
     with pytest.raises(WorkflowValidationError):
         again.save({"name": "bad", "graph": base_graph(tracking="contour")})
     again.delete(saved["id"])
-    assert [t["id"] for t in TemplateStore(path).list()] == ["builtin-videojev-yolo"]
+    assert [t["id"] for t in TemplateStore(path).list()] == BUILTIN_IDS
     with pytest.raises(WorkflowValidationError, match="unknown"):
         again.delete(saved["id"])
 
@@ -384,9 +399,7 @@ def test_template_routes_and_module_catalog(monkeypatch, tmp_path):
         listed = client.get("/v1/workflow-templates")
         assert listed.status_code == 200
         assert listed.headers["cache-control"] == "no-store"
-        assert [t["id"] for t in listed.json()["templates"]] == [
-            "builtin-videojev-yolo"
-        ]
+        assert [t["id"] for t in listed.json()["templates"]] == BUILTIN_IDS
         saved = client.post(
             "/v1/workflow-templates", json={"name": "Store", "graph": base_graph()}
         )
@@ -398,10 +411,10 @@ def test_template_routes_and_module_catalog(monkeypatch, tmp_path):
         bad = client.post("/v1/workflow-templates", json={"name": "x", "extra": 1})
         assert bad.status_code == 400
         assert client.delete(
-            "/v1/workflow-templates/builtin-videojev-yolo"
+            "/v1/workflow-templates/builtin-person-events"
         ).status_code == 400
         assert client.delete(f"/v1/workflow-templates/{template_id}").status_code == 204
-        assert len(client.get("/v1/workflow-templates").json()["templates"]) == 1
+        assert len(client.get("/v1/workflow-templates").json()["templates"]) == 3
 
 
 def test_debug_route_is_on_the_fleet_allowlist():
@@ -410,3 +423,81 @@ def test_debug_route_is_on_the_fleet_allowlist():
     assert "/workflow/nodes/{node_id}/debug" in OUTPUT_PATHS
     assert _OUTPUT_RE.match("/v1/workflow/nodes/objects-1/debug?limit=20")
     assert not _OUTPUT_RE.match("/v1/workflow/nodes/a/b/debug")
+
+
+# -- engine catalog: Decision 3 ----------------------------------------------
+def _events_graph(engine, **extra):
+    return {
+        "nodes": [
+            {"id": "source", "type": "source", "config": {"camera_id": "camera01"}},
+            {"id": "events", "type": "events",
+             "config": {"engine": engine, "features": ["smoking"], **extra}},
+            {"id": "out", "type": "output"},
+        ],
+        "edges": [
+            edge("source", "frames", "events"), edge("events", "events", "out"),
+        ],
+    }
+
+
+def test_catalog_lists_switchable_engines_per_slot():
+    modules = module_catalog()["modules"]
+    events = {e["id"]: e for e in modules["events"]["engines"]}
+    assert list(events) == ["vlm", "system1", "decision3", "neural"]
+    assert events["decision3"] == {
+        "id": "decision3", "name": "Decision 3 recognition",
+        "model": "vllm-sr/d3-nano", "local": True,
+    }
+    assert [e["id"] for e in modules["objects"]["engines"]] == ["system1", "decision3"]
+    assert modules["summary"]["engines"] == []
+
+
+def test_switching_system1_to_decision3_keeps_the_same_wiring():
+    system1 = compile_graph(_events_graph("system1"), camera_id="camera01")
+    decision3 = compile_graph(_events_graph("decision3"), camera_id="camera01")
+    assert decision3["events_engine"] == "decision3"
+    assert decision3["events_service_url"] == "http://127.0.0.1:8099"
+    assert decision3["events_execution_mode"] == "local"
+    for key in ("features", "event_sensitivities", "outputs", "events_node_id"):
+        assert decision3[key] == system1[key]
+
+
+def test_objects_node_accepts_decision3_with_person_crop():
+    value = base_graph()
+    value["nodes"][2]["config"]["engine"] = "decision3"
+    plan = compile_graph(value, camera_id="camera01")
+    assert plan["objects_engine"] == "decision3"
+    assert plan["objects_service_url"] == "http://127.0.0.1:8099"
+    assert plan["objects"]["focus"] == "person_crop"
+
+
+def test_decision3_uses_the_native_event_lane_and_its_own_model(rig):  # noqa: F811
+    runtime = rig[0]
+    configure(runtime, _events_graph(
+        "decision3", execution_mode="server", service_url="http://10.0.0.9:8099",
+    ))
+    assert runtime._workflow_plan["events_engine"] == "decision3"
+    configuration = runtime._workflow_event_configuration()
+    assert configuration.inference.model == "vllm-sr/d3-nano"
+    assert configuration.aiclub.endpoint == "http://10.0.0.9:8099/predict"
+    # The independent lane picks its inspector by this model ID.
+    source = Path(vlm_independent.__file__).read_text(encoding="utf-8")
+    assert 'config.model == "vllm-sr/d3-nano"' in source
+    assert "Decision3Inspector" in source
+
+
+def test_local_decision3_module_runs_the_videojev_service_runtime(
+    monkeypatch, tmp_path
+):
+    import sys
+
+    from goodvision_harness import module_service, videojev_service
+
+    seen = {}
+    monkeypatch.setattr(videojev_service, "main", lambda: seen.update(argv=sys.argv))
+    monkeypatch.setenv("GOODVISION_MODULE_MODEL_DIR", str(tmp_path / "models"))
+    module_service.serve("decision3", "127.0.0.1", 8099, tmp_path / "data")
+    argv = seen["argv"]
+    assert argv[1:3] == ["--runtime", "decision3"]
+    assert argv[argv.index("--port") + 1] == "8099"
+    assert argv[argv.index("--result-log") + 1].endswith("decision3-results.jsonl")

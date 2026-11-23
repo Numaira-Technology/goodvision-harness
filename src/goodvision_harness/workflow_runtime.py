@@ -22,6 +22,7 @@ from .privacy import (
     PUBLIC_MISSING_API_KEY_ERROR,
     public_safe_value,
 )
+from .workflow_modules import NATIVE_EVENT_ENGINES
 
 
 class WorkflowRuntimeMixin:
@@ -242,7 +243,7 @@ class WorkflowRuntimeMixin:
                 # Native safety inference remains available with tracking off.
                 scene_mode = "disabled"
         runtime = replace(configuration.runtime, scene_mode=scene_mode)
-        if (plan or {}).get("events_engine") in {"system1", "neural"}:
+        if (plan or {}).get("events_engine") in NATIVE_EVENT_ENGINES:
             runtime = replace(
                 runtime,
                 scene_mode="active",
@@ -280,7 +281,7 @@ class WorkflowRuntimeMixin:
                 ),
             )
         selected = (plan or {}).get("events_engine", "vlm")
-        if selected in {"system1", "neural"}:
+        if selected in NATIVE_EVENT_ENGINES:
             if not plan.get("events_service_url"):
                 raise ValueError(
                     "Configure the recognition service URL before starting."
@@ -308,7 +309,7 @@ class WorkflowRuntimeMixin:
             raise
         self._workflow_tracking_baseline = baseline if plan is not None else None
         self._workflow_event_baseline = (
-            event_baseline if selected in {"system1", "neural"} else None
+            event_baseline if selected in NATIVE_EVENT_ENGINES else None
         )
 
     def configure_workflow(self, payload):
@@ -1272,8 +1273,11 @@ class WorkflowRuntimeMixin:
                 frames, event_sensitivities=config.sensitivities,
                 vocabulary=config.vocabulary,
             )
-            cls = (NeuralInspector if plan["events_engine"] == "neural"
-                   else VideoJevInspector)
+            if plan["events_engine"] == "decision3":
+                from .decision3_model import Decision3Inspector as cls
+            else:
+                cls = (NeuralInspector if plan["events_engine"] == "neural"
+                       else VideoJevInspector)
             inspector = cls(config)
             verdicts = inspector.inspect(job)
             result.update(
@@ -1331,7 +1335,7 @@ class WorkflowRuntimeMixin:
             # out of the live connection's presentation history.
             native_preview_frames = (
                 connection.display_frames(after=None, max_age_seconds=2, limit=120)
-                if plan.get("events_engine") in {"system1", "neural"} else ()
+                if plan.get("events_engine") in NATIVE_EVENT_ENGINES else ()
             )
             self._workflow_operation += 1
             operation = self._workflow_operation
@@ -1430,7 +1434,7 @@ class WorkflowRuntimeMixin:
                 if not node_id:
                     continue
                 check_active()
-                if not identity and plan.get("events_engine") in {"system1", "neural"}:
+                if not identity and plan.get("events_engine") in NATIVE_EVENT_ENGINES:
                     results.append(self._workflow_native_event_test(
                         plan, connection, snapshot, context, native_preview_frames,
                     ))

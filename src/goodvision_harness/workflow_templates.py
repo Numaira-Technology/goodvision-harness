@@ -43,38 +43,75 @@ def _edge(eid, source, port, target, to_port=None):
     }
 
 
+def _node(nid, kind, x, y, **config):
+    return {"id": nid, "type": kind, "x": x, "y": y, "config": config}
+
+
+# One starter per project type. Engines can be switched inside each node
+# (e.g. System 1 <-> Decision 3) without rewiring. No template carries an
+# accuracy claim; the object preset is experimental and not validated.
 BUILTIN = (
     {
-        "id": "builtin-videojev-yolo",
-        "name": "VideoJev + YOLO 基础盘",
+        "id": "builtin-person-events",
+        "name": "人员 + 事件",
         "description": (
-            "视频源 → YOLO 人框（Bbox）→ 物体存在（VideoJev，按人框裁剪）→ 输出；"
-            "同时 视频源 → System 1 事件（VideoJev）→ 输出。物体预设为实验性，"
-            "未经验证；人框裁剪是否提升识别需在真实视频上对比后才能下结论。"
+            "视频源 → YOLO 人框（Bbox）→ 输出；视频源 → 事件识别（System 1，"
+            "可在节点内切换为 Decision 3）→ 输出。需要身份时再加人脸识别。"
         ),
         "graph": {
             "nodes": [
-                {"id": "source", "type": "source", "x": 40, "y": 60, "config": {}},
-                {"id": "bbox", "type": "tracking", "x": 330, "y": 40,
-                 "config": {"engine": "bbox"}},
-                # Explicit experimental preset (no default object exists); the
-                # description says it is not validated.
-                {"id": "objects", "type": "objects", "x": 330, "y": 235,
-                 "config": {"engine": "system1",
-                            "objects": [object_presence.PRESETS["knife"]]}},
-                {"id": "events", "type": "events", "x": 330, "y": 430,
-                 "config": {"engine": "system1"}},
-                {"id": "output", "type": "output", "x": 640, "y": 200,
-                 "config": {}},
+                _node("source", "source", 40, 60),
+                _node("bbox", "tracking", 330, 40, engine="bbox"),
+                _node("events", "events", 330, 235, engine="system1"),
+                _node("output", "output", 640, 120),
+            ],
+            "edges": [
+                _edge("e-source-bbox", "source", "frames", "bbox"),
+                _edge("e-source-events", "source", "frames", "events"),
+                _edge("e-bbox-output", "bbox", "tracks", "output"),
+                _edge("e-events-output", "events", "events", "output"),
+            ],
+        },
+    },
+    {
+        "id": "builtin-item-check",
+        "name": "物品检查 / 翻包",
+        "description": (
+            "视频源 → YOLO 人框（Bbox）→ 物体存在（VideoJev，按人框裁剪）→ 输出。"
+            "刀具预设为实验性，未经验证；人框裁剪是否提升识别需在真实视频上对比后"
+            "才能下结论。"
+        ),
+        "graph": {
+            "nodes": [
+                _node("source", "source", 40, 60),
+                _node("bbox", "tracking", 330, 40, engine="bbox"),
+                # Explicit experimental preset: there is no default object.
+                _node("objects", "objects", 330, 235, engine="system1",
+                      objects=[object_presence.PRESETS["knife"]]),
+                _node("output", "output", 640, 120),
             ],
             "edges": [
                 _edge("e-source-bbox", "source", "frames", "bbox"),
                 _edge("e-source-objects", "source", "frames", "objects"),
                 _edge("e-bbox-objects", "bbox", "tracks", "objects"),
-                _edge("e-source-events", "source", "frames", "events"),
                 _edge("e-bbox-output", "bbox", "tracks", "output"),
                 _edge("e-objects-output", "objects", "objects", "output"),
-                _edge("e-events-output", "events", "events", "output"),
+            ],
+        },
+    },
+    {
+        "id": "builtin-summary-patrol",
+        "name": "纯总结巡检",
+        "description": "视频源 → 定时总结（托管 VLM，默认每 60 秒）→ 输出。",
+        "graph": {
+            "nodes": [
+                _node("source", "source", 40, 60),
+                _node("summary", "summary", 330, 60),
+                _node("output", "output", 640, 60),
+            ],
+            "edges": [
+                _edge("e-source-summary", "source", "frames", "summary"),
+                _edge("e-summary-output", "summary", "summary", "output"),
             ],
         },
     },

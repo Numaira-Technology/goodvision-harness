@@ -5,21 +5,29 @@ from urllib.parse import urlsplit
 
 ENGINES = {
     "tracking": ("contour", "bbox"),
-    "events": ("vlm", "system1", "neural"),
-    # Object presence reuses the native VideoJev worker; more engines later.
-    "objects": ("system1",),
+    "events": ("vlm", "system1", "decision3", "neural"),
+    # Object presence reuses the native VideoJev protocol; Decision 3 answers the
+    # same questions on its own worker (experimental, not validated).
+    "objects": ("system1", "decision3"),
 }
 NAMES = {
     "contour": "Contour",
     "bbox": "Bbox",
     "vlm": "VLM semantic recognition",
     "system1": "System 1 recognition",
+    "decision3": "Decision 3 recognition",
     "neural": "Neural network recognition",
 }
-MODELS = {"system1": "ZhuYuhan/VideoJev-4B", "neural": "openai/clip-vit-large-patch14"}
+MODELS = {
+    "system1": "ZhuYuhan/VideoJev-4B",
+    "decision3": "vllm-sr/d3-nano",
+    "neural": "openai/clip-vit-large-patch14",
+}
+# Engines that run in the native independent event lane (not the shared VLM).
+NATIVE_EVENT_ENGINES = ("system1", "decision3", "neural")
 NEURAL_EVENTS = ("fight", "smoking", "fall", "weapon", "ppe_violation", "ground_litter")
 POSITIONS = ("top-left", "top-right", "bottom-left", "bottom-right")
-LOCAL_PORTS = {"bbox": 8096, "system1": 8097, "neural": 8098}
+LOCAL_PORTS = {"bbox": 8096, "system1": 8097, "neural": 8098, "decision3": 8099}
 EXECUTION_MODES = ("local", "server", "cloud")
 
 
@@ -167,7 +175,15 @@ def module_catalog():
                     for port, required in spec["inputs"]
                 ],
                 "outputs": [{"port": port, "type": port} for port in spec["outputs"]],
-                "engines": list(ENGINES.get(kind, ())),
+                "engines": [
+                    {
+                        "id": engine,
+                        "name": NAMES[engine],
+                        "model": MODELS.get(engine),
+                        "local": engine in LOCAL_PORTS,
+                    }
+                    for engine in ENGINES.get(kind, ())
+                ],
                 "debug": "records" if kind in DEBUG_RECORDS else "status",
             }
             for kind, spec in CONTRACT.items()

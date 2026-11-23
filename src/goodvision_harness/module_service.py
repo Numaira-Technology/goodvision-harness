@@ -1,4 +1,4 @@
-"""Run an existing Bbox, System 1 or neural worker on any deployment host."""
+"""Run an existing Bbox, System 1, Decision 3 or neural worker on any host."""
 
 from __future__ import annotations
 
@@ -38,15 +38,17 @@ def serve(engine, host, port, directory):
         uvicorn.run(
             "workers.detector_rich_label.app:app", host=host, port=port, workers=1
         )
-    elif engine == "system1":
+    elif engine in {"system1", "decision3"}:
         from .videojev_service import main
 
+        # Decision 3 is the same native service with its own runtime.
         sys.argv = [
             "goodvision-videojev",
+            *(("--runtime", "decision3") if engine == "decision3" else ()),
             "--cache-dir",
             str(cache / "huggingface"),
             "--result-log",
-            str(directory / "system1-results.jsonl"),
+            str(directory / f"{engine}-results.jsonl"),
             "--host",
             host,
             "--port",

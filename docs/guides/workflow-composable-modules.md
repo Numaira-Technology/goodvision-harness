@@ -1,6 +1,6 @@
 # Canvas 可组合模块：设计说明
 
-**状态：第二版草案（2026-11-23），按 Ashley 的意见把范围从「YOLO → 物体」扩到所有模块，待确认第 5 节。** 第一版里已确认并写好的部分（模块契约、YOLO → 物体裁剪、统一调试入口、模板存取）见第 6 节，代码已在本地分支，尚未推送。本文不声明任何识别效果。
+**状态：第二版（2026-11-23）。Ashley 已确认第 5 节，第一期一起提 PR，实现见第 6 节。** 本文不声明任何识别效果。
 
 目标：新项目接进来时，可以在 Canvas 上直接把需要的模块拉过来（VideoJev、Decision 3、托管 VLM、CLIP、总结……），按需加或不加 YOLO，快速搭出一个底子；每个模块在侧栏都有统一的调试入口。
 
@@ -127,8 +127,8 @@ VideoJev 在 Harness 里有两个入口，处理方式不同：
 1. 模块契约（端口、必需 / 可选、`accepts`、调试类型），后端校验和编译，前端改读目录。**已写好。**
 2. YOLO 作为可选上游：物体节点的 `tracks` 输入和人框裁剪，测试模式下用模拟人框。**已写好。**
 3. 统一调试入口：接口加侧栏分区。物体、总结有完整记录，其他节点显示状态。**已写好。**
-4. 模板存取，内置模板按项目类型改成上面三个。存取已写好，三个内置模板待改。
-5. **新增：引擎目录。** 节点内下拉切换引擎，Decision 3 进目录，事件节点在 VideoJev 和 Decision 3 之间切换不用重连。待写。
+4. 模板存取，内置三个按项目类型的模板。**已写好。**
+5. 引擎目录：节点内下拉切换引擎，Decision 3 进目录，事件节点和物体节点都能在 VideoJev 和 Decision 3 之间切换，不用重新连线。**已写好。**
 
 **第二期：** 独立的决策节点，输出 `alerts`，输出节点加 `alerts` 输入：
 - 规则先支持：单个结果过门限、持续 N 次才触发、连续 M 次没有才清除、多个条件同时满足（「有人 + 有刀」）、身份 / 陌生人告警策略（把 `actions/alerts.py` 的逻辑搬成节点配置）。
@@ -148,7 +148,7 @@ VideoJev 在 Harness 里有两个入口，处理方式不同：
 3. **第二期决策节点：** 规则范围按第 4 节（门限、持续、清除、多条件、身份策略）；物体节点接了决策节点后，持续和清除交给决策节点，不接时保持现状。可以吗？
 4. **准确率：** 不变。任何新接法（人框裁剪、Decision 3 回答物体问题、事件接人框）都要在真实视频上和不接的情况对比之后才能说效果；开 GPU 需要 Ashley 同意。
 
-## 6. 已写好的部分（本地分支，尚未推送）
+## 6. 第一期实现情况
 
 | 部分 | 位置 |
 |---|---|
@@ -157,11 +157,13 @@ VideoJev 在 Harness 里有两个入口，处理方式不同：
 | 编译：输出节点的所有上游都运行；接上人框时 plan 多出 `objects.focus` 和 `objects.tracks_node_id` | `workflows.compile_graph` |
 | 人框裁剪：`person_crop_box()`（并集、外扩 25%、最小边 0.35、移回画面内）、窗口共用一个裁剪框、无人退回整帧、框查询出错不影响判断 | `object_presence.py` |
 | 人框来源：真实运行按源帧时间从 Bbox 取框；测试模式用一个固定的模拟人框 | `workflow_runtime._start_workflow_objects` |
-| 模板：内置「VideoJev + YOLO 基础盘」、另存 / 删除、去掉摄像头和服务地址 | `workflow_templates.py`、`workflow_routes.py` |
+| 模板：内置「人员 + 事件」「物品检查 / 翻包」「纯总结巡检」、另存 / 删除、去掉摄像头和服务地址 | `workflow_templates.py`、`workflow_routes.py` |
+| 引擎目录：`decision3` 引擎（模型 `vllm-sr/d3-nano`，本地端口 8099，复用 System 1 的环境）进事件和物体两个槽位；目录里列出各槽位的引擎；原生事件通道和单帧测试识别 Decision 3 | `workflow_modules.py`、`module_service.py`、`module_services.py`、`workflow_runtime.py` |
+| 画布：节点内「引擎」下拉，切换后连线保留，服务地址清空，事件选择收窄到新引擎支持的范围；模块库新增 Decision 3 方块 | `assets/workflow_canvas.js` |
 | 调试接口：`GET /v1/workflow/nodes/{node_id}/debug?limit=`（1–200，默认 20），fleet 按摄像头转发 | `workflow_runtime.workflow_node_debug`、`service.py`、`fleet_outputs.py` |
 | 画布：端口表改读服务端目录；物体节点的 `tracks` 输入只列 Bbox；「从模板新建…」「另存为模板」；模块侧栏「调试」分区 | `assets/workflow_canvas.js` |
 | 测试 | `tests/test_workflow_composable.py`、`tests/workflow_canvas.cjs` |
 
 调试记录格式各节点一致。物体节点每条对应一个计划 tick（含跳过的 tick 和原因），`input.focus` 记录用了几个框、裁剪框和对齐方式；总结节点每条对应一次请求；Bbox 每条对应一个检测快照（人数、track_id）；事件节点目前只有各事件的最新结果，没有耗时。人脸、Contour 只显示状态。
 
-**没有做的：** 引擎目录和 Decision 3；三个按项目类型的内置模板（现在只有「VideoJev + YOLO 基础盘」）；决策节点；System 1 事件接人框元数据；人脸、Contour 的逐次记录。人框裁剪还没在真实视频上跑过，没有任何准确率数据。
+**没有做的：** 决策节点（第二期）；System 1 / Decision 3 事件接人框元数据；人脸、Contour 的逐次记录；`compose.modules.yaml` 里的 Decision 3 服务。人框裁剪和 Decision 3 回答物体问题都还没在真实视频上跑过，没有任何准确率数据；Decision 3 本地服务也没有在本次改动后实际启动验证过（需要 GPU）。

@@ -67,9 +67,15 @@ readiness and credential checks still apply.
 
 ## Templates, module wiring and debugging
 
-**From template…** starts a new workflow from a wired group of modules. The
-built-in **VideoJev + YOLO 基础盘** wires Video source → Bbox → Object presence
-→ Output and Video source → System 1 recognition → Output. **Save as template**
+**From template…** starts a new workflow from a wired group of modules. Built-in
+templates cover three project types: **人员 + 事件** (Bbox and System 1 event
+recognition), **物品检查 / 翻包** (Bbox → Object presence with person crop) and
+**纯总结巡检** (Summary only).
+
+Tracking, event and object blocks have an **Engine** selector. Switching it (for
+example System 1 ↔ Decision 3) keeps the block's connections and clears its
+service address, because each engine runs its own service. Decision 3 uses the
+same native protocol as System 1 on its own local port 8099. **Save as template**
 stores the current graph without camera channels or service addresses; choose
 cameras and services after creating a workflow from it. Saved templates live in
 `workflow-templates.json` beside the workflow document.

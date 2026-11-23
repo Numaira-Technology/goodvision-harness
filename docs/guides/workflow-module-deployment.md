@@ -24,6 +24,7 @@
 | Bbox | `workers/detector_rich_label/app.py`，YOLO26-S + 会话独立追踪器 | `http://127.0.0.1:8096/v1/labels` |
 | System 1 快速识别 | `goodvision_harness.videojev_service`，VideoJev-4B | `http://127.0.0.1:8097` |
 | 神经网络识别 | `goodvision_harness.neural_service`，CLIP 固定视觉分类 | `http://127.0.0.1:8098` |
+| Decision 3 识别 | `goodvision_harness.videojev_service --runtime decision3`，`vllm-sr/d3-nano` | `http://127.0.0.1:8099` |
 
 这些端口避开原有 SAM、Contour、detector 隧道和旧版分类服务默认端口。
 Bbox 支持 CPU 和 NVIDIA CUDA；System 1 和当前神经网络服务仍需要支持的显卡。
@@ -101,7 +102,10 @@ GPU 服务仍要求 `gpu_ready=true`。同主机摄像头进程
 python -m goodvision_harness.module_service bbox --host 0.0.0.0 --port 8096
 python -m goodvision_harness.module_service system1 --host 0.0.0.0 --port 8097
 python -m goodvision_harness.module_service neural --host 0.0.0.0 --port 8098
+python -m goodvision_harness.module_service decision3 --host 0.0.0.0 --port 8099
 ```
+
+Decision 3 和 System 1 是同一个原生服务的两种运行时，共用 System 1 的 Python 环境（`.venv-module-system1`，或用 `GOODVISION_DECISION3_PYTHON` 指定）。画布上事件节点和物体存在节点都可以在节点内把引擎切到 Decision 3，连线不变。`compose.modules.yaml` 暂未包含 Decision 3。Decision 3 用来判断物体存在没有验证过，标为实验性。
 
 每条命令为独立常驻进程，分别使用对应 Python 环境。未安装项目时设置 `PYTHONPATH=src`。
 默认仅监听 `127.0.0.1`，上例显式监听服务器网络接口。通过内网或已有访问代理连接。
