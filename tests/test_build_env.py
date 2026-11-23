@@ -63,6 +63,21 @@ def test_upload_conflict_or_uncertainty_never_deletes_or_overwrites(upload, fail
     assert len(client.calls) == fail_at
 
 
+def test_upload_failure_names_the_error_code_but_not_its_message(upload):
+    env, tar, client = upload
+
+    class AccessDenied(Exception):
+        response = {"Error": {"Code": "AccessDenied", "Message": "SECRET detail"}}
+
+    def deny(**kw):
+        raise AccessDenied("SECRET in SDK error")
+
+    client.put_object = deny
+    with pytest.raises(RuntimeError, match="AccessDenied: AccessDenied") as exc:
+        be._upload(env, "videojev", tar, env["compat"], "a/b@revision")
+    assert "SECRET" not in str(exc.value)
+
+
 def test_large_pack_fails_before_upload(upload, monkeypatch):
     env, tar, client = upload
     monkeypatch.setattr(be, "MAX_PUT_SIZE", 1)

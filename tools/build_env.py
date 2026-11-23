@@ -487,9 +487,13 @@ def _upload(env_spec, name, tarball, compat, repo_rev):
             IfNoneMatch="*",
             Body=json.dumps(manifest, indent=2).encode(),
         )
-    except Exception:
+    except Exception as error:
+        # Name the failure (e.g. AccessDenied from a read-only key) without
+        # echoing request details or credentials.
+        code = getattr(error, "response", {}).get("Error", {}).get("Code", "")
         raise RuntimeError(
-            f"create-only upload failed or is uncertain; inspect {key} "
+            f"create-only upload failed or is uncertain "
+            f"({type(error).__name__}{': ' + code if code else ''}); inspect {key} "
             f"and {manifest_key}; "
             "existing objects were not deleted or overwritten"
         ) from None
