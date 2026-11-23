@@ -180,6 +180,10 @@ from .stream_adapter import parse_stream_source
 from .temporal_client_pool import TemporalClientPool
 from .video_connection import VideoConnection
 from .video_to_stream import encode_jpeg
+from .videojev_recipe import (
+    PRODUCTION_FRAME_STEP_SECONDS,
+    PRODUCTION_WINDOW_FRAMES,
+)
 from .video_tracking import (
     BACKEND as NATIVE_VIDEO_BACKEND,
 )
@@ -2912,8 +2916,13 @@ class HarnessRuntime(WorkflowRuntimeMixin):
                             self.config.runtime.scene_queue_timeout_seconds,
                         ) if self.config.runtime.scene_admission_database else None),
                         candidate_fps=4.0 if prepared_native_vlm else None,
-                        observation_window_frames=2 if prepared_native_vlm else 4,
-                        observation_frame_delta_seconds=0.5 if prepared_native_vlm else None,
+                        observation_window_frames=(
+                            PRODUCTION_WINDOW_FRAMES if prepared_native_vlm else 4
+                        ),
+                        observation_frame_delta_seconds=(
+                            PRODUCTION_FRAME_STEP_SECONDS if prepared_native_vlm
+                            else None
+                        ),
                         vocabulary=self._event_vocabulary(),
                     )
                     next_worker = IndependentVLMBranch(

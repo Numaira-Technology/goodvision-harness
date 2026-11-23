@@ -1,6 +1,7 @@
 """Native request contracts, built offline without importing CUDA libraries."""
 import base64
 import importlib.util
+import itertools
 import json
 import math
 from pathlib import Path
@@ -74,6 +75,8 @@ def request_body(config, unit, bundle):
         return None, {"model": config["model"], "revision": config["revision"],
                       "image_sha256": [f["sha256"] for f in unit["frames"]],
                       "prompts": config["prompts"], "precision": config["precision"]}
+    if backend == "harness_videojev":
+        return None, harness_request(config, unit, bundle)
     if len(images) != 2 or unit["frames"][1]["time"] - unit["frames"][0]["time"] != 1:
         raise ValueError("native window requires two adjacent 1 FPS frames")
     return None, {"session": unit["source_id"], "request_id": unit["id"], "fps": 1.0,
@@ -118,6 +121,8 @@ def parse_response(config, unit, response):
                 result[event] = {"score": p["margin"], "native_scores": {
                     k: p[k] for k in ("positive_cosine", "contrast_cosine", "margin")}}
         return result
+    if backend == "harness_videojev":
+        return harness_answers(config, unit, response)
     if any(response.get(k) != v for k, v in {"request_id": unit["id"], "model": config["model"], "revision": config["revision"]}.items()):
         raise ValueError("native response identity differs")
     raw, answers = response["raw"], {}
@@ -161,3 +166,50 @@ def _probabilities(probs):
     return (isinstance(probs, list) and len(probs) == 3
             and all(finite_number(p) and 0 <= p <= 1 for p in probs)
             and math.isclose(sum(probs), 1, abs_tol=1e-4))
+
+
+# -- current-workbench track: the live System 1 code path, via its recipe ------
+
+def harness_recipe(config):
+    """The workbench recipe named by a profile (``config["recipe"]``)."""
+    from goodvision_harness.videojev_recipe import recipe_from_json
+
+    return recipe_from_json(config["recipe"])
+
+
+def harness_request(config, unit, bundle):
+    """Build the exact body the live inspector would send for these frames.
+
+    The unit's frames must match the recipe window (count and spacing within
+    1 ms); a frozen 1 FPS bundle cannot stand in for a 0.5 s production window.
+    """
+    recipe = harness_recipe(config)
+    frames = unit["frames"]
+    times = [f["time"] for f in frames]
+    if len(frames) != recipe.window_frames or any(
+        abs((b - a) - recipe.frame_step_seconds) > 1e-3
+        for a, b in itertools.pairwise(times)
+    ):
+        raise ValueError("unit sampling differs from the recipe window")
+    return recipe.request_body(
+        [(f["time"], frame_bytes(bundle, f)) for f in frames],
+        session=unit["source_id"], request_id=unit["id"],
+    )
+
+
+def harness_answers(config, unit, response):
+    """Decode with the workbench's own parser; a gate turns weak 'yes' into 'no'."""
+    if response.get("request_id") != unit["id"]:
+        raise ValueError("native response identity differs")
+    decoded = harness_recipe(config).decode(response.get("raw"))
+    answers = {}
+    for event in unit["targets"]:
+        item = decoded.get(event)
+        if item is None:
+            continue
+        detected = item["detected"]
+        answers[event] = {
+            "answer": {True: "yes", False: "no"}.get(detected, "unknown"),
+            "probabilities": item["probabilities"],
+        }
+    return answers

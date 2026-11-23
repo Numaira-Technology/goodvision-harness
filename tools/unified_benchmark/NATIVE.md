@@ -271,3 +271,32 @@ Source-export tests need the two public Git commits locally. A shallow checkout
 can fetch each pinned commit first; the tests themselves never fetch, install,
 download weights, start services or call a model. Synthetic results only verify
 the flow; they are never evaluation results for the shared table.
+
+## Current-workbench track (`backend: harness_videojev`)
+
+The historical `videojev` backend replays a pinned old service and a frozen
+question template; it does not describe what today's workbench does with the
+same frames. The current-workbench track builds requests and decisions through
+`goodvision_harness.videojev_recipe`, the same object the live System 1
+inspector uses (`VideoJevInspector.recipe`), so for identical frames the
+benchmark body and the live body are byte-identical
+(`tests/test_videojev_recipe.py`).
+
+A profile names a recipe:
+
+```json
+{"backend": "harness_videojev",
+ "recipe": {"name": "production", "labels": ["fight", "smoking", "fall", "weapon"],
+            "window_frames": 2, "frame_step_seconds": 0.5}}
+```
+
+Optional keys: `sensitivities`, `definitions` (injected events such as bag
+questions, same schema as `events.definitions`) and `gates` (per-label minimum
+"present" probability; without one the decision is the argmax, as in
+production). A unit whose frames do not match the recipe window (count and
+spacing within 1 ms) is refused, so frozen 1 FPS bundles cannot stand in for
+the 0.5 s production window.
+
+Not yet done (phase 2): preflight windows at the recipe spacing, and running
+the current `goodvision_harness.videojev_service` instead of the historical
+`private-eval/service.py`. Historical results stay reported separately.
