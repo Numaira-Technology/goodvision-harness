@@ -7,6 +7,7 @@ import os
 import tarfile
 import traceback
 from collections import UserDict
+from pathlib import Path
 
 import pytest
 
@@ -222,9 +223,7 @@ def test_builder_invokes_literal_argv_and_strips_credentials(tmp_path, monkeypat
     monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "SECRET")
     monkeypatch.setenv("HF_TOKEN", "TOKEN")
     monkeypatch.setenv("PYTHONPATH", "/injected")
-    monkeypatch.setattr(
-        be.subprocess, "run", lambda argv, **kw: calls.append((argv, kw))
-    )
+    monkeypatch.setattr(be.subprocess, "run", recording_run(calls, keep_kw=True))
     conda = tmp_path / "conda's $(literal)/bin/conda"
     prefix = tmp_path / "env $(literal)"
     requirements = tmp_path / "requirements;literal.txt"
@@ -251,6 +250,22 @@ def test_installer_requires_trusted_pin_and_never_downloads(tmp_path, monkeypatc
         be._ensure_miniconda(tmp_path / "conda", installer, "0" * 64)
 
 
+WHEELS = ("flash_attn-2.8.3.post2-cp312-cp312-linux_x86_64.whl",
+          "causal_conv1d-1.7.0-cp312-cp312-linux_x86_64.whl")
+
+
+def recording_run(calls, *, keep_kw=False):
+    """Stand-in for _run: record argv; `pip wheel -w DIR` leaves wheel files."""
+    def run(argv, **kw):
+        calls.append((argv, kw) if keep_kw else argv)
+        if "wheel" in argv and "-w" in argv:
+            out = Path(argv[argv.index("-w") + 1])
+            out.mkdir(parents=True, exist_ok=True)
+            for name in WHEELS:
+                (out / name).write_bytes(b"synthetic wheel " + name.encode())
+    return run
+
+
 @pytest.mark.parametrize("name", ["clip", "siglip2", "videojev", "d3-nano"])
 def test_main_honors_model_attention_recipe(tmp_path, monkeypatch, name):
     env = copy.deepcopy(registry.env_of(name))
@@ -263,7 +278,7 @@ def test_main_honors_model_attention_recipe(tmp_path, monkeypatch, name):
     monkeypatch.setattr(be.registry, "env_of", lambda _: env)
     monkeypatch.setattr(be.env_source, "check_compatibility", lambda _: None)
     monkeypatch.setattr(be, "_ensure_miniconda", lambda *a: tmp_path / "bin/conda")
-    monkeypatch.setattr(be, "_run", lambda argv, **kw: calls.append((argv, kw)))
+    monkeypatch.setattr(be, "_run", recording_run(calls, keep_kw=True))
     monkeypatch.setattr(be, "_pack", lambda *a: out.write_bytes(b"synthetic pack"))
     monkeypatch.setattr(be, "check_conda_ownership", lambda prefix: None)
     monkeypatch.setattr(be, "verify_pack", lambda tarball: {"dists": 0})
@@ -458,7 +473,7 @@ def test_builder_lets_conda_own_pip_and_constrains_every_pip_install(
     monkeypatch.setattr(
         be, "_write_constraints", lambda prefix, path: path.write_text("pip==26.2.2\n")
     )
-    monkeypatch.setattr(be, "_run", lambda argv, **kw: calls.append(argv))
+    monkeypatch.setattr(be, "_run", recording_run(calls))
     be._build_prefix(
         tmp_path / "conda", tmp_path / "p", tmp_path / "r.txt", "3.12", "8.9"
     )

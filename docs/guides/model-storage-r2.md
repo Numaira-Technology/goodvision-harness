@@ -266,6 +266,15 @@ dist-info RECORD 的哈希和大小，按 CSV 解析路径，并分块读取大�
 RECORD 条目和 site-packages 以外的 launcher 条目单独计数，不宣称已验证。核对结果
 写进构建输出的 `pack_check`。
 
+### 预编译的 CUDA 扩展 wheel（flash-attn、causal-conv1d）
+
+在 RTX 4090 上，打一个环境包大约 80 分钟，其中约 70 分钟花在从源码编译 flash-attn 和 causal-conv1d。为了省掉这部分：
+
+- **构建时保留：** `build_env` 先用 `pip wheel` 把它们编译到 `<out>.wheels/compiled/`，再从这些 wheel 安装。构建输出的 `cuda_extension_wheels` 会记下每个文件的 SHA-256、大小，以及它是现编的还是从 R2 取的。
+- **上传：** 用读写 key 运行 `python -m tools.wheel_cache upload --model <名字> <wheel...>`。文件按内容寻址，存到 `wheels/<包名>/<sha256>.whl`（另附一个 `.json` 说明文件），只新建、不覆盖。脚本会输出对应的 pin。
+- **登记：** pin 经审查后写进 `tools/models.yaml` 的 `wheels:` 列表。每条 pin 写明包名、版本、文件名、Python / CUDA / torch / GPU 家族、`r2_key`、SHA-256 和大小。可信的哈希以仓库里的 pin 为准，不信远端的说明文件。
+- **下次构建：** 如果 Python、CUDA、torch 和 GPU 家族都完全一致，并且两个包都有 pin，就从 R2 下载，先核对大小和 SHA-256 再安装，跳过编译。下载失败或哈希不符时，会退回现场编译，并在输出里写明原因。加 `--compile-wheels` 可以强制编译。
+
 ### 每次使用：在远端恢复，再用包内解释器启动
 
 远端需有 Python（带 `tarfile.data_filter` 的受维护版本）、`boto3`、`PyYAML`、
