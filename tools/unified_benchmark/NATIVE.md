@@ -26,8 +26,9 @@ first valid target answers. Retry invalid/missing responses after the original
 
 A question needs every planned target response. For complete evidence: any yes
 means yes, otherwise any no means no, otherwise unknown. Headline accuracy is
-correct / **all planned test questions** (202 baseline, 222 with the current test
-supplement), with incomplete questions still in the denominator. Report
+correct / **all planned test questions** in the selected release (202 for the
+retained baseline), with incomplete questions still in the denominator. Use the
+retained supplement and test plan, not a fixed supplement count. Report
 missing units, incomplete questions and unknowns separately. A native window is
 two frames, so missing windows and missing single-frame calls are different units.
 This does not establish twelve-camera real-time throughput.

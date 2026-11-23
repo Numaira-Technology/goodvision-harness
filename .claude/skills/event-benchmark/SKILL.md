@@ -42,8 +42,10 @@ Another agent must read this file and its selected execution guide; discovering
    frozen inputs unchanged. Keep the combined question list separate from their `samples.json`.
    Download the supplement for the release being evaluated.
    Its v2 format applies human-reviewed answers to matching original test questions
-   before scoring. Retain the v1 supplement with historical runs.
-   Haotian's first ten bag recordings (Q203–222) have assistant annotations.
+   before scoring. Retain each historical run's exact supplement bytes and hash,
+   whether v1 or v2; do not replace them with the latest release.
+   Haotian's first ten bag recordings (Q203–222) have assistant annotations,
+   pending human confirmation.
    The next seven (Q223–236) have human-reviewed knife and alcohol-bottle answers. Ashley's ten bag
    validation recordings remain separate; do not tune thresholds on the new test.
    Verify all eight frozen inputs and video hashes, decode frames and save the new
