@@ -1,10 +1,10 @@
-# Bbox、System 1 和神经网络模块部署
+# Bbox、System 1、Decision 3 和神经网络模块部署
 
 需要统一 Docker 网络、启动管理或分别生成客户安装包时，使用
 [独立 Docker 安装单元](docker-modules.md)。该入口支持主程序、Contour、Bbox、System 1
 和共享 GPU 底座；本页保留原生进程部署及旧 Compose 入口。
 
-画布中三个模块都有独立的“运行位置”，设置随工作流应用并持久保存。
+这些模块在画布上都有独立的“运行位置”，设置随工作流应用并持久保存。
 
 | 运行位置 | 调用方式 |
 | --- | --- |
@@ -27,7 +27,7 @@
 | Decision 3 识别 | `goodvision_harness.videojev_service --runtime decision3`，`vllm-sr/d3-nano` | `http://127.0.0.1:8099` |
 
 这些端口避开原有 SAM、Contour、detector 隧道和旧版分类服务默认端口。
-Bbox 支持 CPU 和 NVIDIA CUDA；System 1 和当前神经网络服务仍需要支持的显卡。
+Bbox 支持 CPU 和 NVIDIA CUDA；System 1、Decision 3 和当前神经网络服务需要支持的显卡。
 主程序普通 CPU 镜像不包含这些 GPU 依赖。
 VideoJev 沿用 Linux CUDA 环境和固定版本原生扩展，不能直接当作 Windows CPU 分类器。
 
@@ -52,11 +52,17 @@ $env:PYTHONPATH = 'src'
 ```
 
 Linux 使用 `.venv-module-bbox/bin/python`。主程序会检查并复用已经运行的服务。
-其他模块在独立 Python 环境安装项目对应的 `.[videojev]` 或 `.[neural]`。
+其他模块在独立 Python 环境安装项目对应的 `.[videojev]`、`.[decision3]` 或 `.[neural]`。
 CUDA PyTorch 要与目标主机兼容；VideoJev 还需按
 [现有环境说明](videojev-candidate.md)和 `tools/videojev_probe/requirements.txt`
 准备固定依赖、原生扩展及权重。Bbox 需保留仓库的 `workers/detector_rich_label` 源码；
 默认 Docker 构建也会复制它。
+
+Decision 3 复用 `videojev_service` 的服务入口，不复用 System 1 的 Python 环境。
+`.[decision3]` 与 `.[videojev]` 固定的 Transformers 和 FLA 版本不同，不能混装。
+请在带支持 BF16 的 NVIDIA CUDA 主机上，按
+[Decision 3 环境说明](../../tools/d3_nano/requirements.txt)准备单独的 Python 环境和匹配的
+CUDA 原生扩展；放在 `.venv-module-decision3`，或显式指定该环境的 Python 路径。
 
 启动 Harness 前，可指定各模块已配置好的 Python，例如：
 
@@ -69,11 +75,14 @@ Linux 示例：
 
 ```sh
 export GOODVISION_SYSTEM1_PYTHON=/data/videojev/env/bin/python
+export GOODVISION_DECISION3_PYTHON=/data/d3-nano/env/bin/python
 export GOODVISION_MODULE_MODEL_DIR=/data/models
 export GOODVISION_MODULE_DATA_DIR=/data/module-services
 ```
 
-未指定 Python 时优先使用仓库 `.venv-module-<模块名>`，不存在时使用 Harness 当前 Python。
+未指定 Python 时优先使用仓库 `.venv-module-<模块名>`。其他模块可回退到 Harness 当前
+Python；Decision 3 没有可执行的专用 Python 时不会启动，而会提示设置环境。已在运行且
+通过健康检查的 Decision 3 服务不需要 Harness 配置本机 Python。
 模型目录默认 `.models/modules`；
 服务日志与进程锁默认 `.goodvision/modules`。Bbox 可继续使用
 `DETECTOR_WEIGHTS_DIR` / `DETECTOR_WEIGHTS` 指定已准备的 YOLO 权重。
@@ -88,7 +97,7 @@ export GOODVISION_MODULE_DATA_DIR=/data/module-services
 GPU 服务仍要求 `gpu_ready=true`。同主机摄像头进程
 用操作系统锁避免重复加载模型。服务保持预热，直到创建它的主程序退出；关闭时
 只结束自己创建的服务。失败日志为 `.goodvision/modules/bbox.log`、
-`system1.log` 或 `neural.log`。
+`system1.log`、`decision3.log` 或 `neural.log`。
 
 端口已有服务但健康响应失败、模型不匹配或响应超时时，不会另起模型进程争抢
 该端口。先修复或停止原服务再重试。CLIP 启动入口完成一次真实推理预热后才
@@ -102,10 +111,12 @@ GPU 服务仍要求 `gpu_ready=true`。同主机摄像头进程
 python -m goodvision_harness.module_service bbox --host 0.0.0.0 --port 8096
 python -m goodvision_harness.module_service system1 --host 0.0.0.0 --port 8097
 python -m goodvision_harness.module_service neural --host 0.0.0.0 --port 8098
-python -m goodvision_harness.module_service decision3 --host 0.0.0.0 --port 8099
+/data/d3-nano/env/bin/python -m goodvision_harness.module_service decision3 --host 0.0.0.0 --port 8099
 ```
 
-Decision 3 和 System 1 是同一个原生服务的两种运行时，共用 System 1 的 Python 环境（`.venv-module-system1`，或用 `GOODVISION_DECISION3_PYTHON` 指定）。画布上 Decision 3 是和 System 1 平级的独立事件识别方块。物体存在节点暂时不能用 Decision 3：它只接受 2 帧、2 FPS 的窗口，返回 `answers` 映射，需要另写适配。`compose.modules.yaml` 暂未包含 Decision 3。
+画布上 Decision 3 是和 System 1 平级的独立事件识别方块。物体存在节点暂时不能用
+Decision 3：它只接受 2 帧、2 FPS 的窗口，返回 `answers` 映射，需要另写适配。
+`compose.modules.yaml` 暂未包含 Decision 3。
 
 每条命令为独立常驻进程，分别使用对应 Python 环境。未安装项目时设置 `PYTHONPATH=src`。
 默认仅监听 `127.0.0.1`，上例显式监听服务器网络接口。通过内网或已有访问代理连接。
@@ -128,6 +139,7 @@ Harness 在 CPU 容器中时，可将 GPU worker 部署在同宿主机的独立�
 GOODVISION_BBOX_LOCAL_URL=http://host.docker.internal:8096
 GOODVISION_SYSTEM1_LOCAL_URL=http://host.docker.internal:8097
 GOODVISION_NEURAL_LOCAL_URL=http://host.docker.internal:8098
+GOODVISION_DECISION3_LOCAL_URL=http://host.docker.internal:8099
 ```
 
 Linux Docker 需要 `host-gateway` 映射，也可使用共享 worker 容器服务名。

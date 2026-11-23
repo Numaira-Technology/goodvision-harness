@@ -74,8 +74,10 @@ recognition), **物品检查 / 翻包** (Bbox → Object presence with person cr
 
 **Decision 3 recognition** is its own block beside System 1, VLM and neural
 network recognition, with its own service (local port 8099), readiness and
-Debug section. Enable one event recognition block per camera at a time. Object
-presence is answered by System 1 only; Decision 3 needs its own object request
+Debug section. For local launch, give Decision 3 its own
+[Python environment](workflow-module-deployment.md#本机运行), separate from System 1.
+Enable one event recognition block per camera at a time. Object presence is
+answered by System 1 only; Decision 3 needs its own object request
 and response adapter first.
 
 Template video sources are unbound slots. Creating a workflow from a template

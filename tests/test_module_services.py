@@ -19,7 +19,7 @@ from goodvision_harness.workflow_modules import MODELS
 @pytest.fixture
 def services(tmp_path, monkeypatch):
     monkeypatch.setenv("GOODVISION_MODULE_DATA_DIR", str(tmp_path))
-    for engine in ("bbox", "system1", "neural"):
+    for engine in ("bbox", "system1", "neural", "decision3"):
         monkeypatch.delenv(f"GOODVISION_{engine.upper()}_LOCAL_URL", raising=False)
     return LocalModuleServices()
 
@@ -75,6 +75,111 @@ def test_start_is_nonblocking_reuses_worker_and_only_closes_owned_processes(
     assert len(launched) == 1
     services.close()
     assert process.returncode == 0
+
+
+@pytest.fixture
+def fake_module_checkout(tmp_path, monkeypatch):
+    root = tmp_path / "checkout"
+    source = root / "src/goodvision_harness/module_services.py"
+    monkeypatch.setattr(module_services, "__file__", str(source))
+    monkeypatch.delenv("GOODVISION_MODULE_MANAGER", raising=False)
+    monkeypatch.delenv("GOODVISION_SYSTEM1_PYTHON", raising=False)
+    monkeypatch.delenv("GOODVISION_DECISION3_PYTHON", raising=False)
+
+    def make_python(directory):
+        executable = directory / (
+            "Scripts/python.exe" if os.name == "nt" else "bin/python"
+        )
+        executable.parent.mkdir(parents=True)
+        executable.touch()
+        executable.chmod(0o755)
+        return executable
+
+    return root, make_python
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_decision3_launches_with_its_own_interpreter(
+    services, fake_module_checkout, monkeypatch, explicit,
+):
+    root, make_python = fake_module_checkout
+    system1 = make_python(root / ".venv-module-system1")
+    decision3 = make_python(root / ".venv-module-decision3")
+    expected = decision3
+    if explicit:
+        expected = make_python(root / "separate decision3 env")
+        monkeypatch.setenv("GOODVISION_DECISION3_PYTHON", str(expected))
+    launched = []
+    monkeypatch.setattr(services, "_health", lambda *_: "unavailable")
+    monkeypatch.setattr(
+        module_services.subprocess, "Popen",
+        lambda command, **_: launched.append(command) or Process(),
+    )
+    try:
+        assert services.start("decision3")["state"] == "starting"
+        assert services.start("system1")["state"] == "starting"
+        assert [command[0] for command in launched] == [str(expected), str(system1)]
+        assert launched[0][2:5] == [
+            "-m", "goodvision_harness.module_service", "decision3",
+        ]
+        assert launched[0][launched[0].index("--port") + 1] == "8099"
+    finally:
+        services.close()
+
+
+@pytest.mark.parametrize("other_python", ["harness", "system1", "invalid_override"])
+def test_missing_decision3_interpreter_never_launches_another_python(
+    services, fake_module_checkout, monkeypatch, tmp_path, other_python,
+):
+    root, make_python = fake_module_checkout
+    if other_python == "system1":
+        make_python(root / ".venv-module-system1")
+    if other_python == "invalid_override":
+        make_python(root / ".venv-module-decision3")
+        monkeypatch.setenv("GOODVISION_DECISION3_PYTHON", str(root / "missing Python"))
+    monkeypatch.setattr(services, "_health", lambda *_: "unavailable")
+    monkeypatch.setattr(module_services, "local_modules", services)
+    launched = []
+    monkeypatch.setattr(
+        module_services.subprocess, "Popen",
+        lambda command, **_: launched.append(command) or Process(),
+    )
+    app = workflow_app(monkeypatch, tmp_path)
+    try:
+        with TestClient(app) as client:
+            response = client.post("/v1/workflow-modules/decision3/local", json={})
+            assert launched == []
+            assert response.status_code == 503
+            detail = response.json()["detail"]
+            assert ".venv-module-decision3" in detail
+            assert "GOODVISION_DECISION3_PYTHON" in detail
+        assert not (tmp_path / "decision3.log").exists()
+    finally:
+        services.close()
+
+
+def test_existing_decision3_listener_needs_no_local_python(
+    services, fake_module_checkout, monkeypatch,
+):
+    monkeypatch.setenv("GOODVISION_DECISION3_LOCAL_URL", "http://decision3-worker:8099")
+    client_class = httpx.Client
+
+    def respond(request):
+        assert request.url.host == "decision3-worker"
+        assert request.url.path == "/health"
+        return httpx.Response(200, json={"ready": True, "model": MODELS["decision3"]})
+
+    monkeypatch.setattr(
+        module_services.httpx, "Client",
+        lambda **kwargs: client_class(transport=httpx.MockTransport(respond), **kwargs),
+    )
+    monkeypatch.setattr(
+        module_services.subprocess, "Popen",
+        lambda *a, **k: pytest.fail("external worker"),
+    )
+    assert services.start("decision3") == {
+        "engine": "decision3", "state": "ready", "ready": True,
+    }
 
 
 def test_failed_worker_reports_error_without_claiming_ready(services, monkeypatch):

@@ -198,7 +198,7 @@ VideoJev 在 Harness 里有两个入口，处理方式不同：
 | 人框裁剪：`person_crop_box()`（并集、外扩 25%、最小边 0.35、移回画面内）、窗口共用一个裁剪框、无人退回整帧、框查询出错不影响判断 | `object_presence.py` |
 | 人框来源：真实运行按源帧时间从 Bbox 取框；测试模式用一个固定的模拟人框 | `workflow_runtime._start_workflow_objects` |
 | 模板：内置「人员 + 事件」「物品检查 / 翻包」「纯总结巡检」、另存 / 删除、去掉摄像头和服务地址 | `workflow_templates.py`、`workflow_routes.py` |
-| Decision 3 独立模块：模型 `vllm-sr/d3-nano`，本地端口 8099，复用 System 1 的 Python 环境；原生事件通道和单帧测试使用 `Decision3Inspector`；目录 `peers` 列出所有识别模块及其输出形式 | `workflow_modules.py`、`module_service.py`、`module_services.py`、`workflow_runtime.py` |
+| Decision 3 独立模块：模型 `vllm-sr/d3-nano`，本地端口 8099，复用 System 1 服务入口但使用独立 Python 环境；原生事件通道和单帧测试使用 `Decision3Inspector`；目录 `peers` 列出所有识别模块及其输出形式 | `workflow_modules.py`、`module_service.py`、`module_services.py`、`workflow_runtime.py` |
 | 画布：模块库新增 Decision 3 方块（和 System 1 平级）；任务模块有多个识别模型可选时才出现「识别模型」下拉（物体存在目前只有 System 1）；从模板新建时只绑定可用的独立视频通道 | `assets/workflow_canvas.js` |
 | 按摄像头编译：一个模块只有在必需的 `frames` 来自本摄像头时才运行，可选的人框输入不能代替它 | `workflows.compile_graph` |
 | 调试接口：`GET /v1/workflow/nodes/{node_id}/debug?limit=`（1–200，默认 20），fleet 按摄像头转发 | `workflow_runtime.workflow_node_debug`、`service.py`、`fleet_outputs.py` |
