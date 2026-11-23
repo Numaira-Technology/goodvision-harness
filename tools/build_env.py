@@ -175,7 +175,8 @@ def check_conda_ownership(prefix):
     seen = {}
     # conda's python 3.12 ships a lib/python3.1 -> python3.12 compatibility
     # symlink; scan each real site-packages directory once.
-    sites = {site.resolve(): site for site in prefix.glob("lib/python3.*/site-packages")}
+    found = prefix.glob("lib/python3.*/site-packages")
+    sites = {site.resolve(): site for site in found}
     for site in sorted(sites.values()):
         for info in sorted([*site.glob("*.dist-info"), *site.glob("*.egg-info")]):
             metadata = (
