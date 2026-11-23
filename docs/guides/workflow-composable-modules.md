@@ -1,6 +1,6 @@
-# Canvas 可组合模块：设计说明（草案）
+# Canvas 可组合模块：设计说明
 
-**状态：草案，待 Ashley 确认后再动大块代码。** 本文只讲设计和分期，不声明任何识别效果。
+**状态：2026-11-23 Ashley 确认第 5 节三项，第一期已实现（见第 6 节）。** 本文不声明任何识别效果。
 
 目标：新客户项目可以在 Canvas 上把现有模块（例如 VideoJev + YOLO）拖在一起、连好线，作为起步的「基础盘」；每个模块在侧栏都有统一的调试入口。
 
@@ -58,10 +58,10 @@ VideoJev 在 Harness 里有两个入口，处理方式不同：
 
 - **内置模板**写在代码里（`workflow_templates.py`），随版本发布。第一期提供一个「VideoJev + YOLO 基础盘」：视频源 → Bbox → 物体存在（tracks 接 Bbox）→ 输出，同时 视频源 → System 1 事件 → 输出、Bbox → 输出。物体预设沿用现有的「实验性，未验证」标记。
 - **自定义模板**：画布上「另存为模板」，存在数据目录的 `workflow-templates.json`，单独文件、带上限（64 个、单个 2 MiB），**不进**工作流文档，因此不改 `schema_version`，旧版本读文档不受影响。
-- **从模板新建**：生成新的工作流，节点 / 连线 ID 重新生成，名字可改。新建后和手工搭的图一样，需要自己选摄像头、填服务地址、Apply。
+- **从模板新建**：生成新的工作流，名字可改。新建后和手工搭的图一样，需要自己选摄像头、填服务地址、Apply。
 - 模板保存和实例化都走现有的 `validate_graph`，不合法的模板存不进去。
 
-接口：`GET /v1/workflow-templates`（内置 + 自定义）、`POST /v1/workflows/command` 新增 `save_template`、`delete_template`、`create_from_template` 三个命令，沿用现有的修订号乐观锁。
+接口：`GET /v1/workflow-templates`（内置 + 自定义）、`POST /v1/workflow-templates`（另存）、`DELETE /v1/workflow-templates/{id}`（只能删自定义的）。模板不在工作流文档里，所以不走 `/v1/workflows/command` 的修订号；「从模板新建」由画布用模板的图调用现有的 `create_workflow`，图内节点 ID 只需在本图内唯一，沿用模板里的即可。
 
 ## 3. 统一调试入口
 
@@ -107,3 +107,21 @@ VideoJev 在 Harness 里有两个入口，处理方式不同：
 1. 第一个 YOLO → VideoJev 实例落在**物体节点 + 裁剪**，事件节点的「整帧 + 框元数据」放第二期，可以吗？
 2. 本分支基于 PR #121（物体节点）；PR #121 合并前，本 PR 作为它的后续 PR 提交，合并后再改到 main。可以吗？
 3. 测试模式保持全局，调试面板只显示和提供现有开关，不做按节点模拟，可以吗？
+
+## 6. 第一期实现情况
+
+| 部分 | 位置 |
+|---|---|
+| 模块契约（端口、必需 / 可选、`accepts`、调试类型）和 `module_catalog()` | `workflow_modules.py`；`/v1/workflows` 返回 `modules` |
+| 校验：`accepts` 检查；Apply 要求每个启用的模块接上 `frames` | `workflows.validate_graph` |
+| 编译：输出节点的所有上游都运行；接上人框时 plan 多出 `objects.focus` 和 `objects.tracks_node_id` | `workflows.compile_graph` |
+| 人框裁剪：`person_crop_box()`（并集、外扩 25%、最小边 0.35、移回画面内）、窗口共用一个裁剪框、无人退回整帧、框查询出错不影响判断 | `object_presence.py` |
+| 人框来源：真实运行按源帧时间从 Bbox 取框；测试模式用一个固定的模拟人框 | `workflow_runtime._start_workflow_objects` |
+| 模板：内置「VideoJev + YOLO 基础盘」、另存 / 删除、去掉摄像头和服务地址 | `workflow_templates.py`、`workflow_routes.py` |
+| 调试接口：`GET /v1/workflow/nodes/{node_id}/debug?limit=`（1–200，默认 20），fleet 按摄像头转发 | `workflow_runtime.workflow_node_debug`、`service.py`、`fleet_outputs.py` |
+| 画布：端口表改读服务端目录；物体节点的 `tracks` 输入只列 Bbox；「从模板新建…」「另存为模板」；模块侧栏「调试」分区 | `assets/workflow_canvas.js` |
+| 测试 | `tests/test_workflow_composable.py`、`tests/workflow_canvas.cjs` |
+
+调试记录格式各节点一致。物体节点每条对应一个计划 tick（含跳过的 tick 和原因），`input.focus` 记录用了几个框、裁剪框和对齐方式；总结节点每条对应一次请求；Bbox 每条对应一个检测快照（人数、track_id）；事件节点目前只有各事件的最新结果，没有耗时。人脸、Contour 只显示状态。
+
+**没有做的：** 人框裁剪还没在真实视频上跑过，没有任何准确率数据；System 1 事件接人框元数据（第二期）；人脸、Contour 的逐次记录。

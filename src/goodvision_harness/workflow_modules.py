@@ -100,3 +100,76 @@ def service_url(value):
         if parsed.port == 0:
             raise ValueError("Service URL port must be within 1..65535.")
     return value
+
+
+# Module contract: typed ports per node kind. ``frames`` stays the required
+# input of every analysis node; any upstream input added later is optional and
+# lists the (kind, engine) modules it accepts. Old graphs never use an optional
+# input, so their validation and compiled plans are unchanged.
+PORT_TYPES = ("frames", "tracks", "faces", "events", "summary", "objects")
+CONTRACT = {
+    "source": {"inputs": (), "outputs": ("frames",)},
+    "face": {"inputs": (("frames", True),), "outputs": ("faces",)},
+    "tracking": {"inputs": (("frames", True),), "outputs": ("tracks",)},
+    "events": {"inputs": (("frames", True),), "outputs": ("events",)},
+    "summary": {"inputs": (("frames", True),), "outputs": ("summary",)},
+    # Bbox person boxes focus VideoJev on people (person crop). Contour tracks
+    # carry no boxes, so only Bbox is accepted.
+    "objects": {
+        "inputs": (("frames", True), ("tracks", False)),
+        "outputs": ("objects",),
+    },
+    "output": {
+        "inputs": tuple((port, False) for port in PORT_TYPES),
+        "outputs": (),
+    },
+}
+ACCEPTS = {("objects", "tracks"): (("tracking", "bbox"),)}
+# Nodes whose debug entry has a per-request record, not only a status line.
+DEBUG_RECORDS = {"objects", "summary", "tracking", "events"}
+
+
+def node_ports(kind):
+    """{"inputs": (port, ...), "outputs": (port, ...)} for validation."""
+    spec = CONTRACT[kind]
+    return {
+        "inputs": tuple(port for port, _ in spec["inputs"]),
+        "outputs": spec["outputs"],
+    }
+
+
+def required_inputs(kind):
+    return tuple(port for port, required in CONTRACT[kind]["inputs"] if required)
+
+
+def accepts(kind, port, source_kind, source_engine):
+    allowed = ACCEPTS.get((kind, port))
+    return allowed is None or (source_kind, source_engine) in allowed
+
+
+def module_catalog():
+    """JSON contract the canvas reads instead of keeping its own port table."""
+    return {
+        "port_types": list(PORT_TYPES),
+        "modules": {
+            kind: {
+                "inputs": [
+                    {
+                        "port": port,
+                        "type": port,
+                        "required": required,
+                        **(
+                            {"accepts": [list(a) for a in ACCEPTS[(kind, port)]]}
+                            if (kind, port) in ACCEPTS
+                            else {}
+                        ),
+                    }
+                    for port, required in spec["inputs"]
+                ],
+                "outputs": [{"port": port, "type": port} for port in spec["outputs"]],
+                "engines": list(ENGINES.get(kind, ())),
+                "debug": "records" if kind in DEBUG_RECORDS else "status",
+            }
+            for kind, spec in CONTRACT.items()
+        },
+    }

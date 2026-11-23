@@ -5599,6 +5599,16 @@ def create_app(
             headers={"Cache-Control": "no-store"},
         )
 
+    @application.get("/v1/workflow/nodes/{node_id}/debug")
+    def workflow_node_debug(
+        request: Request, node_id: str, limit: int = 20
+    ) -> JSONResponse:
+        try:
+            value = _runtime(request).workflow_node_debug(node_id, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return JSONResponse(value, headers={"Cache-Control": "no-store"})
+
     @application.get("/v1/deployment/summary-service")
     def workflow_summary_service(request: Request) -> JSONResponse:
         # Operator-entered connection values must round-trip verbatim. Only the

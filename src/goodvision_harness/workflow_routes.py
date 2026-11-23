@@ -11,6 +11,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from .event_catalog import event_catalog
+from .workflow_modules import module_catalog
 from .workflows import (
     WorkflowConflictError,
     WorkflowStorageError,
@@ -43,6 +44,19 @@ class WorkflowCoordinator:
     def __init__(self, application):
         self.application = application
         self._store = None
+        self._templates = None
+
+    @property
+    def templates(self):
+        from .workflow_templates import TemplateStore
+
+        if self._templates is None:
+            path = self.store.path
+            self._templates = TemplateStore(
+                path.with_name("workflow-templates.json") if path else None,
+                vocabulary=self.vocabulary,
+            )
+        return self._templates
 
     @property
     def store(self):
@@ -111,6 +125,7 @@ class WorkflowCoordinator:
             "document": self.store.load(),
             "cameras": cameras,
             "event_catalog": event_catalog(self.vocabulary),
+            "modules": module_catalog(),
             "tracking": (
                 self.application.state.runtime.workflow_tracking_capability()
                 if callable(
@@ -187,6 +202,38 @@ def install_workflow_routes(application):
             except ValueError as exc:
                 raise HTTPException(503, str(exc)) from None
         return JSONResponse(value, headers=NO_STORE)
+
+    @application.get("/v1/workflow-templates")
+    async def list_templates():
+        fleet._require_primary()
+        try:
+            items = await asyncio.to_thread(control.templates.list)
+        except (OSError, ValueError, TypeError, WorkflowStorageError):
+            raise HTTPException(503, "template storage is unavailable") from None
+        return JSONResponse({"templates": items}, headers=NO_STORE)
+
+    @application.post("/v1/workflow-templates")
+    async def save_template(request: Request):
+        fleet._require_primary()
+        payload = await body(request)
+        try:
+            item = await asyncio.to_thread(control.templates.save, payload)
+        except WorkflowStorageError:
+            raise HTTPException(503, "templates could not be saved") from None
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(400, str(exc)) from None
+        return JSONResponse(item, headers=NO_STORE)
+
+    @application.delete("/v1/workflow-templates/{template_id}")
+    async def delete_template(template_id: str):
+        fleet._require_primary()
+        try:
+            await asyncio.to_thread(control.templates.delete, template_id)
+        except WorkflowStorageError:
+            raise HTTPException(503, "templates could not be saved") from None
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(400, str(exc)) from None
+        return Response(status_code=204, headers=NO_STORE)
 
     @application.get("/v1/workflows")
     async def state():

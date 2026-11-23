@@ -820,3 +820,73 @@ test('knife and alcohol presets are badged experimental and not validated',()=>{
  assert.match(html,/opt-in framework/);
 });
 
+
+test('object presence takes optional Bbox tracks and refuses Contour tracks',()=>{
+ const {palette}=require('../src/goodvision_harness/assets/workflow_canvas.js');
+ const g={nodes:[node('input','source'),{...node('bbox','tracking'),config:{name:'bbox',engine:'bbox'}},{...node('contour','tracking'),config:{name:'contour',engine:'contour'}},node('objects','objects'),node('out','output')],edges:[]};
+ assert.equal(connectionError(g,'bbox','tracks','objects','tracks'),null);
+ assert.equal(connectionError(g,'contour','tracks','objects','tracks'),'This input only accepts Bbox person boxes.');
+ assert.equal(connectionError(g,'contour','tracks','out','tracks'),null);
+ assert.deepEqual(palette.objects.inputs.map(p=>[p[0],p[2]]),[['frames',true],['tracks',false]]);
+ const app=appFixture();app.graph.nodes.push(...clone(g.nodes.slice(1,4)));app.selected='objects';
+ const html=app.renderInspector();
+ assert.match(html,/tracks · tracks · optional/);
+ assert.match(html,/value="bbox\|tracks"/);
+ assert.doesNotMatch(html,/value="contour\|tracks"/);
+});
+
+test('server module contract replaces the local port table',()=>{
+ const app=appFixture(),data=clone(app.data);
+ data.modules={modules:{objects:{inputs:[{port:'frames',type:'frames',required:true},{port:'tracks',type:'tracks',required:false,accepts:[['tracking','bbox']]}],outputs:[{port:'objects',type:'objects'}]}}};
+ app.accept(data);
+ assert.deepEqual(definitions.objects.inputs,[['frames','frames',true,undefined],['tracks','tracks',false,[['tracking','bbox']]]]);
+ assert.deepEqual(definitions.objects.outputs,[['objects','objects']]);
+});
+
+test('debug section loads one camera record set and labels synthetic results',async()=>{
+ const app=appFixture();app.graph.nodes[0].config.camera_id='camera01';app.selected='summary';
+ const urls=[];
+ app.request=async url=>{urls.push(url);return {node_id:'summary',kind:'summary',synthetic:true,status:{state:'running',last_error:null},counts:{succeeded:2,failed:1},items:[{at:1,source_frame_sequence:7,frame_times:[3.25],input:{},output:{summary:'<b>desk</b>'},latency_seconds:0.4,error:null,reason:'completed',synthetic:true},{at:2,source_frame_sequence:8,frame_times:[4],input:{},output:null,latency_seconds:null,error:'timeout',reason:'error',synthetic:true}]};};
+ assert.match(app.renderInspector(),/data-wc-action="debug-refresh" data-camera="camera01" data-node="summary"/);
+ await app.handleAction('debug-refresh',{dataset:{camera:'camera01',node:'summary'}});
+ assert.deepEqual(urls,['/v1/fleet/cameras/camera01/workflow/nodes/summary/debug?limit=20']);
+ const html=app.renderDebug(app.graph.nodes.find(n=>n.id==='summary'));
+ assert.match(html,/Synthetic · test mode/);assert.match(html,/real-analysis/);
+ assert.match(html,/succeeded 2 · failed 1/);
+ assert.match(html,/#7 · 3.25s/);assert.match(html,/400 ms/);
+ assert.match(html,/wc-debug-row is-error/);assert.match(html,/timeout/);
+ assert.doesNotMatch(html,/<b>desk/);
+ app.request=async()=>({status:{state:'not_in_plan'},items:[]});
+ await app.loadDebug('camera01','summary');
+ assert.match(app.renderDebug(app.graph.nodes.find(n=>n.id==='summary')),/Not in the applied plan/);
+ app.request=async()=>{throw new Error('camera unavailable');};
+ await app.loadDebug('camera01','summary');
+ assert.match(app.renderDebug(app.graph.nodes.find(n=>n.id==='summary')),/camera unavailable/);
+ const unbound=appFixture();assert.match(unbound.renderDebug(unbound.graph.nodes[1]),/Bind a camera/);
+});
+
+test('templates start a new workflow and the current graph saves as a template',async()=>{
+ const previous=globalThis.requestAnimationFrame;globalThis.requestAnimationFrame=callback=>{callback();return 0;};
+ try{
+ const app=appFixture();app.el.querySelector=()=>null;
+ const template={id:'builtin-videojev-yolo',name:'VideoJev + YOLO 基础盘',description:'d',builtin:true,graph:{nodes:[node('source','source')],edges:[]}};
+ const calls=[];
+ app.request=async(url,options={})=>{calls.push([url,options.method||'GET',options.body&&JSON.parse(options.body)]);return url==='/v1/workflow-templates'&&!options.method?{templates:[template]}:{};};
+ assert.match(app.renderContextActions(),/data-wc-action="templates"/);
+ assert.match(app.renderContextActions(),/data-wc-action="save-template"/);
+ await app.handleAction('templates',{dataset:{}});
+ assert.equal(app.dialog.kind,'templates');
+ assert.match(app.renderDialog(),/use-template/);assert.doesNotMatch(app.renderDialog(),/delete-template/);
+ await app.handleAction('use-template',{dataset:{id:template.id}});
+ assert.equal(app.dialog.kind,'new-workflow');assert.equal(app.dialog.name,template.name);
+ assert.deepEqual(app.dialog.graph,template.graph);assert.notEqual(app.dialog.graph,template.graph);
+ app.dialog=null;
+ await app.handleAction('save-template',{dataset:{}});
+ assert.equal(app.dialog.kind,'save-template');app.dialog.name='Store';
+ await app.handleAction('confirm-save-template',{dataset:{}});
+ const saved=calls.find(c=>c[1]==='POST');
+ assert.equal(saved[0],'/v1/workflow-templates');assert.equal(saved[2].name,'Store');
+ assert.deepEqual(saved[2].graph,app.graph);
+ assert.equal(app.dialog,null);assert.equal(app.busy,false);assert.equal(app.notice,'Template saved.');
+ }finally{if(previous===undefined)delete globalThis.requestAnimationFrame;else globalThis.requestAnimationFrame=previous;}
+});
