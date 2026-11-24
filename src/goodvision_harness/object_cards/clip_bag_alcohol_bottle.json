@@ -1,0 +1,50 @@
+{
+  "id": "clip_bag_alcohol_bottle",
+  "version": 1,
+  "names": {
+    "en": "alcohol bottle in bag · CLIP",
+    "zh": "翻包酒瓶 · CLIP"
+  },
+  "scope": "Visibly exposed in a bag or being taken out of a bag; single frame.",
+  "engine": "clip",
+  "recipe": {
+    "kind": "text_pair",
+    "summary": "Benchmark CLIP text pair for bag-alcohol-bottle: the frozen positive/negative descriptions in profiles/clip.json.",
+    "source": {
+      "profile": "clip",
+      "field": "prompts",
+      "sha256": "43f96ae1ba8d6db942914ff4138689cf7fb072b93003454cdb4fa8ac9d258035",
+      "prompt_key": "bag_alcohol_bottle",
+      "revision": "32bd64288804d66eefd0ccbe215aa642df71cc41"
+    },
+    "window": {
+      "frames": 1,
+      "step_seconds": 1.0
+    }
+  },
+  "decision": {
+    "rule": "margin",
+    "comparator": ">",
+    "threshold": null,
+    "thresholds_sha256": null
+  },
+  "hard_negatives": [],
+  "datasets": {
+    "validation": {
+      "name": "validation44 (frozen 24 + bag supplement 20)",
+      "pinned_by": "tools.unified_benchmark.preflight:PINNED_INPUTS"
+    },
+    "test": {
+      "name": "current202",
+      "pinned_by": "tools.unified_benchmark.dataset202:PINNED_202_INPUTS"
+    }
+  },
+  "status": {
+    "state": "experimental",
+    "note": "Offline-only card: the live object node has no CLIP engine yet. The margin threshold is filled only from a frozen validation-only thresholds.json.",
+    "evidence": []
+  },
+  "live": {
+    "supported": false
+  }
+}

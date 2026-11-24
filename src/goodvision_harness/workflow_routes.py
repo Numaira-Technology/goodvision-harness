@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
+from . import object_cards
 from .event_catalog import event_catalog
 from .workflow_modules import module_catalog
 from .workflows import (
@@ -121,11 +122,14 @@ class WorkflowCoordinator:
             camera["status"] = statuses.get(camera["index"])
         return {
             "dynamic_sources": fleet.dynamic is not None,
-            "add_camera_url": "/v1/fleet/cameras" if fleet.dynamic is not None else None,
+            "add_camera_url": (
+                "/v1/fleet/cameras" if fleet.dynamic is not None else None
+            ),
             "document": self.store.load(),
             "cameras": cameras,
             "event_catalog": event_catalog(self.vocabulary),
             "modules": module_catalog(),
+            "object_cards": object_cards.catalog(object_cards.CARDS),
             "tracking": (
                 self.application.state.runtime.workflow_tracking_capability()
                 if callable(

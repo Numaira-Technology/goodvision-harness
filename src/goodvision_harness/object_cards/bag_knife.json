@@ -1,0 +1,50 @@
+{
+  "id": "bag_knife",
+  "version": 1,
+  "names": {
+    "en": "knife in bag",
+    "zh": "翻包刀具"
+  },
+  "scope": "Visibly exposed in a bag or being taken out of a bag; hidden contents are not inferred.",
+  "engine": "videojev",
+  "recipe": {
+    "kind": "native_choice",
+    "summary": "Benchmark recipe bench_bag_v1: the frozen bag-knife question is sent unchanged.",
+    "source": {
+      "profile": "videojev",
+      "field": "question_template",
+      "sha256": "2eb4b20c6875611480735f76e8a0746d8c4790c93f5ceb21c2a9186ac1ea662e",
+      "question_id": "scene/bag_knife",
+      "recipe_id": "bench_bag_v1"
+    },
+    "window": {
+      "frames": 2,
+      "step_seconds": 1.0
+    }
+  },
+  "decision": {
+    "rule": "argmax"
+  },
+  "hard_negatives": [
+    "Rulers, pens and other long thin items in a bag",
+    "Knives that are only inferred, not visible"
+  ],
+  "datasets": {
+    "validation": {
+      "name": "validation44 (frozen 24 + bag supplement 20)",
+      "pinned_by": "tools.unified_benchmark.preflight:PINNED_INPUTS"
+    },
+    "test": {
+      "name": "current202",
+      "pinned_by": "tools.unified_benchmark.dataset202:PINNED_202_INPUTS"
+    }
+  },
+  "status": {
+    "state": "experimental",
+    "note": "Experimental preset, not validated live: sends the event benchmark's frozen bag question unchanged (2 frames 1 s apart, argmax). Benchmark scores are offline and do not establish live accuracy.",
+    "evidence": []
+  },
+  "live": {
+    "supported": true
+  }
+}

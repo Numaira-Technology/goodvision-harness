@@ -1003,3 +1003,28 @@ test('multi-source template uses idle unassigned channels and rechecks before sa
   assert.equal(app.editLocked(),false);
  }finally{if(previous===undefined)delete globalThis.requestAnimationFrame;else globalThis.requestAnimationFrame=previous;}
 });
+
+test('object editor reads presets and badges from the served recipe cards',()=>{
+ const app=appFixture();
+ // Without a served catalog the built-in fallback lists the shipped presets.
+ assert.deepEqual(app.objectCards().map(c=>c.id),['knife','alcohol_bottle','bag_knife','bag_alcohol_bottle']);
+ assert.ok(app.objectCards().every(c=>c.validated===false));
+ const lighter={id:'lighter',version:1,engine:'videojev',names:{en:'lighter',zh:'打火机'},scope:'Anywhere in view.',status:'validated',validated:true,note:'Validated card.',recipe:null,preset:{id:'lighter',name:'lighter',zh_name:'打火机',criterion:'A lighter is visible.',counter_examples:null,gate:0.9}};
+ const knife={...app.objectCards()[0],note:'Served knife note.'};
+ app.data.object_cards=[knife,lighter];
+ app.add('objects',{x:300,y:300});const block=app.graph.nodes.at(-1);app.selected=block.id;
+ let html=app.renderObjects(block,false);
+ assert.match(html,/data-preset="lighter"/);assert.match(html,/Add lighter"?/);
+ assert.doesNotMatch(html,/data-preset="bag_knife"/);
+ app.handleAction('object-add',{dataset:{preset:'lighter'}});
+ app.handleAction('object-add',{dataset:{preset:'knife'}});
+ assert.deepEqual(block.config.objects.map(o=>o.id),['object_1','lighter','knife']);
+ assert.deepEqual(block.config.objects[1],lighter.preset);
+ html=app.renderObjects(block,false);
+ // A validated card carries no experimental badge; the served note is shown for the rest.
+ assert.doesNotMatch(html,/data-wc-experimental="lighter"/);
+ assert.match(html,/data-wc-experimental="knife"[^>]*><strong class="wc-badge">Experimental · not validated<\/strong> Served knife note\./);
+ // A malformed served catalog falls back instead of breaking the editor.
+ app.data.object_cards=[{id:'x'}];
+ assert.equal(app.objectCards().length,4);
+});
