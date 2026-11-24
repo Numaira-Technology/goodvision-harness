@@ -40,7 +40,14 @@ LIVE_ENGINES = {"videojev"}
 _SLUG = re.compile(r"[a-z][a-z0-9_]{0,47}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _PIN = re.compile(r"[a-z_][a-z0-9_.]*:[A-Z_][A-Z0-9_]*\Z")
-_LIVE_EVIDENCE = {"kind", "protocol", "samples", "pass_line", "reviewers", "record_sha256"}
+_LIVE_EVIDENCE = {
+    "kind",
+    "protocol",
+    "samples",
+    "pass_line",
+    "reviewers",
+    "record_sha256",
+}
 
 
 class CardError(ValueError):
@@ -57,14 +64,36 @@ def _keys(cid, value, required, optional=(), label="card"):
     missing = set(required) - set(value)
     extra = set(value) - set(required) - set(optional)
     if missing or extra:
-        _fail(cid, f"{label} fields: missing {sorted(missing)}, unknown {sorted(extra)}")
+        _fail(
+            cid, f"{label} fields: missing {sorted(missing)}, unknown {sorted(extra)}"
+        )
 
 
 def _text(cid, value, label, *, allow_none=False):
     if value is None and allow_none:
         return
-    if not isinstance(value, str) or not value.strip() or len(value) > 600:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > 600
+        or any((ord(c) < 32 and c not in "\n\t") or ord(c) == 127 for c in value)
+    ):
         _fail(cid, f"{label} must be nonempty text up to 600 characters")
+
+
+def _live_evidence_complete(evidence: Mapping) -> bool:
+    if evidence.get("kind") != "live_acceptance" or not _LIVE_EVIDENCE <= set(evidence):
+        return False
+    for key in ("protocol", "pass_line"):
+        value = evidence[key]
+        if not isinstance(value, str) or not value.strip():
+            return False
+    for key in ("samples", "reviewers"):
+        value = evidence[key]
+        if type(value) is not int or value < 1:
+            return False
+    digest = evidence["record_sha256"]
+    return isinstance(digest, str) and bool(_HEX64.fullmatch(digest))
 
 
 def validate_card(card: Any) -> dict:
@@ -72,8 +101,23 @@ def validate_card(card: Any) -> dict:
     cid = card.get("id") if isinstance(card, Mapping) else None
     if not isinstance(cid, str) or not _SLUG.fullmatch(cid):
         raise CardError("object card id must be a lowercase slug")
-    _keys(cid, card, ("id", "version", "names", "scope", "engine", "recipe",
-                      "decision", "hard_negatives", "datasets", "status", "live"))
+    _keys(
+        cid,
+        card,
+        (
+            "id",
+            "version",
+            "names",
+            "scope",
+            "engine",
+            "recipe",
+            "decision",
+            "hard_negatives",
+            "datasets",
+            "status",
+            "live",
+        ),
+    )
     if type(card["version"]) is not int or card["version"] < 1:
         _fail(cid, "version must be a positive integer")
     _keys(cid, card["names"], ("en", "zh"), label="names")
@@ -90,20 +134,34 @@ def validate_card(card: Any) -> dict:
     if kind not in KINDS or engine not in KINDS[kind]:
         _fail(cid, f"recipe kind {kind!r} does not fit engine {engine!r}")
     if ("text" in recipe) == ("source" in recipe):
-        _fail(cid, "recipe needs exactly one of text (own wording) or source "
-                   "(a reference into a frozen benchmark profile)")
+        _fail(
+            cid,
+            "recipe needs exactly one of text (own wording) or source "
+            "(a reference into a frozen benchmark profile)",
+        )
     if "text" in recipe:
-        _keys(cid, recipe["text"], ("criterion", "counter_examples"), label="recipe.text")
+        _keys(
+            cid, recipe["text"], ("criterion", "counter_examples"), label="recipe.text"
+        )
         _text(cid, recipe["text"]["criterion"], "recipe.text.criterion")
-        _text(cid, recipe["text"]["counter_examples"], "recipe.text.counter_examples",
-              allow_none=True)
+        _text(
+            cid,
+            recipe["text"]["counter_examples"],
+            "recipe.text.counter_examples",
+            allow_none=True,
+        )
         if "summary" in recipe:
             _fail(cid, "recipe.summary is only for source recipes")
     else:
         source = recipe["source"]
         ref = "question_id" if kind == "native_choice" else "prompt_key"
-        _keys(cid, source, ("profile", "field", "sha256", ref),
-              ("recipe_id", "revision"), "recipe.source")
+        _keys(
+            cid,
+            source,
+            ("profile", "field", "sha256", ref),
+            ("recipe_id", "revision"),
+            "recipe.source",
+        )
         if not _SLUG.fullmatch(str(source["profile"])) or not _HEX64.fullmatch(
             str(source["sha256"])
         ):
@@ -117,9 +175,13 @@ def validate_card(card: Any) -> dict:
         window = recipe["window"]
         _keys(cid, window, ("frames", "step_seconds"), label="recipe.window")
         step = window["step_seconds"]
-        if (type(window["frames"]) is not int or not 1 <= window["frames"] <= 4
-                or type(step) not in (int, float) or not math.isfinite(step)
-                or not 0.1 <= step <= 2):
+        if (
+            type(window["frames"]) is not int
+            or not 1 <= window["frames"] <= 4
+            or type(step) not in (int, float)
+            or not math.isfinite(step)
+            or not 0.1 <= step <= 2
+        ):
             _fail(cid, "recipe.window needs 1-4 frames and 0.1-2 s spacing")
 
     decision = card["decision"]
@@ -129,19 +191,31 @@ def validate_card(card: Any) -> dict:
     if rule == "gate":
         _keys(cid, decision, ("rule", "gate"), label="decision")
         gate = decision["gate"]
-        if type(gate) not in (int, float) or not math.isfinite(gate) or not 0.34 <= gate <= 1:
+        if (
+            type(gate) not in (int, float)
+            or not math.isfinite(gate)
+            or not 0.34 <= gate <= 1
+        ):
             _fail(cid, "decision.gate must be between 0.34 and 1")
     elif rule == "margin":
-        _keys(cid, decision, ("rule", "comparator", "threshold", "thresholds_sha256"),
-              label="decision")
+        _keys(
+            cid,
+            decision,
+            ("rule", "comparator", "threshold", "thresholds_sha256"),
+            label="decision",
+        )
         if decision["comparator"] != ">":
             _fail(cid, "margin comparator must be '>' (the benchmark's rule)")
         threshold, digest = decision["threshold"], decision["thresholds_sha256"]
         if (threshold is None) != (digest is None):
-            _fail(cid, "a margin threshold needs the sha256 of its frozen "
-                       "validation-only thresholds.json, and vice versa")
+            _fail(
+                cid,
+                "a margin threshold needs the sha256 of its frozen "
+                "validation-only thresholds.json, and vice versa",
+            )
         if threshold is not None and (
-            type(threshold) not in (int, float) or not math.isfinite(threshold)
+            type(threshold) not in (int, float)
+            or not math.isfinite(threshold)
             or not _HEX64.fullmatch(str(digest))
         ):
             _fail(cid, "margin threshold must be finite with a sha256")
@@ -170,17 +244,37 @@ def validate_card(card: Any) -> dict:
     ):
         _fail(cid, "status.evidence must be a list of objects with a kind")
     if status["state"] == "validated" and not any(
-        e.get("kind") == "live_acceptance" and _LIVE_EVIDENCE <= set(e)
-        for e in status["evidence"]
+        _live_evidence_complete(e) for e in status["evidence"]
     ):
-        _fail(cid, "validated needs live_acceptance evidence with "
-                   f"{sorted(_LIVE_EVIDENCE)}; offline scores alone stay experimental")
+        _fail(
+            cid,
+            "validated needs live_acceptance evidence with "
+            f"{sorted(_LIVE_EVIDENCE)}; offline scores alone stay experimental",
+        )
 
     _keys(cid, card["live"], ("supported",), label="live")
     if card["live"]["supported"] is not False and (
         card["live"]["supported"] is not True or engine not in LIVE_ENGINES
     ):
         _fail(cid, f"live.supported is true only for engines in {sorted(LIVE_ENGINES)}")
+    if card["live"]["supported"]:
+        # The current live node has two distinct contracts. Do not offer a
+        # schema-valid card whose decision/window would be dropped or rejected
+        # when its preset is compiled into a workflow.
+        if "source" in recipe:
+            if not recipe["source"].get("recipe_id") or "window" not in recipe:
+                _fail(cid, "live source recipes require recipe_id and window")
+            if rule != "argmax":
+                _fail(cid, "live source recipes require the argmax decision rule")
+            if recipe["window"]["frames"] < 2:
+                _fail(cid, "live source recipes require at least two frames")
+        else:
+            if rule != "gate" or "window" in recipe:
+                _fail(cid, "live text recipes require gate and use the node's window")
+        for label in ("en", "zh"):
+            value = card["names"][label]
+            if value is not None and len(value) > 64:
+                _fail(cid, f"live names.{label} must be at most 64 characters")
     return copy.deepcopy(dict(card))
 
 
@@ -189,7 +283,9 @@ def load_cards(directory: Path = CARD_DIR) -> dict[str, dict]:
     for path in sorted(Path(directory).glob("*.json")):
         card = validate_card(json.loads(path.read_text(encoding="utf-8")))
         if path.stem != card["id"]:
-            raise CardError(f"object card file {path.name} must be named {card['id']}.json")
+            raise CardError(
+                f"object card file {path.name} must be named {card['id']}.json"
+            )
         cards[card["id"]] = card
     _check_recipes(cards)
     return cards
@@ -203,10 +299,17 @@ def _check_recipes(cards: Mapping[str, dict]) -> None:
         rid = source.get("recipe_id")
         if rid is None:
             continue
-        key = (card["engine"], source["profile"], source["field"], source["sha256"],
-               json.dumps(card["recipe"].get("window"), sort_keys=True))
+        key = (
+            card["engine"],
+            source["profile"],
+            source["field"],
+            source["sha256"],
+            json.dumps(card["recipe"].get("window"), sort_keys=True),
+        )
         if seen.setdefault(rid, key) != key:
-            raise CardError(f"object cards sharing recipe {rid} disagree on its source or window")
+            raise CardError(
+                f"object cards sharing recipe {rid} disagree on its source or window"
+            )
 
 
 def preset(card: Mapping[str, Any]) -> dict:

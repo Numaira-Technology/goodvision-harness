@@ -1,7 +1,7 @@
 """Check object recipe cards against the frozen benchmark they reference.
 
     python -m tools.object_cards verify
-    python -m tools.object_cards verify --thresholds clip_bag_knife=path/to/thresholds.json
+    python -m tools.object_cards verify --thresholds clip_bag_knife=thresholds.json
 
 The benchmark profiles stay the single source of truth; a card only points at
 one question or text pair by profile alias, field and content hash. This tool
@@ -40,8 +40,14 @@ def _profile(alias: str, profiles: Path) -> dict:
     return profile
 
 
-def check_card(card: dict, *, profiles: Path = PROFILES, thresholds: Path | None = None) -> list[str]:
+def check_card(
+    card: dict, *, profiles: Path = PROFILES, thresholds: Path | None = None
+) -> list[str]:
     """Problems with one card; an empty list means it matches the benchmark."""
+    try:
+        card = object_cards.validate_card(card)
+    except object_cards.CardError as exc:
+        return [str(exc)]
     problems = []
     recipe, decision = card["recipe"], card["decision"]
     source = recipe.get("source")
@@ -57,14 +63,22 @@ def check_card(card: dict, *, profiles: Path = PROFILES, thresholds: Path | None
         if "prompt_key" in source and isinstance(field, dict):
             hashed = field.get(source["prompt_key"])
         if field is None:
-            problems.append(f"profile {source['profile']} has no field {source['field']}")
+            problems.append(
+                f"profile {source['profile']} has no field {source['field']}"
+            )
         elif canonical_sha256(hashed) != source["sha256"]:
-            problems.append(f"profile {source['profile']}.{source['field']} drifted "
-                            "from the card's sha256")
-        if "question_id" in source and field is not None and source["question_id"] not in {
-            q.get("id") for q in field
-        }:
-            problems.append(f"question {source['question_id']} not in the profile template")
+            problems.append(
+                f"profile {source['profile']}.{source['field']} drifted "
+                "from the card's sha256"
+            )
+        if (
+            "question_id" in source
+            and field is not None
+            and source["question_id"] not in {q.get("id") for q in field}
+        ):
+            problems.append(
+                f"question {source['question_id']} not in the profile template"
+            )
         if "prompt_key" in source and field is not None:
             pair = field.get(source["prompt_key"])
             if not (isinstance(pair, list) and len(pair) == 2):
@@ -73,9 +87,20 @@ def check_card(card: dict, *, profiles: Path = PROFILES, thresholds: Path | None
         if revision is not None and profile.get("revision") != revision:
             problems.append(f"profile {source['profile']} revision is not {revision}")
         window = recipe.get("window")
-        if window and window["frames"] != profile.get("window_frames", window["frames"]):
-            problems.append(f"card window has {window['frames']} frames, profile "
-                            f"{profile.get('window_frames')}")
+        if window and window["frames"] != profile.get(
+            "window_frames", window["frames"]
+        ):
+            problems.append(
+                f"card window has {window['frames']} frames, profile "
+                f"{profile.get('window_frames')}"
+            )
+        # The frozen native adapter requires two adjacent 1 FPS frames, even
+        # though the profile only records the frame count. Checking just that
+        # count would certify a different live sampling recipe.
+        if "question_id" in source and (
+            window is None or window["frames"] != 2 or window["step_seconds"] != 1.0
+        ):
+            problems.append("native benchmark window requires two frames 1 s apart")
     for split, ref in card["datasets"].items():
         module, constant = ref["pinned_by"].split(":")
         try:
@@ -106,8 +131,10 @@ def _check_thresholds(card: dict, path: Path, profiles: Path) -> list[str]:
         problems.append("thresholds.json model differs from the profile")
     value = (artifact.get("thresholds") or {}).get(source["prompt_key"])
     if value != decision["threshold"]:
-        problems.append(f"threshold for {source['prompt_key']} is {value}, card has "
-                        f"{decision['threshold']}")
+        problems.append(
+            f"threshold for {source['prompt_key']} is {value}, card has "
+            f"{decision['threshold']}"
+        )
     return problems
 
 
@@ -116,8 +143,13 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     verify = sub.add_parser("verify")
     verify.add_argument("--profiles", type=Path, default=PROFILES)
-    verify.add_argument("--thresholds", action="append", default=[],
-                        metavar="CARD=PATH", help="frozen thresholds.json for a margin card")
+    verify.add_argument(
+        "--thresholds",
+        action="append",
+        default=[],
+        metavar="CARD=PATH",
+        help="frozen thresholds.json for a margin card",
+    )
     args = parser.parse_args(argv)
     thresholds = {}
     for item in args.thresholds:
@@ -127,8 +159,12 @@ def main(argv=None) -> int:
         thresholds[card_id] = Path(path)
     failed = False
     for cid, card in object_cards.CARDS.items():
-        problems = check_card(card, profiles=args.profiles, thresholds=thresholds.get(cid))
-        state = card["status"]["state"] + ("" if card["live"]["supported"] else ", offline only")
+        problems = check_card(
+            card, profiles=args.profiles, thresholds=thresholds.get(cid)
+        )
+        state = card["status"]["state"] + (
+            "" if card["live"]["supported"] else ", offline only"
+        )
         print(f"{'FAIL' if problems else 'ok  '} {cid} ({state})")
         for problem in problems:
             print(f"     - {problem}")

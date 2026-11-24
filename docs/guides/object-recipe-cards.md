@@ -108,6 +108,8 @@
 - 数据集不记哈希副本，只记钉住它们的常量（如 `tools.unified_benchmark.dataset202:PINNED_202_INPUTS`），`verify` 检查常量存在。
 - Canvas：`GET /v1/workflows` 新增 `object_cards`，编辑器优先读它；没有时用内置的离线列表。
 - 校验：`python -m tools.object_cards verify`；有冻结阈值时加 `--thresholds clip_bag_knife=路径/thresholds.json`。
+- `validated` 验收证据不能只填字段名：`protocol`、`pass_line` 是非空文字，`samples`、`reviewers` 是正整数（样本数、复核人数），`record_sha256` 是 64 位小写十六进制哈希。这里只检查记录格式，不代替人工核实验收结果。
+- 当前实时节点只支持两种卡：自定义文字 + `gate`（窗口由节点设置，卡不能另设窗口），或带 `recipe_id` 和窗口的评测引用 + `argmax`。原生评测引用的窗口还必须是 2 帧、间隔 1 秒，与冻结的评测适配器一致。
 
 ## 6. 新建一张卡（流程草案）
 

@@ -18,7 +18,9 @@ from goodvision_harness import object_presence as op
 from tools import object_cards as tool
 
 ROOT = Path(__file__).resolve().parents[1]
-BEFORE = json.loads((ROOT / "tests/fixtures/object_presets_before_cards.json").read_text())
+BEFORE = json.loads(
+    (ROOT / "tests/fixtures/object_presets_before_cards.json").read_text()
+)
 
 
 def card(cid="bag_knife"):
@@ -72,18 +74,33 @@ def test_catalog_entries_carry_the_live_preset_and_status():
 # --- schema ---------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mutate,message", [
-    (lambda c: c.update(extra=1), "unknown"),
-    (lambda c: c.update(engine="clip"), "does not fit engine"),
-    (lambda c: c["recipe"].update(text={"criterion": "x", "counter_examples": None}),
-     "exactly one of text"),
-    (lambda c: c["decision"].update(rule="margin"), "decision rule"),
-    (lambda c: c["status"].update(state="validated"), "live_acceptance"),
-    (lambda c: c["status"].update(state="validated", evidence=[
-        {"kind": "offline_benchmark", "score": 100}]), "offline scores alone"),
-    (lambda c: c["datasets"]["test"].update(pinned_by="not a pin"), "module:CONSTANT"),
-    (lambda c: c["recipe"]["window"].update(frames=9), "1-4 frames"),
-])
+@pytest.mark.parametrize(
+    "mutate,message",
+    [
+        (lambda c: c.update(extra=1), "unknown"),
+        (lambda c: c.update(engine="clip"), "does not fit engine"),
+        (
+            lambda c: c["recipe"].update(
+                text={"criterion": "x", "counter_examples": None}
+            ),
+            "exactly one of text",
+        ),
+        (lambda c: c["decision"].update(rule="margin"), "decision rule"),
+        (lambda c: c["status"].update(state="validated"), "live_acceptance"),
+        (
+            lambda c: c["status"].update(
+                state="validated",
+                evidence=[{"kind": "offline_benchmark", "score": 100}],
+            ),
+            "offline scores alone",
+        ),
+        (
+            lambda c: c["datasets"]["test"].update(pinned_by="not a pin"),
+            "module:CONSTANT",
+        ),
+        (lambda c: c["recipe"]["window"].update(frames=9), "1-4 frames"),
+    ],
+)
 def test_invalid_cards_are_rejected(mutate, message):
     value = card()
     mutate(value)
@@ -93,10 +110,19 @@ def test_invalid_cards_are_rejected(mutate, message):
 
 def test_validated_needs_complete_live_acceptance_evidence():
     value = card()
-    value["status"].update(state="validated", evidence=[{
-        "kind": "live_acceptance", "protocol": "knife-protocol-v8", "samples": 30,
-        "pass_line": "27/30", "reviewers": 2, "record_sha256": "0" * 64,
-    }])
+    value["status"].update(
+        state="validated",
+        evidence=[
+            {
+                "kind": "live_acceptance",
+                "protocol": "knife-protocol-v8",
+                "samples": 30,
+                "pass_line": "27/30",
+                "reviewers": 2,
+                "record_sha256": "0" * 64,
+            }
+        ],
+    )
     assert oc.validate_card(value)["status"]["state"] == "validated"
 
 
@@ -112,7 +138,7 @@ def test_margin_threshold_and_its_frozen_artifact_travel_together():
 def test_only_live_engines_can_be_offered_live():
     value = card("clip_bag_knife")
     value["live"]["supported"] = True
-    with pytest.raises(oc.CardError, match="live.supported"):
+    with pytest.raises(oc.CardError, match=r"live\.supported"):
         oc.validate_card(value)
 
 
@@ -128,7 +154,7 @@ def test_cards_sharing_a_recipe_must_share_its_window(tmp_path):
 
 def test_card_file_name_must_match_its_id(tmp_path):
     shutil.copy(oc.CARD_DIR / "knife.json", tmp_path / "blade.json")
-    with pytest.raises(oc.CardError, match="must be named knife.json"):
+    with pytest.raises(oc.CardError, match=r"must be named knife\.json"):
         oc.load_cards(tmp_path)
 
 
@@ -156,7 +182,10 @@ def test_verify_detects_a_drifted_clip_text_pair(tmp_path):
     profile = json.loads((profiles / "clip.json").read_text())
     profile["prompts"]["bag_knife"][1] = "An empty bag."
     (profiles / "clip.json").write_text(json.dumps(profile))
-    assert any("drifted" in p for p in tool.check_card(card("clip_bag_knife"), profiles=profiles))
+    assert any(
+        "drifted" in p
+        for p in tool.check_card(card("clip_bag_knife"), profiles=profiles)
+    )
     # The alcohol pair is hashed on its own, so it is unaffected.
     assert tool.check_card(card("clip_bag_alcohol_bottle"), profiles=profiles) == []
 
@@ -164,8 +193,15 @@ def test_verify_detects_a_drifted_clip_text_pair(tmp_path):
 def test_verify_checks_a_threshold_against_its_frozen_artifact(tmp_path):
     model = json.loads((tool.PROFILES / "clip.json").read_text())["model"]
     artifact = tmp_path / "thresholds.json"
-    artifact.write_text(json.dumps({"validation_only": True, "model": model,
-                                    "thresholds": {"bag_knife": 0.0125}}))
+    artifact.write_text(
+        json.dumps(
+            {
+                "validation_only": True,
+                "model": model,
+                "thresholds": {"bag_knife": 0.0125},
+            }
+        )
+    )
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
     value = card("clip_bag_knife")
     # No frozen threshold on the card yet: the tool reports the artifact hash.
@@ -173,10 +209,13 @@ def test_verify_checks_a_threshold_against_its_frozen_artifact(tmp_path):
     value["decision"].update(threshold=0.0125, thresholds_sha256=digest)
     assert tool.check_card(value, thresholds=artifact) == []
     value["decision"]["threshold"] = 0.02
-    assert any("card has 0.02" in p for p in tool.check_card(value, thresholds=artifact))
+    assert any(
+        "card has 0.02" in p for p in tool.check_card(value, thresholds=artifact)
+    )
     value["decision"].update(threshold=0.0125, thresholds_sha256="b" * 64)
     assert tool.check_card(value, thresholds=artifact) == [
-        "thresholds.json sha256 differs from the card"]
+        "thresholds.json sha256 differs from the card"
+    ]
 
 
 # --- served catalog -------------------------------------------------------
@@ -189,3 +228,87 @@ def test_workflow_state_serves_the_card_catalog(monkeypatch, tmp_path):
     with TestClient(workflow_app(monkeypatch, tmp_path)) as client:
         data = client.get("/v1/workflows").json()
     assert data["object_cards"] == oc.catalog(oc.CARDS)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("protocol", None),
+        ("protocol", " "),
+        ("samples", None),
+        ("samples", 0),
+        ("samples", -1),
+        ("samples", True),
+        ("pass_line", None),
+        ("pass_line", ""),
+        ("reviewers", None),
+        ("reviewers", 0),
+        ("reviewers", False),
+        ("record_sha256", None),
+        ("record_sha256", "not a digest"),
+    ],
+)
+def test_registry_rejects_empty_or_invalid_live_evidence(tmp_path, field, value):
+    evidence = {
+        "kind": "live_acceptance",
+        "protocol": "knife-protocol-v8",
+        "samples": 30,
+        "pass_line": "27/30",
+        "reviewers": 2,
+        "record_sha256": "0" * 64,
+    }
+    evidence[field] = value
+    changed = card()
+    changed["status"].update(state="validated", evidence=[evidence])
+    (tmp_path / "bag_knife.json").write_text(json.dumps(changed), encoding="utf-8")
+    with pytest.raises(oc.CardError, match="live_acceptance"):
+        oc.load_cards(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "cid,mutate",
+    [
+        ("bag_knife", lambda c: c["recipe"].pop("window")),
+        ("bag_knife", lambda c: c["recipe"]["window"].update(frames=1)),
+        ("bag_knife", lambda c: c["recipe"]["source"].pop("recipe_id")),
+        ("bag_knife", lambda c: c.update(decision={"rule": "gate", "gate": 0.9})),
+        ("knife", lambda c: c.update(decision={"rule": "argmax"})),
+        (
+            "knife",
+            lambda c: c["recipe"].update(window={"frames": 4, "step_seconds": 0.5}),
+        ),
+        ("knife", lambda c: c["names"].update(en="x" * 65)),
+    ],
+)
+def test_registry_rejects_cards_the_live_node_cannot_run(tmp_path, cid, mutate):
+    changed = card(cid)
+    mutate(changed)
+    (tmp_path / f"{cid}.json").write_text(json.dumps(changed), encoding="utf-8")
+    with pytest.raises(oc.CardError, match="live"):
+        oc.load_cards(tmp_path)
+
+
+def test_verify_rejects_different_live_frame_spacing(monkeypatch, capsys):
+    changed = card()
+    changed["recipe"]["window"]["step_seconds"] = 0.5
+    # This is a structurally valid live card, but not the benchmark's recipe.
+    monkeypatch.setattr(oc, "CARDS", {changed["id"]: oc.validate_card(changed)})
+    assert tool.main(["verify"]) == 1
+    output = capsys.readouterr().out
+    assert "FAIL bag_knife" in output
+    assert "two frames 1 s apart" in output
+
+
+def test_all_catalog_presets_are_accepted_by_the_live_consumer():
+    for entry in oc.catalog(oc.CARDS):
+        spec = op.object_spec(entry["preset"])
+        assert spec["id"] == entry["id"]
+        assert op.question_template([spec])
+
+
+@pytest.mark.parametrize("field", ["en", "zh"])
+def test_live_card_names_cannot_contain_control_characters(field):
+    changed = card("knife")
+    changed["names"][field] = "knife\x00"
+    with pytest.raises(oc.CardError, match="names"):
+        oc.validate_card(changed)

@@ -54,9 +54,13 @@ _PREAMBLE = (
 # send the event benchmark's frozen bag question, whose offline scores do not
 # establish live accuracy. A card turns validated only with live-acceptance
 # evidence (docs/validation/object-presence-knife-protocol.md).
-_LIVE_CARDS = {cid: c for cid, c in object_cards.CARDS.items() if c["live"]["supported"]}
+_LIVE_CARDS = {
+    cid: c for cid, c in object_cards.CARDS.items() if c["live"]["supported"]
+}
 # Frozen benchmark templates the live node can send, keyed by profile field hash.
-_BUNDLED_TEMPLATES = {("videojev", "question_template", TEMPLATE_SHA256): BENCH_TEMPLATE}
+_BUNDLED_TEMPLATES = {
+    ("videojev", "question_template", TEMPLATE_SHA256): BENCH_TEMPLATE
+}
 
 
 def _recipes(cards) -> dict:
