@@ -421,7 +421,8 @@ def test_unpack_uses_packed_python_at_final_prefix_without_credentials(
     es._run_unpack(tmp_path)
     assert captured["argv"] == [
         str(tmp_path / "bin/python"),
-        "-I",
+        "-E",
+        "-s",
         str(tmp_path / "bin/conda-unpack"),
     ]
     assert (
@@ -441,9 +442,12 @@ def test_unpack_executes_script_with_stale_shebang(tmp_path):
     python.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
     python.chmod(0o755)
     script = tmp_path / "bin/conda-unpack"
+    # Real conda-unpack imports a helper that sits next to it in bin/.
+    (tmp_path / "bin/conda_unpack_progress.py").write_text("MARK = 'ok'\n")
     script.write_text(
         "#!/missing/build/prefix/python\nfrom pathlib import Path\n"
-        "Path(__file__).with_name('ran').write_text('ok')\n"
+        "from conda_unpack_progress import MARK\n"
+        "Path(__file__).with_name('ran').write_text(MARK)\n"
     )
     es._run_unpack(tmp_path)
     assert (tmp_path / "bin/ran").read_text() == "ok"

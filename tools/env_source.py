@@ -464,8 +464,11 @@ def _safe_extract(tarball, dest):
 
 def _run_unpack(prefix):
     # conda-unpack's shebang may name the build host; always use packed Python.
+    # -E -s, not -I: conda-unpack imports its sibling bin/conda_unpack_progress.py,
+    # and -I drops the script directory from sys.path. That directory is inside
+    # the verified pack, and PYTHONPATH is already stripped from the env.
     subprocess.run(
-        [str(prefix / "bin/python"), "-I", str(prefix / "bin/conda-unpack")],
+        [str(prefix / "bin/python"), "-E", "-s", str(prefix / "bin/conda-unpack")],
         check=True,
         stdin=subprocess.DEVNULL,
         stdout=sys.stderr,
