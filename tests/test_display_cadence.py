@@ -153,7 +153,7 @@ def test_display_defaults_leave_inference_and_buffer_delay_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("goodvision_harness.config.find_dotenv", lambda **_: "")
-    raw = yaml.safe_load(path.read_text())
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert raw["display"]["fps"] == 15
     assert raw["video"]["fps"] == raw["face"]["sample_fps"] == 2.5
     assert raw["display"]["delay_seconds"] == buffer_delay

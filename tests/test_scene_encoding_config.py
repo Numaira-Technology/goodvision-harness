@@ -14,7 +14,9 @@ def scene_config(tmp_path, monkeypatch):
     monkeypatch.delenv("SCENE_JPEG_QUALITY", raising=False)
     path = tmp_path / "scene.yaml"
     data = yaml.safe_load(
-        (Path(__file__).resolve().parents[1] / "config.yaml").read_text()
+        (Path(__file__).resolve().parents[1] / "config.yaml").read_text(
+            encoding="utf-8"
+        )
     )
 
     def write(value=None):
