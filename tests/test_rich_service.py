@@ -635,7 +635,7 @@ def test_runtime_selects_independent_rich_annotation_backend(
         assert info["rich_labeling"]["enabled"] is True
         assert "backend" not in info["rich_labeling"]
         assert "model" not in info["rich_labeling"]
-        assert info["supported_features"] == list(DETECTION_EVENT_LABELS)
+        assert info["supported_features"] == [*DETECTION_EVENT_LABELS, "hanging"]
     finally:
         runtime.stop()
 
