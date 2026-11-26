@@ -85,7 +85,9 @@ def test_videojev_prepare_leaves_question_binding_to_the_gpu_worker():
     from goodvision_harness import ppe
 
     video = VideoJevPrepared(None, {"tokens": 10}, 1000, {"preprocess_seconds": 0.0})
-    plain = VideoJevRuntime._keep_ppe_sources(video, (b"a", b"b"), QuestionTemplate(ROWS))
+    plain = VideoJevRuntime._keep_ppe_sources(
+        video, (b"a", b"b"), QuestionTemplate(ROWS),
+    )
     assert plain is video and plain.question_groups is None
     template = QuestionTemplate(({"id": ppe.PPE_ID},))
     kept = VideoJevRuntime._keep_ppe_sources(video, [b"a", b"b"], template)
