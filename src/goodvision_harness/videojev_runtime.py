@@ -163,13 +163,25 @@ class VideoJevRuntime(NativeVideoJevModel):
             "context": context, "max_pixels": max_pixels,
             "processor_max_pixels": low,
         })
-        if question_template is not None and frame_times is not None:
-            prepared = self._bind(prepared, question_template, frame_times)
-            from .ppe import has_ppe
-
-            if has_ppe(question_template):
-                prepared = replace(prepared, source_payloads=tuple(payloads))
+        prepared = self._keep_ppe_sources(prepared, payloads, question_template)
         prepared.timings["preprocess_seconds"] = time.perf_counter() - start
+        return prepared
+
+    @staticmethod
+    def _keep_ppe_sources(prepared, payloads, question_template):
+        """Retain source JPEGs for PPE; leave question binding to the GPU worker.
+
+        Questions are bound lazily by predict_prepared / predict_prepared_batch
+        (``_bind``). Binding here on the CPU worker (8f63166) cost ~46 ms per
+        batch-of-4 window on an RTX 4090: throughput fell from 12.6 to 11.1
+        windows/s with identical answers (same-host A/B, 2026-11-25).
+        """
+        if question_template is None:
+            return prepared
+        from .ppe import has_ppe
+
+        if has_ppe(question_template):
+            prepared = replace(prepared, source_payloads=tuple(payloads))
         return prepared
 
     def _append_ppe(self, raw, timings, prepared):
