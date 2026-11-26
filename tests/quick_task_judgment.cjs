@@ -50,6 +50,7 @@ function fixture({view = "insights", parentRow = null, response, status = {}} = 
     detectionEvents: ["smoking", "fight"], $: element, ui: {sseChannel: {}},
     analysis: result => rendered.push(result), setChannel() {},
     async pollOverallDescription() {requests.push({url: "/v1/workflow/summaries?limit=100"});return {received:true,unavailable:false};},
+    async pollObjectPresence() {},
     setTimeout(callback, delay) { const id = ++timerId; timers.set(id, {callback, delay}); return id; },
     clearTimeout(id) { timers.delete(id); },
     async fetch(url, options) {

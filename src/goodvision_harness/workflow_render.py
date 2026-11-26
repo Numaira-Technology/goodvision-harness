@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from .object_presence import is_experimental
 from .workflow_modules import display_settings
 
 
@@ -15,6 +16,24 @@ def recent(timestamp, now, age):
         and math.isfinite(timestamp)
         and 0 <= now - timestamp <= age
     )
+
+
+def object_labels(value, language="zh"):
+    """Burn in present custom labels, never unvalidated preset detections.
+
+    The rendered image may crop text and lose a warning. Skip experimental
+    results altogether, also recognizing shipped IDs in older records.
+    """
+    labels = []
+    for item in value.get("objects", []):
+        if item.get("present") is not True:
+            continue
+        if item.get("experimental") or is_experimental(str(item.get("id", ""))):
+            continue
+        name = (item.get("zh_name") if language == "zh" else None) or item.get("name")
+        if name:
+            labels.append(str(name))
+    return labels
 
 
 def render_output(jpeg, output, timestamp, *, language="zh"):
@@ -113,6 +132,18 @@ def render_output(jpeg, output, timestamp, *, language="zh"):
                             outline="#32e7a0",
                             width=3,
                         )
+        elif layer == "objects":
+            if value.get("error") or not recent(
+                value.get("timestamp_seconds"), timestamp, 15
+            ):
+                continue
+            present = object_labels(value, language)
+            if present:
+                panel(
+                    " · ".join(present),
+                    settings[layer]["position"],
+                    "#8a5a00",
+                )
         elif layer == "events":
             labels = []
             for record in value.get("results", []):

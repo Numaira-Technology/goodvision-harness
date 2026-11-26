@@ -17,6 +17,7 @@ from threading import RLock
 from typing import Any
 from uuid import uuid4
 
+from . import object_presence
 from .event_catalog import event_catalog
 from .event_registry import EventVocabulary
 from .workflow_modules import (
@@ -49,8 +50,9 @@ NODE_PORTS = {
     "tracking": {"inputs": ("frames",), "outputs": ("tracks",)},
     "events": {"inputs": ("frames",), "outputs": ("events",)},
     "summary": {"inputs": ("frames",), "outputs": ("summary",)},
+    "objects": {"inputs": ("frames",), "outputs": ("objects",)},
     "output": {
-        "inputs": ("frames", "faces", "tracks", "events", "summary"),
+        "inputs": ("frames", "faces", "tracks", "events", "summary", "objects"),
         "outputs": (),
     },
 }
@@ -60,6 +62,7 @@ _NAMES = {
     "tracking": "Person tracking",
     "events": "Safety events",
     "summary": "Scene summary",
+    "objects": "Object presence",
     "output": "Output",
 }
 
@@ -162,6 +165,11 @@ def _config(kind: str, value: Any, vocabulary: EventVocabulary | None = None) ->
         allowed |= {"features", "event_sensitivities"}
     elif kind == "summary":
         allowed |= {"interval_seconds", "prompt"}
+    elif kind == "objects":
+        allowed |= {
+            "objects", "sample_fps", "clear_after", "window_frames",
+            "frame_step_seconds",
+        }
     elif kind == "source":
         allowed |= {"camera_id"}
     elif kind == "output":
@@ -194,6 +202,9 @@ def _config(kind: str, value: Any, vocabulary: EventVocabulary | None = None) ->
             ):
                 _fail("unsupported module execution mode")
             config["execution_mode"] = raw["execution_mode"]
+    if kind == "objects":
+        # Always resolve a module endpoint, even when the draft omitted engine.
+        config["engine"] = engine_for(kind, raw)
     if kind == "source" and raw.get("camera_id") is not None:
         camera_id = raw["camera_id"]
         if not isinstance(camera_id, str) or not _CAMERA.fullmatch(camera_id):
@@ -268,6 +279,29 @@ def _config(kind: str, value: Any, vocabulary: EventVocabulary | None = None) ->
         ):
             _fail("summary prompt must be nonempty text under 4001 characters")
         config.update(interval_seconds=interval, prompt=prompt)
+    elif kind == "objects":
+        try:
+            config.update(
+                # No default object: experimental presets are an explicit choice.
+                objects=object_presence.objects_config(raw.get("objects")),
+                sample_fps=object_presence.sample_fps(
+                    raw.get("sample_fps", object_presence.DEFAULT_SAMPLE_FPS)
+                ),
+                clear_after=object_presence.clear_after(
+                    raw.get("clear_after", object_presence.DEFAULT_CLEAR_AFTER)
+                ),
+                window_frames=object_presence.window_frames(
+                    raw.get("window_frames", object_presence.DEFAULT_WINDOW_FRAMES)
+                ),
+                frame_step_seconds=object_presence.frame_step_seconds(
+                    raw.get(
+                        "frame_step_seconds",
+                        object_presence.DEFAULT_FRAME_STEP_SECONDS,
+                    )
+                ),
+            )
+        except ValueError as exc:
+            _fail(str(exc))
     return config
 
 
@@ -301,7 +335,7 @@ def validate_graph(
             node[axis] = number
         slot = (kind, engine_for(kind, node["config"]))
         counts[slot] = counts.get(slot, 0) + 1
-        if kind in {"face", "tracking", "events"} and counts[slot] > 1:
+        if kind in {"face", "tracking", "events", "objects"} and counts[slot] > 1:
             _fail(f"only one {kind} component is supported per workflow")
         by_id[nid] = node
         nodes.append(node)
@@ -487,7 +521,8 @@ def compile_graph(
                 outputs[-1]["display"] = node["config"]["display"]
             consumed.update(binding["node_id"] for binding in inputs)
     features, sensitivities, summaries = set(), {}, []
-    face_id = event_id = tracking_id = None
+    face_id = event_id = tracking_id = objects_id = None
+    objects = None
     for nid in sorted(consumed):
         node, kind = nodes[nid], nodes[nid]["type"]
         if kind == "face":
@@ -499,6 +534,18 @@ def compile_graph(
             event_id = nid
             features.update(node["config"]["features"])
             sensitivities.update(node["config"]["event_sensitivities"])
+        elif kind == "objects":
+            objects_id = nid
+            objects = {
+                "id": nid,
+                **{
+                    key: copy.deepcopy(node["config"][key])
+                    for key in (
+                        "objects", "sample_fps", "clear_after", "window_frames",
+                        "frame_step_seconds",
+                    )
+                },
+            }
         elif kind == "summary":
             summaries.append(
                 {
@@ -527,7 +574,12 @@ def compile_graph(
         "tracking_node_id": tracking_id,
         "tracking_enabled": tracking_id is not None,
     }
-    for kind, nid in (("tracking", tracking_id), ("events", event_id)):
+    if objects is not None:
+        # Only present with an object node, so existing plans keep their shape.
+        plan.update(objects_node_id=objects_id, objects=objects)
+    for kind, nid in (
+        ("tracking", tracking_id), ("events", event_id), ("objects", objects_id),
+    ):
         if nid is not None and "engine" in nodes[nid]["config"]:
             config = nodes[nid]["config"]
             selected = config["engine"]
