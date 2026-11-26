@@ -41,8 +41,44 @@ globalThis.GoodvisionFleet={detailHidden:()=>false,extraBusy:()=>false};
     return page
 
 
+def local_camera_document() -> str:
+    """Render the single-runtime console with browser-camera controls enabled."""
+    page = Path(__file__).with_name("dashboard.html").read_text(encoding="utf-8")
+    page = page.replace(
+        '<div id="fleet-detail-console" hidden>', '<div id="fleet-detail-console">'
+    )
+    page = page.replace('<script src="/assets/fleet_console.js"></script>', "")
+    page = page.replace('<script src="/assets/workflow_canvas.js"></script>', "")
+    page = page.replace('<script src="/assets/local_camera.js"></script>', "")
+    page = page.replace(
+        'mode("stream");info().finally(loadDeploymentSettings);',
+        'mode("camera");info().finally(loadDeploymentSettings);',
+    )
+    setup = """
+<script>
+globalThis.GoodvisionLocalCamera=true;
+globalThis.GoodvisionConsoleManaged=false;
+</script>
+"""
+    page = page.replace("</head>", setup + "</head>")
+    page = page.replace(
+        "<h2>本机摄像头预览</h2>",
+        "<h2>本机摄像头检测</h2>",
+    )
+    return page
+
+
 def install_diagnostic_routes(application, controller, json_body):
     prefix = "/v1/fleet/cameras/{camera_id}"
+
+    @application.get(
+        "/local-camera", response_class=HTMLResponse, include_in_schema=False
+    )
+    async def local_camera():
+        return HTMLResponse(
+            local_camera_document(),
+            headers={"Cache-Control": "no-store"},
+        )
 
     @application.get(
         prefix + "/diagnostics", response_class=HTMLResponse, include_in_schema=False

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 from dataclasses import replace
 from urllib.error import HTTPError, URLError
 
@@ -18,6 +19,29 @@ from goodvision_harness.model_api import (
 )
 
 PRIVATE_DETAIL = "private-provider-token-and-response"
+
+
+class _SyncChunks(httpx.SyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
+        self.closed = False
+
+    def __iter__(self):
+        yield from self.chunks
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _stream_event(content=None, finish=None) -> bytes:
+    payload = {
+        "choices": [{
+            "index": 0,
+            "delta": {"content": content},
+            "finish_reason": finish,
+        }],
+    }
+    return ("data: " + json.dumps(payload) + "\n\n").encode()
 
 
 @pytest.fixture(params=["urllib", "pooled"])
@@ -178,3 +202,132 @@ def test_valid_structured_assistant_text_is_preserved():
         {"type": "image", "image": "ignored"},
         {"type": "text", "text": "second"},
     ]}}]}) == "first \nsecond"
+
+
+def test_pooled_transport_emits_bounded_request_timing():
+    records = []
+    client = PooledModelAPIClient(
+        ModelAPISettings(provider="openrouter", max_retries=0),
+        api_key="secret",
+        timing_sink=records.append,
+        trace_transport=True,
+    )
+    client._http.close()
+    client._http = httpx.Client(transport=httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "{}"}}]},
+        )
+    ))
+    try:
+        assert _request(client)
+    finally:
+        client.close()
+
+    assert len(records) == 1
+    assert records[0]["type"] == "model_transport_timing"
+    assert records[0]["request_sequence"] == 0
+    assert records[0]["attempt"] == 1
+    assert records[0]["outcome"] == "completed"
+    assert records[0]["http_status"] == 200
+    assert records[0]["response_bytes"] > 0
+    assert records[0]["total_seconds"] >= 0
+    assert records[0]["response_json_decode_seconds"] >= 0
+    assert records[0]["connection_reused"] is None
+    assert PRIVATE_DETAIL not in repr(records[0])
+
+
+def test_pooled_transport_timing_sink_cannot_break_request():
+    def fail_timing(_record):
+        raise RuntimeError(PRIVATE_DETAIL)
+
+    client = PooledModelAPIClient(
+        ModelAPISettings(provider="openrouter", max_retries=0),
+        api_key="secret",
+        timing_sink=fail_timing,
+    )
+    client._http.close()
+    client._http = httpx.Client(transport=httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "{}"}}]},
+        )
+    ))
+    try:
+        assert _request(client)
+    finally:
+        client.close()
+
+
+def test_failed_tcp_connect_is_not_reported_as_connection_reuse():
+    records = []
+    client = PooledModelAPIClient(
+        ModelAPISettings(provider="openrouter", max_retries=0),
+        api_key="secret",
+        timing_sink=records.append,
+        trace_transport=True,
+    )
+    try:
+        started, timing, trace = client._start_timing(0, 0, streaming=False)
+        trace("connection.connect_tcp.started", {})
+        trace("connection.connect_tcp.failed", {})
+        client._finish_timing(timing, started, "connection")
+    finally:
+        client.close()
+
+    assert records[0]["tcp_connect_attempt_count"] == 1
+    assert records[0]["tcp_connect_count"] == 0
+    assert records[0]["tcp_connect_failure_count"] == 1
+    assert records[0]["connection_reused"] is False
+
+
+def test_pooled_stream_exposes_prefix_and_retains_valid_final_response():
+    requests = []
+    stream = _SyncChunks([
+        _stream_event('{"detected"'),
+        _stream_event(':false,"confidence":0.9,'),
+        _stream_event('"description":"none","objects":[]}', "stop"),
+        b'data: {"choices":[],"usage":{"completion_tokens":12}}\n\n',
+        b'data: [DONE]\n\n',
+    ])
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=stream,
+        )
+
+    records = []
+    prefixes = []
+    client = PooledModelAPIClient(
+        ModelAPISettings(provider="openrouter", max_retries=0),
+        api_key="secret",
+        timing_sink=records.append,
+    )
+    client._http.close()
+    client._http = httpx.Client(transport=httpx.MockTransport(handle))
+    try:
+        response = client.chat_completion_stream(
+            model="test",
+            messages=[{"role": "user", "content": "test"}],
+            on_content=lambda text, elapsed: prefixes.append((text, elapsed)) or (
+                '"confidence":0.9,' in text
+            ),
+        )
+    finally:
+        client.close()
+
+    payload = json.loads(requests[0].content)
+    assert payload["stream"] is True
+    assert payload["stream_options"] == {"include_usage": True}
+    assert ModelAPIClient.assistant_text(response) == (
+        '{"detected":false,"confidence":0.9,"description":"none","objects":[]}'
+    )
+    assert response["usage"] == {"completion_tokens": 12}
+    assert len(prefixes) == 2
+    assert records[0]["streaming"] is True
+    assert records[0]["outcome"] == "completed"
+    assert records[0]["preliminary_decision_seconds"] <= records[0]["total_seconds"]
+    assert stream.closed
