@@ -104,8 +104,22 @@ the test set as development data; obtain a new untouched test set for the next c
 ## Current handoff compatibility
 
 The base-four CLI accepts v2 and v2.1, verifies each version's total/error counts,
-and requires matching validation/test spec versions. Its historical `overall_at_*`
-metrics remain complete-only; `all_questions_at_*` holds correct/all-question counts.
+and requires matching validation/test spec versions. Counts must be exact integers;
+an optional saved `scored` count must agree with the rows. Reports always expose
+attempted, scored and error counts. Overall `counts.total` retains the input version's
+meaning (scored for v2, attempted for v2.1); historical per-event `counts.total`
+remains scored. Use the explicit `attempted`/`scored` fields rather than inferring
+their meaning from `total`.
+
+Historical `overall_at_*` and per-event `at_*` confusion metrics remain
+complete-only and have no accuracy when scored=0. `all_questions_at_*` reports
+correct/all-question counts and accuracy overall and per event, including any
+frozen historical-threshold comparison. Missing questions stay in that headline
+denominator, with no fabricated TP/FN/TN/FP. A v2.1 all-error test cohort can report
+0% headline accuracy only if partial successful frame receipts still establish the
+required provider identity; no observed successful provider evidence remains
+ineligible. Validation must always be complete and error-free.
+
 For unified-frame-202-v1 or explicit unified-frame-120-v2 ledgers use the unified workflow instead. Its headline
 accuracy includes missing questions in the planned denominator, while the selected
 threshold algorithm still requires complete validation. Never remove missing

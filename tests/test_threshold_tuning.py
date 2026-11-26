@@ -174,11 +174,13 @@ def test_cli_reports_test_errors_and_keeps_fixed_gate_comparison(tmp_path, monke
     tuner.main()
     report = json.loads(output.read_text())
     result = report["test"][str(test_source)]
-    assert result["counts"] == {"attempted": 24, "total": 23, "errors": 1}
+    assert result["counts"] == {"attempted": 24, "total": 23, "scored": 23, "errors": 1}
     assert result["overall_at_tau"]["n"] == result["overall_at_0.5"]["n"] == 23
     assert report["val_counts"]["total"] == 24
     assert report["threshold_artifact_sha256"] == digest
-    assert result["per_event"]["fight"]["counts"] == {"attempted": 6, "total": 5, "errors": 1}
+    assert result["per_event"]["fight"]["counts"] == {"attempted": 6, "total": 5, "scored": 5, "errors": 1}
+    assert result["all_questions_at_tau"] == {"correct": 23, "total": 24, "accuracy": 95.8}
+    assert result["per_event"]["fight"]["all_questions_at_tau"]["accuracy"] == 83.3
 
 
 def test_cli_rejects_identical_val_and_test_before_writing_report(tmp_path, monkeypatch):
@@ -349,7 +351,7 @@ def test_all_error_event_remains_visible_without_an_accuracy(tmp_path):
     source, manifest = save_run(tmp_path, data)
     report = tuner.evaluate_thresholds(artifact, digest, [source], [manifest])
     fight = report["test"][str(source)]["per_event"]["fight"]
-    assert fight["counts"] == {"attempted": 6, "total": 0, "errors": 6}
+    assert fight["counts"] == {"attempted": 6, "total": 0, "scored": 0, "errors": 6}
     assert fight["at_tau"]["accuracy"] is None
     assert fight["at_0.5"]["accuracy"] is None
 
@@ -431,6 +433,7 @@ def test_historical_thresholds_are_frozen_as_comparison_not_used_for_selection(t
     test, test_manifest = save_run(tmp_path, run("test"))
     result = tuner.evaluate_thresholds(artifact, digest, [test], [test_manifest])["test"][str(test)]
     assert result["overall_at_previous_tau"]["accuracy"] == 50.0
+    assert result["all_questions_at_previous_tau"] == {"correct": 12, "total": 24, "accuracy": 50.0}
     assert result["overall_at_tau"]["accuracy"] == 100.0
 
 
@@ -481,7 +484,40 @@ def test_v21_keeps_error_questions_in_reported_total():
     row["error"] = "missing answer"
     data["overall"]["errors"] = 1
     refresh_provider(data)
-    assert check(data) == {"attempted": 24, "total": 24, "errors": 1}
+    assert check(data) == {"attempted": 24, "total": 24, "scored": 23, "errors": 1}
     data["overall"]["total"] = 23
     with pytest.raises(ValueError, match="totals"):
         check(data)
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("attempted", 24.0), ("total", 24.0), ("errors", False),
+    ("scored", 999), ("scored", 24.0), ("scored", True),
+])
+def test_counts_require_exact_integers_and_consistent_optional_scored(field, value):
+    data = run("test")
+    data["overall"][field] = value
+    with pytest.raises(ValueError, match="totals"):
+        check(data)
+
+
+@pytest.mark.parametrize("successful_receipts", [True, False])
+def test_all_error_v21_test_requires_observed_provider_evidence(successful_receipts):
+    data = run("test")
+    data["spec_version"] = "v2.1"
+    data["overall"].update(total=24, errors=24, scored=0)
+    for row in data["per_video"]:
+        for key in ("score", "pred", "correct"):
+            row.pop(key)
+        row.update(error="synthetic second frame failed", frames_ok=1, frames_failed=1)
+        row["frames"][1] = {"time_s": 1.5, "error": "decode failed", "attempts": []}
+        if not successful_receipts:
+            row["frames"] = []
+    refresh_provider(data)
+    if successful_receipts:
+        assert check(data) == {"attempted": 24, "total": 24, "scored": 0, "errors": 24}
+    else:
+        with pytest.raises(ValueError, match="provider"):
+            check(data)
+    with pytest.raises(ValueError, match="validation must be complete"):
+        check(data, validation=True)

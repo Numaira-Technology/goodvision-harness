@@ -54,3 +54,4 @@ networks:
 volumes:
   face-models: {}
   face-data: {}
+  vlm-admission: {}
