@@ -68,7 +68,7 @@ def test_native_display_crops_before_every_encode(
 
 @pytest.mark.parametrize("side,expected", [(None, (1920, 1080)), (1280, (1280, 720))])
 def test_display_optional_cap_preserves_aspect_ratio(tmp_path, side, expected):
-    data = yaml.safe_load((ROOT / "config.yaml").read_text())
+    data = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
     data["display"]["max_image_side"] = side
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))
@@ -84,7 +84,7 @@ def test_display_optional_cap_preserves_aspect_ratio(tmp_path, side, expected):
 
 @pytest.mark.parametrize("side", [0, -1, True, "source", 1280.5])
 def test_display_cap_still_rejects_invalid_limits(tmp_path, side):
-    data = yaml.safe_load((ROOT / "config.yaml").read_text())
+    data = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
     data["display"]["max_image_side"] = side
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(data))

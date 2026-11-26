@@ -297,7 +297,18 @@ service:
 events:
   # Declaring an event makes it selectable. A session still has to name it
   # in features before it is detected. See docs/guides/configuration.md.
-  definitions: []
+  definitions:
+    - label: hanging
+      zh_name: 上吊
+      definition: >-
+        A person ties a cord, bed sheet, belt or similar ligature to a fixed
+        point such as bars, a door, a bed frame, a window or a ceiling fixture
+        and places the loop around their own neck, or a person's body hangs or
+        slumps while supported by a ligature at the neck.
+      counter_examples: >-
+        Hanging clothes or towels on a hook or line; a scarf, tie or lanyard
+        worn normally; stretching or doing pull-ups on a bar.
+      target: person
   # Default directory: event-evidence beside face.gallery_path.
   clip_seconds: 3.0
   pre_roll_seconds: 1.0

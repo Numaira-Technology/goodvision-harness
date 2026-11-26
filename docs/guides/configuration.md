@@ -174,6 +174,15 @@ events:
 能力接口 `supported_features` 列出全部可选项、`features` 是未指定选择时的默认项、
 `event_display_names` 给出各标签的中文名供界面渲染。
 
+开发配置 `config.yaml` 与安装包内的 `src/goodvision_harness/config.yaml` 必须逐字节相同。
+这两份和客户交付配置 `config.delivery.yaml` 都已经声明 `hanging`（上吊，`target: person`）；
+交付文件只在模型路由、人脸和编码器路径上与开发配置不同，事件词表保持一致。
+源码 Compose（`compose.yaml`，以及继承它的本地 GPU 叠加）把 `./config.yaml` 只读挂到
+`/app/config.yaml`，并设置 `HARNESS_CONFIG=/app/config.yaml`。客户交付 Compose
+`compose.full-gpu.delivery.yaml` 把 `./config.delivery.yaml` 挂到同一路径。
+两种启动方式下，「人员与能力」和工作流目录都会列出「上吊」。界面名称来自 `zh_name`，
+不需要再改前端文案表。
+
 注入的是部署级词表；每个会话再用 `POST /v1/sessions/start` 的 `features` 数组从中挑子集，
 词表外的标签一律 `unsupported feature`。上限 32 条，每段文本 600 字符，
 换行会被折叠成空格——定义文本进的是模型 prompt，不能自带指令行。
