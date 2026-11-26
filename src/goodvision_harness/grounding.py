@@ -1141,10 +1141,9 @@ def _recall_posture_rule(definitions: tuple[EventDefinition, ...]) -> str:
         )
     if grouped[BALANCED_RECALL]:
         parts.append(
-            f"Treat {grouped[BALANCED_RECALL]} as ordinary activity rather than "
-            "safety risks, so no recall preference applies. Report one only "
-            "when its stated criteria are visibly met, and answer false when "
-            "they are not."
+            f"For {grouped[BALANCED_RECALL]}, apply no recall preference. "
+            "Report one only when clear visible evidence meets its stated "
+            "criteria, and answer false when that evidence is absent."
         )
         parts.append(
             "Verdicts cover the whole chronological window: set detected=true "
@@ -1184,12 +1183,12 @@ def _injected_event_section(
 
     lines = [
         (
-            "Additional requested events. These are not safety events; judge "
-            "each one only from visible evidence, with the same discipline and "
-            "honesty about uncertainty as the events above:"
+            "Additional requested events. Judge each one only from clear "
+            "visible evidence of its stated criteria, with the same discipline "
+            "and honesty about uncertainty as the events above:"
             if alongside_builtins
-            else "Requested events. None of these is a safety event; judge each "
-            "one only from visible evidence, and say so plainly when the "
+            else "Requested events. Judge each one only from clear visible "
+            "evidence of its stated criteria, and say so plainly when the "
             "evidence does not settle it:"
         )
     ]
@@ -1258,8 +1257,8 @@ def build_multi_grounding_messages(
     if balanced:
         policy_system_prompt += f"\n{_recall_posture_rule(requested)}"
     # The compact no_events shortcut is for safety windows that are usually
-    # empty. Everyday events are ordinary activity that is easy to miss in a
-    # short sample, and a pilot run answered every clip with bare no_events
+    # empty. A balanced event is easy to miss in a short sample, and a pilot
+    # run answered every clip with bare no_events
     # including ones that plainly show people talking. Force a per-label
     # answer whenever any balanced event is in the request so a miss cannot
     # hide behind the all-negative form. Safety-only requests keep the

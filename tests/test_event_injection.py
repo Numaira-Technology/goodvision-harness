@@ -406,7 +406,12 @@ def test_a_request_without_safety_events_never_calls_them_safety_events():
     )
     # Nothing to sit "above" the list when every requested event is injected.
     assert "as the events above" not in user_text
-    assert "Requested events. None of these is a safety event" in user_text
+    assert (
+        "Requested events. Judge each one only from clear visible evidence"
+        in user_text
+    )
+    assert "not a safety event" not in user_text
+    assert "None of these is a safety event" not in user_text
 
 
 def test_everyday_events_do_not_get_the_compact_negative_shortcut():
@@ -458,6 +463,59 @@ def _system_text(event_labels, vocabulary=BUILTIN_VOCABULARY):
     )[0]["content"]
 
 
+def _full_prompt(event_labels, vocabulary):
+    settings = load_config(ROOT / "config.yaml").inference
+    messages = build_multi_grounding_messages(
+        _WINDOW,
+        system_prompt=settings.system_prompt,
+        prompt=settings.prompt,
+        event_labels=event_labels,
+        append_contract=True,
+        vocabulary=vocabulary,
+    )
+    chunks = [messages[0]["content"]]
+    chunks.extend(
+        item["text"]
+        for item in messages[1]["content"]
+        if item.get("type") == "text"
+    )
+    return "\n".join(chunks)
+
+
+def test_a_custom_safety_alert_is_judged_on_clear_evidence():
+    """A selected custom alert is judged on its stated criteria.
+
+    Hanging stays opt-in. Alone or beside a built-in safety event, the prompt
+    asks for clear visible evidence and does not call the custom event non-safety.
+    """
+
+    config = load_config(ROOT / "config.yaml")
+    vocabulary = config.event_vocabulary
+    hanging = vocabulary.get("hanging")
+    assert hanging is not None
+    assert "hanging" not in vocabulary.default_labels()
+    forbidden = (
+        "ordinary activity",
+        "not a safety event",
+        "not safety events",
+        "None of these is a safety event",
+        "rather than safety",
+    )
+    for labels in (("hanging",), ("fight", "hanging")):
+        text = _full_prompt(labels, vocabulary)
+        assert hanging.definition in text
+        assert "clear visible evidence" in text
+        for phrase in forbidden:
+            assert phrase not in text, phrase
+    alone = _system_text(("hanging",), vocabulary)
+    mixed = _system_text(("fight", "hanging"), vocabulary)
+    assert "For hanging, apply no recall preference" in alone
+    assert "prefer a false positive over a miss" not in alone
+    assert "For hanging, apply no recall preference" in mixed
+    assert "Treat fight as safety events" in mixed
+    assert "prefer a false positive over a miss" in mixed
+
+
 def test_the_safety_recall_bias_does_not_reach_everyday_events():
     """A weapon is worth a false alarm; someone checking a phone is not.
 
@@ -475,12 +533,16 @@ def test_the_safety_recall_bias_does_not_reach_everyday_events():
 
     assert "prefer a false positive over a miss" in mixed
     assert "Treat fight as safety events" in mixed
-    assert "Treat texts_on_phone as ordinary activity" in mixed
+    assert "For texts_on_phone, apply no recall preference" in mixed
+    assert "ordinary activity" not in mixed
+    assert "rather than safety" not in mixed
 
-    # Nothing asks for recall when nothing requested is a safety event.
+    # Nothing asks for recall when nothing requested is a built-in safety event.
     assert "prefer false positives" not in everyday_only
     assert "prefer a false positive over a miss" not in everyday_only
-    assert "Treat texts_on_phone as ordinary activity" in everyday_only
+    assert "For texts_on_phone, apply no recall preference" in everyday_only
+    assert "ordinary activity" not in everyday_only
+    assert "rather than safety" not in everyday_only
     assert "whole chronological window" in everyday_only
     assert "whole chronological window" in mixed
 
